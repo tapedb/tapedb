@@ -12,7 +12,9 @@ import {
   buildSelectSql,
   compileQuery,
   type CompiledChild,
+  type CompiledCondition,
   type CompiledNode,
+  type CompiledOrder,
   type CompiledQuery,
 } from "./query-compile";
 import {
@@ -23,6 +25,7 @@ import {
 } from "./query-types";
 import { findNamespace, toSnakeCase, type AttributeType } from "./registry";
 import { allowRowView, assertPermission } from "./tx-permissions";
+import { quoteIdentifier } from "./tx-apply";
 import type { SqlExecutor, SqlValue } from "./tx-sql";
 import { TxError } from "./tx-types";
 
@@ -106,10 +109,33 @@ export function executeCompiledQuery(
 }
 
 /**
+ * Multiplier and floor for the scan cap. One page may read at most
+ * `max(limit * 10, 200)` matching rows before it gives up filling: a rule that
+ * hides every row must terminate instead of walking the whole namespace.
+ */
+const SCAN_CAP_FACTOR = 10;
+const SCAN_CAP_FLOOR = 200;
+
+/**
+ * Hard ceiling on how many rows one page may read while filling. Returns rows
+ * are bounded by `limit`; this bounds the work behind them.
+ */
+export function pageScanCap(limit: number): number {
+  return Math.max(limit * SCAN_CAP_FACTOR, SCAN_CAP_FLOOR);
+}
+
+/**
  * Executes a compiled query and reports truncation per namespace.
  *
- * The SELECT asks for one row beyond the limit so `hasMore` is exact instead of
+ * Each chunk asks for one row beyond the limit so `hasMore` is exact instead of
  * a guess, and the extra row is discarded before hydration.
+ *
+ * Row-level `view` rules run in TypeScript, so they cannot be pushed into SQL:
+ * they see API-shaped values and may be arbitrary predicates. A page is
+ * therefore filled by scanning further when a rule hides rows, up to
+ * `pageScanCap(limit)`. `hasMore` and `nextCursor` stay honest: `returned`
+ * counts visible rows only, `hasMore` means matching rows remain outside this
+ * page, and `nextCursor` resumes after the last VISIBLE row.
  */
 export function executeCompiledQueryWithPageInfo(
   sql: SqlExecutor,
@@ -121,34 +147,205 @@ export function executeCompiledQueryWithPageInfo(
 
   for (const node of compiled.nodes) {
     const limit = node.limit;
-    const entities = hydrateNode(
-      sql,
-      limit === null ? node : { ...node, limit: limit + 1 }
-    );
-    const hasMore = limit !== null && entities.length > limit;
-    const page = hasMore ? entities.slice(0, limit) : entities;
 
-    // Row-level read rules run here, after the SQL limit: a rule is arbitrary
-    // TypeScript, so it cannot be pushed into the query. A page can therefore
-    // come back smaller than the limit, and `hasMore` reflects the unfiltered
-    // match count.
-    const visible =
-      claim === undefined
-        ? page
-        : page
-            .map((entity) => filterVisible(entity, claim))
-            .filter((entity): entity is HydratedEntity => entity !== null);
+    if (limit === null) {
+      // A nested level is bounded per parent, not by a page: there is no page
+      // to fill and no cursor to resume from.
+      const entities = hydrateNode(sql, node);
+      const visible =
+        claim === undefined ? entities : visibleOnly(entities, claim);
 
-    data[node.namespace] = visible.map(toApiEntity);
+      data[node.namespace] = visible.map(toApiEntity);
+      pageInfo[node.namespace] = {
+        limit,
+        returned: visible.length,
+        hasMore: false,
+      };
+      continue;
+    }
+
+    const { page, hasMore } = fillPage(sql, node, claim, limit);
+
+    data[node.namespace] = page.map(toApiEntity);
 
     const nextCursor = cursorFor(node, page, hasMore);
     pageInfo[node.namespace] =
       nextCursor === undefined
-        ? { limit, returned: visible.length, hasMore }
-        : { limit, returned: visible.length, hasMore, nextCursor };
+        ? { limit, returned: page.length, hasMore }
+        : { limit, returned: page.length, hasMore, nextCursor };
   }
 
   return { data, pageInfo };
+}
+
+/** Rows the namespace's `view` rule hides are dropped at every link depth. */
+function visibleOnly(
+  entities: HydratedEntity[],
+  claim: RoleClaim
+): HydratedEntity[] {
+  return entities
+    .map((entity) => filterVisible(entity, claim))
+    .filter((entity): entity is HydratedEntity => entity !== null);
+}
+
+/**
+ * Fills one page by scanning forward while `view` rules hide rows.
+ *
+ * Stops on the first of: a full page, an exhausted match set, or the scan cap.
+ * `hasMore` is only ever set when a row outside the page is known to exist, so
+ * a cap-limited page resumes from its last visible row without skipping or
+ * repeating anything.
+ */
+function fillPage(
+  sql: SqlExecutor,
+  node: CompiledNode,
+  claim: RoleClaim | undefined,
+  limit: number
+): { page: HydratedEntity[]; hasMore: boolean } {
+  const maxScan = pageScanCap(limit);
+  const page: HydratedEntity[] = [];
+
+  const more =
+    node.order.length === 0
+      ? fillUnordered(sql, node, claim, limit, maxScan, page)
+      : fillOrdered(sql, node, claim, limit, maxScan, page);
+
+  // A cap-limited page with nothing visible has no valid cursor to hand back,
+  // so it must be terminal rather than an unactionable `hasMore: true`.
+  return { page, hasMore: more && page.length > 0 };
+}
+
+/**
+ * Ordered scan: keyset, one chunk at a time, appending visible rows.
+ *
+ * The page's own limit plus one probe row is the chunk size. Once the page is
+ * full the scan keeps looking for one more VISIBLE row, so `hasMore` is never
+ * set on the strength of a hidden row: a client is not sent on an extra round
+ * trip to fetch an empty page. Each chunk resumes after the last row actually
+ * read, which is what keeps the scan linear in rows read.
+ *
+ * Returns whether a visible row remains outside the page.
+ */
+function fillOrdered(
+  sql: SqlExecutor,
+  node: CompiledNode,
+  claim: RoleClaim | undefined,
+  limit: number,
+  maxScan: number,
+  page: HydratedEntity[]
+): boolean {
+  let scanned = 0;
+  let cursor: CompiledCondition | null = null;
+
+  while (scanned < maxScan) {
+    const chunkLimit = Math.min(limit + 1, maxScan - scanned);
+    const chunkNode: CompiledNode =
+      cursor === null
+        ? { ...node, limit: chunkLimit }
+        : { ...node, limit: chunkLimit, conditions: [...node.conditions, cursor] };
+
+    const chunk = hydrateNode(sql, chunkNode);
+    if (chunk.length === 0) return false;
+
+    scanned += chunk.length;
+
+    for (const entity of chunk) {
+      const visible = claim === undefined ? entity : filterVisible(entity, claim);
+      if (visible === null) continue;
+      if (page.length < limit) {
+        page.push(visible);
+        continue;
+      }
+      return true; // a visible row sits outside the page
+    }
+
+    // A short chunk is the end of the match set, so nothing is left to return.
+    if (chunk.length < chunkLimit) return false;
+
+    const next = conditionAfter(node.order, chunk[chunk.length - 1].row);
+    // A null ordering value has no total order to advance along, so the scan
+    // cannot continue; report the rows it may not have reached.
+    if (next === null) return true;
+    cursor = next;
+  }
+
+  return true; // scan cap: rows were left unread
+}
+
+/**
+ * Unordered scan: no total order exists, so there is no keyset to advance.
+ * Re-read one widening window from the start instead of inventing offsets.
+ * Bounded by the same cap, so it terminates; the window doubles, so it costs
+ * a logarithmic number of queries.
+ */
+function fillUnordered(
+  sql: SqlExecutor,
+  node: CompiledNode,
+  claim: RoleClaim | undefined,
+  limit: number,
+  maxScan: number,
+  page: HydratedEntity[]
+): boolean {
+  let window = Math.min(limit + 1, maxScan);
+
+  for (;;) {
+    const rows = hydrateNode(sql, { ...node, limit: window });
+    const visible = claim === undefined ? rows : visibleOnly(rows, claim);
+
+    page.length = 0;
+    page.push(...visible.slice(0, limit));
+
+    if (rows.length < window) return false; // exhausted
+    if (visible.length >= limit) return true; // window held more than a page
+    if (window >= maxScan) return true; // cap: rows were left unread
+
+    window = Math.min(window * 2, maxScan);
+  }
+}
+
+/**
+ * Keyset predicate for "strictly after `row`" in the node's order.
+ *
+ * Mirrors the compiler's private `cursorCondition`: for `(a ASC, b DESC)` it
+ * builds `a > ? OR (a = ? AND b < ?)`. The executor needs it mid-scan, from a
+ * row it just read rather than an opaque client cursor, so it cannot reuse the
+ * compile-time helper. Returns null when a value cannot be compared, matching
+ * the compiler's refusal to resume from a null.
+ */
+function conditionAfter(
+  order: CompiledOrder[],
+  row: PhysicalRow
+): CompiledCondition | null {
+  const clauses: string[] = [];
+  const params: SqlValue[] = [];
+
+  for (let index = 0; index < order.length; index += 1) {
+    const parts: string[] = [];
+
+    for (let prior = 0; prior < index; prior += 1) {
+      const value = row[order[prior].column];
+      if (!isComparable(value)) return null;
+      parts.push(`${quoteIdentifier(order[prior].column)} = ?`);
+      params.push(value);
+    }
+
+    const value = row[order[index].column];
+    if (!isComparable(value)) return null;
+    const operator = order[index].direction === "desc" ? "<" : ">";
+    parts.push(`${quoteIdentifier(order[index].column)} ${operator} ?`);
+    params.push(value);
+
+    clauses.push(`(${parts.join(" AND ")})`);
+  }
+
+  if (clauses.length === 0) return null;
+  return { sql: clauses.join(" OR "), params };
+}
+
+function isComparable(
+  value: SqlValue | undefined
+): value is string | number {
+  return typeof value === "string" || typeof value === "number";
 }
 
 /** Drops rows the namespace's `view` rule hides, at every link depth. */

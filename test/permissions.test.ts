@@ -378,7 +378,7 @@ describe("view rules", () => {
     expect(executeCompiledQuery(sql, compiled, claimFor("bob")).columns).toEqual([]);
   });
 
-  test("a filtered page can be shorter than the limit", () => {
+  test("fills the page past hidden rows and stops when nothing is left", () => {
     useReadSchema();
     const sql = readDatabase();
 
@@ -400,11 +400,12 @@ describe("view rules", () => {
       claimFor("bob")
     );
 
-    // Rows are filtered after the SQL limit, so this is expected: one visible
-    // row from a page of two, and hasMore still reflects the unfiltered match.
+    // Only one row is visible in the whole namespace, so the scan fills what it
+    // can and then reports the end instead of pretending a third row exists.
     expect(data.columns.map((row) => row.name)).toEqual(["B"]);
     expect(pageInfo.columns.returned).toBe(1);
-    expect(pageInfo.columns.hasMore).toBe(true);
+    expect(pageInfo.columns.hasMore).toBe(false);
+    expect(pageInfo.columns.nextCursor).toBeUndefined();
   });
 });
 
