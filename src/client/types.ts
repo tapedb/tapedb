@@ -73,6 +73,12 @@ export interface QueryOptions {
   where?: QueryWhere;
   order?: Record<string, "asc" | "desc">;
   limit?: number;
+  /**
+   * Opaque cursor from a previous page's `pageInfo[namespace].nextCursor`.
+   * The engine requires an explicit `order`, because a cursor is only
+   * meaningful against a total order. `db.loadMore()` sends this for you.
+   */
+  after?: string;
 }
 
 export interface QueryNode {
@@ -95,9 +101,17 @@ export interface QueryError {
 
 /** Truncation metadata the engine reports per namespace. */
 export interface PageInfo {
+  /** The effective limit, or null when the namespace is uncapped. */
   limit: number | null;
+  /** Rows the engine returned after row-level view rules, not rows read. */
   returned: number;
   hasMore: boolean;
+  /**
+   * Opaque keyset cursor for the next page. Emitted only when `hasMore` is
+   * true and the query has an explicit `order`; `db.loadMore()` passes it back
+   * as `$: { after }`.
+   */
+  nextCursor?: string;
 }
 
 export type QueryPageInfo = Record<string, PageInfo>;
@@ -106,7 +120,10 @@ export interface QueryState {
   data: QueryResult | null;
   isLoading: boolean;
   error: QueryError | null;
-  /** Present when the engine reported a capped result set. */
+  /**
+   * Per top-level namespace truncation metadata from the engine. `returned` is
+   * the engine's own visible count; do not re-derive it from `data`.
+   */
   pageInfo?: QueryPageInfo;
 }
 
@@ -245,6 +262,23 @@ export interface DataClient {
 
   /** Current cached state for a query, without subscribing to it. */
   getQueryState(query: QueryDocument): QueryState;
+
+  /**
+   * Requests the next page for the cached query and appends it.
+   *
+   * Uses `pageInfo[namespace].nextCursor` for each **top-level** namespace that
+   * reported one, re-requests with `$: { ...options, after: cursor }`, appends
+   * the new rows deduped by `id`, and updates `pageInfo`. Resolves to `false`
+   * when there is no cursor left (first page not loaded yet, or exhausted).
+   *
+   * Nested link results arrive with the page and are not paginated: a cursor is
+   * only defined for the top-level namespace's order.
+   *
+   * The result lives in the cache until the next full `query:data` (a reconnect
+   * re-subscribes the original query, which resets the cached list to page one);
+   * call `loadMore()` again to rebuild it.
+   */
+  loadMore(query: QueryDocument): Promise<boolean>;
 
   /** Opens the shared WebSocket (lazy; safe to call repeatedly). */
   connect(): Promise<void>;
