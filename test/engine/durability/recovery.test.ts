@@ -567,6 +567,12 @@ describe("recoverWorkspace", () => {
     expect(scalar(target.db, `SELECT COUNT(*) FROM "favorites"`)).toBe(0);
 
     expect(scalar(target.db, `SELECT high_water_seq FROM "_tx_state"`)).toBe(3);
+
+    // Recovery drops the local transaction log on purpose: the durable copy is
+    // the R2 segments, and a stale local row could hand out a seq that already
+    // exists. Consequence, verified live: clientTxId dedupe covers only the
+    // window since the last cold start, not all history.
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(0);
     expect(scalar(target.db, `SELECT last_seq FROM "_flush_state"`)).toBe(3);
     expect(scalar(target.db, `SELECT base_seq FROM "_snapshot_state"`)).toBe(1);
 
