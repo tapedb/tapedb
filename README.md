@@ -18,6 +18,10 @@ and two R2 buckets (`DATA` for the log and snapshots, `FILES` for uploads).
 There is no D1 and no hosted control plane. Your data never leaves your
 account.
 
+`studio` opens a local table browser at `http://127.0.0.1:4400`: pick a
+namespace, see rows, send transactions. It proxies through the dev claim route,
+so it needs no separate credentials.
+
 `dev` runs that Worker locally with an in-memory Durable Object and passes
 `TAPEDB_DEV_CLAIMS=true` on the command line, which enables
 `POST /_tapedb/claim` so the client works with no session and no configuration.
@@ -182,8 +186,25 @@ replayed `clientTxId` is not re-judged. A rule that throws denies: a broken
 rule can never widen access. `update` is an upsert, so an insert must satisfy
 the **create** rule, not the update one.
 
-`view` is level-only in v1. A row rule there would never run, so `defineSchema`
-refuses it instead of shipping a rule that does nothing.
+`view` can be a row rule too, and then it filters what comes back:
+
+```ts
+permissions: {
+  documents: { view: ({ auth, data }) => data?.ownerId === auth.sub },
+}
+```
+
+Read rules run after the page is fetched, so a page can be smaller than the
+limit and `hasMore` reflects the unfiltered match count. A rule that throws
+hides the row.
+
+Rules also receive `changed`, the attribute names an op writes, which is how
+one field is gated:
+
+```ts
+update: ({ auth, data, changed }) =>
+  changed?.includes("price") ? data?.ownerId === auth.sub : true
+```
 
 ## Releasing
 
@@ -205,7 +226,7 @@ command; `npm org` only manages members of an existing org.
 | `tapedb` | `defineSchema`, schema builders, `id`, cache and outbox primitives | no |
 | `tapedb/react` | `init`, `useQuery`, `transact`, `storage`, presence | yes, peer |
 | `tapedb/worker` | `defineTapeDB`, the Durable Object class, routing | no |
-| `tapedb/cli` | `tapedb init` | no |
+| `tapedb/cli` | `init`, `dev`, `studio` | no |
 
 ## Status
 
