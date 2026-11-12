@@ -22,6 +22,7 @@ import {
   isPlainObject,
   MAX_LINK_DEPTH,
   parseQueryOptions,
+  decodeQueryCursor,
   type QueryComparison,
   type QueryOptions,
   type QueryScalar,
@@ -248,19 +249,75 @@ function compileNode(
     });
   }
 
+  const order = compileOrder(namespace, options.order);
+  const conditions = compileWhere(namespace, options.where);
+  if (options.after !== undefined) {
+    conditions.push(cursorCondition(options.after, order));
+  }
+
   return {
     namespace: namespaceName,
     table: namespace.table,
     depth,
     columns: selectColumns(namespace),
-    conditions: compileWhere(namespace, options.where),
-    order: compileOrder(namespace, options.order),
+    conditions,
+    order,
     // Only the top level gets the implicit result cap. A nested level is
     // bounded per parent (see `hydrateChild`), never by one shared LIMIT.
     limit: options.limit ?? (depth === 0 ? DEFAULT_QUERY_LIMIT : null),
     explicitLimit: options.limit !== undefined,
     children,
   };
+}
+
+/**
+ * Lexicographic "after the cursor row" predicate.
+ *
+ * For order (a ASC, b DESC) the next page starts at
+ * `a > va OR (a = va AND b < vb)`. The cursor becomes an ordinary WHERE
+ * clause, so the executor needs no pagination awareness.
+ */
+function cursorCondition(
+  after: string,
+  order: CompiledOrder[]
+): CompiledCondition {
+  if (order.length === 0) {
+    throw invalidOp('"after" requires an explicit "$.order".');
+  }
+
+  const cursor = decodeQueryCursor(after);
+  const columns = order.map((entry) => entry.column);
+
+  if (
+    cursor.cols.length !== columns.length ||
+    cursor.cols.some((column, index) => column !== columns[index])
+  ) {
+    throw invalidOp('"after" cursor does not match this query\'s "$.order".');
+  }
+
+  if (cursor.vals.some((value) => value === null)) {
+    throw invalidOp('"after" cannot resume from a row with null values.');
+  }
+
+  const clauses: string[] = [];
+  const params: SqlValue[] = [];
+
+  for (let index = 0; index < order.length; index += 1) {
+    const parts: string[] = [];
+
+    for (let prior = 0; prior < index; prior += 1) {
+      parts.push(`${quoteIdentifier(order[prior].column)} = ?`);
+      params.push(cursor.vals[prior] as SqlValue);
+    }
+
+    const operator = order[index].direction === "desc" ? "<" : ">";
+    parts.push(`${quoteIdentifier(order[index].column)} ${operator} ?`);
+    params.push(cursor.vals[index] as SqlValue);
+
+    clauses.push(`(${parts.join(" AND ")})`);
+  }
+
+  return { sql: clauses.join(" OR "), params };
 }
 
 function selectColumns(namespace: NamespaceDefinition): string[] {

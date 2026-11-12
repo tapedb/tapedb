@@ -200,7 +200,17 @@ function dev(argv: string[]): number {
 
   const run = spawnSync(
     "npx",
-    ["--no-install", "wrangler", "dev", "--port", port],
+    [
+      "--no-install",
+      "wrangler",
+      "dev",
+      "--port",
+      port,
+      // Passed here, never written to wrangler.jsonc: a plain `wrangler deploy`
+      // therefore has no dev claim route even if ENVIRONMENT is the default.
+      "--var",
+      "TAPEDB_DEV_CLAIMS:true",
+    ],
     { cwd: target, stdio: "inherit" }
   );
   return run.status ?? 1;

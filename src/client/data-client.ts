@@ -8,15 +8,14 @@
  * subscribed once per unique query shape, transactions are optimistic and
  * durable via an IndexedDB outbox, and reconnects re-auth + resubscribe.
  */
-import { useRef, useSyncExternalStore } from "react";
 
-import { id } from "../client/id";
-import { createStorageClient, type StorageFetch } from "../client/storage-client";
-import { createOutbox, type Outbox } from "../client/outbox";
-import { applyOptimisticOps, applyQueryDiff } from "../client/query-cache";
-import { resolveLink } from "../client/schema";
-import { QuerySocket, type WebSocketFactory } from "../client/socket";
-import { cloneJson, stableStringify } from "../client/stable";
+import { id } from "./id";
+import { createStorageClient, type StorageFetch } from "./storage-client";
+import { createOutbox, type Outbox } from "./outbox";
+import { applyOptimisticOps, applyQueryDiff } from "./query-cache";
+import { resolveLink } from "./schema";
+import { QuerySocket, type WebSocketFactory } from "./socket";
+import { cloneJson, stableStringify } from "./stable";
 import type {
   DataClient,
   InitConfig,
@@ -35,7 +34,7 @@ import type {
   TxProxy,
   TxStep,
   TxUnlinkOp,
-} from "../client/types";
+} from "./types";
 
 const DEFAULT_API_URL = "http://localhost:8787";
 const MAX_RETRY_DELAY_MS = 30_000;
@@ -931,54 +930,26 @@ class DataClientImpl {
   }
 }
 
-export function createDataClient(
+/**
+ * Framework-free client. Everything except the hook: usable from a Worker, a
+ * Node script, a Svelte store or a test.
+ */
+export type HeadlessDataClient = Omit<DataClient, "useQuery">;
+
+export function createClientParts(
   config: InitConfig,
   deps: ClientDeps = {}
-): DataClient {
+): { client: HeadlessDataClient; impl: DataClientImpl } {
   const impl = new DataClientImpl(config, deps);
+  const resolved = resolveConfig(config);
 
-  /**
-   * A custom hook (name starts with `use`) so React's rules-of-hooks lint
-   * understands the hook calls below. Keeping it outside the class avoids
-   * treating the client as a class component.
-   */
-  function useQuery(query: QueryDocument): QueryState {
-    const key = stableStringify(query);
-    const queryRef = useRef(query);
-    queryRef.current = query;
-
-    const subscriptionRef = useRef<{
-      key: string;
-      subscribe: (onStoreChange: () => void) => () => void;
-    } | null>(null);
-
-    let subscription = subscriptionRef.current;
-    if (subscription === null || subscription.key !== key) {
-      subscription = {
-        key,
-        subscribe: (onStoreChange) =>
-          impl.subscribeQuery(queryRef.current, onStoreChange),
-      };
-      subscriptionRef.current = subscription;
-    }
-
-    const getSnapshot = () => impl.getQueryState(queryRef.current);
-
-    return useSyncExternalStore(
-      subscription.subscribe,
-      getSnapshot,
-      getSnapshot
-    );
-  }
-
-  return {
-    useQuery,
+  const client: HeadlessDataClient = {
     transact: (input) => impl.transact(input),
     tx: impl.tx,
     get files() {
       return createStorageClient({
-        apiUrl: resolveConfig(config).apiUrl,
-        workspaceId: resolveConfig(config).workspaceId,
+        apiUrl: resolved.apiUrl,
+        workspaceId: resolved.workspaceId,
         getToken: async () => {
           if (!config.getToken) throw new Error("Storage requires getToken.");
           return config.getToken();
@@ -988,7 +959,7 @@ export function createDataClient(
     },
     storage: (appId) =>
       createStorageClient({
-        apiUrl: resolveConfig(config).apiUrl,
+        apiUrl: resolved.apiUrl,
         appId,
         getToken: async () => {
           if (!config.getToken) throw new Error("Storage requires getToken.");
@@ -1023,9 +994,22 @@ export function createDataClient(
     connect: () => impl.connect(),
     close: () => impl.close(),
   };
+
+  return { client, impl };
 }
 
+/** The client alone, for callers that never need the implementation handle. */
+export function createHeadlessClient(
+  config: InitConfig,
+  deps: ClientDeps = {}
+): HeadlessDataClient {
+  return createClientParts(config, deps).client;
+}
+
+/** Exported for the React binding, which needs the same instance's hook. */
+export { DataClientImpl };
+
 /** Creates a workspace engine client with native room and storage adapters. */
-export function init(config: InitConfig): DataClient {
-  return createDataClient(config);
+export function init(config: InitConfig): HeadlessDataClient {
+  return createHeadlessClient(config);
 }

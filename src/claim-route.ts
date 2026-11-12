@@ -14,6 +14,7 @@ export interface ClaimRouteEnv {
   TAPEDB_CLAIM_SECRET: string;
   TAPEDB_CLAIM_ISSUER?: string;
   TAPEDB_CLAIM_AUDIENCE?: string;
+  TAPEDB_DEV_CLAIMS?: string;
 }
 
 export interface ClaimRouteOptions {
@@ -24,9 +25,15 @@ export interface ClaimRouteOptions {
 
 /**
  * Order matters and is the security property: the development issuer is
- * checked first, but it is unreachable when `ENVIRONMENT` is `production`.
- * A deployment that forgets to set `ENVIRONMENT` gets dev claims in a
- * non-production Worker, which is why `tapedb init` writes it explicitly.
+ * checked first, but two independent conditions must both hold:
+ *
+ *   1. the code opted in (`devClaims: true`), and
+ *   2. the deployment opted in (`TAPEDB_DEV_CLAIMS=true`), and
+ *   3. `ENVIRONMENT` is not `production`.
+ *
+ * The env-var condition is the one that makes a plain `wrangler deploy` safe:
+ * `tapedb dev` passes the var on the command line, so a deployed Worker never
+ * has it, even if `ENVIRONMENT` is left at the generated default.
  */
 export async function handleClaimRequest(
   request: Request,
@@ -34,8 +41,9 @@ export async function handleClaimRequest(
 ): Promise<Response> {
   const { env, identity, devClaims = false } = options;
   const isProduction = env.ENVIRONMENT === "production";
+  const devEnabled = devClaims && env.TAPEDB_DEV_CLAIMS === "true";
 
-  if (devClaims && !isProduction) {
+  if (devEnabled && !isProduction) {
     if (request.method !== "POST") {
       await discardBody(request);
       return apiError(405, "method_not_allowed", "Use POST.");

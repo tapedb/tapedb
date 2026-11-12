@@ -18,9 +18,12 @@ and two R2 buckets (`DATA` for the log and snapshots, `FILES` for uploads).
 There is no D1 and no hosted control plane. Your data never leaves your
 account.
 
-`dev` runs that Worker locally with an in-memory Durable Object and serves
-`POST /_tapedb/claim`, so the client works with no session and no
-configuration. That route is refused when `ENVIRONMENT` is `production`.
+`dev` runs that Worker locally with an in-memory Durable Object and passes
+`TAPEDB_DEV_CLAIMS=true` on the command line, which enables
+`POST /_tapedb/claim` so the client works with no session and no configuration.
+The flag is never written to `wrangler.jsonc` and is also refused when
+`ENVIRONMENT` is `production`, so a plain `wrangler deploy` has no dev claim
+route.
 
 ## Usage
 
@@ -58,7 +61,7 @@ export default tapedb.worker;
 ```
 
 ```tsx
-// client
+// client (React)
 import { init, id } from "tapedb/react";
 
 const db = init({ workspaceId, apiUrl, schema, getToken });
@@ -71,6 +74,22 @@ await db.transact([
 ]);
 ```
 
+### Without React
+
+`tapedb` itself is framework-free, with the same socket, cache and outbox:
+
+```ts
+import { init } from "tapedb";
+
+const db = init({ workspaceId, schema });   // one import, no config
+
+db.subscribeQuery({ boards: {} }, () => {
+  console.log(db.getQueryState({ boards: {} }).data);
+});
+
+await db.transact([db.tx.boards[id()].update({ name: "New" })]);
+```
+
 ## What it does
 
 - **Relational queries** in the shape of the result you want, with nested link
@@ -78,6 +97,9 @@ await db.transact([
 - **Transactions** with `update`, `merge`, `delete`, `link` and `unlink`,
   idempotent per `clientTxId`, applied inside one SQLite transaction with the
   log append and the sequence advance.
+- **Cursor pagination**: `$: { limit, order }` returns
+  `pageInfo[ns].nextCursor`; pass it back as `$: { after }`. Keyset, not
+  offset, so an insert above the window cannot repeat a row.
 - **Live queries** by default: after a commit, only subscriptions whose
   compiled query touches a changed namespace re-run, batched at 50 ms, and
   clients receive entity-level diffs.
@@ -86,6 +108,8 @@ await db.transact([
 - **Durability**: log segments and chunked snapshots to R2, with an idempotent
   cold-start replay.
 - **Presence** and **file uploads** on the same socket and the same bucket set.
+  Uploads write bytes to R2 and a metadata row into the workspace, so
+  `GET /engine/workspaces/:id/files` lists what the workspace contains.
 
 ## Architecture
 
@@ -143,11 +167,13 @@ put the route behind a Cloudflare rate-limit binding.
 ## Status
 
 `0.0.1`, extracted from a production application. The engine, the client and
-the claim path are exercised by tests against in-memory SQLite and by a live
-`wrangler dev` run (init, mint, transact, idempotent replay, nested query,
-upload, and the auth refusals). Known gaps are tracked in
-[SCOPE.md](./SCOPE.md): cursor pagination, row-level permissions, `$files`
-metadata rows, and the headless (non-React) `init`.
+the claim path are exercised by 166 tests, including the upstream engine suite
+and a headless client run against a live Worker. Live `wrangler dev` runs cover
+init, mint, transact, idempotent replay, nested query, cursor pagination,
+upload and listing, and every auth refusal.
+
+Remaining gaps are tracked in [SCOPE.md](./SCOPE.md): row-level permissions
+(role levels only today) and the absent devtool.
 
 ## License
 

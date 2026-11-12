@@ -128,7 +128,7 @@ describe("dev claims", () => {
         method: "POST",
         body: JSON.stringify({ workspaceId: WORKSPACE }),
       }),
-      { env: { ENVIRONMENT: "development", TAPEDB_CLAIM_SECRET: SECRET }, devClaims: true }
+      { env: { ENVIRONMENT: "development", TAPEDB_CLAIM_SECRET: SECRET, TAPEDB_DEV_CLAIMS: "true" }, devClaims: true }
     );
 
     expect(response.status).toBe(200);
@@ -143,12 +143,26 @@ describe("dev claims", () => {
         method: "POST",
         body: JSON.stringify({ workspaceId: WORKSPACE }),
       }),
-      { env: { ENVIRONMENT: "production", TAPEDB_CLAIM_SECRET: SECRET }, devClaims: true }
+      { env: { ENVIRONMENT: "production", TAPEDB_CLAIM_SECRET: SECRET, TAPEDB_DEV_CLAIMS: "true" }, devClaims: true }
     );
 
     expect(response.status).toBe(501);
     const body = (await response.json()) as { error: { code: string } };
     expect(body.error.code).toBe("identity_not_configured");
+  });
+
+  test("are refused when the deployment did not opt in", async () => {
+    // The code flag alone is not enough: a plain `wrangler deploy` never sets
+    // TAPEDB_DEV_CLAIMS, so the route must stay closed even in "development".
+    const response = await handleClaimRequest(
+      new Request("https://x/_tapedb/claim", {
+        method: "POST",
+        body: JSON.stringify({ workspaceId: WORKSPACE }),
+      }),
+      { env: { ENVIRONMENT: "development", TAPEDB_CLAIM_SECRET: SECRET }, devClaims: true }
+    );
+
+    expect(response.status).toBe(501);
   });
 
   test("reject a malformed workspace id", async () => {
@@ -157,7 +171,7 @@ describe("dev claims", () => {
         method: "POST",
         body: JSON.stringify({ workspaceId: "not-a-uuid" }),
       }),
-      { env: { ENVIRONMENT: "development", TAPEDB_CLAIM_SECRET: SECRET }, devClaims: true }
+      { env: { ENVIRONMENT: "development", TAPEDB_CLAIM_SECRET: SECRET, TAPEDB_DEV_CLAIMS: "true" }, devClaims: true }
     );
 
     expect(response.status).toBe(400);

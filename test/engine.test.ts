@@ -13,7 +13,10 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../src/claims";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { compileQuery } from "../src/engine/query-compile";
-import { executeCompiledQuery } from "../src/engine/query-execute";
+import {
+  executeCompiledQuery,
+  executeCompiledQueryWithPageInfo,
+} from "../src/engine/query-execute";
 import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
@@ -228,6 +231,135 @@ describe("recovery ordering", () => {
     expect(boards).toBeLessThan(columns);
     expect(columns).toBeLessThan(tasks);
     expect(order.at(-1)).toBe("$files");
+  });
+});
+
+describe("pagination", () => {
+  function seed(sql: ReturnType<typeof freshDatabase>): void {
+    runTransaction(sql, WORKSPACE_ID, claim, {
+      txId: "seed",
+      ops: ["B1", "B2", "B3", "B4", "B5"].map((name, index) => ({
+        op: "update" as const,
+        namespace: "boards",
+        id: `board-${index + 1}`,
+        values: { name },
+      })),
+    });
+  }
+
+  function page(sql: ReturnType<typeof freshDatabase>, after?: string) {
+    const compiled = compileQuery({
+      boards: {
+        $: {
+          order: { name: "asc" },
+          limit: 2,
+          ...(after === undefined ? {} : { after }),
+        },
+      },
+    });
+    return executeCompiledQueryWithPageInfo(sql, compiled);
+  }
+
+  test("walks every row exactly once across pages", () => {
+    const sql = freshDatabase();
+    seed(sql);
+
+    const first = page(sql);
+    expect(first.data.boards.map((row) => row.name)).toEqual(["B1", "B2"]);
+    expect(first.pageInfo.boards.hasMore).toBe(true);
+    expect(typeof first.pageInfo.boards.nextCursor).toBe("string");
+
+    const second = page(sql, first.pageInfo.boards.nextCursor);
+    expect(second.data.boards.map((row) => row.name)).toEqual(["B3", "B4"]);
+
+    const third = page(sql, second.pageInfo.boards.nextCursor);
+    expect(third.data.boards.map((row) => row.name)).toEqual(["B5"]);
+    expect(third.pageInfo.boards.hasMore).toBe(false);
+    expect(third.pageInfo.boards.nextCursor).toBeUndefined();
+
+    const seen = [
+      ...first.data.boards,
+      ...second.data.boards,
+      ...third.data.boards,
+    ].map((row) => row.name);
+    expect(seen).toEqual(["B1", "B2", "B3", "B4", "B5"]);
+    expect(new Set(seen).size).toBe(5);
+  });
+
+  test("does not repeat a row when something is inserted above the window", () => {
+    const sql = freshDatabase();
+    seed(sql);
+
+    const first = page(sql);
+    // A new row that sorts before the whole first page.
+    runTransaction(sql, WORKSPACE_ID, claim, {
+      txId: "insert-a",
+      ops: [{ op: "update", namespace: "boards", id: "board-a", values: { name: "A0" } }],
+    });
+
+    const second = page(sql, first.pageInfo.boards.nextCursor);
+    // Keyset, not offset: the new row does not shift the window, so nothing
+    // from page one reappears.
+    expect(second.data.boards.map((row) => row.name)).toEqual(["B3", "B4"]);
+  });
+
+  test("pages in descending order", () => {
+    const sql = freshDatabase();
+    seed(sql);
+
+    const compiled = compileQuery({
+      boards: { $: { order: { name: "desc" }, limit: 2 } },
+    });
+    const first = executeCompiledQueryWithPageInfo(sql, compiled);
+    expect(first.data.boards.map((row) => row.name)).toEqual(["B5", "B4"]);
+
+    const second = page2(sql, first.pageInfo.boards.nextCursor);
+    expect(second.data.boards.map((row) => row.name)).toEqual(["B3", "B2"]);
+  });
+
+  function page2(sql: ReturnType<typeof freshDatabase>, after?: string) {
+    const compiled = compileQuery({
+      boards: {
+        $: {
+          order: { name: "desc" },
+          limit: 2,
+          ...(after === undefined ? {} : { after }),
+        },
+      },
+    });
+    return executeCompiledQueryWithPageInfo(sql, compiled);
+  }
+
+  test("refuses a cursor without an explicit order", () => {
+    const sql = freshDatabase();
+    seed(sql);
+    expect(() =>
+      compileQuery({ boards: { $: { limit: 2, after: "eyJ2IjoxfQ" } } })
+    ).toThrow(/requires an explicit/);
+  });
+
+  test("refuses a cursor built for a different order", () => {
+    const sql = freshDatabase();
+    seed(sql);
+    const first = page(sql);
+
+    expect(() =>
+      compileQuery({
+        boards: {
+          $: {
+            order: { id: "asc" },
+            limit: 2,
+            after: first.pageInfo.boards.nextCursor,
+          },
+        },
+      })
+    ).toThrow(/does not match/);
+  });
+
+  test("refuses a malformed cursor", () => {
+    expect(() =>
+      compileQuery({ boards: { $: { order: { name: "asc" }, after: "not-a-cursor" } } })
+    ).toThrow(/valid cursor/);
   });
 });
 
