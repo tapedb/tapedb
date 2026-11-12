@@ -33,7 +33,7 @@ import {
   type QueryResult,
 } from "./query-types";
 import { isWorkspaceId } from "./r2-keys";
-import { ENGINE_TABLES } from "./registry";
+import { ENGINE_TABLES, LINKS, NAMESPACES } from "./registry";
 import {
   DEFAULT_INVALIDATION_DEBOUNCE_MS,
   diffQueryResults,
@@ -220,6 +220,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
         );
       }
       return this.transact(request);
+    }
+
+    // Introspection for tooling (the studio, your own scripts). Costs one
+    // registry read and needs the same claim as any other engine route.
+    if (url.pathname === "/schema") {
+      if (request.method !== "GET") {
+        return apiError(
+          405,
+          "method_not_allowed",
+          `${request.method} is not supported for ${url.pathname}.`
+        );
+      }
+      return this.schemaDocument();
     }
 
     if (url.pathname === "/query") {
@@ -708,7 +721,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
       );
       ({ data, pageInfo } = executeCompiledQueryWithPageInfo(
         durableObjectSqlExecutor(this.ctx.storage),
-        compiled
+        compiled,
+        claimFromAttachment(attachment, this.workspaceId)
       ));
     } catch (error) {
       const txError = error instanceof TxError ? error : null;
@@ -857,7 +871,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
         try {
           ({ data, pageInfo } = executeCompiledQueryWithPageInfo(
             sql,
-            compiled
+            compiled,
+            claimFromAttachment(attachment, this.workspaceId)
           ));
         } catch (error) {
           const txError = error instanceof TxError ? error : null;
@@ -1068,6 +1083,38 @@ export class WorkspaceRoom extends DurableObject<Env> {
       path
     );
     return json({ ok: true, removed });
+  }
+
+  /** Registry snapshot for tooling: API names, attribute types and links. */
+  private schemaDocument(): Response {
+    const namespaces = Object.values(NAMESPACES).map((namespace) => ({
+      apiName: namespace.apiName,
+      table: namespace.table,
+      attributes: Object.fromEntries(
+        Object.entries(namespace.attributes).map(([name, definition]) => [
+          name,
+          {
+            type: definition.type,
+            optional: definition.optional === true,
+            indexed: definition.indexed === true,
+            unique: definition.unique === true,
+          },
+        ])
+      ),
+    }));
+
+    return json({
+      ok: true,
+      data: {
+        namespaces,
+        links: Object.values(LINKS).map((link) => ({
+          apiName: link.apiName,
+          kind: link.kind,
+          forward: link.forward,
+          reverse: link.reverse,
+        })),
+      },
+    });
   }
 
   private status(): Response {

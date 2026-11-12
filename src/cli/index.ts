@@ -17,6 +17,8 @@ import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
+import { startStudio } from "./studio";
+
 const SCHEMA_FILE = `import { defineSchema } from "tapedb";
 
 /**
@@ -168,11 +170,13 @@ function usage(): number {
 Usage:
   tapedb init [--dir <path>] [--name <worker-name>] [--force]
   tapedb dev  [--dir <path>] [--port <port>]
+  tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
 
 Commands:
   init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars.
           Existing files are kept unless --force is passed.
   dev     Run the local database with wrangler dev on port 8787.
+  studio  Open a local table browser against a running Worker.
 `);
   return 0;
 }
@@ -216,12 +220,42 @@ function dev(argv: string[]): number {
   return run.status ?? 1;
 }
 
+async function studio(argv: string[]): Promise<number> {
+  const flags = parseFlags(argv);
+
+  const url = typeof flags.url === "string" ? flags.url : "http://localhost:8787";
+  const workspace =
+    typeof flags.workspace === "string"
+      ? flags.workspace
+      : process.env.TAPEDB_WORKSPACE ?? "";
+  const port = Number(typeof flags.port === "string" ? flags.port : "4400");
+
+  let server: { url: string; close: () => void };
+  try {
+    server = await startStudio({ url, workspace, port });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  console.log(`tapedb studio on ${server.url} -> ${url}`);
+  console.log("Press Ctrl+C to stop.");
+
+  await new Promise<void>((resolve) => {
+    process.on("SIGINT", () => {
+      server.close();
+      resolve();
+    });
+  });
+  return 0;
+}
+
 /** Runs the CLI and returns its exit code. Importable without side effects. */
-export function run(argv: string[]): number {
+export async function run(argv: string[]): Promise<number> {
   const command = argv[0];
 
   if (command === "init") return init(argv.slice(1));
   if (command === "dev") return dev(argv.slice(1));
+  if (command === "studio") return studio(argv.slice(1));
   if (command === undefined || command === "--help" || command === "-h") {
     return usage();
   }
@@ -233,5 +267,5 @@ export function run(argv: string[]): number {
 // Only execute when invoked as the binary, never when imported.
 const entry = process.argv[1];
 if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
-  process.exit(run(process.argv.slice(2)));
+  void run(process.argv.slice(2)).then((code) => process.exit(code));
 }

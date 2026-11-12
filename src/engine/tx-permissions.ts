@@ -40,6 +40,12 @@ export interface PermissionContext {
   auth: PermissionAuth;
   data?: Record<string, unknown>;
   next?: Record<string, unknown>;
+  /**
+   * API attribute names this op writes. Lets a rule gate one field: "only the
+   * owner may change `price`" is
+   * `changed.includes("price") ? data.ownerId === auth.sub : true`.
+   */
+  changed?: string[];
 }
 
 /** A rule returns true to allow. Throw or return false to deny. */
@@ -81,6 +87,38 @@ function decisionFor(
   action: PermissionAction
 ): PermissionDecision {
   return NAMESPACE_OVERRIDES[namespace]?.[action] ?? DEFAULT_PERMISSIONS[action];
+}
+
+/**
+ * Evaluates a `view` rule against one row.
+ *
+ * Read rules cannot be pushed into SQL: they are arbitrary predicates. The
+ * query executor calls this per fetched row, so a page can come back smaller
+ * than the limit.
+ */
+export function allowRowView(
+  claim: RoleClaim,
+  namespace: string,
+  data: Record<string, unknown>
+): boolean {
+  const decision = decisionFor(namespace, "view");
+  if (typeof decision !== "function") return true;
+
+  try {
+    return (
+      decision({
+        auth: {
+          sub: claim.sub,
+          role: claim.role,
+          workspaceId: claim.workspaceId,
+        },
+        data,
+      }) === true
+    );
+  } catch {
+    // Fail closed: a broken read rule hides the row rather than exposing it.
+    return false;
+  }
 }
 
 /** Minimum role for a level decision. Throws when the namespace uses a rule. */
@@ -252,6 +290,10 @@ export function assertRowPermissions(
         target.values === undefined
           ? undefined
           : valuesToApi(target.namespace, target.values),
+      changed:
+        target.values === undefined
+          ? undefined
+          : Object.keys(valuesToApi(target.namespace, target.values)),
     };
 
     let allowed = false;

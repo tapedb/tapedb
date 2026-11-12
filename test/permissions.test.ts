@@ -11,6 +11,11 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { configurePermissions } from "../src/engine/tx-permissions";
+import { compileQuery } from "../src/engine/query-compile";
+import {
+  executeCompiledQuery,
+  executeCompiledQueryWithPageInfo,
+} from "../src/engine/query-execute";
 import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
@@ -229,13 +234,14 @@ describe("row rules", () => {
 });
 
 describe("schema validation", () => {
-  test("refuses a view rule, which could never run", () => {
-    expect(() =>
-      defineSchema({
-        entities: { documents: { title: { type: "string" } } },
-        permissions: { documents: { view: () => true } },
-      })
-    ).toThrow(/must be a role level/);
+  test("accepts a view rule, now that reads are filtered per row", () => {
+    const rule = () => true;
+    const built = defineSchema({
+      entities: { documents: { title: { type: "string" } } },
+      permissions: { documents: { view: rule } },
+    });
+
+    expect(built.permissions.overrides?.documents?.view).toBe(rule);
   });
 
   test("refuses permissions for a namespace that does not exist", () => {
@@ -245,5 +251,194 @@ describe("schema validation", () => {
         permissions: { ghost: { update: WORKSPACE_ROLE_LEVELS.EDITOR } },
       })
     ).toThrow(/unknown namespace "ghost"/);
+  });
+});
+
+/**
+ * Read rules and per-field rules. A separate schema, because these need a
+ * different shape and the registry is global per worker.
+ */
+const readSchema = defineSchema({
+  entities: {
+    boards: { name: { type: "string" } },
+    columns: {
+      name: { type: "string" },
+      isPublic: { type: "boolean", optional: true },
+      boardId: { type: "string", optional: true },
+    },
+    priced: {
+      title: { type: "string" },
+      price: { type: "number", optional: true },
+      ownerId: { type: "string", optional: true },
+    },
+  },
+  links: [
+    {
+      apiName: "boardColumns",
+      kind: "one-to-many",
+      forward: { namespace: "boards", label: "columns", has: "many" },
+      reverse: { namespace: "columns", label: "board", has: "one" },
+      foreignKey: { namespace: "columns", attribute: "boardId" },
+    },
+  ],
+  permissions: {
+    columns: {
+      // Only rows the viewer is allowed to see come back.
+      view: ({ data }) => data?.isPublic === true,
+      create: WORKSPACE_ROLE_LEVELS.EDITOR,
+      update: WORKSPACE_ROLE_LEVELS.EDITOR,
+      delete: WORKSPACE_ROLE_LEVELS.EDITOR,
+    },
+    priced: {
+      // Attribute-level: anyone may retitle, only the owner may reprice.
+      update: ({ auth, data, changed }) =>
+        changed?.includes("price") === true ? data?.ownerId === auth.sub : true,
+      create: WORKSPACE_ROLE_LEVELS.EDITOR,
+      delete: WORKSPACE_ROLE_LEVELS.EDITOR,
+      view: WORKSPACE_ROLE_LEVELS.MEMBER,
+    },
+  },
+});
+
+function readDatabase(): SqlExecutor {
+  const db = new Database(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
+  for (const migration of readSchema.migrations) db.exec(migration.sql);
+  return executor(db);
+}
+
+function useReadSchema(): void {
+  configureRegistry(readSchema.registry);
+  configureMigrations(readSchema.migrations);
+  configurePermissions(readSchema.permissions);
+}
+
+describe("view rules", () => {
+  test("hide rows and leave the rest intact", () => {
+    useReadSchema();
+    const sql = readDatabase();
+
+    runTransaction(sql, WORKSPACE_ID, claimFor("alice"), {
+      txId: "seed",
+      ops: [
+        { op: "update", namespace: "boards", id: "b1", values: { name: "Board" } },
+        { op: "update", namespace: "columns", id: "c1", values: { name: "Public", isPublic: true, boardId: "b1" } },
+        { op: "update", namespace: "columns", id: "c2", values: { name: "Private", isPublic: false, boardId: "b1" } },
+      ],
+    });
+
+    const compiled = compileQuery({ columns: { $: { order: { name: "asc" } } } });
+    const result = executeCompiledQuery(sql, compiled, claimFor("bob"));
+
+    expect(result.columns.map((row) => row.name)).toEqual(["Public"]);
+  });
+
+  test("hide a denied row at link depth too", () => {
+    useReadSchema();
+    const sql = readDatabase();
+
+    runTransaction(sql, WORKSPACE_ID, claimFor("alice"), {
+      txId: "seed",
+      ops: [
+        { op: "update", namespace: "boards", id: "b1", values: { name: "Board" } },
+        { op: "update", namespace: "columns", id: "c1", values: { name: "Public", isPublic: true, boardId: "b1" } },
+        { op: "update", namespace: "columns", id: "c2", values: { name: "Private", isPublic: false, boardId: "b1" } },
+      ],
+    });
+
+    const compiled = compileQuery({ boards: { columns: {} } });
+    const result = executeCompiledQuery(sql, compiled, claimFor("bob"));
+
+    const board = result.boards[0] as { columns: Array<{ name: string }> };
+    expect(board.columns.map((column) => column.name)).toEqual(["Public"]);
+  });
+
+  test("hide a row when the rule throws", () => {
+    useReadSchema();
+    const sql = readDatabase();
+    runTransaction(sql, WORKSPACE_ID, claimFor("alice"), {
+      txId: "seed",
+      ops: [
+        { op: "update", namespace: "boards", id: "b1", values: { name: "Board" } },
+        { op: "update", namespace: "columns", id: "c1", values: { name: "Public", isPublic: true, boardId: "b1" } },
+      ],
+    });
+
+    configurePermissions({
+      overrides: {
+        columns: {
+          view: () => {
+            throw new Error("broken rule");
+          },
+        },
+      },
+    });
+
+    const compiled = compileQuery({ columns: {} });
+    expect(executeCompiledQuery(sql, compiled, claimFor("bob")).columns).toEqual([]);
+  });
+
+  test("a filtered page can be shorter than the limit", () => {
+    useReadSchema();
+    const sql = readDatabase();
+
+    runTransaction(sql, WORKSPACE_ID, claimFor("alice"), {
+      txId: "seed",
+      ops: [
+        { op: "update", namespace: "columns", id: "c1", values: { name: "A", isPublic: false } },
+        { op: "update", namespace: "columns", id: "c2", values: { name: "B", isPublic: true } },
+        { op: "update", namespace: "columns", id: "c3", values: { name: "C", isPublic: false } },
+      ],
+    });
+
+    const compiled = compileQuery({
+      columns: { $: { order: { name: "asc" }, limit: 2 } },
+    });
+    const { data, pageInfo } = executeCompiledQueryWithPageInfo(
+      sql,
+      compiled,
+      claimFor("bob")
+    );
+
+    // Rows are filtered after the SQL limit, so this is expected: one visible
+    // row from a page of two, and hasMore still reflects the unfiltered match.
+    expect(data.columns.map((row) => row.name)).toEqual(["B"]);
+    expect(pageInfo.columns.returned).toBe(1);
+    expect(pageInfo.columns.hasMore).toBe(true);
+  });
+});
+
+describe("attribute rules", () => {
+  test("allow a retitle but refuse a reprice by a non-owner", () => {
+    useReadSchema();
+    const sql = readDatabase();
+    const owner = claimFor("alice");
+    const other = claimFor("mallory");
+
+    runTransaction(sql, WORKSPACE_ID, owner, {
+      txId: "seed",
+      ops: [
+        { op: "update", namespace: "priced", id: "p1", values: { title: "Thing", price: 10, ownerId: "alice" } },
+      ],
+    });
+
+    runTransaction(sql, WORKSPACE_ID, other, {
+      txId: "t2",
+      ops: [{ op: "update", namespace: "priced", id: "p1", values: { title: "Renamed" } }],
+    });
+
+    expect(() =>
+      runTransaction(sql, WORKSPACE_ID, other, {
+        txId: "t3",
+        ops: [{ op: "update", namespace: "priced", id: "p1", values: { price: 1 } }],
+      })
+    ).toThrow(/Row rule denied update/);
+
+    const row = sql.one<{ title: string; price: number }>(
+      `SELECT "title", "price" FROM "priced" WHERE "id" = ?`,
+      "p1"
+    );
+    expect(row?.title).toBe("Renamed");
+    expect(row?.price).toBe(10);
   });
 });

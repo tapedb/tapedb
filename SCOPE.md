@@ -156,12 +156,17 @@ predicate over `{ auth, data, next }`), evaluated inside the transaction so a
 replay is not re-judged and a throwing rule denies. `view` stays level-only by
 design; `defineSchema` refuses a view rule rather than shipping a no-op.
 
+DONE: row-level **view** rules filter rows (and nested children) after fetch;
+`changed` gives rules the attribute names an op writes, so one field can be
+gated; `tapedb studio` is a local table browser over `/schema`, `/query` and
+`/transact`, and `GET /engine/workspaces/:id/schema` exposes the registry for
+tooling.
+
 REMAINING:
 
-- Row-level **view** filtering (needs post-fetch filtering per namespace).
-- Attribute-level rules: a rule cannot yet say "owner may edit the title but
-  not the price".
-- A devtool/explorer; today the CLI and `/status` are the only introspection.
+- View rules cannot use indexes: filtering happens after the SQL page, so a
+  heavily filtered namespace reads more rows than it returns.
+- No multi-workspace view in the studio; one workspace at a time.
 - `$files` rows are written outside the transaction log, so they are not part of
   the replay; a crash between the R2 put and the row write leaves an unlisted
   object, which the 502 makes visible rather than silent.

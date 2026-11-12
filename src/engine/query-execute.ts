@@ -22,7 +22,7 @@ import {
   type QueryResult,
 } from "./query-types";
 import { findNamespace, toSnakeCase, type AttributeType } from "./registry";
-import { assertPermission } from "./tx-permissions";
+import { allowRowView, assertPermission } from "./tx-permissions";
 import type { SqlExecutor, SqlValue } from "./tx-sql";
 import { TxError } from "./tx-types";
 
@@ -69,7 +69,7 @@ export function executeQueryWithPageInfo(
   authorizeQuery(claim, compiled);
 
   try {
-    return executeCompiledQueryWithPageInfo(sql, compiled);
+    return executeCompiledQueryWithPageInfo(sql, compiled, claim);
   } catch (error) {
     if (error instanceof TxError) throw error;
     throw new TxError("storage_error", errorMessage(error));
@@ -99,9 +99,10 @@ export function authorizeQuery(
 /** Executes an already compiled and authorized query. */
 export function executeCompiledQuery(
   sql: SqlExecutor,
-  compiled: CompiledQuery
+  compiled: CompiledQuery,
+  claim?: RoleClaim
 ): QueryResult {
-  return executeCompiledQueryWithPageInfo(sql, compiled).data;
+  return executeCompiledQueryWithPageInfo(sql, compiled, claim).data;
 }
 
 /**
@@ -112,7 +113,8 @@ export function executeCompiledQuery(
  */
 export function executeCompiledQueryWithPageInfo(
   sql: SqlExecutor,
-  compiled: CompiledQuery
+  compiled: CompiledQuery,
+  claim?: RoleClaim
 ): { data: QueryResult; pageInfo: QueryPageInfo } {
   const data: QueryResult = {};
   const pageInfo: QueryPageInfo = {};
@@ -126,16 +128,68 @@ export function executeCompiledQueryWithPageInfo(
     const hasMore = limit !== null && entities.length > limit;
     const page = hasMore ? entities.slice(0, limit) : entities;
 
-    data[node.namespace] = page.map(toApiEntity);
+    // Row-level read rules run here, after the SQL limit: a rule is arbitrary
+    // TypeScript, so it cannot be pushed into the query. A page can therefore
+    // come back smaller than the limit, and `hasMore` reflects the unfiltered
+    // match count.
+    const visible =
+      claim === undefined
+        ? page
+        : page
+            .map((entity) => filterVisible(entity, claim))
+            .filter((entity): entity is HydratedEntity => entity !== null);
+
+    data[node.namespace] = visible.map(toApiEntity);
 
     const nextCursor = cursorFor(node, page, hasMore);
     pageInfo[node.namespace] =
       nextCursor === undefined
-        ? { limit, returned: page.length, hasMore }
-        : { limit, returned: page.length, hasMore, nextCursor };
+        ? { limit, returned: visible.length, hasMore }
+        : { limit, returned: visible.length, hasMore, nextCursor };
   }
 
   return { data, pageInfo };
+}
+
+/** Drops rows the namespace's `view` rule hides, at every link depth. */
+function filterVisible(
+  entity: HydratedEntity,
+  claim: RoleClaim
+): HydratedEntity | null {
+  if (!allowRowView(claim, entity.namespace, rowToApi(entity))) return null;
+
+  const links: HydratedEntity["links"] = {};
+  for (const [label, value] of Object.entries(entity.links)) {
+    if (Array.isArray(value)) {
+      links[label] = value
+        .map((child) => filterVisible(child, claim))
+        .filter((child): child is HydratedEntity => child !== null);
+    } else if (value === null) {
+      links[label] = null;
+    } else {
+      links[label] = filterVisible(value, claim);
+    }
+  }
+
+  return { ...entity, links };
+}
+
+/** Stored row with API attribute names, for rule evaluation. */
+function rowToApi(entity: HydratedEntity): Record<string, unknown> {
+  const namespace = findNamespace(entity.namespace);
+  if (!namespace) return { id: entity.row.id };
+
+  const output: Record<string, unknown> = { id: entity.row.id };
+  for (const [attribute, definition] of Object.entries(namespace.attributes)) {
+    // Rules see the same values a client would: booleans as booleans, JSON
+    // parsed, dates as epoch millis. Handing them raw SQLite integers would
+    // make `data.isPublic === true` fail for every row.
+    output[attribute] = fromStoredValue(
+      definition.type,
+      entity.row[toSnakeCase(attribute)]
+    );
+  }
+  return output;
 }
 
 /**

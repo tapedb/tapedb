@@ -191,14 +191,6 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
         `Permissions reference unknown namespace "${namespace}".`
       );
     }
-    if (typeof actions?.view === "function") {
-      // Reading is authorized per namespace, before any row is loaded, so a
-      // row rule here would never run. Refuse it rather than ship a rule that
-      // silently does nothing.
-      throw new Error(
-        `"${namespace}.view" must be a role level; row rules are supported for create, update and delete.`
-      );
-    }
   }
 
   const namespaces: NamespaceDefinition[] = Object.entries(config.entities).map(
