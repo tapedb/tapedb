@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tapedb-starter",
+  "main": "worker.ts",
+  "compatibility_date": "2026-01-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "workers_dev": true,
+  "vars": { "ENVIRONMENT": "development" },
+  "durable_objects": {
+    "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceRoom" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceRoom"] }],
+  "r2_buckets": [
+    { "binding": "DATA", "bucket_name": "tapedb-starter-data" },
+    { "binding": "FILES", "bucket_name": "tapedb-starter-files" }
+  ]
+}
