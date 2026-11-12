@@ -22,7 +22,10 @@ import type {
   OutboxEntry,
   PresencePeer,
   QueryDocument,
+  QueryEntity,
   QueryError,
+  QueryOptions,
+  QueryPageInfo,
   QueryResult,
   QueryState,
   SchemaDefinition,
@@ -42,6 +45,12 @@ const BASE_RETRY_DELAY_MS = 1_000;
 
 /** Consecutive auth failures before reconnecting stops and the error surfaces. */
 const MAX_AUTH_ATTEMPTS = 3;
+
+/**
+ * A page request is a one-shot subscription that nothing retries, so it must
+ * not hang forever when the socket drops mid-flight.
+ */
+const LOAD_MORE_TIMEOUT_MS = 15_000;
 
 /**
  * `session:error` codes that mean "this token will not work". Transport and
@@ -102,6 +111,15 @@ interface CacheSnapshot {
   data: QueryResult;
 }
 
+type QueryDataMessage = Extract<ServerMessage, { type: "query:data" }>;
+
+/** A one-shot `query:subscribe` awaiting its `query:data` reply. */
+interface PageRequest {
+  timer: ReturnType<typeof setTimeout>;
+  resolve: (message: QueryDataMessage) => void;
+  reject: (error: Error) => void;
+}
+
 export class ServerError extends Error {
   readonly code: string;
   readonly status: number;
@@ -143,6 +161,34 @@ function isTxOp(value: unknown): value is TxOp {
     typeof value.namespace === "string" &&
     typeof value.id === "string"
   );
+}
+
+/**
+ * Appends `incoming` rows to `existing`, dropping any row whose `id` was
+ * already present.
+ *
+ * Deduping by id, not by position, is what makes a replayed page harmless: the
+ * same cursor answered twice (a retry, a reconnect, a concurrent caller) cannot
+ * duplicate rows. Engine rows always carry an id; a row without one is appended
+ * as-is rather than silently dropped.
+ */
+function mergeRows(
+  existing: readonly QueryEntity[],
+  incoming: readonly QueryEntity[]
+): QueryEntity[] {
+  const seen = new Set<string>();
+  const merged: QueryEntity[] = [];
+
+  for (const row of [...existing, ...incoming]) {
+    const rowId = typeof row.id === "string" ? row.id : null;
+    if (rowId !== null) {
+      if (seen.has(rowId)) continue;
+      seen.add(rowId);
+    }
+    merged.push(row);
+  }
+
+  return merged;
 }
 
 function normalizeOps(input: TransactInput): TxOp[] {
@@ -321,6 +367,12 @@ class DataClientImpl {
   private readonly subIdToKey = new Map<string, string>();
   private nextSubId = 0;
 
+  /** One-shot page subscriptions, keyed by their ephemeral subscription id. */
+  private readonly pages = new Map<string, PageRequest>();
+  /** Coalesces concurrent `loadMore()` calls for the same query. */
+  private readonly pagesInFlight = new Map<string, Promise<boolean>>();
+  private nextPageId = 0;
+
   private socket: QuerySocket | null = null;
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private retryAttempt = 0;
@@ -449,6 +501,37 @@ class DataClientImpl {
     return this.entry(query).state;
   }
 
+  /**
+   * Requests the next page for the cached query and appends it.
+   *
+   * The cursor comes from the engine (`pageInfo[namespace].nextCursor`), never
+   * from a client-side offset: keyset pagination stays correct when rows are
+   * inserted or deleted between pages. One request covers every top-level
+   * namespace that reported a cursor; nested link results ride along with the
+   * page instead of being paginated.
+   */
+  loadMore(query: QueryDocument): Promise<boolean> {
+    const problem = this.configProblem();
+    if (problem) {
+      return Promise.reject(new Error(problem));
+    }
+
+    const entry = this.entry(query);
+    const inFlight = this.pagesInFlight.get(entry.key);
+    // Two callers asking for the same page share one request, so the rows can
+    // only be appended once.
+    if (inFlight) return inFlight;
+
+    const document = this.nextPageDocument(entry);
+    if (!document) return Promise.resolve(false);
+
+    const tracked = this.requestPage(entry, document).finally(() => {
+      this.pagesInFlight.delete(entry.key);
+    });
+    this.pagesInFlight.set(entry.key, tracked);
+    return tracked;
+  }
+
   publishPresence(target: string, presence: unknown): void {
     const entry = this.localPresence.get(target) ?? {};
     entry.presence = presence;
@@ -548,6 +631,17 @@ class DataClientImpl {
     this.closed = true;
     this.clearRetryTimer();
 
+    // No reply can arrive once the socket is gone; settle page requests now
+    // instead of leaving them to time out.
+    for (const id of [...this.pages.keys()]) {
+      this.failPage(
+        id,
+        new Error(
+          "tapedb-data: client closed while waiting for the next page."
+        )
+      );
+    }
+
     if (
       this.onlineHandler &&
       typeof window !== "undefined" &&
@@ -610,6 +704,133 @@ class DataClientImpl {
     for (const entry of this.cache.values()) {
       if (entry.listeners.size > 0) this.sendSubscribe(entry);
     }
+  }
+
+  /**
+   * The request for the next page: every top-level namespace with a cursor,
+   * each carrying its own `after` on top of the options the caller already
+   * passed. Returns null when nothing is left to fetch.
+   */
+  private nextPageDocument(entry: CacheEntry): QueryDocument | null {
+    if (entry.state.data === null) return null;
+
+    const document: QueryDocument = {};
+    let hasCursor = false;
+
+    for (const namespace of Object.keys(entry.query)) {
+      const cursor = entry.state.pageInfo?.[namespace]?.nextCursor;
+      if (typeof cursor !== "string" || cursor.length === 0) continue;
+
+      const node = entry.query[namespace];
+      const options: QueryOptions =
+        isRecord(node) && isRecord(node.$) ? node.$ : {};
+      document[namespace] = {
+        ...(isRecord(node) ? node : {}),
+        $: { ...options, after: cursor },
+      };
+      hasCursor = true;
+    }
+
+    return hasCursor ? document : null;
+  }
+
+  /**
+   * Sends one page request and waits for its `query:data`.
+   *
+   * It is a subscription rather than an HTTP call because the paginated rows
+   * must come from the same authenticated socket and the same view rules as the
+   * first page. The id is ephemeral and unsubscribed as soon as the page lands,
+   * so it never joins the live-query cache.
+   */
+  private async requestPage(
+    entry: CacheEntry,
+    document: QueryDocument
+  ): Promise<boolean> {
+    this.ensureSocket();
+    const socket = this.socket;
+    if (!socket) {
+      throw new Error("tapedb-data: WebSocket is not available.");
+    }
+    await socket.connect();
+
+    const id = `lm${(this.nextPageId += 1)}`;
+    const response = new Promise<QueryDataMessage>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.failPage(
+          id,
+          new Error(
+            "tapedb-data: loadMore() timed out waiting for the next page."
+          )
+        );
+      }, LOAD_MORE_TIMEOUT_MS);
+      this.pages.set(id, { timer, resolve, reject });
+    });
+
+    if (!socket.send({ type: "query:subscribe", id, query: document })) {
+      this.failPage(
+        id,
+        new Error("tapedb-data: loadMore() could not send on the socket.")
+      );
+    }
+
+    try {
+      const message = await response;
+      return this.appendPage(entry, message);
+    } finally {
+      socket.send({ type: "query:unsubscribe", id });
+    }
+  }
+
+  /** Settles a pending page request with its reply. */
+  private resolvePage(id: string, message: QueryDataMessage): boolean {
+    const pending = this.pages.get(id);
+    if (!pending) return false;
+    this.pages.delete(id);
+    clearTimeout(pending.timer);
+    pending.resolve(message);
+    return true;
+  }
+
+  /** Settles a pending page request with an error, at most once. */
+  private failPage(id: string, error: Error): boolean {
+    const pending = this.pages.get(id);
+    if (!pending) return false;
+    this.pages.delete(id);
+    clearTimeout(pending.timer);
+    pending.reject(error);
+    return true;
+  }
+
+  /**
+   * Appends a page to the cached result.
+   *
+   * Rows are deduped by id, so the same page delivered twice (a retried cursor,
+   * a server that repeats a boundary row) cannot duplicate entities. `pageInfo`
+   * is replaced with the page's own metadata; a namespace the engine no longer
+   * caps loses its entry, which is what makes the next `loadMore()` return
+   * false.
+   */
+  private appendPage(entry: CacheEntry, message: QueryDataMessage): boolean {
+    if (entry.state.data === null) return false;
+
+    const data: QueryResult = { ...entry.state.data };
+    const pageInfo: QueryPageInfo = { ...(entry.state.pageInfo ?? {}) };
+
+    for (const [namespace, rows] of Object.entries(message.data)) {
+      if (!Array.isArray(rows)) continue;
+      data[namespace] = mergeRows(data[namespace] ?? [], rows as QueryEntity[]);
+
+      const info = message.pageInfo?.[namespace];
+      if (info) pageInfo[namespace] = info;
+      else delete pageInfo[namespace];
+    }
+
+    const next: QueryState = { data, isLoading: false, error: null };
+    if (Object.keys(pageInfo).length > 0) next.pageInfo = pageInfo;
+
+    entry.state = next;
+    this.notify(entry);
+    return true;
   }
 
   private ensureSocket(): void {
@@ -704,6 +925,8 @@ class DataClientImpl {
         return;
       }
       case "query:data": {
+        // A pending loadMore() first: its id is ephemeral and never cached.
+        if (this.resolvePage(message.id, message)) return;
         const entry = this.entryBySubId(message.id);
         if (!entry) return;
         entry.seq = message.seq;
@@ -733,6 +956,15 @@ class DataClientImpl {
         return;
       }
       case "query:error": {
+        if (
+          message.id !== null &&
+          this.failPage(
+            message.id,
+            new ServerError(message.code, message.message)
+          )
+        ) {
+          return;
+        }
         if (message.id === null) return;
         const entry = this.entryBySubId(message.id);
         if (!entry) return;
@@ -983,6 +1215,7 @@ export function createClientParts(
     flushOutbox: () => impl.flushOutbox(),
     subscribeQuery: (query, listener) => impl.subscribeQuery(query, listener),
     getQueryState: (query) => impl.getQueryState(query),
+    loadMore: (query) => impl.loadMore(query),
     publishPresence: (target, presence) =>
       impl.publishPresence(target, presence),
     publishCursor: (target, cursor) => impl.publishCursor(target, cursor),
