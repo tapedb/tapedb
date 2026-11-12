@@ -19,8 +19,9 @@ There is no D1 and no hosted control plane. Your data never leaves your
 account.
 
 `studio` opens a local table browser at `http://127.0.0.1:4400`: pick a
-namespace, see rows, send transactions. It proxies through the dev claim route,
-so it needs no separate credentials.
+namespace, page through rows, switch between the workspaces you have opened,
+and send transactions. It proxies through the dev claim route, so it needs no
+separate credentials.
 
 `dev` runs that Worker locally with an in-memory Durable Object and passes
 `TAPEDB_DEV_CLAIMS=true` on the command line, which enables
@@ -194,9 +195,11 @@ permissions: {
 }
 ```
 
-Read rules run after the page is fetched, so a page can be smaller than the
-limit and `hasMore` reflects the unfiltered match count. A rule that throws
-hides the row.
+Read rules are arbitrary TypeScript, so they run after the SQL page. The engine
+then keeps scanning (by keyset when the query has an `order`) until the page is
+full, the rows run out, or a cap of `max(limit * 10, 200)` scanned rows is
+reached, so a rule that hides everything terminates instead of walking the
+namespace. A rule that throws hides the row.
 
 Rules also receive `changed`, the attribute names an op writes, which is how
 one field is gated:
