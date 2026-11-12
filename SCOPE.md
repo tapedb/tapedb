@@ -102,10 +102,17 @@ the app registry, and the `/apps/:appId/*` routes.
 
 ## Three decisions
 
-**1. Auth is a seam, not a feature.** The engine consumes a verified claim and
-never issues one. To keep "out of the box" honest, ship one adapter per identity
-provider, starting with BetterAuth since ndex already uses it, so integration is
-one line rather than one subsystem. Owning passwords would make this a BaaS.
+**1. Auth is a seam, not a feature.** DONE. The engine consumes a verified claim
+and never issues one. `defineTapeDB({ identity })` takes two methods,
+`getSubject(headers)` and `getRole(workspaceId, sub)`, and the library serves
+`POST /_tapedb/claim` for any identity provider. BetterAuth is the reference
+integration, not a dependency. `devClaims` mints an OWNER claim in development
+and is refused whenever `ENVIRONMENT` is `production`. Owning passwords would
+make this a BaaS.
+
+Development loop, verified end to end under `wrangler dev`: `tapedb init` then
+`tapedb dev` gives a local database with a working claim route, so the client
+runs with no session and no configuration.
 
 **2. Permissions stay role-level in v1, designed to grow.** InstantDB evaluates
 CEL rules per row and per attribute. TapeDB gates by role level per namespace
@@ -119,13 +126,24 @@ first-class InstantDB feature and the gap is small.
 
 ## Extraction tasks implied by this contract
 
-- Replace the ndex namespace override map in `tx-permissions.ts` (it hardcodes
-  `kanbanAttachments`, `taskAssignees`) with consumer-supplied configuration.
-- Replace every `ndex-*` literal: `x-ndex-role-claim`, `ndex-data` bucket,
-  `ndex-*` error codes, `ndex-data-outbox` IndexedDB name.
-- Emit the client schema from the server registry, or the reverse. One source,
-  two artifacts. Today they are two hand-maintained files.
-- Turn `preflight`, `dev-env`, `engine-up`, `engine-generate-migrations`,
-  `verify`, `deploy-gate` into CLI subcommands that do not assume this monorepo.
-- Add `dist` builds and `.d.ts` per subpath, a real `exports` map, `files`,
-  `sideEffects: false`, and a LICENSE.
+DONE:
+
+- Permissions overrides and the namespace registry are consumer configuration.
+- Every `ndex-*` literal is gone: header, bucket, error codes, IndexedDB name.
+- `defineSchema()` emits the registry, the migrations and the client schema from
+  one object.
+- `dist` builds, `.d.ts` per subpath, real `exports`, `files`,
+  `sideEffects: false`, LICENSE.
+- `tapedb init` and `tapedb dev` replace the monorepo scripts.
+- Recovery restore order, self-referential tables and the allowed-table set are
+  derived from the registry instead of hardcoded ndex tables.
+
+REMAINING:
+
+- Re-point the upstream engine suite (36 files) at a fixture schema; 12 were
+  schema-bound and 3 needed a harness that read the ndex migrations directory.
+- Write the `$files` metadata row on upload so `db.storage.list()` has a source.
+- Cursor pagination (`limit` and `order` work; no cursor yet).
+- Headless `init` (the React entry owns `init` today).
+- Rebuild the runtime exports from generated code: the emitted `cli.ts` uses a
+  dev claim route and must be reviewed before it is ever deployed as-is.

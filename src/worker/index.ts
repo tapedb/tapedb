@@ -16,6 +16,8 @@ import { configurePermissions } from "../engine/tx-permissions";
 import { isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
 import { apiError, discardBody, json } from "../http";
+import { handleClaimRequest } from "../claim-route";
+import { mintClaim, mintDevClaim, type ClaimIdentity } from "../mint";
 import type { TapeDBSchema } from "../schema";
 import type { Env } from "../types";
 import {
@@ -34,6 +36,17 @@ const ENGINE_PREFIX = "/engine/workspaces";
 
 export interface DefineTapeDBOptions {
   schema: TapeDBSchema;
+  /**
+   * Identity adapter. Implement `getSubject` and `getRole` to serve
+   * `POST /_tapedb/claim`. Without it that route returns 501 and the consumer
+   * must supply tokens to the client itself.
+   */
+  identity?: ClaimIdentity;
+  /**
+   * Development-only issuer: mints an OWNER claim for any workspace with no
+   * session. Always refused when `ENVIRONMENT` is `production`.
+   */
+  devClaims?: boolean;
 }
 
 export interface TapeDBWorker {
@@ -123,7 +136,7 @@ async function handleStorage(
 }
 
 export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
-  const { schema } = options;
+  const { schema, identity, devClaims = false } = options;
 
   // One schema per Worker instance. Installed at module evaluation, before any
   // request or Durable Object is constructed.
@@ -141,6 +154,14 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
 
       if (url.pathname === "/status" || url.pathname === "/health") {
         return json({ ok: true, service: "tapedb" });
+      }
+
+      if (url.pathname === "/_tapedb/claim") {
+        return handleClaimRequest(request, {
+          env,
+          identity,
+          devClaims,
+        });
       }
 
       if (!url.pathname.startsWith(`${ENGINE_PREFIX}/`)) {
@@ -201,6 +222,8 @@ export {
   TRUSTED_CLAIM_HEADER,
   verifyRoleClaim,
 };
+export { mintClaim, mintDevClaim, signRoleClaim } from "../mint";
+export type { ClaimIdentity, MintClaimDependencies } from "../mint";
 export { WorkspaceRoom };
 export { WORKSPACE_ROLE_LEVELS };
 export type { Env };
