@@ -25,6 +25,7 @@ import {
   findNamespace,
   NAMESPACES,
   namespaceTables,
+  registryGeneration,
   toSnakeCase,
 } from "../registry";
 import { applyOps, quoteIdentifier } from "../tx-apply";
@@ -100,8 +101,8 @@ type RestorableRow = Record<string, SqlValue>;
  * inside an outer transaction). Computed rather than hardcoded, so a schema
  * change cannot silently reorder a restore.
  */
-function restoreOrder(): string[] {
-  const remaining = Object.values(NAMESPACES);
+export function restoreOrder(): string[] {
+  let remaining = Object.values(NAMESPACES);
   const emitted: string[] = [];
   const done = new Set<string>();
 
@@ -121,6 +122,11 @@ function restoreOrder(): string[] {
       emitted.push(namespace.table);
       done.add(namespace.table);
     }
+
+    // Drop what was emitted. Without this the loop never terminates: `ready` is
+    // derived from `remaining`, and re-selecting the same tables grows
+    // `emitted` until the array overflows.
+    remaining = remaining.filter((namespace) => !done.has(namespace.table));
   }
 
   emitted.push(ENGINE_TABLES.files);
@@ -143,10 +149,24 @@ function selfReferential(): Record<string, string> {
 const LOG_SEGMENT_NAME = /^(\d+)-(\d+)\.ndjson$/;
 const MAX_ERROR_LENGTH = 2000;
 
-const ALLOWED_TABLES = new Set<string>([
-  ...namespaceTables(),
-  ENGINE_TABLES.files,
-]);
+/**
+ * Tables recovery may touch. Computed lazily and rebuilt when the registry is
+ * configured, which happens after this module loads: a module-level snapshot
+ * would be fixed to the empty pre-configuration state and reject every
+ * namespace.
+ */
+let allowedTableCache: { generation: number; tables: Set<string> } | null = null;
+
+export function allowedTables(): Set<string> {
+  const generation = registryGeneration();
+  if (allowedTableCache === null || allowedTableCache.generation !== generation) {
+    allowedTableCache = {
+      generation,
+      tables: new Set<string>([...namespaceTables(), ENGINE_TABLES.files]),
+    };
+  }
+  return allowedTableCache.tables;
+}
 
 const textDecoder = new TextDecoder();
 
@@ -156,11 +176,11 @@ function messageOf(error: unknown): string {
 
 /**
  * Engine tables include `$files`, which `quoteIdentifier` intentionally
- * rejects. Callers only pass names from `ALLOWED_TABLES`, so quoting here is
+ * rejects. Callers only pass names from `allowedTables()`, so quoting here is
  * a guard rail rather than an input sanitizer.
  */
 function quoteTable(table: string): string {
-  if (!ALLOWED_TABLES.has(table)) {
+  if (!allowedTables().has(table)) {
     throw new Error(`Unknown table "${table}".`);
   }
   return `"${table}"`;
@@ -298,7 +318,7 @@ function validateManifestTables(manifest: WorkspaceManifest): void {
   )}/snapshots/${manifest.baseSeq}/`;
 
   for (const table of manifest.tables) {
-    if (!ALLOWED_TABLES.has(table.name)) {
+    if (!allowedTables().has(table.name)) {
       throw new Error(`Manifest contains unknown table "${table.name}".`);
     }
 

@@ -195,6 +195,35 @@ export function deriveWebSocketUrl(
   return `${base}/engine/workspaces/${workspaceId}/websocket`;
 }
 
+/**
+ * Default token provider for development.
+ *
+ * `tapedb dev` exposes `POST /_tapedb/claim`, which mints an OWNER claim with
+ * no session. Production Workers refuse that route, so this fallback fails
+ * closed: the error names the missing option instead of silently sending an
+ * unauthenticated request.
+ */
+function createDevTokenProvider(apiUrl: string, workspaceId: string) {
+  return async (): Promise<string> => {
+    const response = await fetch(`${apiUrl}/_tapedb/claim`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ workspaceId }),
+    });
+    if (!response.ok) {
+      throw new Error(
+        `tapedb-data: no getToken provided and the dev claim route returned ${response.status}. ` +
+          `Pass init({ getToken: () => Promise<string> }) for production.`
+      );
+    }
+    const body = (await response.json()) as { token?: unknown };
+    if (typeof body.token !== "string") {
+      throw new Error("tapedb-data: dev claim route returned no token.");
+    }
+    return body.token;
+  };
+}
+
 function resolveConfig(config: InitConfig): ResolvedConfig {
   const workspaceId = config.workspaceId ?? "";
   const apiUrl = trimTrailingSlash(config.apiUrl ?? DEFAULT_API_URL);
@@ -205,7 +234,7 @@ function resolveConfig(config: InitConfig): ResolvedConfig {
     workspaceId,
     apiUrl,
     websocketUrl,
-    getToken: config.getToken ?? null,
+    getToken: config.getToken ?? createDevTokenProvider(apiUrl, workspaceId),
     schema: config.schema,
   };
 }

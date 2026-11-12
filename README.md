@@ -10,12 +10,17 @@ You bring the Cloudflare account. TapeDB brings the database.
 
 ```bash
 npx tapedb init
+npx tapedb dev
 ```
 
-That writes four files and needs three resources: one Durable Object class,
+`init` writes four files and needs three resources: one Durable Object class,
 and two R2 buckets (`DATA` for the log and snapshots, `FILES` for uploads).
 There is no D1 and no hosted control plane. Your data never leaves your
 account.
+
+`dev` runs that Worker locally with an in-memory Durable Object and serves
+`POST /_tapedb/claim`, so the client works with no session and no
+configuration. That route is refused when `ENVIRONMENT` is `production`.
 
 ## Usage
 
@@ -96,6 +101,36 @@ client ──HTTP /transact──▶ Worker ──claim──▶ WorkspaceRoom (
                                           R2 DATA (log + snapshots)
 ```
 
+## Claims and identity
+
+The engine verifies a short-lived signed claim and never issues one. Identity
+stays yours: implement two methods and the library serves the claim route.
+
+```ts
+import { defineTapeDB, WORKSPACE_ROLE_LEVELS } from "tapedb/worker";
+
+const tapedb = defineTapeDB({
+  schema,
+  identity: {
+    async getSubject(headers) {
+      const session = await auth.api.getSession({ headers });
+      return session ? { sub: session.user.id } : null;
+    },
+    async getRole(workspaceId, sub) {
+      const member = await db.membership(workspaceId, sub);
+      return member ? WORKSPACE_ROLE_LEVELS[member.role] : null;
+    },
+  },
+});
+```
+
+`POST /_tapedb/claim` then returns `{ token, workspaceId, roleLevel, expiresAt }`
+and the client sends it as `Authorization: Bearer <token>`. Claims last five
+minutes and the client renews on reconnect.
+
+Rate limiting is the deployment's call: pass `allowRequest` to `mintClaim`, or
+put the route behind a Cloudflare rate-limit binding.
+
 ## Entry points
 
 | import | contains | React |
@@ -108,9 +143,11 @@ client ──HTTP /transact──▶ Worker ──claim──▶ WorkspaceRoom (
 ## Status
 
 `0.0.1`, extracted from a production application. The engine, the client and
-the tables are exercised by tests against in-memory SQLite. Known gaps are
-tracked in [SCOPE.md](./SCOPE.md): cursor pagination, row-level permissions,
-and the headless (non-React) `init`.
+the claim path are exercised by tests against in-memory SQLite and by a live
+`wrangler dev` run (init, mint, transact, idempotent replay, nested query,
+upload, and the auth refusals). Known gaps are tracked in
+[SCOPE.md](./SCOPE.md): cursor pagination, row-level permissions, `$files`
+metadata rows, and the headless (non-React) `init`.
 
 ## License
 

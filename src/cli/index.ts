@@ -13,6 +13,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -60,7 +61,12 @@ const WORKER_FILE = `import { defineTapeDB } from "tapedb/worker";
 
 import { schema } from "./tapedb.schema";
 
-const tapedb = defineTapeDB({ schema });
+const tapedb = defineTapeDB({
+  schema,
+  // Development only: serves POST /_tapedb/claim so the client works with no
+  // session. defineTapeDB refuses that route when ENVIRONMENT is "production".
+  devClaims: true,
+});
 
 // Cloudflare requires the Durable Object class to be exported by the Worker
 // that declares the binding.
@@ -77,6 +83,7 @@ function wrangler(name: string): string {
   "compatibility_date": "${new Date().toISOString().slice(0, 10)}",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "vars": { "ENVIRONMENT": "development" },
   "durable_objects": {
     "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceRoom" }]
   },
@@ -160,12 +167,43 @@ function usage(): number {
 
 Usage:
   tapedb init [--dir <path>] [--name <worker-name>] [--force]
+  tapedb dev  [--dir <path>] [--port <port>]
 
 Commands:
   init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars.
           Existing files are kept unless --force is passed.
+  dev     Run the local database with wrangler dev on port 8787.
 `);
   return 0;
+}
+
+function dev(argv: string[]): number {
+  const flags = parseFlags(argv);
+  const target = resolve(typeof flags.dir === "string" ? flags.dir : ".");
+  const port = typeof flags.port === "string" ? flags.port : "8787";
+
+  if (!existsSync(join(target, ".dev.vars"))) {
+    console.error(`No .dev.vars in ${target}. Run \`tapedb init\` first.`);
+    return 1;
+  }
+
+  const probe = spawnSync("npx", ["--no-install", "wrangler", "--version"], {
+    cwd: target,
+    encoding: "utf8",
+  });
+  if (probe.status !== 0) {
+    console.error(
+      "wrangler is required to run the local database.\n\n  npm i -D wrangler\n"
+    );
+    return 1;
+  }
+
+  const run = spawnSync(
+    "npx",
+    ["--no-install", "wrangler", "dev", "--port", port],
+    { cwd: target, stdio: "inherit" }
+  );
+  return run.status ?? 1;
 }
 
 /** Runs the CLI and returns its exit code. Importable without side effects. */
@@ -173,6 +211,7 @@ export function run(argv: string[]): number {
   const command = argv[0];
 
   if (command === "init") return init(argv.slice(1));
+  if (command === "dev") return dev(argv.slice(1));
   if (command === undefined || command === "--help" || command === "-h") {
     return usage();
   }

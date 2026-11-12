@@ -210,6 +210,42 @@ describe("transaction pipeline", () => {
   });
 });
 
+describe("recovery ordering", () => {
+  test("orders parents before children and terminates", async () => {
+    const { restoreOrder } = await import("../src/engine/durability/recovery");
+    const order = restoreOrder();
+
+    // Regression: an earlier version re-selected the same tables forever and
+    // overflowed the array on a real cold start, which no unit test reached.
+    expect(order.length).toBeLessThan(100);
+    expect(new Set(order).size).toBe(order.length);
+
+    const boards = order.indexOf("boards");
+    const columns = order.indexOf("columns");
+    const tasks = order.indexOf("tasks");
+
+    expect(boards).toBeGreaterThanOrEqual(0);
+    expect(boards).toBeLessThan(columns);
+    expect(columns).toBeLessThan(tasks);
+    expect(order.at(-1)).toBe("$files");
+  });
+});
+
+describe("recovery tables", () => {
+  test("uses the configured registry, not a module-load snapshot", async () => {
+    const { allowedTables } = await import("../src/engine/durability/recovery");
+    const tables = allowedTables();
+
+    // Regression: this was a module-level Set built before configureRegistry()
+    // ran, so it rejected every entity table on a real cold start.
+    expect(tables.has("boards")).toBe(true);
+    expect(tables.has("columns")).toBe(true);
+    expect(tables.has("tasks")).toBe(true);
+    expect(tables.has("$files")).toBe(true);
+    expect(tables.has("_tx_log")).toBe(false);
+  });
+});
+
 describe("queries", () => {
   test("traverses a two-level link from the compiled query", () => {
     const sql = freshDatabase();
