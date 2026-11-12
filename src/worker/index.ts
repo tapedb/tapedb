@@ -72,12 +72,37 @@ function storageKey(workspaceId: string, objectKey: string): string {
   return `workspaces/${workspaceId}/files/${objectKey}`;
 }
 
+/**
+ * Calls the Durable Object directly with a trusted claim. Used for the file
+ * metadata index, which lives in the workspace's SQLite next to the data, not
+ * in R2.
+ */
+async function callRoom(
+  env: Env,
+  workspaceId: string,
+  path: string,
+  init: RequestInit,
+  trustedClaim: string
+): Promise<Response> {
+  const headers = new Headers(init.headers);
+  headers.delete(TRUSTED_CLAIM_HEADER);
+  headers.set(TRUSTED_CLAIM_HEADER, trustedClaim);
+
+  const request = new Request(new URL(path, "https://room.internal"), {
+    ...init,
+    headers,
+  });
+
+  return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)).fetch(request);
+}
+
 async function handleStorage(
   request: Request,
   env: Env,
   workspaceId: string,
   objectKey: string,
-  role: number
+  role: number,
+  trustedClaim: string
 ): Promise<Response> {
   const bucket = env.FILES;
   if (!bucket) {
@@ -106,11 +131,38 @@ async function handleStorage(
     if (body.byteLength > MAX_UPLOAD_BYTES) {
       return apiError(413, "file_too_large", `Files are capped at ${MAX_UPLOAD_BYTES} bytes.`);
     }
-    await bucket.put(key, body, {
-      httpMetadata: {
-        contentType: request.headers.get("content-type") ?? "application/octet-stream",
+    const contentType =
+      request.headers.get("content-type") ?? "application/octet-stream";
+
+    await bucket.put(key, body, { httpMetadata: { contentType } });
+
+    // Bytes are stored; now record them where the database can see them. A
+    // failure here is reported rather than swallowed: an object nobody can
+    // list is worse than a failed upload.
+    const recorded = await callRoom(
+      env,
+      workspaceId,
+      "/files",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          path: objectKey,
+          key,
+          size: body.byteLength,
+          contentType,
+        }),
       },
-    });
+      trustedClaim
+    );
+    if (!recorded.ok) {
+      return apiError(
+        502,
+        "file_index_failed",
+        "Stored the object but could not record it in the workspace index."
+      );
+    }
+
     return json({ key, size: body.byteLength }, 201);
   }
 
@@ -128,6 +180,26 @@ async function handleStorage(
 
   if (request.method === "DELETE") {
     await bucket.delete(key);
+
+    const forgotten = await callRoom(
+      env,
+      workspaceId,
+      "/files",
+      {
+        method: "DELETE",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: objectKey }),
+      },
+      trustedClaim
+    );
+    if (!forgotten.ok) {
+      return apiError(
+        502,
+        "file_index_failed",
+        "Deleted the object but could not remove it from the workspace index."
+      );
+    }
+
     return new Response(null, { status: 204 });
   }
 
@@ -188,12 +260,18 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
         try {
           const claim = await authenticateEngineRequest(request, env, workspaceId);
           role = claim.role;
+          trustedClaim = encodeTrustedRoleClaim(claim);
 
           if (roomPath.startsWith("/files/")) {
-            return handleStorage(request, env, workspaceId, roomPath.slice("/files/".length), role);
+            return handleStorage(
+              request,
+              env,
+              workspaceId,
+              roomPath.slice("/files/".length),
+              role,
+              trustedClaim
+            );
           }
-
-          trustedClaim = encodeTrustedRoleClaim(claim);
         } catch (error) {
           await discardBody(request);
           if (error instanceof ClaimError) {

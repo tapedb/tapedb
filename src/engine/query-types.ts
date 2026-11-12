@@ -42,6 +42,12 @@ export interface QueryOptions {
   where?: QueryWhere;
   order?: Record<string, SortDirection>;
   limit?: number;
+  /**
+   * Opaque cursor from a previous page's `pageInfo.nextCursor`. Requires an
+   * explicit `order`, because a cursor is only meaningful against a total
+   * order.
+   */
+  after?: string;
 }
 
 /**
@@ -76,6 +82,11 @@ export interface PageInfo {
   returned: number;
   /** True when more rows matched than were returned. */
   hasMore: boolean;
+  /**
+   * Opaque cursor for the next page, present only when `hasMore` is true and
+   * the query has an explicit `order`. Pass it back as `$: { after }`.
+   */
+  nextCursor?: string;
 }
 
 export type QueryPageInfo = Record<string, PageInfo>;
@@ -93,7 +104,7 @@ export interface QueryErrorResponse {
   };
 }
 
-const OPTION_KEYS = new Set(["where", "order", "limit"]);
+const OPTION_KEYS = new Set(["where", "order", "limit", "after"]);
 const COMPARISON_OPERATORS = new Set([
   "$ne",
   "$in",
@@ -159,8 +170,76 @@ export function parseQueryOptions(value: unknown): QueryOptions {
   if ("limit" in value) {
     options.limit = parseLimit(value.limit);
   }
+  if ("after" in value) {
+    options.after = parseCursor(value.after);
+  }
 
   return options;
+}
+
+/**
+ * Pagination cursor: the ordered column values of the last row on the page.
+ *
+ * Keyset, not offset: an offset cursor silently skips or repeats rows when
+ * something is inserted above the window, which is the normal case for a live
+ * database.
+ */
+export interface QueryCursor {
+  v: 1;
+  /** Physical columns the cursor is ordered by. */
+  cols: string[];
+  /** Values of those columns on the last returned row. */
+  vals: (string | number | null)[];
+}
+
+function base64UrlEncode(text: string): string {
+  return btoa(text).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function base64UrlDecode(value: string): string {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  return atob(padded + "=".repeat((4 - (padded.length % 4)) % 4));
+}
+
+export function encodeQueryCursor(cursor: QueryCursor): string {
+  return base64UrlEncode(JSON.stringify(cursor));
+}
+
+/** Decodes and validates a cursor. A malformed cursor is a client error. */
+export function decodeQueryCursor(value: string): QueryCursor {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(base64UrlDecode(value));
+  } catch {
+    throw invalidOp('"after" is not a valid cursor.');
+  }
+
+  if (!isPlainObject(parsed) || parsed.v !== 1) {
+    throw invalidOp('"after" is not a valid cursor.');
+  }
+
+  const cols = parsed.cols;
+  const vals = parsed.vals;
+  if (!Array.isArray(cols) || cols.length === 0 || !cols.every((c) => typeof c === "string")) {
+    throw invalidOp('"after" cursor has no columns.');
+  }
+  if (!Array.isArray(vals) || vals.length !== cols.length) {
+    throw invalidOp('"after" cursor does not match its columns.');
+  }
+  for (const val of vals) {
+    if (val !== null && typeof val !== "string" && typeof val !== "number") {
+      throw invalidOp('"after" cursor contains an unsupported value.');
+    }
+  }
+
+  return { v: 1, cols: cols as string[], vals: vals as (string | number | null)[] };
+}
+
+function parseCursor(value: unknown): string {
+  if (typeof value !== "string" || value.length === 0) {
+    throw invalidOp('"after" must be a non-empty cursor string.');
+  }
+  return value;
 }
 
 function parseWhere(value: unknown): QueryWhere {

@@ -26,4 +26,11 @@ export interface Env {
   TAPEDB_CLAIM_ISSUER?: string;
   /** Optional expected `aud` claim; checked only when set. */
   TAPEDB_CLAIM_AUDIENCE?: string;
+
+  /**
+   * Enables the development claim issuer. Set to `"true"` by `tapedb dev` on
+   * the command line and never written to `wrangler.jsonc`, so a plain
+   * `wrangler deploy` has no dev claim route.
+   */
+  TAPEDB_DEV_CLAIMS?: string;
 }

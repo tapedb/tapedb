@@ -16,6 +16,7 @@ import {
   type CompiledQuery,
 } from "./query-compile";
 import {
+  encodeQueryCursor,
   parseQueryEnvelope,
   type QueryPageInfo,
   type QueryResult,
@@ -126,10 +127,46 @@ export function executeCompiledQueryWithPageInfo(
     const page = hasMore ? entities.slice(0, limit) : entities;
 
     data[node.namespace] = page.map(toApiEntity);
-    pageInfo[node.namespace] = { limit, returned: page.length, hasMore };
+
+    const nextCursor = cursorFor(node, page, hasMore);
+    pageInfo[node.namespace] =
+      nextCursor === undefined
+        ? { limit, returned: page.length, hasMore }
+        : { limit, returned: page.length, hasMore, nextCursor };
   }
 
   return { data, pageInfo };
+}
+
+/**
+ * Cursor for the next page, or undefined when there is nothing to resume from.
+ *
+ * Requires an explicit order: without one there is no total order for a keyset
+ * cursor to sit in. A null ordering value also yields no cursor, because
+ * comparisons against null never select a row.
+ */
+function cursorFor(
+  node: CompiledNode,
+  page: HydratedEntity[],
+  hasMore: boolean
+): string | undefined {
+  if (!hasMore || node.order.length === 0 || page.length === 0) return undefined;
+
+  const last = page[page.length - 1];
+  const values: (string | number | null)[] = [];
+
+  for (const entry of node.order) {
+    const value = last.row[entry.column];
+    if (value === null || value === undefined) return undefined;
+    if (typeof value !== "string" && typeof value !== "number") return undefined;
+    values.push(value);
+  }
+
+  return encodeQueryCursor({
+    v: 1,
+    cols: node.order.map((entry) => entry.column),
+    vals: values,
+  });
 }
 
 function hydrateNode(

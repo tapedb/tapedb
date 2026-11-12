@@ -33,6 +33,7 @@ import {
   type QueryResult,
 } from "./query-types";
 import { isWorkspaceId } from "./r2-keys";
+import { ENGINE_TABLES } from "./registry";
 import {
   DEFAULT_INVALIDATION_DEBOUNCE_MS,
   diffQueryResults,
@@ -41,7 +42,7 @@ import {
 } from "./subscriptions";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { runTransaction } from "./tx-pipeline";
-import { durableObjectSqlExecutor } from "./tx-sql";
+import { durableObjectSqlExecutor, type SqlValue } from "./tx-sql";
 import { TxError, type TxErrorCode } from "./tx-types";
 import { acceptVerifiedSocket } from "./ws-handshake";
 import {
@@ -230,6 +231,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
         );
       }
       return this.query(request);
+    }
+
+    // File metadata. Bytes live in R2 and are handled by the Worker; this is
+    // the queryable index so a workspace can be asked what it contains.
+    if (url.pathname === "/files") {
+      if (request.method === "GET") return this.listFiles();
+      if (request.method === "POST") return this.recordFile(request);
+      if (request.method === "DELETE") return this.forgetFile(request);
+      return apiError(
+        405,
+        "method_not_allowed",
+        `${request.method} is not supported for ${url.pathname}.`
+      );
     }
 
     return apiError(
@@ -970,6 +984,90 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (existing === null || at < existing) {
       await this.ctx.storage.setAlarm(at);
     }
+  }
+
+  /**
+   * File metadata rows. Bytes live in R2 and never enter the transaction log;
+   * this table is the queryable index over them.
+   */
+  private listFiles(): Response {
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const rows = sql.all<Record<string, SqlValue>>(
+      `SELECT "id", "path", "r2_key" AS "r2Key", "size",
+              "content_type" AS "contentType",
+              "created_at" AS "createdAt", "updated_at" AS "updatedAt"
+         FROM "${ENGINE_TABLES.files}"
+        ORDER BY "path"`
+    );
+    return json({ ok: true, data: rows });
+  }
+
+  private async recordFile(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return apiError(400, "invalid_body", "Request body must be a JSON object.");
+    }
+
+    const record = (body ?? {}) as Record<string, unknown>;
+    const path = record.path;
+    const key = record.key;
+    const size = record.size;
+    const contentType = record.contentType;
+
+    if (typeof path !== "string" || path.length === 0) {
+      return apiError(400, "invalid_path", "path is required.");
+    }
+    if (typeof key !== "string" || key.length === 0) {
+      return apiError(400, "invalid_key", "key is required.");
+    }
+    if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
+      return apiError(400, "invalid_size", "size must be a non-negative number.");
+    }
+
+    const now = Date.now();
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    sql.exec(
+      `INSERT INTO "${ENGINE_TABLES.files}"
+         ("id", "path", "r2_key", "size", "content_type", "created_at", "updated_at")
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT("path") DO UPDATE SET
+         "r2_key" = excluded."r2_key",
+         "size" = excluded."size",
+         "content_type" = excluded."content_type",
+         "updated_at" = excluded."updated_at"`,
+      crypto.randomUUID(),
+      path,
+      key,
+      size,
+      typeof contentType === "string" ? contentType : null,
+      now,
+      now
+    );
+
+    return json({ ok: true, data: { path, size } }, 201);
+  }
+
+  private async forgetFile(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return apiError(400, "invalid_body", "Request body must be a JSON object.");
+    }
+
+    const path = ((body ?? {}) as Record<string, unknown>).path;
+    if (typeof path !== "string" || path.length === 0) {
+      return apiError(400, "invalid_path", "path is required.");
+    }
+
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const removed = sql.exec(
+      `DELETE FROM "${ENGINE_TABLES.files}" WHERE "path" = ?`,
+      path
+    );
+    return json({ ok: true, removed });
   }
 
   private status(): Response {

@@ -7,6 +7,23 @@
 
 export { id } from "./id";
 export { i } from "./schema";
+
+// Headless client: the same runtime the React bindings wrap.
+export {
+  createClientParts,
+  createHeadlessClient,
+  createTxProxy,
+  DataClientImpl,
+  deriveWebSocketUrl,
+  init,
+  ServerError,
+} from "./data-client";
+export type {
+  ClientDeps,
+  FetchLike,
+  FetchResponseLike,
+  HeadlessDataClient,
+} from "./data-client";
 export type {
   AttributeDefinition,
   DataClient,

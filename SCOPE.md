@@ -138,12 +138,23 @@ DONE:
 - Recovery restore order, self-referential tables and the allowed-table set are
   derived from the registry instead of hardcoded ndex tables.
 
+DONE since first draft:
+
+- The upstream engine suite runs again (13 files, 166 tests total) against an
+  ndex-shaped fixture that configures the registry, permissions and migration
+  bundle before each file.
+- Uploads write a `$files` metadata row into the workspace and expose
+  `GET /files`; delete removes it. Bytes stay in R2 and never enter the log.
+- Cursor pagination: `after` compiles to a lexicographic WHERE clause, and
+  `pageInfo.nextCursor` is emitted when a page has more rows.
+- Headless `init` in `tapedb`; the React entry wraps the same instance.
+- Dev claims require the code flag and `TAPEDB_DEV_CLAIMS=true`, which
+  `tapedb dev` passes and `wrangler deploy` never does.
+
 REMAINING:
 
-- Re-point the upstream engine suite (36 files) at a fixture schema; 12 were
-  schema-bound and 3 needed a harness that read the ndex migrations directory.
-- Write the `$files` metadata row on upload so `db.storage.list()` has a source.
-- Cursor pagination (`limit` and `order` work; no cursor yet).
-- Headless `init` (the React entry owns `init` today).
-- Rebuild the runtime exports from generated code: the emitted `cli.ts` uses a
-  dev claim route and must be reviewed before it is ever deployed as-is.
+- Row-level and attribute-level permissions (role levels only).
+- A devtool/explorer; today the CLI and `/status` are the only introspection.
+- `$files` rows are written outside the transaction log, so they are not part of
+  the replay; a crash between the R2 put and the row write leaves an unlisted
+  object, which the 502 makes visible rather than silent.
