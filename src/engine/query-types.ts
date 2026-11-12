@@ -1,0 +1,288 @@
+/**
+ * InstaQL query wire contract for the workspace engine (KAN-392).
+ *
+ * Only the subset the plan promises is supported: `where`, `order`, `limit`
+ * and nested link traversal up to two levels. This module owns the typed
+ * shapes and the registry-independent validation. Registry-specific checks
+ * (namespace, attribute and link existence) live in `query-compile.ts`.
+ *
+ * Values describe the API shape: attribute names are camelCase registry names,
+ * booleans are real booleans, dates are epoch milliseconds and `json`/`any`
+ * attributes are JSON values. Storage conversion happens in `query-execute.ts`.
+ */
+
+import { TxError } from "./tx-types";
+
+export const DEFAULT_QUERY_LIMIT = 100;
+export const MAX_QUERY_LIMIT = 1000;
+export const MAX_LINK_DEPTH = 2;
+
+export type SortDirection = "asc" | "desc";
+
+/** Scalars accepted by `where` and by comparison operators. */
+export type QueryScalar = string | number | boolean | null;
+
+/** Supported comparison operators. Anything else is rejected. */
+export interface QueryComparison {
+  $ne?: QueryScalar;
+  $in?: QueryScalar[];
+  $gt?: QueryScalar;
+  $gte?: QueryScalar;
+  $lt?: QueryScalar;
+  $lte?: QueryScalar;
+}
+
+export type QueryWhereValue = QueryScalar | QueryComparison;
+
+export interface QueryWhere {
+  [attribute: string]: QueryWhereValue;
+}
+
+export interface QueryOptions {
+  where?: QueryWhere;
+  order?: Record<string, SortDirection>;
+  limit?: number;
+}
+
+/**
+ * One namespace/link level.
+ *
+ * `$` carries options; every other key is a registered link label for the
+ * namespace at this level.
+ */
+export interface QueryNodeInput {
+  $?: QueryOptions;
+  [link: string]: QueryOptions | QueryNodeInput | undefined;
+}
+
+/** A query document keyed by top-level namespace API name. */
+export interface QueryDocument {
+  [namespace: string]: QueryNodeInput;
+}
+
+/** Result payload keyed by the requested top-level namespace names. */
+export interface QueryResult {
+  [namespace: string]: unknown[];
+}
+
+/**
+ * Truncation metadata for one namespace. The default result cap is silent, so
+ * a caller cannot otherwise tell 100 rows from the first 100 of 500.
+ */
+export interface PageInfo {
+  /** The effective limit, or null when the namespace is uncapped. */
+  limit: number | null;
+  /** Rows actually returned for this namespace. */
+  returned: number;
+  /** True when more rows matched than were returned. */
+  hasMore: boolean;
+}
+
+export type QueryPageInfo = Record<string, PageInfo>;
+
+export interface QueryResponse {
+  ok: true;
+  data: QueryResult;
+}
+
+export interface QueryErrorResponse {
+  ok: false;
+  error: {
+    code: string;
+    message: string;
+  };
+}
+
+const OPTION_KEYS = new Set(["where", "order", "limit"]);
+const COMPARISON_OPERATORS = new Set([
+  "$ne",
+  "$in",
+  "$gt",
+  "$gte",
+  "$lt",
+  "$lte",
+]);
+
+const ISO_DATE_PATTERN =
+  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,9})?)?(?:Z|[+-]\d{2}:?\d{2})?)?$/;
+
+/**
+ * Validates the request envelope `{ query: {...} }` and returns the query
+ * document. Unknown envelope keys are rejected rather than ignored.
+ */
+export function parseQueryEnvelope(value: unknown): QueryDocument {
+  if (!isPlainObject(value)) {
+    throw invalidOp("Query request body must be a JSON object.");
+  }
+
+  for (const key of Object.keys(value)) {
+    if (key !== "query") {
+      throw invalidOp(`Unknown query envelope key "${key}".`);
+    }
+  }
+
+  if (!("query" in value)) {
+    throw invalidOp('Query request body requires a "query" object.');
+  }
+
+  const query = value.query;
+  if (!isPlainObject(query)) {
+    throw invalidOp('"query" must be a plain object.');
+  }
+
+  return query as QueryDocument;
+}
+
+/**
+ * Validates an options object (`$`). Attribute and link names are checked
+ * later, against the registry.
+ */
+export function parseQueryOptions(value: unknown): QueryOptions {
+  if (!isPlainObject(value)) {
+    throw invalidOp('"$" must be an object.');
+  }
+
+  for (const key of Object.keys(value)) {
+    if (!OPTION_KEYS.has(key)) {
+      throw invalidOp(`Unknown query option "$${key}".`);
+    }
+  }
+
+  const options: QueryOptions = {};
+
+  if ("where" in value) {
+    options.where = parseWhere(value.where);
+  }
+  if ("order" in value) {
+    options.order = parseOrder(value.order);
+  }
+  if ("limit" in value) {
+    options.limit = parseLimit(value.limit);
+  }
+
+  return options;
+}
+
+function parseWhere(value: unknown): QueryWhere {
+  if (!isPlainObject(value)) {
+    throw invalidOp('"where" must be an object.');
+  }
+
+  const where: QueryWhere = {};
+  for (const [attribute, raw] of Object.entries(value)) {
+    if (isPlainObject(raw)) {
+      where[attribute] = parseComparison(attribute, raw);
+    } else {
+      where[attribute] = parseScalar(attribute, raw);
+    }
+  }
+  return where;
+}
+
+function parseComparison(
+  attribute: string,
+  value: Record<string, unknown>
+): QueryComparison {
+  const keys = Object.keys(value);
+  if (keys.length === 0) {
+    throw invalidValue(`Comparison for "${attribute}" has no operators.`);
+  }
+
+  const comparison: QueryComparison = {};
+  for (const operator of keys) {
+    if (!COMPARISON_OPERATORS.has(operator)) {
+      throw invalidValue(
+        `Unsupported where operator "${operator}" on "${attribute}".`
+      );
+    }
+
+    const operand = value[operator];
+    switch (operator) {
+      case "$in":
+        if (!Array.isArray(operand)) {
+          throw invalidValue(`"$in" on "${attribute}" requires an array.`);
+        }
+        comparison.$in = operand.map((item, index) =>
+          parseScalar(`${attribute}.$in[${index}]`, item)
+        );
+        break;
+      case "$ne":
+        comparison.$ne = parseScalar(attribute, operand);
+        break;
+      case "$gt":
+        comparison.$gt = parseScalar(attribute, operand);
+        break;
+      case "$gte":
+        comparison.$gte = parseScalar(attribute, operand);
+        break;
+      case "$lt":
+        comparison.$lt = parseScalar(attribute, operand);
+        break;
+      case "$lte":
+        comparison.$lte = parseScalar(attribute, operand);
+        break;
+    }
+  }
+
+  return comparison;
+}
+
+function parseOrder(value: unknown): Record<string, SortDirection> {
+  if (!isPlainObject(value)) {
+    throw invalidOp('"order" must be an object.');
+  }
+
+  const order: Record<string, SortDirection> = {};
+  for (const [attribute, direction] of Object.entries(value)) {
+    if (direction !== "asc" && direction !== "desc") {
+      throw invalidValue(`Order for "${attribute}" must be "asc" or "desc".`);
+    }
+    order[attribute] = direction;
+  }
+  return order;
+}
+
+function parseLimit(value: unknown): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 1 ||
+    value > MAX_QUERY_LIMIT
+  ) {
+    throw invalidValue(
+      `Limit must be an integer from 1 to ${MAX_QUERY_LIMIT}.`
+    );
+  }
+  return value;
+}
+
+function parseScalar(attribute: string, value: unknown): QueryScalar {
+  if (value === null) return null;
+  if (typeof value === "string" || typeof value === "boolean") return value;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  throw invalidValue(
+    `Value for "${attribute}" must be a scalar (string, number, boolean or null).`
+  );
+}
+
+export function isPlainObject(
+  value: unknown
+): value is Record<string, unknown> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
+}
+
+export function isIsoDate(value: string): boolean {
+  return ISO_DATE_PATTERN.test(value);
+}
+
+export function invalidOp(message: string): TxError {
+  return new TxError("invalid_op", message);
+}
+
+export function invalidValue(message: string): TxError {
+  return new TxError("invalid_value", message);
+}

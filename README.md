@@ -1,0 +1,117 @@
+# TapeDB
+
+**A log-structured database for Cloudflare Durable Objects.** One SQLite
+database per workspace lives inside a single Durable Object. Every write is a
+transaction appended to a log, the log ships to R2, and a cold start replays
+it. Clients subscribe to live queries over one WebSocket, with an optimistic
+cache and a durable outbox.
+
+You bring the Cloudflare account. TapeDB brings the database.
+
+```bash
+npx tapedb init
+```
+
+That writes four files and needs three resources: one Durable Object class,
+and two R2 buckets (`DATA` for the log and snapshots, `FILES` for uploads).
+There is no D1 and no hosted control plane. Your data never leaves your
+account.
+
+## Usage
+
+```ts
+// tapedb.schema.ts — one schema, two artifacts
+import { defineSchema } from "tapedb";
+
+export const schema = defineSchema({
+  entities: {
+    boards: { name: { type: "string" } },
+    columns: { name: { type: "string" }, boardId: { type: "string", optional: true } },
+    tasks: { title: { type: "string" }, done: { type: "boolean", optional: true } },
+  },
+  links: [
+    {
+      apiName: "boardColumns",
+      kind: "one-to-many",
+      forward: { namespace: "boards", label: "columns", has: "many" },
+      reverse: { namespace: "columns", label: "board", has: "one" },
+      foreignKey: { namespace: "columns", attribute: "boardId" },
+    },
+  ],
+});
+```
+
+```ts
+// worker.ts — the entire Worker entry
+import { defineTapeDB } from "tapedb/worker";
+import { schema } from "./tapedb.schema";
+
+const tapedb = defineTapeDB({ schema });
+
+export const WorkspaceRoom = tapedb.WorkspaceRoom;
+export default tapedb.worker;
+```
+
+```tsx
+// client
+import { init, id } from "tapedb/react";
+
+const db = init({ workspaceId, apiUrl, schema, getToken });
+
+const { data, isLoading } = db.useQuery({ boards: { columns: { tasks: {} } } });
+
+await db.transact([
+  db.tx.tasks[taskId].update({ done: true }),
+  db.tx.columns[columnId].link({ tasks: taskId }),
+]);
+```
+
+## What it does
+
+- **Relational queries** in the shape of the result you want, with nested link
+  traversal, compiled to SQL.
+- **Transactions** with `update`, `merge`, `delete`, `link` and `unlink`,
+  idempotent per `clientTxId`, applied inside one SQLite transaction with the
+  log append and the sequence advance.
+- **Live queries** by default: after a commit, only subscriptions whose
+  compiled query touches a changed namespace re-run, batched at 50 ms, and
+  clients receive entity-level diffs.
+- **Offline writes**: optimistic application to the query cache plus an
+  IndexedDB outbox keyed by `clientTxId`, replayed on reconnect.
+- **Durability**: log segments and chunked snapshots to R2, with an idempotent
+  cold-start replay.
+- **Presence** and **file uploads** on the same socket and the same bucket set.
+
+## Architecture
+
+One Durable Object per workspace is the only writer, which is what makes
+transactions serializable without a lock manager. `_tx_log` is the source of
+truth; snapshots are a checkpoint over it.
+
+```
+client ──HTTP /transact──▶ Worker ──claim──▶ WorkspaceRoom (SQLite)
+   ▲                                             │
+   └──WebSocket query:subscribe / presence ◀─────┘
+                                                 │
+                                          R2 DATA (log + snapshots)
+```
+
+## Entry points
+
+| import | contains | React |
+| --- | --- | --- |
+| `tapedb` | `defineSchema`, schema builders, `id`, cache and outbox primitives | no |
+| `tapedb/react` | `init`, `useQuery`, `transact`, `storage`, presence | yes, peer |
+| `tapedb/worker` | `defineTapeDB`, the Durable Object class, routing | no |
+| `tapedb/cli` | `tapedb init` | no |
+
+## Status
+
+`0.0.1`, extracted from a production application. The engine, the client and
+the tables are exercised by tests against in-memory SQLite. Known gaps are
+tracked in [SCOPE.md](./SCOPE.md): cursor pagination, row-level permissions,
+and the headless (non-React) `init`.
+
+## License
+
+MIT

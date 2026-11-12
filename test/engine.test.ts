@@ -1,0 +1,256 @@
+/**
+ * Acceptance test for the extracted engine.
+ *
+ * Runs the real transaction pipeline, query compiler and recovery bookkeeping
+ * against in-memory SQLite, using the migrations that `defineSchema()` emits.
+ * No Durable Object runtime is involved, so this is the cheapest proof that
+ * the engine still works after extraction.
+ */
+
+import { Database } from "bun:sqlite";
+import { beforeEach, describe, expect, test } from "bun:test";
+
+import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../src/claims";
+import { configureMigrations } from "../src/engine/migrations-bundle";
+import { compileQuery } from "../src/engine/query-compile";
+import { executeCompiledQuery } from "../src/engine/query-execute";
+import { configureRegistry } from "../src/engine/registry";
+import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
+import { runTransaction } from "../src/engine/tx-pipeline";
+import { defineSchema } from "../src/schema";
+
+const WORKSPACE_ID = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
+
+const schema = defineSchema({
+  entities: {
+    boards: { name: { type: "string" } },
+    columns: {
+      name: { type: "string" },
+      boardId: { type: "string", optional: true, indexed: true },
+    },
+    tasks: {
+      title: { type: "string" },
+      done: { type: "boolean", optional: true },
+      columnId: { type: "string", optional: true, indexed: true },
+    },
+  },
+  links: [
+    {
+      apiName: "boardColumns",
+      kind: "one-to-many",
+      forward: { namespace: "boards", label: "columns", has: "many" },
+      reverse: { namespace: "columns", label: "board", has: "one" },
+      foreignKey: { namespace: "columns", attribute: "boardId" },
+    },
+    {
+      apiName: "columnTasks",
+      kind: "one-to-many",
+      forward: { namespace: "columns", label: "tasks", has: "many" },
+      reverse: { namespace: "tasks", label: "column", has: "one" },
+      foreignKey: { namespace: "tasks", attribute: "columnId" },
+    },
+  ],
+});
+
+const claim: RoleClaim = {
+  sub: "user-1",
+  workspaceId: WORKSPACE_ID,
+  role: WORKSPACE_ROLE_LEVELS.EDITOR,
+  exp: Math.floor(Date.now() / 1000) + 600,
+  iat: Math.floor(Date.now() / 1000),
+};
+
+/** Adapts bun:sqlite to the engine's synchronous SQL contract. */
+function executor(db: Database): SqlExecutor {
+  return {
+    exec(sql: string, ...params: SqlValue[]): number {
+      return db.query(sql).run(...(params as never[])).changes;
+    },
+    all<T extends SqlRow = SqlRow>(sql: string, ...params: SqlValue[]): T[] {
+      return db.query(sql).all(...(params as never[])) as T[];
+    },
+    one<T extends SqlRow = SqlRow>(sql: string, ...params: SqlValue[]): T | undefined {
+      return (db.query(sql).get(...(params as never[])) ?? undefined) as T | undefined;
+    },
+    transactionSync<T>(fn: () => T): T {
+      return db.transaction(fn)();
+    },
+  };
+}
+
+function freshDatabase(): SqlExecutor {
+  const db = new Database(":memory:");
+  db.exec("PRAGMA foreign_keys = ON");
+
+  for (const migration of schema.migrations) {
+    db.exec(migration.sql);
+  }
+
+  return executor(db);
+}
+
+beforeEach(() => {
+  configureRegistry(schema.registry);
+  configureMigrations(schema.migrations);
+});
+
+describe("schema", () => {
+  test("emits engine bookkeeping plus one table per entity", () => {
+    const sql = schema.migrations.map((migration) => migration.sql).join("\n");
+
+    for (const table of ["_tx_log", "_tx_state", "_flush_state", "_snapshot_state"]) {
+      expect(sql).toContain(`"${table}"`);
+    }
+    for (const table of ["boards", "columns", "tasks"]) {
+      expect(sql).toContain(`CREATE TABLE IF NOT EXISTS "${table}"`);
+    }
+  });
+
+  test("derives the foreign key on the child namespace", () => {
+    const columns = schema.registry.namespaces.find((ns) => ns.apiName === "columns");
+    expect(columns?.attributes.boardId?.references?.table).toBe("boards");
+
+    const sql = schema.migrations[1].sql;
+    expect(sql).toContain('REFERENCES "boards"("id")');
+  });
+
+  test("rejects a link whose foreign key attribute does not exist", () => {
+    expect(() =>
+      defineSchema({
+        entities: { boards: { name: { type: "string" } } },
+        links: [
+          {
+            apiName: "broken",
+            kind: "one-to-many",
+            forward: { namespace: "boards", label: "items", has: "many" },
+            reverse: { namespace: "boards", label: "board", has: "one" },
+            foreignKey: { namespace: "boards", attribute: "missingId" },
+          },
+        ],
+      })
+    ).toThrow(/needs "boards\.missingId"/);
+  });
+});
+
+describe("transaction pipeline", () => {
+  test("applies a transaction, logs it and advances the sequence", () => {
+    const sql = freshDatabase();
+
+    const result = runTransaction(sql, WORKSPACE_ID, claim, {
+      txId: "t1",
+      clientTxId: "tx-1",
+      ops: [
+        { op: "update", namespace: "boards", id: "board-1", values: { name: "Roadmap" } },
+        {
+          op: "update",
+          namespace: "columns",
+          id: "column-1",
+          values: { name: "Todo", boardId: "board-1" },
+        },
+        {
+          op: "update",
+          namespace: "tasks",
+          id: "task-1",
+          values: { title: "Ship it", columnId: "column-1" },
+        },
+      ],
+    });
+
+    expect(result.seq).toBe(1);
+    expect(result.applied).toBe(3);
+
+    const task = sql.one<{ title: string; column_id: string }>(
+      `SELECT "title", "column_id" FROM "tasks" WHERE "id" = ?`,
+      "task-1"
+    );
+    expect(task?.title).toBe("Ship it");
+    expect(task?.column_id).toBe("column-1");
+
+    const log = sql.one<{ seq: number; ops_hash: string }>(
+      `SELECT seq, ops_hash FROM "_tx_log" WHERE client_tx_id = ?`,
+      "tx-1"
+    );
+    expect(log?.seq).toBe(1);
+    expect(log?.ops_hash.length).toBeGreaterThan(0);
+  });
+
+  test("is idempotent for a repeated clientTxId and rejects a different payload", () => {
+    const sql = freshDatabase();
+    const envelope = {
+      txId: "t2",
+      clientTxId: "tx-same",
+      ops: [{ op: "update", namespace: "boards", id: "board-1", values: { name: "A" } }],
+    };
+
+    expect(runTransaction(sql, WORKSPACE_ID, claim, envelope).applied).toBe(1);
+
+    const replay = runTransaction(sql, WORKSPACE_ID, claim, envelope);
+    expect(replay.applied).toBe(0);
+    expect(replay.seq).toBe(1);
+
+    expect(() =>
+      runTransaction(sql, WORKSPACE_ID, claim, {
+        txId: "t3",
+        clientTxId: "tx-same",
+        ops: [{ op: "update", namespace: "boards", id: "board-1", values: { name: "B" } }],
+      })
+    ).toThrow(/already used with different ops/);
+  });
+
+  test("denies a claim issued for another workspace", () => {
+    const sql = freshDatabase();
+    expect(() =>
+      runTransaction(
+        sql,
+        WORKSPACE_ID,
+        { ...claim, workspaceId: "00000000-0000-4000-8000-000000000000" },
+        { txId: "t5", ops: [] }
+      )
+    ).toThrow(/does not belong to this workspace/);
+  });
+});
+
+describe("queries", () => {
+  test("traverses a two-level link from the compiled query", () => {
+    const sql = freshDatabase();
+
+    runTransaction(sql, WORKSPACE_ID, claim, {
+      txId: "t4",
+      ops: [
+        { op: "update", namespace: "boards", id: "board-1", values: { name: "Roadmap" } },
+        {
+          op: "update",
+          namespace: "columns",
+          id: "column-1",
+          values: { name: "Todo", boardId: "board-1" },
+        },
+        {
+          op: "update",
+          namespace: "tasks",
+          id: "task-1",
+          values: { title: "Ship it", columnId: "column-1" },
+        },
+      ],
+    });
+
+    const compiled = compileQuery({
+      boards: { $: { where: { id: "board-1" } }, columns: { tasks: {} } },
+    });
+
+    const result = executeCompiledQuery(sql, compiled) as Record<
+      string,
+      Array<Record<string, unknown>>
+    >;
+
+    const board = result.boards?.[0];
+    expect(board?.name).toBe("Roadmap");
+
+    const columns = board?.columns as Array<Record<string, unknown>>;
+    expect(columns).toHaveLength(1);
+    expect(columns[0]?.name).toBe("Todo");
+
+    const tasks = columns[0]?.tasks as Array<Record<string, unknown>>;
+    expect(tasks).toHaveLength(1);
+    expect(tasks[0]?.title).toBe("Ship it");
+  });
+});
