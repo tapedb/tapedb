@@ -10,7 +10,7 @@
 import type { RoleClaim } from "../claims";
 import { applyOps } from "./tx-apply";
 import { opsHash, stableStringify } from "./tx-hash";
-import { authorizeOps } from "./tx-permissions";
+import { assertRowPermissions, authorizeOps } from "./tx-permissions";
 import type { SqlExecutor } from "./tx-sql";
 import { TxError, type TxResult } from "./tx-types";
 import { validateEnvelope } from "./tx-validate";
@@ -71,6 +71,11 @@ export function runTransaction(
         );
       }
     }
+
+    // Row rules read the stored row, so they belong inside the transaction,
+    // after the idempotency check (a replay of an applied tx must not re-judge)
+    // and before the sequence is allocated (a denial burns nothing).
+    assertRowPermissions(sql, claim, tx.ops);
 
     const state = sql.one<TxStateRow>(
       `SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`
