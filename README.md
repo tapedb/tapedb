@@ -155,6 +155,49 @@ minutes and the client renews on reconnect.
 Rate limiting is the deployment's call: pass `allowRequest` to `mintClaim`, or
 put the route behind a Cloudflare rate-limit binding.
 
+## Permissions
+
+Role levels by default: `view` needs MEMBER, `create`/`update` need EDITOR,
+`delete` needs MODERATOR. Anything finer is a row rule: a predicate that sees
+the caller and the stored row.
+
+```ts
+defineSchema({
+  entities: {
+    documents: { title: { type: "string" }, ownerId: { type: "string" } },
+  },
+  permissions: {
+    documents: {
+      create: ({ auth, next }) => next?.ownerId === auth.sub,
+      update: ({ auth, data }) => data?.ownerId === auth.sub,
+      delete: ({ auth, data }) =>
+        data?.ownerId === auth.sub && auth.role >= WORKSPACE_ROLE_LEVELS.EDITOR,
+    },
+  },
+});
+```
+
+Rules run inside the transaction, so `data` is the row being changed, and a
+replayed `clientTxId` is not re-judged. A rule that throws denies: a broken
+rule can never widen access. `update` is an upsert, so an insert must satisfy
+the **create** rule, not the update one.
+
+`view` is level-only in v1. A row rule there would never run, so `defineSchema`
+refuses it instead of shipping a rule that does nothing.
+
+## Releasing
+
+`tapedb` is unscoped, so publishing needs no npm org:
+
+```bash
+npm login
+npm publish --access public
+```
+
+Only a *scoped* release (`@tapedb/*`) needs an org, and orgs are created in the
+web UI at `https://www.npmjs.com/org/create`. There is no `npm org create`
+command; `npm org` only manages members of an existing org.
+
 ## Entry points
 
 | import | contains | React |

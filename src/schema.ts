@@ -23,6 +23,7 @@ import type { BundledWorkspaceMigration } from "./engine/migrations-bundle";
 import type {
   PermissionAction,
   PermissionConfig,
+  PermissionOverrides,
 } from "./engine/tx-permissions";
 import type { WorkspaceRole } from "./claims";
 import { i } from "./client/schema";
@@ -39,7 +40,7 @@ export interface SchemaConfig {
   entities: Record<string, EntityConfig>;
   links?: readonly LinkDefinition[];
   /** Per-namespace role overrides; defaults are view=MEMBER, write=EDITOR. */
-  permissions?: Record<string, Partial<Record<PermissionAction, WorkspaceRole>>>;
+  permissions?: PermissionOverrides;
 }
 
 export interface TapeDBSchema {
@@ -184,6 +185,22 @@ function clientLink(link: LinkDefinition): ClientLinkDefinition {
 }
 
 export function defineSchema(config: SchemaConfig): TapeDBSchema {
+  for (const [namespace, actions] of Object.entries(config.permissions ?? {})) {
+    if (!config.entities[namespace]) {
+      throw new Error(
+        `Permissions reference unknown namespace "${namespace}".`
+      );
+    }
+    if (typeof actions?.view === "function") {
+      // Reading is authorized per namespace, before any row is loaded, so a
+      // row rule here would never run. Refuse it rather than ship a rule that
+      // silently does nothing.
+      throw new Error(
+        `"${namespace}.view" must be a role level; row rules are supported for create, update and delete.`
+      );
+    }
+  }
+
   const namespaces: NamespaceDefinition[] = Object.entries(config.entities).map(
     ([apiName, attributes]) => ({
       apiName,

@@ -151,9 +151,16 @@ DONE since first draft:
 - Dev claims require the code flag and `TAPEDB_DEV_CLAIMS=true`, which
   `tapedb dev` passes and `wrangler deploy` never does.
 
+DONE: row rules for create, update and delete (`write` decisions can be a
+predicate over `{ auth, data, next }`), evaluated inside the transaction so a
+replay is not re-judged and a throwing rule denies. `view` stays level-only by
+design; `defineSchema` refuses a view rule rather than shipping a no-op.
+
 REMAINING:
 
-- Row-level and attribute-level permissions (role levels only).
+- Row-level **view** filtering (needs post-fetch filtering per namespace).
+- Attribute-level rules: a rule cannot yet say "owner may edit the title but
+  not the price".
 - A devtool/explorer; today the CLI and `/status` are the only introspection.
 - `$files` rows are written outside the transaction log, so they are not part of
   the replay; a crash between the R2 put and the row write leaves an unlisted
