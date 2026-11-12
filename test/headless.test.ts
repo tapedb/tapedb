@@ -7,7 +7,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { init } from "../src/index";
+import { createHeadlessClient } from "../src/client/data-client";
 import { MemoryOutbox } from "../src/client/outbox";
 import type { WebSocketLike } from "../src/client/socket";
 import { defineSchema } from "../src/schema";
@@ -46,7 +46,9 @@ class FakeSocket implements WebSocketLike {
 }
 
 function client(socket: FakeSocket, calls: string[] = []) {
-  return init(
+  // `createHeadlessClient` takes deps; the package root's `init(config)` does
+  // not, so passing a fake socket to `init` silently did nothing.
+  return createHeadlessClient(
     {
       workspaceId: WORKSPACE,
       apiUrl: "http://localhost:8787",

@@ -29,10 +29,10 @@ Status is measured against InstantDB's published docs surface.
 | offline cache and optimistic updates | `query-cache.ts` + `outbox.ts`; IndexedDB outbox keyed by `clientTxId` | HAVE |
 | `presence-and-topics` — presence, cursors | `presence:set/clear`, `cursor:set`, `drag:set/clear` on the workspace socket | HAVE presence, no topics abstraction |
 | `storage` — file uploads | `/storage/:appId/:objectKey`, `FILES` bucket, 25 MB cap, MEMBER read / EDITOR write | HAVE |
-| `infinite-queries` — cursor pagination | `limit` and `order` only; `pageInfo` reserved in the wire contract | PARTIAL |
-| `permissions` — row and attribute rules | role levels per namespace per action (`view` MEMBER, `create/update` EDITOR, `delete` MODERATOR) | PARTIAL, coarse |
+| `infinite-queries` — cursor pagination | keyset `after`, `pageInfo.nextCursor`, and `db.loadMore()` on the client | HAVE |
+| `permissions` — row and attribute rules | role levels plus row rules over `{ auth, data, next, changed }` for view, create, update and delete | HAVE, with the scan cap noted below |
 | `http-api` — server-side access | `POST /query`, `POST /transact`, `GET /status` | HAVE |
-| `cli` — schema push | repo scripts (`engine-generate-migrations`, `deploy-gate`) | PARTIAL, not a CLI |
+| `cli` — schema push | `tapedb init`, `dev`, `studio`; migrations are generated from the schema by `defineSchema` | HAVE |
 | `self-hosting` | inherent, the consumer's account | HAVE by construction |
 | `devtool` / `explorer-component` | kitchen-sink app, not shipped | OUT of v1 |
 | `auth` — magic code, OAuth, guest | none; the engine consumes a trusted claim header | GAP by design, see below |
@@ -164,9 +164,12 @@ tooling.
 
 REMAINING:
 
-- View rules cannot use indexes: filtering happens after the SQL page, so a
-  heavily filtered namespace reads more rows than it returns.
-- No multi-workspace view in the studio; one workspace at a time.
+- View rules still cannot use an index. Pages are filled by scanning up to
+  `max(limit * 10, 200)` rows, so a rule that hides almost everything costs a
+  bounded scan per page and can return a short page at the cap.
+- `db.loadMore()` resets to page one on reconnect: the live subscription
+  re-subscribes the original query. Deep pagination over a long session is
+  therefore cursor-based per request, not accumulated client-side forever.
 - `$files` rows are written outside the transaction log, so they are not part of
   the replay; a crash between the R2 put and the row write leaves an unlisted
   object, which the 502 makes visible rather than silent.
