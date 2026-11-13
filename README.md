@@ -104,7 +104,10 @@ await db.transact([db.tx.boards[id()].update({ name: "New" })]);
   log append and the sequence advance.
 - **Cursor pagination**: `$: { limit, order }` returns
   `pageInfo[ns].nextCursor`; pass it back as `$: { after }`. Keyset, not
-  offset, so an insert above the window cannot repeat a row.
+  offset, so an insert above the window cannot repeat a row. On the client,
+  `db.loadMore(query)` appends the next page and widens the live subscription
+  to every loaded row (up to 1000 per namespace), so a reconnect restores the
+  pages instead of resetting to the first.
 - **Live queries** by default: after a commit, only subscriptions whose
   compiled query touches a changed namespace re-run, batched at 50 ms, and
   clients receive entity-level diffs.
