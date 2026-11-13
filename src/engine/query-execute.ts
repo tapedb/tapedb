@@ -1,5 +1,5 @@
 /**
- * Executes compiled InstaQL queries against workspace SQLite (KAN-392).
+ * Executes compiled query documents against workspace SQLite.
  *
  * Entity rows are read as physical columns, hydrated one link level at a time,
  * then folded back into the API shape: camelCase registry attributes, real

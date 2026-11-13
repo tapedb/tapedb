@@ -6,6 +6,17 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Removed
+
+- The compatibility surface the engine was first extracted with: `init`,
+  `useQuery`, the `db.tx` proxy, `createDataClient`, the `i` schema builders
+  and `defineSchema` as public API, the deprecated `appId` / `apiURI` /
+  `websocketURI` options, the `NEXT_PUBLIC_*` workspace fallback, and
+  `storage(appId)`, which pointed at a route the Worker never served. The
+  public entries are `tapedb` (`createClient`, the schema builders, `id`),
+  `tapedb/schema`, `tapedb/react` (`useLive`, `useLivePage`, `usePresence`),
+  `tapedb/worker` and `tapedb/cli`.
+
 ### Added
 
 - `tapedb migrate dev --name <name>` diffs the schema against

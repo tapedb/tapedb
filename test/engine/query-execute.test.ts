@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../fixtures/registry";
+useLegacyFixture();
 
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -477,7 +477,7 @@ describe("executeQuery", () => {
   });
 
   test("$ne also matches rows where the attribute is null or absent", () => {
-    // InstantDB documents $ne as returning entities that do not match the
+    // the original documents $ne as returning entities that do not match the
     // value, "including entities where the field is null or undefined".
     insert(store.db, "kanban_tasks", {
       id: "t5",

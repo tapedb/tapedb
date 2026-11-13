@@ -1,8 +1,8 @@
-import { useNdexFixture } from "../../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../../fixtures/registry";
+useLegacyFixture();
 
 /**
- * Recovery property test (KAN-401).
+ * Recovery property test.
  *
  * Each seed generates a deterministic, pseudo-random transaction stream across
  * several namespaces, applies it through the real transaction pipeline, then
@@ -11,7 +11,7 @@ useNdexFixture();
  * row-for-row, including `updated_seq` and every foreign-key column.
  *
  * This is the fast "wipe a DO, rebuild from R2" drill that runs in CI. The
- * slower miniflare drill lives in `apps/ndex-sync/scripts/recovery-drill.mjs`.
+ * slower drill runs against a real Worker under `wrangler dev`.
  */
 
 import { Database } from "bun:sqlite";

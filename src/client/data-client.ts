@@ -1,19 +1,18 @@
 "use client";
 
 /**
- * ndex data client (KAN-394).
+ * The client runtime under `createClient()`.
  *
- * Keeps InstantDB's client surface over one WebSocket per workspace:
- * `useQuery`, `transact`, `tx`, plus native room and storage adapters. Queries are
- * subscribed once per unique query shape, transactions are optimistic and
- * durable via an IndexedDB outbox, and reconnects re-auth + resubscribe.
+ * One WebSocket per workspace carries live queries and presence; writes go
+ * over HTTP. Queries are subscribed once per unique document, writes are
+ * optimistic and durable through an IndexedDB outbox, and reconnects
+ * re-authenticate and resubscribe.
  */
 
 import { id } from "./id";
 import { createStorageClient, type StorageFetch } from "./storage-client";
 import { createOutbox, type Outbox } from "./outbox";
 import { applyOptimisticOps, applyQueryDiff } from "./query-cache";
-import { resolveLink } from "./schema";
 import { QuerySocket, type WebSocketFactory } from "./socket";
 import { cloneJson, stableStringify } from "./stable";
 import type {
@@ -31,12 +30,8 @@ import type {
   SchemaDefinition,
   ServerMessage,
   TransactInput,
-  TxEntity,
-  TxLinkOp,
   TxOp,
-  TxProxy,
   TxStep,
-  TxUnlinkOp,
   WriteRejection,
 } from "./types";
 
@@ -234,7 +229,7 @@ function normalizeOps(input: TransactInput): TxOp[] {
       ops.push(value);
       return;
     }
-    throw new Error("tapedb-data: transact() received an invalid operation.");
+    throw new Error("tapedb: transact() received an invalid operation.");
   };
 
   for (const item of input) visit(item);
@@ -284,13 +279,13 @@ function createDevTokenProvider(apiUrl: string, workspaceId: string) {
     });
     if (!response.ok) {
       throw new Error(
-        `tapedb-data: no getToken provided and the dev claim route returned ${response.status}. ` +
+        `tapedb: no getToken provided and the dev claim route returned ${response.status}. ` +
           `Pass init({ getToken: () => Promise<string> }) for production.`
       );
     }
     const body = (await response.json()) as { token?: unknown };
     if (typeof body.token !== "string") {
-      throw new Error("tapedb-data: dev claim route returned no token.");
+      throw new Error("tapedb: dev claim route returned no token.");
     }
     return body.token;
   };
@@ -312,78 +307,7 @@ function resolveConfig(config: InitConfig): ResolvedConfig {
   };
 }
 
-function single(op: TxOp): TxStep {
-  return { ops: [op], op };
-}
-
-function linkStep(
-  schema: SchemaDefinition | undefined,
-  namespace: string,
-  entityId: string,
-  links: Record<string, string>,
-  op: "link" | "unlink"
-): TxStep {
-  const entries = Object.entries(links);
-  if (entries.length === 0) {
-    throw new Error(`tapedb-data: ${op}() requires at least one link.`);
-  }
-
-  const ops = entries.map(([label, targetId]) => {
-    const resolved = resolveLink(schema, namespace, label);
-    const wireOp: TxLinkOp | TxUnlinkOp = {
-      op,
-      namespace,
-      id: entityId,
-      link: resolved.apiName,
-      targetId,
-    };
-    return wireOp;
-  });
-
-  return { ops, op: ops[0]! };
-}
-
-function createTxEntity(
-  schema: SchemaDefinition | undefined,
-  namespace: string,
-  entityId: string
-): TxEntity {
-  return {
-    update(values) {
-      return single({ op: "update", namespace, id: entityId, values });
-    },
-    merge(values) {
-      return single({ op: "merge", namespace, id: entityId, values });
-    },
-    delete() {
-      return single({ op: "delete", namespace, id: entityId });
-    },
-    link(links) {
-      return linkStep(schema, namespace, entityId, links, "link");
-    },
-    unlink(links) {
-      return linkStep(schema, namespace, entityId, links, "unlink");
-    },
-  };
-}
-
-export function createTxProxy(schema: SchemaDefinition | undefined): TxProxy {
-  return new Proxy({} as TxProxy, {
-    get(_target, namespace) {
-      if (typeof namespace !== "string") return undefined;
-
-      return new Proxy({} as Record<string, TxEntity>, {
-        get(_entityTarget, entityId) {
-          if (typeof entityId !== "string") return undefined;
-          return createTxEntity(schema, namespace, entityId);
-        },
-      });
-    },
-  });
-}
-
 class DataClientImpl {
-  readonly tx: TxProxy;
 
   private readonly config: ResolvedConfig;
   private readonly fetchImpl: FetchLike;
@@ -433,7 +357,6 @@ class DataClientImpl {
     this.createWebSocket = deps.createWebSocket;
     this.outbox = deps.outbox ?? createOutbox();
     this.now = deps.now ?? (() => Date.now());
-    this.tx = createTxProxy(this.config.schema);
 
     if (
       typeof window !== "undefined" &&
@@ -708,7 +631,7 @@ class DataClientImpl {
     this.authFailures = 0;
     this.ensureSocket();
     if (!this.socket) {
-      throw new Error("tapedb-data: WebSocket is not available.");
+      throw new Error("tapedb: WebSocket is not available.");
     }
     await this.socket.connect();
   }
@@ -740,7 +663,7 @@ class DataClientImpl {
       this.failPage(
         id,
         new Error(
-          "tapedb-data: client closed while waiting for the next page."
+          "tapedb: client closed while waiting for the next page."
         )
       );
     }
@@ -760,10 +683,10 @@ class DataClientImpl {
 
   private configProblem(): string | null {
     if (!this.config.workspaceId) {
-      return "tapedb-data: missing workspaceId. Pass init({ workspaceId }) or set NEXT_PUBLIC_NDEX_WORKSPACE_ID.";
+      return "tapedb: missing workspace. Pass createClient({ workspace }).";
     }
     if (!this.config.getToken) {
-      return "tapedb-data: missing getToken. Pass init({ getToken: () => Promise<string> }).";
+      return "tapedb: missing getToken. Pass createClient({ getToken: () => Promise<string> }).";
     }
     return null;
   }
@@ -874,7 +797,7 @@ class DataClientImpl {
     this.ensureSocket();
     const socket = this.socket;
     if (!socket) {
-      throw new Error("tapedb-data: WebSocket is not available.");
+      throw new Error("tapedb: WebSocket is not available.");
     }
     await socket.connect();
 
@@ -884,7 +807,7 @@ class DataClientImpl {
         this.failPage(
           id,
           new Error(
-            "tapedb-data: loadMore() timed out waiting for the next page."
+            "tapedb: loadMore() timed out waiting for the next page."
           )
         );
       }, LOAD_MORE_TIMEOUT_MS);
@@ -894,7 +817,7 @@ class DataClientImpl {
     if (!socket.send({ type: "query:subscribe", id, query: document })) {
       this.failPage(
         id,
-        new Error("tapedb-data: loadMore() could not send on the socket.")
+        new Error("tapedb: loadMore() could not send on the socket.")
       );
     }
 
@@ -1285,7 +1208,7 @@ class DataClientImpl {
 
   private async requireToken(): Promise<string> {
     if (!this.config.getToken) {
-      throw new Error("tapedb-data: missing getToken.");
+      throw new Error("tapedb: missing getToken.");
     }
     return this.config.getToken();
   }
@@ -1360,7 +1283,8 @@ class DataClientImpl {
  * Framework-free client. Everything except the hook: usable from a Worker, a
  * Node script, a Svelte store or a test.
  */
-export type HeadlessDataClient = Omit<DataClient, "useQuery">;
+/** The runtime facade the model client and the tests drive. */
+export type HeadlessDataClient = DataClient;
 
 export function createClientParts(
   config: InitConfig,
@@ -1371,7 +1295,6 @@ export function createClientParts(
 
   const client: HeadlessDataClient = {
     transact: (input) => impl.transact(input),
-    tx: impl.tx,
     get files() {
       return createStorageClient({
         apiUrl: resolved.apiUrl,
@@ -1383,16 +1306,6 @@ export function createClientParts(
         fetch: deps.storageFetch,
       });
     },
-    storage: (appId) =>
-      createStorageClient({
-        apiUrl: resolved.apiUrl,
-        appId,
-        getToken: async () => {
-          if (!config.getToken) throw new Error("Storage requires getToken.");
-          return config.getToken();
-        },
-        fetch: deps.storageFetch,
-      }),
     room: (target) => {
       if (!target.trim()) throw new Error("Room target must not be empty.");
       return {
@@ -1433,10 +1346,4 @@ export function createHeadlessClient(
   return createClientParts(config, deps).client;
 }
 
-/** Exported for the React binding, which needs the same instance's hook. */
 export { DataClientImpl };
-
-/** Creates a workspace engine client with native room and storage adapters. */
-export function init(config: InitConfig): HeadlessDataClient {
-  return createHeadlessClient(config);
-}

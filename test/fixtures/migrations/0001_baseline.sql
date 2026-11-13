@@ -3,7 +3,7 @@
 -- scripts/engine/generate-workspace-migrations.ts; do not edit the generated
 -- TypeScript copy.
 --
--- Entity tables mirror the production InstantDB schema (instant.schema.ts)
+-- Entity tables mirror the production the original schema 
 -- minus `documentEdits` (Yjs lives in the document Durable Object).
 -- Every entity row carries id, created_at, updated_at and updated_seq.
 -- The engine tables (_migrations, _tx_log, _tx_state, _flush_state,

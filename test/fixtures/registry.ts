@@ -1,5 +1,5 @@
 /**
- * Test fixture: the ndex schema the engine was extracted from.
+ * Test fixture: a large, realistic schema the engine was first built against.
  *
  * The upstream suite asserts against these namespaces, so the fixture installs
  * them into the engine registry before each file's tests run. Production code
@@ -14,9 +14,9 @@ import { configureMigrations } from "../../src/engine/migrations-bundle";
 import { configureRegistry } from "../../src/engine/registry";
 import { configurePermissions } from "../../src/engine/tx-permissions";
 import {
-  LINKS as NDEX_LINKS,
-  NAMESPACES as NDEX_NAMESPACES,
-} from "./ndex-registry";
+  LINKS as LEGACY_LINKS,
+  NAMESPACES as LEGACY_NAMESPACES,
+} from "./legacy-registry";
 
 export * from "../../src/engine/registry";
 
@@ -31,11 +31,11 @@ const FIXTURE_MIGRATIONS = readdirSync(MIGRATIONS_DIR)
     sql: readFileSync(resolve(MIGRATIONS_DIR, file), "utf8"),
   }));
 
-/** Installs the ndex-shaped schema. Safe to call repeatedly. */
-export function useNdexFixture(): void {
+/** Installs the legacy schema. Safe to call repeatedly. */
+export function useLegacyFixture(): void {
   configureRegistry({
-    namespaces: Object.values(NDEX_NAMESPACES),
-    links: Object.values(NDEX_LINKS),
+    namespaces: Object.values(LEGACY_NAMESPACES),
+    links: Object.values(LEGACY_LINKS),
   });
   configureMigrations(FIXTURE_MIGRATIONS);
   configurePermissions({
@@ -50,4 +50,4 @@ export function useNdexFixture(): void {
   });
 }
 
-useNdexFixture();
+useLegacyFixture();

@@ -1,5 +1,5 @@
 /**
- * IndexedDB-backed outbox for unacknowledged writes (KAN-394).
+ * IndexedDB-backed outbox for unacknowledged writes.
  *
  * The outbox is keyed by `clientTxId`, so retrying the same optimistic write
  * replaces the pending entry instead of appending a duplicate. When
