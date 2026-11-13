@@ -1299,9 +1299,12 @@ export function createClientParts(
       return createStorageClient({
         apiUrl: resolved.apiUrl,
         workspaceId: resolved.workspaceId,
-        getToken: async () => {
-          if (!config.getToken) throw new Error("Storage requires getToken.");
-          return config.getToken();
+        // The resolved provider, not config.getToken: without it uploads were
+        // the one part of the client that could not run under `tapedb dev`.
+        getToken: () => {
+          const provider = resolved.getToken;
+          if (!provider) throw new Error("tapedb: storage needs a workspace and an API URL.");
+          return provider();
         },
         fetch: deps.storageFetch,
       });
