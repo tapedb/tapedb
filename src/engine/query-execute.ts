@@ -11,6 +11,7 @@ import type { RoleClaim } from "../claims";
 import {
   buildSelectSql,
   compileQuery,
+  compileViewCondition,
   type CompiledChild,
   type CompiledCondition,
   type CompiledNode,
@@ -24,7 +25,11 @@ import {
   type QueryResult,
 } from "./query-types";
 import { findNamespace, toSnakeCase, type AttributeType } from "./registry";
-import { allowRowView, assertPermission } from "./tx-permissions";
+import {
+  allowRowView,
+  assertPermission,
+  viewWhereBranches,
+} from "./tx-permissions";
 import { quoteIdentifier } from "./tx-apply";
 import type { SqlExecutor, SqlValue } from "./tx-sql";
 import { TxError } from "./tx-types";
@@ -144,8 +149,12 @@ export function executeCompiledQueryWithPageInfo(
 ): { data: QueryResult; pageInfo: QueryPageInfo } {
   const data: QueryResult = {};
   const pageInfo: QueryPageInfo = {};
+  const nodes =
+    claim === undefined
+      ? compiled.nodes
+      : compiled.nodes.map((node) => withViewConditions(node, claim));
 
-  for (const node of compiled.nodes) {
+  for (const node of nodes) {
     const limit = node.limit;
 
     if (limit === null) {
@@ -176,6 +185,29 @@ export function executeCompiledQueryWithPageInfo(
   }
 
   return { data, pageInfo };
+}
+
+/**
+ * Pushes `where` view rules into the SQL of every level that reads a
+ * namespace with one. Those rows never reach the post-fetch filter, so a page
+ * fills from an index instead of a bounded scan.
+ */
+function withViewConditions(node: CompiledNode, claim: RoleClaim): CompiledNode {
+  const branches = viewWhereBranches(claim, node.namespace);
+  const children = node.children.map((child) => ({
+    ...child,
+    node: withViewConditions(child.node, claim),
+  }));
+  if (branches === null) return { ...node, children };
+
+  return {
+    ...node,
+    conditions: [
+      ...node.conditions,
+      compileViewCondition(node.namespace, branches),
+    ],
+    children,
+  };
 }
 
 /** Rows the namespace's `view` rule hides are dropped at every link depth. */

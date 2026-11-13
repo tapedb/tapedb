@@ -10,12 +10,16 @@
  * this". They run inside the transaction, next to the write they gate, so the
  * row they judge is the row being changed.
  *
- * `view` stays level-only in v1: filtering rows at read time is a different
- * mechanism (post-fetch filtering per namespace), and pretending otherwise
- * would ship a rule that silently does nothing.
+ * `view` accepts two rule forms. A function rule is evaluated per fetched row,
+ * so it can express anything but cannot use an index: the executor scans to
+ * fill a page, bounded by a cap. A `where` rule returns a query filter for the
+ * caller, which is compiled into the SQL of every level that reads the
+ * namespace, so it uses indexes and never short-fills a page.
  */
 
 import { hasRole, WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../claims";
+import { assertDecisionShape, isViewWhereRule } from "./permission-shape";
+import type { QueryWhere } from "./query-types";
 import { findNamespace, toSnakeCase } from "./registry";
 import type { SqlExecutor, SqlRow } from "./tx-sql";
 import { TxError } from "./tx-types";
@@ -51,7 +55,17 @@ export interface PermissionContext {
 /** A rule returns true to allow. Throw or return false to deny. */
 export type PermissionRule = (context: PermissionContext) => boolean;
 
-export type PermissionDecision = WorkspaceRole | PermissionRule;
+/**
+ * A `view` rule SQL can evaluate: the rows the caller may see, as a `where`
+ * filter. An array is OR of its branches, so "mine or public" is
+ * `[{ ownerId: auth.sub }, { isPublic: true }]`. An empty array hides
+ * everything. Only valid for `view`.
+ */
+export interface ViewWhereRule {
+  where: (auth: PermissionAuth) => QueryWhere | readonly QueryWhere[];
+}
+
+export type PermissionDecision = WorkspaceRole | PermissionRule | ViewWhereRule;
 
 export type PermissionOverrides = Record<
   string,
@@ -60,6 +74,12 @@ export type PermissionOverrides = Record<
 
 export interface PermissionConfig {
   overrides?: PermissionOverrides;
+}
+
+export { assertDecisionShape, isViewWhereRule };
+
+function isRule(decision: PermissionDecision): boolean {
+  return typeof decision === "function" || isViewWhereRule(decision);
 }
 
 const DEFAULT_PERMISSIONS: Record<PermissionAction, WorkspaceRole> = {
@@ -78,8 +98,39 @@ export function configurePermissions(config: PermissionConfig = {}): void {
     delete NAMESPACE_OVERRIDES[key];
   }
   for (const [namespace, actions] of Object.entries(config.overrides ?? {})) {
+    for (const [action, decision] of Object.entries(actions ?? {})) {
+      assertDecisionShape(namespace, action, decision);
+    }
     NAMESPACE_OVERRIDES[namespace] = actions;
   }
+}
+
+function authOf(claim: RoleClaim): PermissionAuth {
+  return { sub: claim.sub, role: claim.role, workspaceId: claim.workspaceId };
+}
+
+/**
+ * The caller's `where` view filter for a namespace, as OR branches.
+ *
+ * `null` means the namespace has no where rule. A rule that throws returns no
+ * branches, which hides every row: a broken rule must never widen access. The
+ * shape is validated by the compiler, so a malformed filter is an error, not a
+ * silent pass.
+ */
+export function viewWhereBranches(
+  claim: RoleClaim,
+  namespace: string
+): readonly QueryWhere[] | null {
+  const decision = decisionFor(namespace, "view");
+  if (!isViewWhereRule(decision)) return null;
+
+  let result: QueryWhere | readonly QueryWhere[];
+  try {
+    result = decision.where(authOf(claim));
+  } catch {
+    return [];
+  }
+  return Array.isArray(result) ? result : [result as QueryWhere];
 }
 
 function decisionFor(
@@ -102,6 +153,7 @@ export function allowRowView(
   data: Record<string, unknown>
 ): boolean {
   const decision = decisionFor(namespace, "view");
+  // Level decisions were checked up front; where rules already ran in SQL.
   if (typeof decision !== "function") return true;
 
   try {
@@ -131,13 +183,13 @@ export function minimumRole(
   }
 
   const decision = decisionFor(namespace, action);
-  if (typeof decision === "function") {
+  if (isRule(decision)) {
     throw new TxError(
       "permission_denied",
       `"${namespace}.${action}" is a row rule, not a role level.`
     );
   }
-  return decision;
+  return decision as WorkspaceRole;
 }
 
 /**
@@ -154,9 +206,9 @@ export function assertPermission(
   }
 
   const decision = decisionFor(namespace, action);
-  if (typeof decision === "function") return;
+  if (isRule(decision)) return;
 
-  if (!hasRole(claim, decision)) {
+  if (!hasRole(claim, decision as WorkspaceRole)) {
     throw new TxError(
       "permission_denied",
       `Role ${claim.role} is not allowed to ${action} "${namespace}".`

@@ -20,8 +20,8 @@ import type {
   RegistryDefinition,
 } from "./engine/registry";
 import type { BundledWorkspaceMigration } from "./engine/migrations-bundle";
+import { assertDecisionShape } from "./engine/permission-shape";
 import type {
-  PermissionAction,
   PermissionConfig,
   PermissionOverrides,
 } from "./engine/tx-permissions";
@@ -39,7 +39,11 @@ export interface EntityConfig {
 export interface SchemaConfig {
   entities: Record<string, EntityConfig>;
   links?: readonly LinkDefinition[];
-  /** Per-namespace role overrides; defaults are view=MEMBER, write=EDITOR. */
+  /**
+   * Per-namespace overrides; defaults are view=MEMBER, write=EDITOR,
+   * delete=MODERATOR. Each action takes a role level or a rule function;
+   * `view` also takes `{ where: (auth) => filter }`, which runs in SQL.
+   */
   permissions?: PermissionOverrides;
 }
 
@@ -190,6 +194,9 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
       throw new Error(
         `Permissions reference unknown namespace "${namespace}".`
       );
+    }
+    for (const [action, decision] of Object.entries(actions ?? {})) {
+      assertDecisionShape(namespace, action, decision);
     }
   }
 
