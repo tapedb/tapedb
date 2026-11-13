@@ -358,12 +358,6 @@ class DataClientImpl {
   >();
   private onlineHandler: (() => void) | null = null;
   private closed = false;
-  /**
-   * Highest workspace sequence seen in row `updatedSeq` values and write
-   * acknowledgements. A lower bound on the server's high-water mark, which is
-   * all a retry's `basisSeq` needs to be.
-   */
-  private observedSeq = 0;
 
   constructor(config: InitConfig, deps: ClientDeps = {}) {
     this.config = resolveConfig(config);
@@ -415,9 +409,9 @@ class DataClientImpl {
       workspaceId: this.config.workspaceId,
       ops: ops.map((op) => cloneJson(op)),
       createdAt: this.now(),
-      basisSeq: this.observedSeq,
-      // Persisted with the entry before the first send, so a crash mid-send
-      // still leaves the next flush knowing this is a retry.
+      // Persisted with the entry before the first send. A retry reuses the
+      // clientTxId, whose receipt the engine keeps for good, so it is applied
+      // at most once however many attempts it takes.
       attempts: 1,
     };
 
@@ -437,7 +431,7 @@ class DataClientImpl {
     this.ensureSocket();
 
     try {
-      await this.sendTransaction(outboxEntry, false);
+      await this.sendTransaction(outboxEntry);
       await this.outbox.remove(clientTxId);
       this.pendingOps.delete(clientTxId);
       this.retryAttempt = 0;
@@ -489,7 +483,7 @@ class DataClientImpl {
       };
       let result: Awaited<ReturnType<DataClientImpl["sendTransaction"]>>;
       try {
-        result = await this.sendTransaction(entry, false);
+        result = await this.sendTransaction(entry);
       } catch (error) {
         if (count === 0) throw error;
         throw new BulkWriteError(count, error);
@@ -539,7 +533,6 @@ class DataClientImpl {
         response.status
       );
     }
-    this.noteRows(payload.data);
     return { data: payload.data, pageInfo: payload.pageInfo ?? {} };
   }
 
@@ -1044,7 +1037,6 @@ class DataClientImpl {
       case "query:data": {
         // A pending loadMore() first: its id is ephemeral and never cached.
         if (this.resolvePage(message.id, message)) return;
-        this.noteRows(message.data);
         const entry = this.entryBySubId(message.id);
         if (!entry) return;
         entry.seq = message.seq;
@@ -1062,8 +1054,6 @@ class DataClientImpl {
         return;
       }
       case "query:diff": {
-        this.noteRows(message.added);
-        this.noteRows(message.updated);
         const entry = this.entryBySubId(message.id);
         if (!entry || entry.state.data === null) return;
         entry.seq = message.seq;
@@ -1196,28 +1186,8 @@ class DataClientImpl {
     }
   }
 
-  private noteSeq(value: unknown): void {
-    if (typeof value === "number" && Number.isSafeInteger(value) && value > this.observedSeq) {
-      this.observedSeq = value;
-    }
-  }
-
-  /** Raises `observedSeq` from every `updatedSeq` in a result, at any depth. */
-  private noteRows(value: unknown): void {
-    if (Array.isArray(value)) {
-      for (const item of value) this.noteRows(item);
-      return;
-    }
-    if (!isRecord(value)) return;
-    this.noteSeq(value.updatedSeq);
-    for (const nested of Object.values(value)) {
-      if (typeof nested === "object" && nested !== null) this.noteRows(nested);
-    }
-  }
-
   private async sendTransaction(
-    entry: OutboxEntry,
-    retry: boolean
+    entry: OutboxEntry
   ): Promise<{ seq?: number; applied?: number; matched?: Record<number, number>; more?: Record<number, string> } | null> {
     const token = await this.requireToken();
     const response = await this.fetchImpl(
@@ -1231,7 +1201,6 @@ class DataClientImpl {
         body: JSON.stringify({
           txId: entry.txId,
           clientTxId: entry.clientTxId,
-          ...(retry ? { basisSeq: entry.basisSeq ?? 0 } : {}),
           ops: entry.ops,
         }),
       }
@@ -1262,7 +1231,6 @@ class DataClientImpl {
 
     const result = (payload as { result?: unknown }).result;
     if (!isRecord(result)) return null;
-    this.noteSeq(result.seq);
     return result as { seq?: number; applied?: number; matched?: Record<number, number>; more?: Record<number, string> };
   }
 
@@ -1292,7 +1260,7 @@ class DataClientImpl {
 
       try {
         await this.outbox.add(attempt).catch(() => undefined);
-        await this.sendTransaction(attempt, true);
+        await this.sendTransaction(attempt);
         await this.outbox.remove(entry.clientTxId);
         this.pendingOps.delete(entry.clientTxId);
         this.retryAttempt = 0;

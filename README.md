@@ -99,8 +99,9 @@ const titles = await db.task.findMany({
 // { title: string; column: { name: string } | null }[]
 ```
 
-The engine reads and sends only those columns (plus the row's id and
-sequence, which live updates key on), and the result type narrows to match.
+The engine reads and sends only those columns (plus the row's id, which live
+updates key on), and the result type narrows to match. A live select is only
+pushed a change when a selected field changed.
 It works the same for `findPage` and live subscriptions; `select` and
 `include` are not combined at one level.
 

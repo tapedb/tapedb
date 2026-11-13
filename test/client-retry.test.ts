@@ -1,10 +1,9 @@
 /**
- * Retries carry a basis, so the server can refuse one it cannot dedupe.
- *
- * The first send of a write carries no `basisSeq`: nothing can have applied it
- * yet. Every later send does, with the highest sequence the client had seen
- * when the write was created. The attempt count is persisted before each send,
- * so a crash mid-send still leaves the next flush knowing it is a retry.
+ * A retry is the same request again: same clientTxId, same ops. The engine
+ * keeps every receipt for good, so it answers a retry of an applied write
+ * with the original sequence instead of applying it twice (see
+ * `durability/recovery.test.ts` and the soak). The attempt count is
+ * persisted before each send.
  */
 
 import { describe, expect, test } from "bun:test";
@@ -72,65 +71,17 @@ async function tick(): Promise<void> {
 const op = { op: "update", namespace: "boards", id: "b1", values: { name: "x" } } as const;
 
 describe("write retries", () => {
-  test("the first send has no basis; the retry sends the basis from creation", async () => {
-    const { db, socket, bodies, outbox } = harness(["network"]);
-
-    // Rows the client has seen carry updatedSeq; the highest is the basis.
-    db.subscribeQuery({ boards: {} }, () => {});
-    await tick();
-    socket.open();
-    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
-    await tick();
-    const subscribe = socket.sent.find((message) => message.type === "query:subscribe")!;
-    socket.push({
-      type: "query:data",
-      id: subscribe.id,
-      seq: 1,
-      data: { boards: [{ id: "b0", name: "a", updatedSeq: 7 }, { id: "b9", name: "b", updatedSeq: 4 }] },
-    });
-
+  test("a retry resends the same clientTxId and ops, and nothing else", async () => {
+    const { db, bodies, outbox } = harness(["network"]);
     await db.transact([op as never]);
-    expect(bodies[0]).not.toHaveProperty("basisSeq");
-
-    // Seeing a newer row after creation does not move this write's basis.
-    socket.push({ type: "query:diff", id: subscribe.id, seq: 2, namespace: "boards", added: [{ id: "b5", name: "c", updatedSeq: 30 }], updated: [], removed: [] });
-
     const [queued] = await outbox.list(WORKSPACE);
-    expect(queued).toMatchObject({ basisSeq: 7, attempts: 1 });
+    expect(queued).toMatchObject({ attempts: 1 });
 
     await db.flushOutbox();
-    expect(bodies[1]).toMatchObject({ clientTxId: bodies[0].clientTxId, basisSeq: 7 });
-    expect(await outbox.list(WORKSPACE)).toEqual([]);
-    db.close();
-  });
-
-  test("an acknowledgement raises the basis of the next write", async () => {
-    const { db, bodies, outbox } = harness([
-      { status: 200, body: { ok: true, result: { txId: "t", seq: 12, applied: 1 } } },
-      "network",
-    ]);
-
-    await db.transact([op as never]);
-    await db.transact([op as never]);
-    const [queued] = await outbox.list(WORKSPACE);
-    expect(queued.basisSeq).toBe(12);
     expect(bodies).toHaveLength(2);
-    db.close();
-  });
-
-  test("an entry from an older client is treated as a retry from seq 0", async () => {
-    const { db, bodies, outbox } = harness([]);
-    const legacy: OutboxEntry = {
-      clientTxId: "legacy-1",
-      txId: "tx-legacy",
-      workspaceId: WORKSPACE,
-      ops: [op as never],
-      createdAt: 1,
-    };
-    await outbox.add(legacy);
-
-    await db.flushOutbox();
-    expect(bodies[0]).toMatchObject({ clientTxId: "legacy-1", basisSeq: 0 });
+    expect(bodies[1]).toEqual({ txId: bodies[0].txId, clientTxId: bodies[0].clientTxId, ops: bodies[0].ops });
+    expect(bodies[1]).not.toHaveProperty("basisSeq");
+    expect(await outbox.list(WORKSPACE)).toEqual([]);
     db.close();
   });
 
@@ -143,12 +94,12 @@ describe("write retries", () => {
     db.close();
   });
 
-  test("dedupe_expired drops the entry and tells the app", async () => {
+  test("a permanent refusal drops the entry and tells the app", async () => {
     const { db, outbox, rejections } = harness([
       "network",
       {
         status: 409,
-        body: { ok: false, error: { code: "dedupe_expired", message: "may already be applied" } },
+        body: { ok: false, error: { code: "conflict", message: "already used with different ops" } },
       },
     ]);
 
@@ -157,7 +108,7 @@ describe("write retries", () => {
 
     expect(await outbox.list(WORKSPACE)).toEqual([]);
     expect(rejections).toHaveLength(1);
-    expect(rejections[0]).toMatchObject({ code: "dedupe_expired", ops: [op] });
+    expect(rejections[0]).toMatchObject({ code: "conflict", ops: [op] });
     db.close();
   });
 });

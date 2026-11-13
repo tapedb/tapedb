@@ -73,20 +73,8 @@ export function runTransaction(
           { txId: tx.txId }
         );
       }
-
-      // Only legacy snapshots can lack historical receipts. Preserve their
-      // recorded uncertainty instead of inventing receipts already discarded
-      // by that older engine. New workspaces retain every receipt.
-      if (tx.basisSeq !== undefined) {
-        const floor = readDedupeFloor(sql);
-        if (floor > tx.basisSeq) {
-          throw new TxError(
-            "dedupe_expired",
-            `clientTxId "${tx.clientTxId}" may already be applied: this workspace no longer holds idempotency keys at or below seq ${floor}, and the retry's basis is ${tx.basisSeq}.`,
-            { txId: tx.txId }
-          );
-        }
-      }
+      // Every receipt is kept, through log pruning, snapshots and recovery,
+      // so an unknown key is a write that was never applied.
     }
 
     // Bulk writes become one op per matching row, here, so everything below
@@ -189,22 +177,6 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
   }
   sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
   return seq;
-}
-
-/** `_engine_meta` key for the dedupe floor; written by recovery. */
-export const DEDUPE_FLOOR_META_KEY = "dedupe_floor_seq";
-
-/**
- * Highest sequence whose receipt was already missing in an older snapshot.
- * New workspaces keep this at zero, including after replay-log pruning.
- */
-export function readDedupeFloor(sql: SqlExecutor): number {
-  const row = sql.one<EngineMetaRow>(
-    `SELECT value FROM "_engine_meta" WHERE "key" = ?`,
-    DEDUPE_FLOOR_META_KEY
-  );
-  const floor = Number(row?.value ?? 0);
-  return Number.isSafeInteger(floor) && floor > 0 ? floor : 0;
 }
 
 function readSchemaVersion(sql: SqlExecutor): string {
