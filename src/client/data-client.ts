@@ -1010,10 +1010,14 @@ class DataClientImpl {
         const entry = this.entryBySubId(message.id);
         if (!entry || entry.state.data === null) return;
         entry.seq = message.seq;
+        // A diff without pageInfo leaves it as it was; dropping it here is
+        // what made loadMore() stop after the first live change.
+        const pageInfo = message.pageInfo ?? entry.state.pageInfo;
         entry.state = {
           data: applyQueryDiff(entry.state.data, message),
           isLoading: false,
           error: null,
+          ...(pageInfo === undefined ? {} : { pageInfo }),
         };
         this.notify(entry);
         return;

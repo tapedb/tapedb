@@ -491,6 +491,68 @@ describe("WorkspaceRoom live queries", () => {
     expect(tasks[0]).toMatchObject({ id: "task1", title: "Changed" });
   });
 
+  test("sends page metadata when a row lands past the window", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "paged",
+      query: { kanbanTasks: { $: { order: { title: "asc" }, limit: 1 } } },
+    });
+    expect(socket.messages()[1]).toMatchObject({
+      type: "query:data",
+      pageInfo: { kanbanTasks: { returned: 1, hasMore: false } },
+    });
+    socket.clear();
+
+    // "Zed" sorts after "First": the one-row window is unchanged, but there is
+    // now a next page. Before, this produced no message at all.
+    await transact(
+      [
+        {
+          op: "update",
+          namespace: "kanbanTasks",
+          id: "task2",
+          values: { columnId: "col1", title: "Zed", order: 1 },
+        },
+      ],
+      "t1"
+    );
+    await delay(100);
+
+    const messages = queryMessages(socket);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      type: "query:diff",
+      added: [],
+      updated: [],
+      removed: [],
+      pageInfo: { kanbanTasks: { returned: 1, hasMore: true } },
+    });
+    expect(
+      (messages[0]?.pageInfo as Record<string, { nextCursor?: string }>).kanbanTasks.nextCursor
+    ).toBeString();
+  });
+
+  test("leaves page metadata off a diff when it did not change", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "paged",
+      query: { kanbanTasks: { $: { order: { title: "asc" }, limit: 5 } } },
+    });
+    socket.clear();
+
+    await transact(
+      [{ op: "update", namespace: "kanbanTasks", id: "task1", values: { title: "Renamed" } }],
+      "t1"
+    );
+    await delay(100);
+
+    const [diff] = queryMessages(socket);
+    expect(diff?.type).toBe("query:diff");
+    expect(diff).not.toHaveProperty("pageInfo");
+  });
+
   test("rejects subscriptions the role cannot view", async () => {
     const guest = await connect(WORKSPACE_ROLE_LEVELS.GUEST);
 

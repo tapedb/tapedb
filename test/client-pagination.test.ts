@@ -374,4 +374,47 @@ describe("client pagination", () => {
     expect(await pending).toBe(true);
     expect(lastQueryOf(socket, "query:subscribe").query.boards.$?.limit).toBe(1000);
   });
+
+  test("a live diff keeps pageInfo, so loadMore still works after a change", async () => {
+    const { db, socket } = await withFirstPage(firstPageInfo);
+    const live = lastQueryOf(socket, "query:subscribe").id;
+    socket.push({
+      type: "query:diff",
+      id: live,
+      seq: 2,
+      namespace: "boards",
+      added: [],
+      updated: [{ id: "b1", name: "renamed" }],
+      removed: [],
+    });
+    expect(db.getQueryState(query).pageInfo?.boards.nextCursor).toBe("cursor-1");
+
+    const pending = db.loadMore(query);
+    await flush();
+    expect(lastQueryOf(socket, "query:subscribe").query.boards.$?.after).toBe("cursor-1");
+    socket.push({
+      type: "query:data",
+      id: lastQueryOf(socket, "query:subscribe").id,
+      seq: 3,
+      data: { boards: [board("b3")] },
+      pageInfo: { boards: { limit: 2, returned: 1, hasMore: false } },
+    });
+    expect(await pending).toBe(true);
+  });
+
+  test("a diff that carries pageInfo replaces it", async () => {
+    const { db, socket } = await withFirstPage({ boards: { limit: 2, returned: 2, hasMore: false } });
+    const live = lastQueryOf(socket, "query:subscribe").id;
+    socket.push({
+      type: "query:diff",
+      id: live,
+      seq: 2,
+      namespace: "boards",
+      added: [],
+      updated: [],
+      removed: [],
+      pageInfo: { boards: { limit: 2, returned: 2, hasMore: true, nextCursor: "cursor-9" } },
+    });
+    expect(db.getQueryState(query).pageInfo?.boards.nextCursor).toBe("cursor-9");
+  });
 });

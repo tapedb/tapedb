@@ -385,6 +385,7 @@ export type ServerMessage =
       added: unknown[];
       updated: unknown[];
       removed: string[];
+      pageInfo?: QueryPageInfo;
     }
   | { type: "query:unsubscribed"; id: string }
   | { type: "query:error"; id: string | null; code: string; message: string }
