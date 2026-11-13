@@ -16,7 +16,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 
 import { migrateCheck, migrateDev, readMigrations } from "../src/cli/migrate";
 import { run } from "../src/cli/index";
-import { migrationChecksum } from "../src/engine/migrations";
+import { applyMigrationWithoutCascades, migrationChecksum } from "../src/engine/migrations";
 import { model, schema, t } from "../src/schema";
 
 const dirs: string[] = [];
@@ -29,12 +29,26 @@ afterEach(() => {
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 
+/** Applies one migration with the runner a Durable Object uses. */
+function apply(db: Database, migration: { id: string; sql: string }): Promise<void> {
+  return applyMigrationWithoutCascades(
+    {
+      run: (statements) => db.exec(statements),
+      all: (query) => db.query(query).all() as Array<Record<string, unknown>>,
+      transaction: (fn) => db.transaction(fn)(),
+      settle: async () => {},
+    },
+    { id: migration.id, sql: migration.sql },
+    () => {}
+  );
+}
+
 /** A database as a Durable Object has it: baseline, engine track, then each app migration in order. */
-function applied(root: string, base = schema({ x: model({ y: t.string() }) })): Database {
+async function applied(root: string, base = schema({ x: model({ y: t.string() }) })): Promise<Database> {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON");
   for (const migration of base.migrations.slice(0, -1)) db.exec(migration.sql);
-  for (const migration of readMigrations(root)) db.transaction(() => db.exec(migration.sql))();
+  for (const migration of readMigrations(root)) await apply(db, migration);
   return db;
 }
 
@@ -77,10 +91,10 @@ describe("migrate dev", () => {
     expect(migrateDev(root, v1, "again")).toEqual({ status: "unchanged" });
   });
 
-  test("added fields, indexes, defaults and models reach the fresh shape, keeping rows", () => {
+  test("added fields, indexes, defaults and models reach the fresh shape, keeping rows", async () => {
     const root = project();
     migrateDev(root, v1, "entities");
-    const db = applied(root);
+    const db = (await applied(root));
     db.exec(`INSERT INTO "board" (id, name, created_at, updated_at) VALUES ('b1', 'Board', 1, 1)`);
 
     const v2 = schema({
@@ -96,7 +110,7 @@ describe("migrate dev", () => {
     });
     expect(migrateDev(root, v2, "board flags")).toMatchObject({ status: "created", id: "0003_board_flags" });
 
-    const migrated = applied(root);
+    const migrated = (await applied(root));
     migrated.exec(`INSERT INTO "board" (id, name, created_at, updated_at) VALUES ('b1', 'Board', 1, 1)`);
     for (const table of ["board", "column", "note", "tag"]) {
       expect(shape(migrated, table)).toEqual(shape(fresh(v2), table));
@@ -115,7 +129,7 @@ describe("migrate dev", () => {
     expect(readMigrations(root)).toHaveLength(1);
   });
 
-  test("a drop needs --accept-data-loss, and is declared for recovery", () => {
+  test("a drop needs --accept-data-loss, and is declared for recovery", async () => {
     const root = project();
     migrateDev(root, v1, "entities");
     const v2 = schema({ ...v1.models, note: model({ body: t.string() }) });
@@ -128,13 +142,13 @@ describe("migrate dev", () => {
     expect(readMigrations(root).at(-1)!.changes).toEqual([
       { kind: "dropField", model: "note", table: "note", field: "score", column: "score" },
     ]);
-    expect(shape(applied(root), "note")).toEqual(shape(fresh(v2), "note"));
+    expect(shape((await applied(root)), "note")).toEqual(shape(fresh(v2), "note"));
   });
 
-  test("a rename keeps the values and is declared", () => {
+  test("a rename keeps the values and is declared", async () => {
     const root = project();
     migrateDev(root, v1, "entities");
-    const before = applied(root);
+    const before = (await applied(root));
     const v2 = schema({ ...v1.models, note: model({ text: t.string(), score: t.number().optional() }) });
 
     // Without --rename this reads as a drop plus an add, which loses data.
@@ -148,10 +162,10 @@ describe("migrate dev", () => {
     expect(shape(before, "note")).toEqual(shape(fresh(v2), "note"));
   });
 
-  test("a type change rebuilds a leaf table and refuses a referenced one", () => {
+  test("a type change rebuilds a leaf table", async () => {
     const root = project();
     migrateDev(root, v1, "entities");
-    const db = applied(root);
+    const db = (await applied(root));
     db.exec(`INSERT INTO "note" (id, body, score, created_at, updated_at) VALUES ('n1', 'x', 4, 1, 1)`);
 
     const leaf = schema({ ...v1.models, note: model({ body: t.string(), score: t.string().optional() }) });
@@ -160,17 +174,58 @@ describe("migrate dev", () => {
       status: "created",
       changes: [{ kind: "retypeField", model: "note", field: "score" }],
     });
-    db.transaction(() => db.exec(readMigrations(root).at(-1)!.sql))();
+    await apply(db, readMigrations(root).at(-1)!);
     expect(db.query(`SELECT id, score FROM "note"`).all()).toEqual([{ id: "n1", score: "4.0" }]);
     expect(shape(db, "note")).toEqual(shape(fresh(leaf), "note"));
+  });
 
-    const referenced = schema({
-      ...leaf.models,
+  test("rebuilding a referenced table keeps every child row and its key", async () => {
+    const root = project();
+    migrateDev(root, v1, "entities");
+    const db = await applied(root);
+    db.exec(`INSERT INTO "board" (id, name, created_at, updated_at) VALUES ('b1', 'Roadmap', 1, 1)`);
+    db.exec(`INSERT INTO "column" (id, name, board_id, created_at, updated_at) VALUES ('c1', 'Todo', 'b1', 1, 1)`);
+
+    // A new default changes the column definition, so the board table is
+    // rebuilt while "column" references it with ON DELETE CASCADE.
+    const next = schema({
+      ...v1.models,
       board: model({ name: t.string().default("untitled"), columns: t.hasMany("column") }),
     });
-    const refused = migrateDev(root, referenced, "board default", { acceptDataLoss: true });
-    expect(refused.status).toBe("refused");
-    expect(JSON.stringify(refused)).toContain("other tables reference");
+    expect(migrateDev(root, next, "board default")).toMatchObject({ status: "created" });
+    const migration = readMigrations(root).at(-1)!;
+    expect(migration.sql).toContain('DROP TABLE "board"');
+
+    // The negative control: the same SQL with foreign keys on, as migrations
+    // used to run, cascades the drop into the child table.
+    const naive = new Database(db.serialize());
+    naive.exec("PRAGMA foreign_keys = ON");
+    naive.transaction(() => naive.exec(migration.sql))();
+    expect(naive.query(`SELECT COUNT(*) AS n FROM "column"`).get()).toEqual({ n: 0 });
+
+    await apply(db, migration);
+    expect(db.query(`SELECT id, board_id FROM "column"`).all()).toEqual([{ id: "c1", board_id: "b1" }]);
+    expect(shape(db, "board")).toEqual(shape(fresh(next), "board"));
+    expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+
+    // Enforcement is back: the cascade still runs on an ordinary delete.
+    db.exec(`DELETE FROM "board" WHERE id = 'b1'`);
+    expect(db.query(`SELECT COUNT(*) AS n FROM "column"`).get()).toEqual({ n: 0 });
+  });
+
+  test("a migration that would orphan rows is rolled back", async () => {
+    const root = project();
+    migrateDev(root, v1, "entities");
+    const db = await applied(root);
+    db.exec(`INSERT INTO "board" (id, name, created_at, updated_at) VALUES ('b1', 'Roadmap', 1, 1)`);
+    db.exec(`INSERT INTO "column" (id, name, board_id, created_at, updated_at) VALUES ('c1', 'Todo', 'b1', 1, 1)`);
+
+    await expect(
+      apply(db, { id: "0009_bad", sql: `DELETE FROM "board"; CREATE TABLE "left_behind" (id TEXT);` })
+    ).rejects.toThrow(/leaves 1 row\(s\) pointing at rows that do not exist/);
+    expect(db.query(`SELECT COUNT(*) AS n FROM "board"`).get()).toEqual({ n: 1 });
+    expect(db.query(`SELECT name FROM sqlite_master WHERE name = 'left_behind'`).all()).toEqual([]);
+    expect(db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
   });
 });
 
