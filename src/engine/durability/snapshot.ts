@@ -274,6 +274,46 @@ const LOG_SEGMENT_NAME = /^(\d+)-(\d+)\.ndjson$/;
 export const DEDUPE_HORIZON_SEQ = 2 * SNAPSHOT_SEQ_THRESHOLD;
 
 /**
+ * Trims the local `_tx_log` to the same window R2 keeps.
+ *
+ * Without this the Durable Object's SQLite grows by one row per write for its
+ * whole life. Rows are removed only when they are both flushed to R2 and at
+ * least the dedupe horizon below the latest snapshot, which is exactly when a
+ * restore could no longer rebuild their keys either. The keys they carried go
+ * with them, so `dedupe_floor_seq` rises to the cut: a retry from below it is
+ * refused with `dedupe_expired` instead of being applied twice.
+ *
+ * Returns the number of rows removed.
+ */
+export function trimLocalLog(
+  sql: SqlExecutor,
+  baseSeq: number,
+  options: { dedupeHorizonSeq?: number } = {}
+): number {
+  const horizon = options.dedupeHorizonSeq ?? DEDUPE_HORIZON_SEQ;
+  const flushed =
+    sql
+      .exec<{ last_seq: number }>(`SELECT last_seq FROM "_flush_state" WHERE id = 1`)
+      .toArray()[0]?.last_seq ?? 0;
+  const cut = Math.min(baseSeq, flushed) - horizon;
+  if (cut <= 0) return 0;
+
+  const removable =
+    sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_log" WHERE seq <= ?`, cut)
+      .toArray()[0]?.n ?? 0;
+  if (removable === 0) return 0;
+
+  sql.exec(`DELETE FROM "_tx_log" WHERE seq <= ?`, cut);
+  sql.exec(
+    `INSERT INTO "_engine_meta" ("key", value) VALUES ('dedupe_floor_seq', ?)
+       ON CONFLICT("key") DO UPDATE SET value = CAST(MAX(CAST(value AS INTEGER), CAST(excluded.value AS INTEGER)) AS TEXT)`,
+    String(cut)
+  );
+  return Number(removable);
+}
+
+/**
  * Deletes log segments wholly covered by `baseSeq`, keeping those inside the
  * idempotency horizon so cold-start recovery can still rebuild `_tx_log`.
  */
@@ -449,6 +489,14 @@ export async function snapshotWorkspace(
       retention,
       options.dedupeHorizonSeq
     );
+
+    // The snapshot and its manifest are durable; the local log can shrink to
+    // the same window R2 keeps.
+    try {
+      trimLocalLog(sql, baseSeq, { dedupeHorizonSeq: options.dedupeHorizonSeq });
+    } catch (cause) {
+      warnings.push(`trim_local_log_failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
 
     return {
       snapshotted: true,
