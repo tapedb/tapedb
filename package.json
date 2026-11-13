@@ -64,9 +64,12 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250109.0",
+    "@happy-dom/global-registrator": "^21.0.4",
     "@types/node": "^26.6.6",
     "@types/react": "19",
+    "@types/react-dom": "19",
     "react": "19",
+    "react-dom": "19",
     "tsup": "^8.3.5",
     "typescript": "^5.7.2"
   },
