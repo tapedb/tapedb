@@ -103,7 +103,7 @@ export function applyOptimisticOps(
   // so a link can materialise the child with them.
   const pendingValues = new Map<string, Record<string, unknown>>();
   for (const op of ops) {
-    if (op.op !== "update" && op.op !== "merge") continue;
+    if (op.op === "link" || op.op === "unlink" || op.op === "delete") continue;
     pendingValues.set(op.id, {
       ...(pendingValues.get(op.id) ?? {}),
       ...op.values,
@@ -123,6 +123,8 @@ export function applyOptimisticOp(
   pendingValues?: ReadonlyMap<string, Record<string, unknown>>
 ): QueryResult {
   switch (op.op) {
+    case "insert":
+    case "patch":
     case "update":
     case "merge":
       applyValues(data, op.namespace, op.id, op.values);

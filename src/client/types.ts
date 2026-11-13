@@ -136,7 +136,14 @@ export interface PresencePeer {
 
 // ---- Transactions ----------------------------------------------------------
 
-export type TxOpKind = "update" | "merge" | "link" | "unlink" | "delete";
+export type TxOpKind =
+  | "insert"
+  | "patch"
+  | "update"
+  | "merge"
+  | "link"
+  | "unlink"
+  | "delete";
 
 interface TxOpBase {
   op: TxOpKind;
@@ -146,6 +153,16 @@ interface TxOpBase {
 
 export interface TxUpdateOp extends TxOpBase {
   op: "update";
+  values: Record<string, unknown>;
+}
+
+export interface TxInsertOp extends TxOpBase {
+  op: "insert";
+  values: Record<string, unknown>;
+}
+
+export interface TxPatchOp extends TxOpBase {
+  op: "patch";
   values: Record<string, unknown>;
 }
 
@@ -170,7 +187,14 @@ export interface TxDeleteOp extends TxOpBase {
   op: "delete";
 }
 
-export type TxOp = TxUpdateOp | TxMergeOp | TxLinkOp | TxUnlinkOp | TxDeleteOp;
+export type TxOp =
+  | TxInsertOp
+  | TxPatchOp
+  | TxUpdateOp
+  | TxMergeOp
+  | TxLinkOp
+  | TxUnlinkOp
+  | TxDeleteOp;
 
 /**
  * One chainable `tx` step. `op` is provided for the common single-op case;

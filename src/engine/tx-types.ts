@@ -10,7 +10,14 @@
  * names. All ids are client-generated strings (UUIDv7).
  */
 
-export type TxOpKind = "update" | "merge" | "link" | "unlink" | "delete";
+export type TxOpKind =
+  | "insert"
+  | "patch"
+  | "update"
+  | "merge"
+  | "link"
+  | "unlink"
+  | "delete";
 
 export interface TxOpBase {
   op: TxOpKind;
@@ -20,13 +27,25 @@ export interface TxOpBase {
   id: string;
 }
 
-/** Replaces the supplied attributes; omitted attributes keep their value. */
+/** Creates the row. Fails with `unique_violation` when the id already exists. */
+export interface TxInsertOp extends TxOpBase {
+  op: "insert";
+  values: Record<string, unknown>;
+}
+
+/** Writes the supplied attributes. Fails with `not_found` when the row is missing. */
+export interface TxPatchOp extends TxOpBase {
+  op: "patch";
+  values: Record<string, unknown>;
+}
+
+/** Upsert: creates the row if missing, otherwise writes the supplied attributes. */
 export interface TxUpdateOp extends TxOpBase {
   op: "update";
   values: Record<string, unknown>;
 }
 
-/** Creates the row if missing, otherwise applies a shallow merge. */
+/** Same as `update`: an upsert of the supplied attributes. Kept for old clients. */
 export interface TxMergeOp extends TxOpBase {
   op: "merge";
   values: Record<string, unknown>;
@@ -52,7 +71,14 @@ export interface TxDeleteOp extends TxOpBase {
   op: "delete";
 }
 
-export type TxOp = TxUpdateOp | TxMergeOp | TxLinkOp | TxUnlinkOp | TxDeleteOp;
+export type TxOp =
+  | TxInsertOp
+  | TxPatchOp
+  | TxUpdateOp
+  | TxMergeOp
+  | TxLinkOp
+  | TxUnlinkOp
+  | TxDeleteOp;
 
 export interface TxEnvelope {
   /** Server-visible transaction id. */

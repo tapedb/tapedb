@@ -223,6 +223,10 @@ export function assertOpPermission(claim: RoleClaim, op: ValidatedOp): void {
   }
 
   switch (op.kind) {
+    case "insert":
+      assertPermission(claim, op.namespace, "create");
+      return;
+    case "patch":
     case "update":
     case "merge":
       assertPermission(claim, op.namespace, "update");
@@ -260,9 +264,19 @@ function targetOf(op: ValidatedOp, rowExists: boolean): RowTarget {
   if (op.kind === "delete") {
     return { namespace: op.namespace, action: "delete", id: op.id };
   }
+  // insert and patch name their action outright; the apply step refuses an
+  // insert over an existing row and a patch of a missing one.
+  const action =
+    op.kind === "insert"
+      ? "create"
+      : op.kind === "patch"
+        ? "update"
+        : rowExists
+          ? "update"
+          : "create";
   return {
     namespace: op.namespace,
-    action: rowExists ? "update" : "create",
+    action,
     id: op.id,
     values: op.values,
   };

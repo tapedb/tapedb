@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `insert` and `patch` transaction ops, the strict halves of `update`'s
+  upsert: `insert` fails with `unique_violation` when the id exists and is
+  gated by the `create` decision; `patch` fails with `not_found` when the row
+  is missing. Both are logged and replayed like any op. They are the engine
+  side of the model API's `create` and `update`.
+
 - `view` rules can be `{ where: (auth) => filter }`. The filter is compiled
   into the SQL of every query level that reads the namespace, ANDed with the
   caller's own `where`, so it uses indexes and fills every page instead of
