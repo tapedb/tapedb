@@ -12,6 +12,7 @@
  * therefore safe.
  */
 
+import { applyFileOps, isFileOpList } from "../file-index";
 import {
   manifestKey,
   readManifest,
@@ -726,6 +727,14 @@ function replayLine(
   txSql: TxSqlExecutor,
   line: LogLine
 ): boolean {
+  // File-index entries are engine ops, not client transactions: they are
+  // last-writer-wins on path, so applying them in order is the whole replay.
+  if (isFileOpList(line.ops)) {
+    recordReplayedLine(sql, line);
+    applyFileOps(txSql, line.ops, line.at);
+    return true;
+  }
+
   const tx = validateEnvelope({ txId: "recovery", ops: line.ops });
   const touched = new Set<string>();
   let applied = false;
