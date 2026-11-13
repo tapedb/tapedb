@@ -72,5 +72,6 @@ Only a scoped release (`@tapedb/*`) needs an org, and orgs are created in the
 web UI at `https://www.npmjs.com/org/create`. There is no `npm org create`
 command.
 
-After the first publish, add `repository` and `bugs` to `package.json`: they are
-deliberately absent until the public URL exists.
+`repository` and `bugs` already point at the GitHub repo. `homepage` stays out
+until `tapedb.dev` actually serves something: a dead URL on the package page is
+worse than no link.

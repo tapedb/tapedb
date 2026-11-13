@@ -5,7 +5,13 @@
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
-  "homepage": "https://tapedb.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/brxndxndiaz/tapedb.git"
+  },
+  "bugs": {
+    "url": "https://github.com/brxndxndiaz/tapedb/issues"
+  },
   "keywords": [
     "cloudflare",
     "durable-objects",
