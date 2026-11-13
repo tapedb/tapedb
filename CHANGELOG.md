@@ -26,6 +26,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `db.loadMore()` no longer resets to page one on reconnect. After each page
+  the client widens the live subscription's `limit` to the rows it has loaded
+  (clamped to 1000, the engine's ceiling), so the reconnect re-subscribes the
+  whole window, and the engine diffs rows on later pages like the first.
+
 - `$files` rows are written through the transaction log as engine-only
   `file:put` / `file:forget` entries and replayed on recovery. They were written
   in place before, so only snapshots carried them: a restore from R2 lost every

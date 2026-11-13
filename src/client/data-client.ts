@@ -105,7 +105,21 @@ interface CacheEntry {
   seq: number;
   subId: string;
   listeners: Set<() => void>;
+  /**
+   * Rows loaded per top-level namespace once `loadMore()` has run. The live
+   * subscription is widened to this many rows, so a reconnect re-subscribes
+   * every loaded page instead of resetting to the first, and diffs reach
+   * rows on later pages too.
+   */
+  window?: Record<string, number>;
 }
+
+/**
+ * The engine's per-level limit ceiling. A live window wider than this is
+ * clamped: a reconnect then comes back with this many rows, and `loadMore()`
+ * continues from its cursor.
+ */
+export const MAX_LIVE_WINDOW = 1000;
 
 interface CacheSnapshot {
   key: string;
@@ -709,8 +723,30 @@ class DataClientImpl {
     this.socket?.send({
       type: "query:subscribe",
       id: entry.subId,
-      query: entry.query,
+      query: this.liveDocument(entry),
     });
+  }
+
+  /**
+   * The query the live subscription actually runs: the caller's query, with
+   * each paged namespace's limit widened to the rows already loaded. The cache
+   * key stays the caller's query, so `useQuery` callers are unaffected.
+   */
+  private liveDocument(entry: CacheEntry): QueryDocument {
+    if (!entry.window) return entry.query;
+
+    const document: QueryDocument = { ...entry.query };
+    for (const [namespace, rows] of Object.entries(entry.window)) {
+      const node = entry.query[namespace];
+      if (!isRecord(node)) continue;
+      const options: QueryOptions = isRecord(node.$) ? node.$ : {};
+      const limit = Math.min(
+        Math.max(rows, typeof options.limit === "number" ? options.limit : 0),
+        MAX_LIVE_WINDOW
+      );
+      document[namespace] = { ...node, $: { ...options, limit } };
+    }
+    return document;
   }
 
   private resubscribeAll(): void {
@@ -843,6 +879,17 @@ class DataClientImpl {
 
     entry.state = next;
     this.notify(entry);
+
+    // Widen the live subscription to everything now loaded. The engine
+    // answers with the same rows (plus anything that changed meanwhile), and
+    // from then on a reconnect restores this window and diffs cover it.
+    const window = { ...(entry.window ?? {}) };
+    for (const namespace of Object.keys(message.data)) {
+      const rows = data[namespace];
+      if (Array.isArray(rows)) window[namespace] = rows.length;
+    }
+    entry.window = window;
+    if (entry.listeners.size > 0) this.sendSubscribe(entry);
     return true;
   }
 
