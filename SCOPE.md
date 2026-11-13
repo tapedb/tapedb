@@ -30,7 +30,7 @@ Status is measured against InstantDB's published docs surface.
 | `presence-and-topics` — presence, cursors | `presence:set/clear`, `cursor:set`, `drag:set/clear` on the workspace socket | HAVE presence, no topics abstraction |
 | `storage` — file uploads | `/storage/:appId/:objectKey`, `FILES` bucket, 25 MB cap, MEMBER read / EDITOR write | HAVE |
 | `infinite-queries` — cursor pagination | keyset `after`, `pageInfo.nextCursor`, and `db.loadMore()` on the client | HAVE |
-| `permissions` — row and attribute rules | role levels plus row rules over `{ auth, data, next, changed }` for view, create, update and delete | HAVE, with the scan cap noted below |
+| `permissions` — row and attribute rules | role levels plus row rules over `{ auth, data, next, changed }` for create, update and delete; `view` as a SQL `where` rule or a post-fetch function | HAVE |
 | `http-api` — server-side access | `POST /query`, `POST /transact`, `GET /status` | HAVE |
 | `cli` — schema push | `tapedb init`, `dev`, `studio`; migrations are generated from the schema by `defineSchema` | HAVE |
 | `self-hosting` | inherent, the consumer's account | HAVE by construction |
@@ -114,11 +114,13 @@ Development loop, verified end to end under `wrangler dev`: `tapedb init` then
 `tapedb dev` gives a local database with a working claim route, so the client
 runs with no session and no configuration.
 
-**2. Permissions stay role-level in v1, designed to grow.** InstantDB evaluates
-CEL rules per row and per attribute. TapeDB gates by role level per namespace
-and action. That is coarser and it is already built and tested. The claim
-already carries `sub` and `role`, so row-level rules can land later without a
-wire change. Do not promise attribute-level rules in v1.
+**2. Permissions grew from role levels to rules without a wire change.** DONE.
+The claim already carried `sub` and `role`, so row rules landed on top of role
+levels: write rules see `{ auth, data, next, changed }` inside the
+transaction, and `view` is either a `where` filter compiled into SQL (indexed,
+the default to reach for) or a function evaluated after fetch (anything, but
+scan-capped). Unlike InstantDB there is no CEL: rules are TypeScript in the
+schema.
 
 **3. Cursor pagination is in v1.** `pageInfo` is already reserved in the query
 response and `limit`/`order` already compile. Infinite queries are a
@@ -140,8 +142,7 @@ DONE:
 
 DONE since first draft:
 
-- The upstream engine suite runs again (13 files, 166 tests total) against an
-  ndex-shaped fixture that configures the registry, permissions and migration
+- The upstream engine suite runs again against an ndex-shaped fixture that configures the registry, permissions and migration
   bundle before each file.
 - Uploads write a `$files` metadata row into the workspace and expose
   `GET /files`; delete removes it. Bytes stay in R2 and never enter the log.
@@ -153,8 +154,7 @@ DONE since first draft:
 
 DONE: row rules for create, update and delete (`write` decisions can be a
 predicate over `{ auth, data, next }`), evaluated inside the transaction so a
-replay is not re-judged and a throwing rule denies. `view` stays level-only by
-design; `defineSchema` refuses a view rule rather than shipping a no-op.
+replay is not re-judged and a throwing rule denies.
 
 DONE: row-level **view** rules filter rows (and nested children) after fetch;
 `changed` gives rules the attribute names an op writes, so one field can be
@@ -162,21 +162,38 @@ gated; `tapedb studio` is a local table browser over `/schema`, `/query` and
 `/transact`, and `GET /engine/workspaces/:id/schema` exposes the registry for
 tooling.
 
-REMAINING:
+DONE: the four gaps left after the first extract.
 
-- View rules still cannot use an index. Pages are filled by scanning up to
-  `max(limit * 10, 200)` rows, so a rule that hides almost everything costs a
-  bounded scan per page and can return a short page at the cap.
-- `clientTxId` idempotency has a bounded window, not infinite history. A
-  snapshot stores rows, not keys, so covered log segments are retained for
-  `DEDUPE_HORIZON_SEQ` (2000 seq) past the snapshot base; a retry inside that
-  window is deduped across a cold start, and beyond it the segment is pruned.
-  The cost is a few extra small objects in R2. Carrying keys inside the
-  snapshot would make the window unbounded, at the price of a durability-format
-  change and a snapshot that grows with history.
-- `db.loadMore()` resets to page one on reconnect: the live subscription
-  re-subscribes the original query. Deep pagination over a long session is
-  therefore cursor-based per request, not accumulated client-side forever.
-- `$files` rows are written outside the transaction log, so they are not part of
-  the replay; a crash between the R2 put and the row write leaves an unlisted
-  object, which the 502 makes visible rather than silent.
+- `view: { where: (auth) => filter }` compiles into the query's SQL, so a
+  visibility rule uses an index and fills every page. Function view rules stay
+  for predicates SQL cannot express, with the scan cap below.
+- `$files` changes are logged as engine-only `file:put` / `file:forget` entries
+  and replayed, so a restore keeps uploads and deletes made since the last
+  snapshot. Before this, only snapshots carried the index.
+- A retry the engine cannot dedupe is refused, not applied twice. Clients send
+  `basisSeq` on retries; recovery records `dedupe_floor_seq`; an unknown key
+  below the floor gets `dedupe_expired` and the client reports it through
+  `onWriteRejected`.
+- `db.loadMore()` widens the live subscription to the loaded rows, so a
+  reconnect restores every page and later pages are diffed live.
+
+REMAINING, as trade-offs rather than bugs:
+
+- Function `view` rules filter after fetch and scan at most
+  `max(limit * 10, 200)` rows per page, so a function rule that hides almost
+  everything can return a short page. The `where` form has no such limit.
+- After a restore, exactly-once covers retries whose basis is at or above the
+  dedupe floor (`DEDUPE_HORIZON_SEQ`, 2000 seq past the snapshot base). Older
+  retries are refused with `dedupe_expired`, which is safe but needs the app
+  to check and rewrite. Carrying keys in snapshots would remove the floor at
+  the cost of a format change and a snapshot that grows with history.
+- The local `_tx_log` is never trimmed, so a Durable Object's SQLite grows by
+  one row per write for its whole life. Trimming rows that are flushed and
+  below the snapshot horizon would bound it; the dedupe floor that recovery
+  writes is already the mechanism a trim would need to stay safe.
+- The live `loadMore()` window is clamped to 1000 rows per namespace, the
+  engine's limit ceiling. Past that a reconnect returns 1000 rows and paging
+  resumes from the cursor.
+- A crash between the R2 put of an upload and its `file:put` entry leaves an
+  unindexed object in `FILES`. The Worker returns 502, so it is visible, but
+  nothing sweeps it.
