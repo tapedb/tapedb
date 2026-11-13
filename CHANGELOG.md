@@ -4,7 +4,12 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.0] - 2026-11-13
+
+First release of the model API. `0.0.1` was the engine extracted from an
+application behind a compatibility surface; this is the library that surface
+was hiding. Everything below is breaking for a `0.0.1` consumer, and the
+engine's own tables and log format changed with it.
 
 ### Removed
 
@@ -18,8 +23,6 @@ All notable changes to this project are documented here. The format follows
   `tapedb/worker` and `tapedb/cli`.
 
 ### Added
-
-- React hooks are covered by render tests (`react-dom`, `@happy-dom/global-registrator` as dev dependencies).
 
 - `tapedb migrate dev --name <name>` diffs the schema against
   `tapedb/schema.snapshot.json` and writes the next numbered SQL migration,
