@@ -809,11 +809,14 @@ async function replayLogs(
   );
 
   for (const segment of segments) {
-    if (segment.toSeq <= baseSeq) continue;
     if (segment.fromSeq > durableToSeq) continue;
 
     const object = await bucket.get(segment.key);
     if (!object) {
+      // A segment the snapshot already covers may have been pruned once it
+      // fell outside the idempotency horizon. Rows are safe in the snapshot;
+      // its keys are simply outside the retry window we promise.
+      if (segment.toSeq <= baseSeq) continue;
       throw new Error(`Log segment ${segment.key} is missing from R2.`);
     }
 
@@ -821,10 +824,15 @@ async function replayLogs(
 
     sql.transactionSync(() => {
       for (const line of lines) {
-        // Snapshot already reflects everything at or below its base. Skipping
-        // older lines prevents a delete-then-insert history from resurrecting
-        // rows that the snapshot correctly omits.
-        if (line.seq <= baseSeq) continue;
+        // The snapshot already reflects everything at or below its base, so
+        // those ops must not be applied again (a delete-then-insert history
+        // would resurrect rows the snapshot correctly omits). Their
+        // idempotency keys are another matter: the snapshot does not carry
+        // them, so this line is the only copy left.
+        if (line.seq <= baseSeq) {
+          recordReplayedLine(sql, line);
+          continue;
+        }
 
         maxSeq = Math.max(maxSeq, line.seq);
         if (replayLine(sql, txSql, line)) replayed += 1;

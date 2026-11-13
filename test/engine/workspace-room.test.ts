@@ -206,13 +206,15 @@ describe("WorkspaceRoom durability wiring", () => {
     expect(readFlushState(context.storage.sql).lastSeq).toBe(1);
     expect(readSnapshotState(context.storage.sql).status).toBe("completed");
     expect(readSnapshotState(context.storage.sql).baseSeq).toBe(1);
-    // The baseline snapshot covers seq 1, so its log segment is pruned.
+    // The baseline snapshot covers seq 1, but the segment is retained inside
+    // the idempotency horizon: it is the only remaining copy of that
+    // transaction's clientTxId, which a retry after an eviction needs.
     expect(
       bucket.puts.some(
         (entry) => entry.key === logSegmentKey(TEST_WORKSPACE, 1, 1)
       )
     ).toBe(true);
-    expect(bucket.objects.has(logSegmentKey(TEST_WORKSPACE, 1, 1))).toBe(false);
+    expect(bucket.objects.has(logSegmentKey(TEST_WORKSPACE, 1, 1))).toBe(true);
     expect(context.alarm).toBeNull();
 
     const first = await readManifest(
