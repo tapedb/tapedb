@@ -19,6 +19,7 @@ import { apiError, discardBody, json } from "../http";
 import { handleClaimRequest } from "../claim-route";
 import { mintClaim, mintDevClaim, type ClaimIdentity } from "../mint";
 import type { TapeDBSchema } from "../schema";
+import type { BundledWorkspaceMigration } from "../engine/migrations-bundle";
 import type { Env } from "../types";
 import {
   authenticateEngineRequest,
@@ -34,8 +35,17 @@ export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 const ENGINE_PREFIX = "/engine/workspaces";
 
+/** One app migration, as `tapedb migrate` bundles it. */
+export type AppMigration = BundledWorkspaceMigration;
+
 export interface DefineTapeDBOptions {
   schema: TapeDBSchema;
+  /**
+   * The app's committed migrations, from `tapedb/migrations.gen.ts`. Omit
+   * only before the first `tapedb migrate dev`: the schema's generated SQL
+   * is used, which cannot evolve.
+   */
+  migrations?: readonly AppMigration[];
   /**
    * Identity adapter. Implement `getSubject` and `getRole` to serve
    * `POST /_tapedb/claim`. Without it that route returns 501 and the consumer
@@ -208,12 +218,14 @@ async function handleStorage(
 }
 
 export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
-  const { schema, identity, devClaims = false } = options;
+  const { schema, identity, devClaims = false, migrations } = options;
 
   // One schema per Worker instance. Installed at module evaluation, before any
   // request or Durable Object is constructed.
   configureRegistry(schema.registry);
-  configureMigrations(schema.migrations);
+  configureMigrations(
+    migrations === undefined ? schema.migrations : [schema.migrations[0], ...migrations]
+  );
   configurePermissions(schema.permissions);
 
   const worker = {
