@@ -312,8 +312,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-/** How deep `create` may nest. Past this a schema is better written as several writes. */
-const MAX_NESTED_CREATE_DEPTH = 3;
 
 interface SplitResult {
   values: Record<string, unknown>;
@@ -328,8 +326,7 @@ function splitData(
   model: ModelInfo,
   rowId: string,
   data: Record<string, unknown>,
-  allowLinks: boolean,
-  depth = 0
+  allowLinks: boolean
 ): SplitResult {
   const values: Record<string, unknown> = {};
   const before: TxOp[] = [];
@@ -337,14 +334,9 @@ function splitData(
 
   /** Expands a nested `create` into its own insert, recursively. */
   const nested = (relation: RelationInfo, input: Record<string, unknown>): string => {
-    if (depth >= MAX_NESTED_CREATE_DEPTH) {
-      throw new Error(
-        `"${model.key}": nested create may go at most ${MAX_NESTED_CREATE_DEPTH} levels deep.`
-      );
-    }
     const target = graph[relation.target];
     const id = typeof input.id === "string" ? input.id : newId();
-    const child = splitData(graph, target, id, input, true, depth + 1);
+    const child = splitData(graph, target, id, input, true);
     const childValues = withDefaults(target, child.values);
 
     before.push(...child.before);
@@ -404,12 +396,7 @@ function splitData(
       const childOps: TxOp[] = [];
       const target = graph[relation.target];
       const id = typeof child.id === "string" ? child.id : newId();
-      const split = splitData(graph, target, id, child, true, depth + 1);
-      if (depth >= MAX_NESTED_CREATE_DEPTH) {
-        throw new Error(
-          `"${model.key}": nested create may go at most ${MAX_NESTED_CREATE_DEPTH} levels deep.`
-        );
-      }
+      const split = splitData(graph, target, id, child, true);
       const childValues = withDefaults(target, split.values);
       childValues[relation.foreignKey!] = rowId;
       childOps.push(...split.before, { op: "insert", namespace: target.key, id, values: childValues }, ...split.after);

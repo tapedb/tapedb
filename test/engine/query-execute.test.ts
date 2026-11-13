@@ -610,13 +610,8 @@ describe("executeQuery", () => {
       "unknown_attribute"
     );
     expectCode(() => read(store, { folders: { nope: {} } }), "unknown_link");
-    expectCode(
-      () =>
-        read(store, {
-          folders: { children: { children: { children: {} } } },
-        }),
-      "invalid_op"
-    );
+    // Three link levels are a valid query, not a refusal.
+    expect(() => read(store, { folders: { children: { children: { children: {} } } } })).not.toThrow();
     expectCode(
       () => read(store, { kanbanTasks: { $: { where: { tags: "x" } } } }),
       "invalid_value"

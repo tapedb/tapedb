@@ -10,8 +10,9 @@
  *
  * Supported subset: equality and `$ne`/`$in`/`$gt`/`$gte`/`$lt`/`$lte` on
  * scalar attributes, `order` and `limit` (1..1000). JSON/`any` attributes are
- * returned but cannot be filtered or ordered on. Link nesting is capped at two
- * levels.
+ * returned but cannot be filtered or ordered on. Links and relation filters
+ * nest as deep as the document asks; the bound is SQLite's own statement
+ * size, reported as a bad request (`sqliteLimitError`).
  */
 
 import { compileAggregate, type CompiledAggregate } from "./query-aggregate";
@@ -21,8 +22,6 @@ import {
   invalidValue,
   isIsoDate,
   isPlainObject,
-  MAX_LINK_DEPTH,
-  MAX_RELATION_DEPTH,
   parseQueryOptions,
   parseWhere,
   decodeQueryCursor,
@@ -160,11 +159,33 @@ export function compileQuery(value: unknown, view?: ViewAccess): CompiledQuery {
     throw invalidOp("Query must be a plain object keyed by namespace.");
   }
 
-  const nodes = Object.entries(value).map(([namespace, node]) =>
-    compileNode(namespace, node, 0, view)
-  );
+  try {
+    const nodes = Object.entries(value).map(([namespace, node]) =>
+      compileNode(namespace, node, 0, view)
+    );
+    return { nodes };
+  } catch (error) {
+    // Links, relation filters and logical filters nest as deep as the
+    // document does. A document deep enough to exhaust the stack is a bad
+    // request, not a server fault.
+    if (error instanceof RangeError) {
+      throw invalidOp("The query nests too deeply to compile.");
+    }
+    throw error;
+  }
+}
 
-  return { nodes };
+/**
+ * SQLite's own bounds on one statement, which a deeply nested filter can
+ * reach: about thirty relation filters inside each other exceed its
+ * expression depth. Reported as a bad request, naming the bound.
+ */
+export function sqliteLimitError(error: unknown): TxError | null {
+  const message = error instanceof Error ? error.message : String(error);
+  if (/expression tree is too large|recursion limit|too many terms|parser stack overflow|too many SQL variables/i.test(message)) {
+    return invalidOp(`The query is larger than SQLite can run as one statement (${message}). Split the filter.`);
+  }
+  return null;
 }
 
 /**
@@ -227,12 +248,6 @@ function compileNode(
   depth: number,
   view?: ViewAccess
 ): CompiledNode {
-  if (depth > MAX_LINK_DEPTH) {
-    throw invalidOp(
-      `Links may be nested at most ${MAX_LINK_DEPTH} levels deep.`
-    );
-  }
-
   const namespace = findNamespace(namespaceName);
   if (!namespace) {
     throw new TxError(
@@ -258,12 +273,6 @@ function compileNode(
       throw new TxError(
         "unknown_link",
         `Unknown link "${label}" on namespace "${namespaceName}".`
-      );
-    }
-
-    if (depth >= MAX_LINK_DEPTH) {
-      throw invalidOp(
-        `Links may be nested at most ${MAX_LINK_DEPTH} levels deep.`
       );
     }
 
@@ -623,11 +632,6 @@ function compileRelationFilter(
   context: WhereContext
 ): CompiledCondition {
   const depth = context.depth ?? 0;
-  if (depth >= MAX_RELATION_DEPTH) {
-    throw invalidOp(
-      `Relation filters may nest at most ${MAX_RELATION_DEPTH} levels; "${relation.label}" is deeper.`
-    );
-  }
 
   const info = findLinkLabel(namespace.apiName, relation.label);
   if (!info) {
