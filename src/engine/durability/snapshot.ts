@@ -56,6 +56,13 @@ function assertPositiveInteger(value: number, label: string): number {
   return value;
 }
 
+function readSchemaVersion(sql: SqlExecutor): string | undefined {
+  const row = sql
+    .exec<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = 'schema_version'`)
+    .toArray()[0];
+  return row?.value;
+}
+
 export function readHighWater(sql: SqlExecutor): number {
   const row = sql
     .exec<HighWaterRow>(`SELECT high_water_seq FROM "_tx_state" WHERE id = 1`)
@@ -426,6 +433,7 @@ export async function snapshotWorkspace(
         logSeq: Math.max(logSeq, current?.logSeq ?? 0),
         createdAt: current?.createdAt ?? manifestCreatedAt(now),
         engineVersion: readEngineVersion(sql),
+        schemaVersion: readSchemaVersion(sql),
         tables,
         totalRows,
         totalBytes,

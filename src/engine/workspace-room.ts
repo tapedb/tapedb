@@ -12,6 +12,7 @@ import {
   shouldSnapshot,
 } from "./durability";
 import {
+  isEngineMigration,
   WORKSPACE_MIGRATIONS,
   type BundledWorkspaceMigration,
 } from "./migrations-bundle";
@@ -179,6 +180,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
         checksum,
         Date.now()
       );
+      // Log lines record the app schema they were written under, so recovery
+      // knows which later changes to read them through.
+      if (!isEngineMigration(migration.id)) {
+        sql.exec(
+          `INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('schema_version', ?)`,
+          migration.id
+        );
+      }
     });
   }
 
