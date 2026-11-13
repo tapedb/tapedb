@@ -14,15 +14,17 @@
  * development configuration or an unmigrated schema.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, extname, join, resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, readMigrations, readSnapshot } from "./migrate";
 import { startStudio } from "./studio";
+
+let schemaLoads = 0;
 
 /** Loads the schema module: its default export, or an export named `schema`. */
 async function loadSchema(root: string, flags: Record<string, string | boolean>): Promise<TapeDBSchema> {
@@ -33,7 +35,10 @@ async function loadSchema(root: string, flags: Record<string, string | boolean>)
     // Import a fresh copy beside the original, so its relative imports still
     // resolve and no runtime's module cache can hand back an older schema.
     // (Node keys its cache on the URL; Bun ignores the query string.)
-    const copy = join(dirname(path), `.${basename(path, extname(path))}.${process.pid}.${Date.now()}${extname(path)}`);
+    // A counter, not the clock: two loads within one millisecond must still
+    // get different files.
+    schemaLoads += 1;
+    const copy = join(dirname(path), `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}${extname(path)}`);
     copyFileSync(path, copy);
     try {
       loaded = (await import(pathToFileURL(copy).href)) as Record<string, unknown>;
@@ -444,8 +449,21 @@ export async function run(argv: string[]): Promise<number> {
   return usage();
 }
 
+/**
+ * True when this module is the process entry point. `npx tapedb` runs it
+ * through the node_modules/.bin symlink: argv[1] is the link, while
+ * import.meta.url is the resolved file, so both are compared after resolving.
+ */
+export function isEntryPoint(entry: string | undefined, moduleUrl: string): boolean {
+  if (entry === undefined) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return false;
+  }
+}
+
 // Only execute when invoked as the binary, never when imported.
-const entry = process.argv[1];
-if (entry !== undefined && import.meta.url === pathToFileURL(entry).href) {
+if (isEntryPoint(process.argv[1], import.meta.url)) {
   void run(process.argv.slice(2)).then((code) => process.exit(code));
 }
