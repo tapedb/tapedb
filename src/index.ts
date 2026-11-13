@@ -15,6 +15,7 @@ export { createClient, Query, PageQuery, Write } from "./model/client";
 export type {
   Client,
   ClientConfig,
+  BroadcastTopic,
   FilesClient,
   FindArgs,
   LiveState,
@@ -46,7 +47,7 @@ export type {
 export { id } from "./client/id";
 export { BulkWriteError } from "./client/data-client";
 export type { StoredFile } from "./client/data-client";
-export type { PresencePeer, QueryError, WriteRejection } from "./client/types";
+export type { PresencePeer, QueryError, TopicSender, WriteRejection } from "./client/types";
 export type { StorageObject } from "./client/storage-client";
 
 export type { Env } from "./types";

@@ -12,7 +12,8 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import { stableStringify } from "../client/stable";
 import type { PresencePeer } from "../client/types";
-import type { LiveState, Page, PageQuery, PresenceRoom, Query } from "../model/client";
+import type { BroadcastTopic, LiveState, Page, PageQuery, PresenceRoom, Query } from "../model/client";
+import type { TopicSender } from "../client/types";
 
 /**
  * Live results for a query: `useLive(db.task.findMany({ where }))`.
@@ -80,3 +81,23 @@ export function usePresence(
   return peers;
 }
 
+
+/**
+ * Listens on a broadcast topic while mounted and returns its `send`. The
+ * latest `onMessage` is always the one called, so it need not be memoised.
+ */
+export function useBroadcast<T = unknown>(
+  db: { $broadcast<M>(topic: string): BroadcastTopic<M> },
+  topic: string,
+  onMessage?: (message: T, from: TopicSender) => void
+): (message: T) => boolean {
+  const handle = useMemo(() => db.$broadcast<T>(topic), [db, topic]);
+  const listener = useRef(onMessage);
+  listener.current = onMessage;
+
+  useEffect(
+    () => handle.subscribe((message, from) => listener.current?.(message, from)),
+    [handle]
+  );
+  return useCallback((message: T) => handle.send(message), [handle]);
+}

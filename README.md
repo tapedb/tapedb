@@ -321,6 +321,37 @@ File bytes live in the `FILES` bucket (25 MB cap, member read / editor
 write); their index is written through the transaction log, so a restore
 keeps it. Presence is ephemeral and rides the workspace socket.
 
+### Broadcast
+
+Fire-and-forget messages between the clients of a workspace, on the same
+socket:
+
+```ts
+const board = db.$broadcast<{ kind: "ping"; at: number }>("board:" + boardId);
+const stop = board.subscribe((message, from) => flash(from.userId, message));
+board.send({ kind: "ping", at: Date.now() });   // false (dropped) while offline
+
+// React (tapedb/react)
+const send = useBroadcast(db, "board:" + boardId, (message, from) => flash(from.userId, message));
+```
+
+A message reaches every other client listening on the topic, with the
+sender's client id and user id; your own messages are not echoed back.
+Nothing is stored or replayed, and a send while the socket is down is dropped
+rather than delivered late. Listening clients rejoin their topics after a
+reconnect. By default any member of the workspace may listen and send; decide
+per topic on the Worker:
+
+```ts
+defineTapeDB({
+  schema,
+  topics: {
+    authorize: ({ auth, topic, action }) =>
+      !topic.startsWith("admin:") || auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN,
+  },
+});
+```
+
 ## Claims and identity
 
 The engine verifies a short-lived signed claim and never issues one. Identity
