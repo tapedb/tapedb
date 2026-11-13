@@ -45,7 +45,7 @@ import type {
   UpdateData,
   WithInclude,
 } from "./schema";
-import { toEngineNode, type NodeArgs, type Where } from "./where";
+import { toEngineNode, toEngineWhere, type NodeArgs, type Where } from "./where";
 
 // ---- Public types ----------------------------------------------------------
 
@@ -67,6 +67,11 @@ export interface WriteResult {
   id: string;
   /** "queued" when the send failed transiently and the outbox will retry. */
   status: "applied" | "queued";
+}
+
+export interface BulkResult {
+  /** Rows the filter matched, and therefore wrote. */
+  count: number;
 }
 
 export interface FindArgs<M extends Models, F extends Fields> {
@@ -95,6 +100,15 @@ export interface ModelClient<M extends Models, F extends Fields> {
   count(args?: { where?: Where<F, M> }): Query<number>;
 
   create(args: { data: CreateData<F> }): Write;
+  /**
+   * Writes every row matching `where`, up to 1000. Sent straight to the
+   * engine, which resolves the rows: unlike single-row writes it is not
+   * applied optimistically and not queued offline, because which rows match
+   * is the engine's answer, not the cache's.
+   */
+  updateMany(args: { where: Where<F, M>; data: UpdateData<F> }): Promise<BulkResult>;
+  /** Deletes every row matching `where`, up to 1000. Sent like `updateMany`. */
+  deleteMany(args: { where: Where<F, M> }): Promise<BulkResult>;
   update(args: { where: { id: string }; data: UpdateData<F> }): Write;
   upsert(args: { where: { id: string }; create: CreateData<F>; update: UpdateData<F> }): Write;
   delete(args: { where: { id: string } }): Write;
@@ -400,6 +414,25 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
       const rowId = requireId(model, where);
       return new Write(runtime, [{ op: "delete", namespace: model.key, id: rowId }], rowId);
     },
+
+    updateMany: async ({ where, data }: { where: unknown; data: Record<string, unknown> }) => {
+      const { values, links } = splitData(model, "", data, false);
+      if (links.length > 0) {
+        throw new Error(`"${model.key}.updateMany" cannot connect or disconnect relations.`);
+      }
+      return runtime.impl.bulk({
+        op: "patchMany",
+        namespace: model.key,
+        where: toEngineWhere(model, where as never, runtime.graph) as Record<string, unknown>,
+        values,
+      });
+    },
+    deleteMany: async ({ where }: { where: unknown }) =>
+      runtime.impl.bulk({
+        op: "deleteMany",
+        namespace: model.key,
+        where: toEngineWhere(model, where as never, runtime.graph) as Record<string, unknown>,
+      }),
   } as unknown as ModelClient<Models, Fields>;
 }
 

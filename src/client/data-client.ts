@@ -448,6 +448,29 @@ class DataClientImpl {
     }
   }
 
+  /**
+   * A bulk write: sent straight to the engine, which resolves the rows it
+   * matches. Not optimistic and not queued — the cache cannot know what the
+   * filter matches, and an offline queue would replay it against a different
+   * database than the one the caller was looking at.
+   */
+  async bulk(op: TxOp): Promise<{ count: number }> {
+    const problem = this.configProblem();
+    if (problem) throw new Error(problem);
+
+    const entry: OutboxEntry = {
+      clientTxId: id(),
+      txId: id(),
+      workspaceId: this.config.workspaceId,
+      ops: [op],
+      createdAt: this.now(),
+    };
+    const result = await this.sendTransaction(entry, false);
+    // Live queries refresh through the engine's invalidation; a one-shot read
+    // after this call sees the new rows because it goes to the engine too.
+    return { count: result?.matched?.[0] ?? 0 };
+  }
+
   /** One-shot read over HTTP: no socket, no cache, no live updates. */
   async queryOnce(
     query: QueryDocument
@@ -1160,7 +1183,7 @@ class DataClientImpl {
   private async sendTransaction(
     entry: OutboxEntry,
     retry: boolean
-  ): Promise<void> {
+  ): Promise<{ seq?: number; applied?: number; matched?: Record<number, number> } | null> {
     const token = await this.requireToken();
     const response = await this.fetchImpl(
       `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/transact`,
@@ -1203,7 +1226,9 @@ class DataClientImpl {
     }
 
     const result = (payload as { result?: unknown }).result;
-    if (isRecord(result)) this.noteSeq(result.seq);
+    if (!isRecord(result)) return null;
+    this.noteSeq(result.seq);
+    return result as { seq?: number; applied?: number; matched?: Record<number, number> };
   }
 
   private async requireToken(): Promise<string> {

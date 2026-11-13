@@ -1295,3 +1295,75 @@ describe("the local log is bounded", () => {
     expect(scalar(source.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe("9");
   });
 });
+
+describe("bulk writes through a restore", () => {
+  test("replay changes the rows the original changed, not the ones the filter matches now", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const sql = txExecutor(source.db);
+    void sql;
+
+    // Snapshot first, so everything below is rebuilt by replaying the log
+    // rather than restored from the snapshot.
+    const snapshotBucket = new FakeR2Bucket();
+    await flushPending(snapshotBucket, source.sql, TEST_WORKSPACE, NOW);
+    await snapshotWorkspace(snapshotBucket, source.sql, TEST_WORKSPACE, NOW);
+
+    // Three folders named "Batch", bulk-renamed, then a fourth added with the
+    // old name afterwards. Re-running the filter during a replay would catch
+    // the fourth as well; replaying the resolved rows cannot.
+    run(source, {
+      txId: "mk",
+      ops: ["p1", "p2", "p3"].map((id) => ({ op: "insert", namespace: "folders", id, values: { name: "Batch" } })),
+    } as unknown as TxEnvelope);
+    run(source, {
+      txId: "bulk",
+      ops: [{ op: "patchMany", namespace: "folders", where: { name: "Batch" }, values: { name: "Renamed" } }],
+    } as unknown as TxEnvelope);
+    run(source, {
+      txId: "after",
+      ops: [{ op: "insert", namespace: "folders", id: "p4", values: { name: "Batch" } }],
+    } as unknown as TxEnvelope);
+
+    const bucket = snapshotBucket;
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 5);
+    const target = createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, {
+      now: NOW + 10,
+    });
+
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    expect(
+      target.db.query(`SELECT "id" FROM "folders" WHERE "name" = 'Batch' ORDER BY "id"`).all()
+    ).toEqual([{ id: "p4" }]);
+  });
+
+  test("a retry of a bulk write is still deduped after a restore", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    run(source, {
+      txId: "mk",
+      ops: [{ op: "insert", namespace: "folders", id: "q1", values: { name: "Batch" } }],
+    } as unknown as TxEnvelope);
+
+    const envelope = {
+      txId: "bulk",
+      clientTxId: "client-bulk",
+      ops: [{ op: "patchMany", namespace: "folders", where: { name: "Batch" }, values: { name: "Renamed" } }],
+    } as unknown as TxEnvelope;
+    run(source, envelope);
+
+    const bucket = new FakeR2Bucket();
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
+
+    const target = createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, {
+      now: NOW + 10,
+    });
+
+    // The log holds the resolved rows, whose hash is not the hash of what the
+    // client sent; the segment carries the client's hash so this still matches.
+    const retry = run(target, { ...envelope, txId: "retry" });
+    expect(retry).toMatchObject({ applied: 0 });
+  });
+});

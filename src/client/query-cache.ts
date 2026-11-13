@@ -103,7 +103,15 @@ export function applyOptimisticOps(
   // so a link can materialise the child with them.
   const pendingValues = new Map<string, Record<string, unknown>>();
   for (const op of ops) {
-    if (op.op === "link" || op.op === "unlink" || op.op === "delete") continue;
+    if (
+      op.op === "link" ||
+      op.op === "unlink" ||
+      op.op === "delete" ||
+      op.op === "patchMany" ||
+      op.op === "deleteMany"
+    ) {
+      continue;
+    }
     pendingValues.set(op.id, {
       ...(pendingValues.get(op.id) ?? {}),
       ...(op.op === "upsert" ? op.create : {}),
@@ -124,6 +132,12 @@ export function applyOptimisticOp(
   pendingValues?: ReadonlyMap<string, Record<string, unknown>>
 ): QueryResult {
   switch (op.op) {
+    // Which rows a bulk write matches is decided by the engine, inside the
+    // transaction. The cache cannot know it, so these are not applied
+    // optimistically; the live query refresh that follows carries the result.
+    case "patchMany":
+    case "deleteMany":
+      return data;
     case "insert":
     case "patch":
     case "update":

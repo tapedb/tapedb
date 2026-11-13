@@ -32,6 +32,8 @@ const OP_KINDS = new Set<TxOpKind>([
   "insert",
   "patch",
   "upsert",
+  "patchMany",
+  "deleteMany",
   "update",
   "merge",
   "link",
@@ -47,6 +49,16 @@ export interface ValidatedValuesOp {
   values: Record<string, SqlValue>;
   /** `upsert` only: the values for the row when it does not exist yet. */
   createValues?: Record<string, SqlValue>;
+}
+
+/** A bulk write, before the engine resolves which rows it touches. */
+export interface ValidatedBulkOp {
+  kind: "patchMany" | "deleteMany";
+  namespace: string;
+  /** Client-shaped query filter; compiled when the rows are resolved. */
+  where: Record<string, unknown>;
+  /** `patchMany` only: values keyed by SQLite column name. */
+  values?: Record<string, SqlValue>;
 }
 
 export interface ValidatedDeleteOp {
@@ -72,6 +84,7 @@ export interface ValidatedLinkOp {
 }
 
 export type ValidatedOp =
+  | ValidatedBulkOp
   | ValidatedValuesOp
   | ValidatedDeleteOp
   | ValidatedLinkOp;
@@ -171,6 +184,28 @@ function validateOp(value: unknown, context: ValidationContext): ValidatedOp {
   const namespaceName = value.namespace;
   if (typeof namespaceName !== "string" || namespaceName.length === 0) {
     throw invalidOp("Op namespace is required.", context);
+  }
+
+  if (opKind === "patchMany" || opKind === "deleteMany") {
+    const namespace = findNamespace(namespaceName);
+    if (!namespace) {
+      throw new TxError(
+        "unknown_namespace",
+        `Unknown namespace "${namespaceName}".`,
+        { txId: context.txId, opIndex: context.opIndex }
+      );
+    }
+    if (!isPlainObject(value.where)) {
+      throw invalidOp(`"${opKind}" needs a "where" object.`, context);
+    }
+    return {
+      kind: opKind,
+      namespace: namespaceName,
+      where: value.where,
+      ...(opKind === "patchMany"
+        ? { values: validateValues(namespace, value.values, context) }
+        : {}),
+    } as ValidatedOp;
   }
 
   const namespace = findNamespace(namespaceName);
@@ -507,6 +542,11 @@ export function requiredColumns(namespace: NamespaceDefinition): string[] {
         !definition.optional && !ENGINE_MANAGED_ATTRIBUTES.has(attribute)
     )
     .map(([attribute]) => toSnakeCase(attribute));
+}
+
+/** True for an unresolved bulk write. `expandBulkOps` replaces these. */
+export function isBulkOp(op: ValidatedOp): op is ValidatedBulkOp {
+  return op.kind === "patchMany" || op.kind === "deleteMany";
 }
 
 export function isLinkOp(op: ValidatedOp): op is ValidatedLinkOp {
