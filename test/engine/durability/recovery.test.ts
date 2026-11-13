@@ -1180,3 +1180,26 @@ describe("retries the restore cannot vouch for", () => {
     ).toThrow(/only meaningful with a clientTxId/);
   });
 });
+
+describe("strict ops through a restore", () => {
+  test("insert and patch replay from segments, and a forced recovery converges", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+
+    run(source, { txId: "i1", ops: [{ op: "insert", namespace: "folders", id: "f-strict", values: { name: "Made" } }] } as unknown as TxEnvelope);
+    run(source, { txId: "p1", ops: [{ op: "patch", namespace: "folders", id: "f-strict", values: { name: "Renamed" } }] } as unknown as TxEnvelope);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+
+    const target = createSource();
+    const exec = recoveryExecutor(target.db, target.sql);
+    await recoverWorkspace(bucket as unknown as R2Bucket, exec, TEST_WORKSPACE, { now: NOW + 20 });
+    expect(scalar(target.db, `SELECT name FROM "folders" WHERE "id" = 'f-strict'`)).toBe("Renamed");
+
+    // A forced re-run restores over the same rows and must land identically.
+    await recoverWorkspace(bucket as unknown as R2Bucket, exec, TEST_WORKSPACE, { force: true, now: NOW + 30 });
+    expect(scalar(target.db, `SELECT name FROM "folders" WHERE "id" = 'f-strict'`)).toBe("Renamed");
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+  });
+});

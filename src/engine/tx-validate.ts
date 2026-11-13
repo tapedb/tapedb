@@ -29,6 +29,8 @@ const ISO_DATE_PATTERN =
 const RESERVED_ATTRIBUTES = new Set(["id", "updatedSeq", "updated_seq"]);
 const ENGINE_MANAGED_ATTRIBUTES = new Set(["createdAt", "updatedAt"]);
 const OP_KINDS = new Set<TxOpKind>([
+  "insert",
+  "patch",
   "update",
   "merge",
   "link",
@@ -37,7 +39,7 @@ const OP_KINDS = new Set<TxOpKind>([
 ]);
 
 export interface ValidatedValuesOp {
-  kind: "update" | "merge";
+  kind: "insert" | "patch" | "update" | "merge";
   namespace: string;
   id: string;
   /** Values keyed by SQLite column name. */
@@ -183,6 +185,8 @@ function validateOp(value: unknown, context: ValidationContext): ValidatedOp {
   }
 
   switch (opKind) {
+    case "insert":
+    case "patch":
     case "update":
     case "merge":
       return {

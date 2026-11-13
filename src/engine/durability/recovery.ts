@@ -760,6 +760,7 @@ function replayLine(
         seq: line.seq,
         now: line.at,
         txId: "recovery",
+        replay: true,
       },
       [op]
     );
