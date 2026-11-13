@@ -8,6 +8,19 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- The model API. `schema({ task: model({ title: t.string(), column:
+  t.belongsTo("column") }).access({ read: filter(...), update: check(...) }) })`
+  compiles to the engine's registry, permissions and migrations, and
+  `createClient({ schema, url, workspace })` exposes `db.task.findMany /
+  findFirst / findUnique / findPage / count / create / update / upsert /
+  delete`, `db.$transaction`, `db.$files` and `db.$presence`. Reads are
+  awaited over HTTP or subscribed live; writes are lazy, optimistic and queued
+  offline, and resolve to `{ id, status: "applied" | "queued" }`. Row,
+  input and `include` result types are inferred from the schema.
+- React: `useLive(query)`, `useLivePage(pageQuery)` and
+  `usePresence(db, room, presence)`.
+- `model({...}, { table })` maps a model onto an existing table.
+
 - `upsert` transaction op with separate `values` and `create`: the engine
   creates the row from `create` when it is missing and writes `values` when it
   exists, deciding inside the transaction. Row rules judge whichever set will
@@ -46,6 +59,10 @@ All notable changes to this project are documented here. The format follows
   also fires for any other permanent refusal during a background flush.
 
 ### Fixed
+
+- Client ids are monotonic: ids made by one client sort in creation order even
+  within one millisecond (UUIDv7 with the RFC 9562 counter), so ordering by
+  `id` is ordering by creation.
 
 - Live queries keep their page metadata. The client rebuilt its state on every
   `query:diff` without `pageInfo`, so after one live change `loadMore()`
