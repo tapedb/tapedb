@@ -271,13 +271,15 @@ npx tapedb migrate dev --name add_task_priority
 writes the next numbered SQL file — reviewed and committed like any ORM
 migration — plus the bundle `worker.ts` imports. Each workspace's Durable
 Object applies pending migrations on its next wake, one transaction per
-migration.
+migration, with foreign keys switched off around it and checked before it
+commits (SQLite's documented procedure for schema changes): a migration that
+would leave a row pointing at nothing rolls back.
 
 - A new required field needs `.default(...)` or `.optional()`.
 - Drops need `--accept-data-loss`; renames need `--rename old=new` or
   `--rename model.old=new`, otherwise they read as a drop plus an add.
-- Type changes rebuild the table; tables other tables reference are refused
-  with an add-copy-drop alternative.
+- Type, default and reference changes rebuild the table, including tables
+  other tables reference: child rows keep their keys and nothing cascades.
 - Migrations declare what they changed, so recovery can replay log segments
   and snapshots written under an older schema. Undeclared drift fails closed.
 

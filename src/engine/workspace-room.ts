@@ -19,6 +19,7 @@ import {
 import {
   assertMigrationOrder,
   migrationChecksum,
+  applyMigrationWithoutCascades,
   MIGRATIONS_TABLE_SQL,
 } from "./migrations";
 import { forgetFileEntry, recordFileEntry } from "./file-index";
@@ -136,7 +137,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
   /**
    * Applies pending migrations before the object serves any request. Each
    * migration and its `_migrations` row commit in the same transaction, so a
-   * failed boot cannot leave a half-migrated schema.
+   * failed boot cannot leave a half-migrated schema, and each runs with
+   * foreign keys off and checked before commit (see
+   * `applyMigrationWithoutCascades`).
    */
   private async applyMigrations(): Promise<void> {
     assertMigrationOrder();
@@ -164,32 +167,46 @@ export class WorkspaceRoom extends DurableObject<Env> {
         continue;
       }
 
-      this.applyMigration(migration, checksum);
+      await this.applyMigration(migration, checksum);
     }
   }
 
-  private applyMigration(
+  private async applyMigration(
     migration: BundledWorkspaceMigration,
     checksum: string
-  ): void {
-    this.ctx.storage.transactionSync(() => {
-      const sql = this.ctx.storage.sql;
-      sql.exec(migration.sql);
-      sql.exec(
-        `INSERT INTO "_migrations" (id, checksum, applied_at) VALUES (?, ?, ?)`,
-        migration.id,
-        checksum,
-        Date.now()
-      );
-      // Log lines record the app schema they were written under, so recovery
-      // knows which later changes to read them through.
-      if (!isEngineMigration(migration.id)) {
+  ): Promise<void> {
+    const storage = this.ctx.storage;
+    const sql = storage.sql;
+    await applyMigrationWithoutCascades(
+      {
+        run: (statements) => void sql.exec(statements),
+        all: (query) => sql.exec<Record<string, SqlValue>>(query).toArray(),
+        transaction: (fn) => storage.transactionSync(fn),
+        settle: async () => {
+          // Writes made so far in this event sit in an implicit transaction;
+          // syncing them closes it, so the pragma that follows takes effect.
+          if (typeof storage.sync === "function") await storage.sync();
+          else await new Promise((resolve) => setTimeout(resolve, 0));
+        },
+      },
+      migration,
+      () => {
         sql.exec(
-          `INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('schema_version', ?)`,
-          migration.id
+          `INSERT INTO "_migrations" (id, checksum, applied_at) VALUES (?, ?, ?)`,
+          migration.id,
+          checksum,
+          Date.now()
         );
+        // Log lines record the app schema they were written under, so recovery
+        // knows which later changes to read them through.
+        if (!isEngineMigration(migration.id)) {
+          sql.exec(
+            `INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('schema_version', ?)`,
+            migration.id
+          );
+        }
       }
-    });
+    );
   }
 
   async fetch(request: Request): Promise<Response> {

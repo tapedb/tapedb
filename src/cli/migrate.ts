@@ -170,10 +170,6 @@ export function diffSnapshots(
 ): MigrationPlan {
   const plan: MigrationPlan = { statements: [], changes: [], destructive: [], refused: [] };
   const renames = parseRenames(options.renames ?? []);
-  const referenced = (table: string, snapshot: SchemaSnapshot) =>
-    Object.values(snapshot.models).some((model) =>
-      Object.values(model.attributes).some((attribute) => attribute.references?.table === table)
-    );
 
   // Models: renames first, so field diffs compare the right pair.
   const pairs: Array<[string | null, string | null]> = [];
@@ -217,7 +213,7 @@ export function diffSnapshots(
       }
       plan.changes.push({ kind: "renameModel", from: oldName, to: newName, fromTable: oldModel.table, toTable: newModel.table });
     }
-    diffFields(plan, newName, newModel.table, oldModel.attributes, newModel.attributes, renames.fields.get(newName) ?? renames.fields.get(oldName) ?? new Map(), referenced(newModel.table, after) || referenced(oldModel.table, before));
+    diffFields(plan, newName, newModel.table, oldModel.attributes, newModel.attributes, renames.fields.get(newName) ?? renames.fields.get(oldName) ?? new Map());
   }
 
   if (plan.destructive.length > 0 && !options.acceptDataLoss) {
@@ -234,8 +230,7 @@ function diffFields(
   table: string,
   before: Record<string, SnapshotAttribute>,
   after: Record<string, SnapshotAttribute>,
-  renames: Map<string, string>,
-  isReferenced: boolean
+  renames: Map<string, string>
 ): void {
   const handled = new Set<string>();
   for (const [from, to] of renames) {
@@ -253,7 +248,7 @@ function diffFields(
     plan.changes.push({ kind: "renameField", model, table, from, to, fromColumn: column(from), toColumn: column(to) });
     handled.add(from);
     handled.add(to);
-    compareField(plan, model, table, to, { ...before[from] }, after[to], isReferenced, true);
+    compareField(plan, model, table, to, { ...before[from] }, after[to], true);
   }
 
   for (const [name, attribute] of Object.entries(after)) {
@@ -269,7 +264,7 @@ function diffFields(
       plan.statements.push(...indexStatements(table, name, undefined, attribute));
       continue;
     }
-    compareField(plan, model, table, name, before[name], attribute, isReferenced, false);
+    compareField(plan, model, table, name, before[name], attribute, false);
   }
 
   for (const [name, attribute] of Object.entries(before)) {
@@ -288,7 +283,6 @@ function compareField(
   name: string,
   before: SnapshotAttribute,
   after: SnapshotAttribute,
-  isReferenced: boolean,
   renamed: boolean
 ): void {
   // A renamed field's index was dropped and recreated with the rename.
@@ -303,12 +297,6 @@ function compareField(
     plan.changes.push({ kind: "retypeField", model, field: name });
   }
   if (sqlTypeChanged || referencesChanged || defaultChanged) {
-    if (isReferenced) {
-      plan.refused.push(
-        `"${model}.${name}" changes its column definition, which needs a table rebuild, and other tables reference "${table}". SQLite cannot rebuild a referenced table inside a migration without risking cascades. Add a new field, copy the values in your app, then drop the old one.`
-      );
-      return;
-    }
     if (sqlTypeChanged) plan.destructive.push(`convert "${model}.${name}" from ${before.type} to ${after.type}; values that do not convert are lost`);
     plan.statements.push(`-- rebuild "${table}" for "${model}.${name}"`);
     plan.statements.push(`${REBUILD_MARKER}${table}:${name}`);
