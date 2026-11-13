@@ -4,6 +4,19 @@ All notable changes to this project are documented here. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Filters on linked models: a to-one link takes a filter on the row it points
+  at (`where: { board: { archived: false } }`, or `null` for no parent), and a
+  to-many link takes `some`, `every` or `none`. They compile to correlated
+  subqueries, nest two links deep, and combine with `AND` / `OR` / `NOT`.
+  The linked model's read rule is compiled into the subquery, so a filter
+  cannot reveal rows the caller may not see; a model whose read rule is a
+  function, which only runs after fetch, is refused as a filter target, as is
+  one the caller's role cannot read.
+
 ## [0.1.0] - 2026-11-13
 
 First release of the model API. `0.0.1` was the engine extracted from an

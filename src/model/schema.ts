@@ -230,12 +230,15 @@ export type FieldsOf<M> = M extends Model<infer F> ? F : never;
 type TargetOf<S> = S extends BelongsTo<infer T, boolean> ? T : S extends HasMany<infer T> ? T : never;
 type TargetFields<S, M extends Models> = TargetOf<S> extends keyof M ? FieldsOf<M[TargetOf<S>]> : Fields;
 
+/** The fields of the model a relation points at. */
+export type TargetFieldsOf<S, M extends Models> = TargetFields<S, M>;
+
 export type OrderBy<F> =
   | Partial<Record<FilterKeys<F>, "asc" | "desc">>
   | Partial<Record<FilterKeys<F>, "asc" | "desc">>[];
 
 export interface IncludeArgs<M extends Models, F extends Fields> {
-  where?: Where<F>;
+  where?: Where<F, M>;
   orderBy?: OrderBy<F>;
   take?: number;
   include?: Include<M, F>;

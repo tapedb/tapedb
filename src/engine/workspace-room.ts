@@ -28,6 +28,7 @@ import {
   executeCompiledQuery,
   executeCompiledQueryWithPageInfo,
   executeQueryWithPageInfo,
+  viewAccess,
 } from "./query-execute";
 import {
   isPlainObject,
@@ -725,11 +726,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     let data: QueryResult;
     let pageInfo: QueryPageInfo;
     try {
-      const compiled = compileQuery(query);
-      authorizeQuery(
-        claimFromAttachment(attachment, this.workspaceId),
-        compiled
-      );
+      const socketClaim = claimFromAttachment(attachment, this.workspaceId);
+      const compiled = compileQuery(query, viewAccess(socketClaim));
+      authorizeQuery(socketClaim, compiled);
       ({ data, pageInfo } = executeCompiledQueryWithPageInfo(
         durableObjectSqlExecutor(this.ctx.storage),
         compiled,
@@ -868,7 +867,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
       for (const subscription of attachment.subscriptions) {
         let compiled: CompiledQuery;
         try {
-          compiled = compileQuery(subscription.query);
+          compiled = compileQuery(
+            subscription.query,
+            viewAccess(claimFromAttachment(attachment, this.workspaceId))
+          );
         } catch {
           // A subscription stored by an older deployment may no longer
           // compile; leave it registered so the client can resubscribe.

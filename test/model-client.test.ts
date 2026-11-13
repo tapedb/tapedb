@@ -207,10 +207,12 @@ describe("reads", () => {
     expect(await client("bob").board.count()).toBe(1);
   });
 
-  test("unknown fields and relation filters fail before the request", () => {
+  test("unknown fields fail before the request; relation filters compile", () => {
     const db = client();
     expect(() => db.task.findMany({ where: { nope: 1 } as never })).toThrow(/no filterable field "nope"/);
-    expect(() => db.task.findMany({ where: { column: { name: "x" } } as never })).toThrow(/not supported yet/);
+    expect(
+      db.task.findMany({ where: { column: { name: "x" } } as never }).document
+    ).toEqual({ task: { $: { where: { $link: [{ label: "column", mode: "parent", where: { name: "x" } }] } } } });
     expect(() => db.task.findMany({ where: { title: { like: "x" } } as never })).toThrow(/Unknown filter "like"/);
     expect(() => db.task.findMany({ include: { nope: true } as never })).toThrow(/no relation "nope"/);
   });

@@ -90,6 +90,21 @@ error, and `include` shapes the result type. Filters take `not`, `in`,
 filters. Pagination is keyset, so an insert above the window cannot repeat a
 row.
 
+Filters can also reach through a relation. A to-one link takes a filter on
+the row it points at; a to-many link takes `some`, `every` or `none`:
+
+```ts
+await db.column.findMany({ where: { board: { archived: false } } });
+await db.board.findMany({ where: { columns: { some: { tasks: { none: {} } } } } });
+await db.task.findMany({ where: { column: null } });          // no parent
+```
+
+These compile to correlated subqueries, so the linked rows are never fetched.
+The linked model's own read rule is compiled into the subquery, so a filter
+cannot answer a question about rows the caller may not see; a model whose read
+rule is a function (which only runs after fetch) is refused as a filter
+target. The types follow one link; a second hop is checked by the engine.
+
 Building a query validates it against the schema, so an unknown field,
 operator or relation throws there and then, at the call, rather than
 resolving to an error later. Everything the engine decides — permissions, a

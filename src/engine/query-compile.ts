@@ -21,12 +21,14 @@ import {
   isIsoDate,
   isPlainObject,
   MAX_LINK_DEPTH,
+  MAX_RELATION_DEPTH,
   parseQueryOptions,
   parseWhere,
   decodeQueryCursor,
   type QueryComparison,
   type QueryOptions,
   type QueryScalar,
+  type QueryRelationFilter,
   type QueryWhere,
   type SortDirection,
 } from "./query-types";
@@ -130,13 +132,21 @@ function linkLabels(): Map<string, Map<string, LinkLabelInfo>> {
   return linkLabelCache.index;
 }
 
-export function compileQuery(value: unknown): CompiledQuery {
+/**
+ * Compiles a query document.
+ *
+ * `view` is how relation filters learn what the caller may read: their
+ * subqueries run over rows that are never returned, so without it a filter on
+ * a linked namespace could reveal rows a read rule hides. Omitting it compiles
+ * without read rules, which matches executing without a claim.
+ */
+export function compileQuery(value: unknown, view?: ViewAccess): CompiledQuery {
   if (!isPlainObject(value)) {
     throw invalidOp("Query must be a plain object keyed by namespace.");
   }
 
   const nodes = Object.entries(value).map(([namespace, node]) =>
-    compileNode(namespace, node, 0)
+    compileNode(namespace, node, 0, view)
   );
 
   return { nodes };
@@ -199,7 +209,8 @@ export function buildSelectSql(
 function compileNode(
   namespaceName: string,
   value: unknown,
-  depth: number
+  depth: number,
+  view?: ViewAccess
 ): CompiledNode {
   if (depth > MAX_LINK_DEPTH) {
     throw invalidOp(
@@ -250,7 +261,7 @@ function compileNode(
       direction: info.direction,
       multiplicity: linkMultiplicity(info),
       foreignKeyColumn: toSnakeCase(info.link.foreignKey.attribute),
-      node: compileNode(target.namespace, raw, depth + 1),
+      node: compileNode(target.namespace, raw, depth + 1, view),
     });
   }
 
@@ -262,7 +273,7 @@ function compileNode(
   }
 
   const order = compileOrder(namespace, options.order);
-  const conditions = compileWhere(namespace, options.where);
+  const conditions = compileWhere(namespace, options.where, { view });
   if (options.after !== undefined) {
     conditions.push({ ...cursorCondition(options.after, order), cursor: true });
   }
@@ -343,7 +354,8 @@ function cursorCondition(
  */
 export function compileViewCondition(
   namespaceName: string,
-  branches: readonly unknown[]
+  branches: readonly unknown[],
+  alias?: string
 ): CompiledCondition {
   const namespace = findNamespace(namespaceName);
   if (!namespace) {
@@ -359,7 +371,7 @@ export function compileViewCondition(
   for (const branch of branches) {
     let conditions: CompiledCondition[];
     try {
-      conditions = compileWhere(namespace, parseWhere(branch));
+      conditions = compileWhere(namespace, parseWhere(branch), { alias });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new TxError(
@@ -389,17 +401,45 @@ function selectColumns(namespace: NamespaceDefinition): string[] {
   return [...columns];
 }
 
+/**
+ * How a subquery sees the caller's access to a namespace. Supplied by the
+ * executor, which holds the claim; the compiler only places what it returns.
+ */
+export interface ViewAccess {
+  /** `where` view-rule branches to AND into a read, or null when there is none. */
+  branches(namespace: string): readonly QueryWhere[] | null;
+  /** A reason the namespace cannot be filtered on in SQL, or null. */
+  refusal(namespace: string): string | null;
+}
+
+interface WhereContext {
+  /** Table alias to qualify columns with, for correlated subqueries. */
+  alias?: string;
+  view?: ViewAccess;
+  /** Relation nesting so far. */
+  depth?: number;
+  /** Shared counter, so every subquery in one statement gets its own alias. */
+  aliases?: { next: number };
+}
+
 function compileWhere(
   namespace: NamespaceDefinition,
-  where: QueryWhere | undefined
+  where: QueryWhere | undefined,
+  context: WhereContext = {}
 ): CompiledCondition[] {
   if (where === undefined) return [];
 
   const conditions: CompiledCondition[] = [];
   for (const [attribute, value] of Object.entries(where)) {
+    if (attribute === "$link") {
+      for (const relation of value as QueryRelationFilter[]) {
+        conditions.push(compileRelationFilter(namespace, relation, context));
+      }
+      continue;
+    }
     if (attribute === "$or" || attribute === "$and") {
       const branches = (value as QueryWhere[]).map((branch) =>
-        conjunction(compileWhere(namespace, branch))
+        conjunction(compileWhere(namespace, branch, context))
       );
       conditions.push(
         joinConditions(branches, attribute === "$or" ? " OR " : " AND ")
@@ -407,7 +447,7 @@ function compileWhere(
       continue;
     }
     if (attribute === "$not") {
-      const inner = conjunction(compileWhere(namespace, value as QueryWhere));
+      const inner = conjunction(compileWhere(namespace, value as QueryWhere, context));
       // SQL's NOT of an unknown is unknown, which drops the row. A row whose
       // field is null does not match `{ status: "done" }`, so it should match
       // its negation: COALESCE treats unknown as false before negating.
@@ -438,12 +478,113 @@ function compileWhere(
             resolved.column,
             resolved.type,
             attribute,
-            value as QueryComparison
+            value as QueryComparison,
+            context.alias
           )
-        : compileEquality(resolved, attribute, value as QueryScalar)
+        : compileEquality(resolved, attribute, value as QueryScalar, context.alias)
     );
   }
   return conditions;
+}
+
+/**
+ * One relation filter, as a correlated subquery over the linked table.
+ *
+ *   parent  the row this one points at matches      fk IN (SELECT id ...)
+ *   some    at least one child matches              EXISTS (...)
+ *   none    no child matches                        NOT EXISTS (...)
+ *   every   no child fails                          NOT EXISTS (... AND NOT inner)
+ *
+ * The linked rows are never returned, so the caller could otherwise learn
+ * about rows a read rule hides. The target's `where` view rule is therefore
+ * compiled into the subquery, and a target whose rule is a function — which
+ * only runs after fetch — is refused rather than filtered without it.
+ */
+function compileRelationFilter(
+  namespace: NamespaceDefinition,
+  relation: QueryRelationFilter,
+  context: WhereContext
+): CompiledCondition {
+  const depth = context.depth ?? 0;
+  if (depth >= MAX_RELATION_DEPTH) {
+    throw invalidOp(
+      `Relation filters may nest at most ${MAX_RELATION_DEPTH} levels; "${relation.label}" is deeper.`
+    );
+  }
+
+  const info = findLinkLabel(namespace.apiName, relation.label);
+  if (!info) {
+    throw new TxError(
+      "unknown_link",
+      `Unknown link "${relation.label}" on namespace "${namespace.apiName}".`
+    );
+  }
+
+  const target = findNamespace(linkTarget(info).namespace);
+  if (!target) {
+    throw new TxError(
+      "unknown_namespace",
+      `Link "${relation.label}" points at an unregistered namespace.`
+    );
+  }
+
+  const refusal = context.view?.refusal(target.apiName);
+  if (refusal !== undefined && refusal !== null) {
+    throw new TxError("invalid_op", refusal);
+  }
+
+  const multiplicity = linkMultiplicity(info);
+  if (relation.mode === "parent" && multiplicity !== "one") {
+    throw invalidOp(
+      `"${relation.label}" is a to-many link: filter it with some, every or none.`
+    );
+  }
+  if (relation.mode !== "parent" && multiplicity === "one") {
+    throw invalidOp(
+      `"${relation.label}" is a to-one link: filter it directly, not with ${relation.mode}.`
+    );
+  }
+
+  const aliases = context.aliases ?? { next: 0 };
+  const alias = `__r${aliases.next++}`;
+  const foreignKey = toSnakeCase(info.link.foreignKey.attribute);
+  const inner = compileWhere(target, relation.where, {
+    alias,
+    view: context.view,
+    depth: depth + 1,
+    aliases,
+  });
+
+  const viewBranches = context.view?.branches(target.apiName);
+  if (viewBranches !== undefined && viewBranches !== null) {
+    inner.push(compileViewCondition(target.apiName, viewBranches, alias));
+  }
+
+  const params: SqlValue[] = inner.flatMap((condition) => condition.params);
+  const innerSql =
+    inner.length === 0 ? "1 = 1" : inner.map((condition) => `(${condition.sql})`).join(" AND ");
+  const from = `${quoteIdentifier(target.table)} AS ${quoteIdentifier(alias)}`;
+
+  if (relation.mode === "parent") {
+    // The outer row holds the key. A null key matches nothing, which is what
+    // "its parent matches" means for a row that has no parent.
+    return {
+      sql: `${qualify(foreignKey, context.alias ?? namespace.table)} IN (SELECT ${quoteIdentifier(alias)}."id" FROM ${from} WHERE ${innerSql})`,
+      params,
+    };
+  }
+
+  const correlation = `${qualify(foreignKey, alias)} = ${qualify("id", context.alias ?? namespace.table)}`;
+  if (relation.mode === "every") {
+    // "every child matches" is "no child fails", which is also true when there
+    // are no children — the same reading SQL's universal quantifier has.
+    return {
+      sql: `NOT EXISTS (SELECT 1 FROM ${from} WHERE ${correlation} AND NOT COALESCE((${innerSql}), 0))`,
+      params,
+    };
+  }
+  const exists = `EXISTS (SELECT 1 FROM ${from} WHERE ${correlation} AND (${innerSql}))`;
+  return { sql: relation.mode === "none" ? `NOT ${exists}` : exists, params };
 }
 
 /** AND of a branch's conditions; an empty branch matches everything. */
@@ -502,13 +643,21 @@ function resolveAttribute(
   return { column: toSnakeCase(attribute), type: definition.type };
 }
 
+/** `"column"` or `"alias"."column"`: unqualified names bind to the nearest FROM. */
+function qualify(column: string, alias?: string): string {
+  return alias === undefined
+    ? quoteIdentifier(column)
+    : `${quoteIdentifier(alias)}.${quoteIdentifier(column)}`;
+}
+
 function compileEquality(
   attribute: ResolvedAttribute,
   name: string,
-  value: QueryScalar
+  value: QueryScalar,
+  alias?: string
 ): CompiledCondition {
   const normalised = normaliseFilterValue(attribute.type, value, name);
-  const column = quoteIdentifier(attribute.column);
+  const column = qualify(attribute.column, alias);
 
   if (normalised === null) {
     return { sql: `${column} IS NULL`, params: [] };
@@ -520,9 +669,10 @@ function compileComparison(
   columnName: string,
   type: AttributeType,
   name: string,
-  comparison: QueryComparison
+  comparison: QueryComparison,
+  alias?: string
 ): CompiledCondition {
-  const column = quoteIdentifier(columnName);
+  const column = qualify(columnName, alias);
   const clauses: string[] = [];
   const params: SqlValue[] = [];
 
