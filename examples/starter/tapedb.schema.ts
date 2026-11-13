@@ -1,61 +1,35 @@
-import { WORKSPACE_ROLE_LEVELS } from "tapedb";
-import { defineSchema } from "tapedb";
+import { check, model, role, schema, t } from "tapedb/schema";
 
 /**
- * One schema, two artifacts: the engine registry and the client schema are both
- * generated from this object, so they cannot drift.
+ * The whole database. After changing it, run
+ *   npx tapedb migrate dev --name <what changed>
+ * and commit what it writes under tapedb/.
  */
-export const schema = defineSchema({
-  entities: {
-    boards: {
-      name: { type: "string" },
-      ownerId: { type: "string", optional: true, indexed: true },
-    },
-    columns: {
-      name: { type: "string" },
-      boardId: { type: "string", optional: true, indexed: true },
-    },
-    tasks: {
-      title: { type: "string" },
-      done: { type: "boolean", optional: true },
-      columnId: { type: "string", optional: true, indexed: true },
-    },
-  },
-  links: [
-    {
-      apiName: "boardColumns",
-      kind: "one-to-many",
-      forward: { namespace: "boards", label: "columns", has: "many" },
-      reverse: { namespace: "columns", label: "board", has: "one" },
-      foreignKey: { namespace: "columns", attribute: "boardId" },
-    },
-    {
-      apiName: "columnTasks",
-      kind: "one-to-many",
-      forward: { namespace: "columns", label: "tasks", has: "many" },
-      reverse: { namespace: "tasks", label: "column", has: "one" },
-      foreignKey: { namespace: "tasks", attribute: "columnId" },
-    },
-  ],
-  permissions: {
-    boards: {
-      // Anyone in the workspace may read; only the owner may edit or delete.
-      view: WORKSPACE_ROLE_LEVELS.MEMBER,
-      create: WORKSPACE_ROLE_LEVELS.EDITOR,
-      update: ({ auth, data }) => data?.ownerId === auth.sub,
-      delete: ({ auth, data }) => data?.ownerId === auth.sub,
-    },
-    columns: {
-      view: WORKSPACE_ROLE_LEVELS.MEMBER,
-      create: WORKSPACE_ROLE_LEVELS.EDITOR,
-      update: WORKSPACE_ROLE_LEVELS.EDITOR,
-      delete: WORKSPACE_ROLE_LEVELS.EDITOR,
-    },
-    tasks: {
-      view: WORKSPACE_ROLE_LEVELS.MEMBER,
-      create: WORKSPACE_ROLE_LEVELS.EDITOR,
-      update: WORKSPACE_ROLE_LEVELS.EDITOR,
-      delete: WORKSPACE_ROLE_LEVELS.EDITOR,
-    },
-  },
+export default schema({
+  board: model({
+    name: t.string(),
+    ownerId: t.string().index(),
+    archived: t.boolean().default(false),
+    columns: t.hasMany("column"),
+  }).access({
+    // Anyone in the workspace reads; only the owner edits or deletes.
+    read: role("member"),
+    create: role("editor"),
+    update: check(({ auth, row }) => row?.ownerId === auth.sub),
+    delete: check(({ auth, row }) => row?.ownerId === auth.sub),
+  }),
+
+  column: model({
+    name: t.string(),
+    position: t.number().default(0).index(),
+    board: t.belongsTo("board", { onDelete: "cascade" }),
+    tasks: t.hasMany("task"),
+  }),
+
+  task: model({
+    title: t.string(),
+    done: t.boolean().default(false),
+    due: t.date().optional(),
+    column: t.belongsTo("column").optional(),
+  }),
 });

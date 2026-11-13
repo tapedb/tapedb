@@ -64,6 +64,13 @@ describe("migrate dev", () => {
     const result = migrateDev(root, v1, "entities");
     expect(result).toMatchObject({ status: "created", id: "0002_entities" });
 
+    // The count the CLI prints is of SQL statements, not of lines: a
+    // CREATE TABLE spans many lines and is one statement.
+    const written = readMigrations(root)[0].sql;
+    const semicolons = written.split(";").filter((part) => part.trim()).length;
+    expect(result.status === "created" ? result.statements : -1).toBe(semicolons);
+    expect(written.split("\n").length).toBeGreaterThan(semicolons);
+
     const [first] = readMigrations(root);
     expect(await migrationChecksum(first.sql)).toBe(await migrationChecksum(v1.migrations.at(-1)!.sql));
     expect(migrateCheck(root, v1)).toEqual({ ok: true, problems: [] });

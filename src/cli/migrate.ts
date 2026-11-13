@@ -459,7 +459,12 @@ export function migrateDev(
   return {
     status: "created",
     id: file.id,
-    statements: file.sql.split("\n").filter((line) => line.trim() && !line.startsWith("--")).length,
+    statements: file.sql
+      .split("\n")
+      .filter((line) => !line.startsWith("--"))
+      .join("\n")
+      .split(";")
+      .filter((statement) => statement.trim()).length,
     changes: file.changes,
   };
 }
