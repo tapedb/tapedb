@@ -145,6 +145,12 @@ export interface QueryDiffMessage {
   added: unknown[];
   updated: unknown[];
   removed: string[];
+  /**
+   * Every id in the namespace's result, in the query's order. Present when
+   * keeping surviving rows in place and appending `added` would not give
+   * that order: a row arrived mid-list, or an update moved one.
+   */
+  order?: string[];
   /** Present when the subscription's page metadata changed. */
   pageInfo?: QueryPageInfo;
 }
