@@ -236,6 +236,7 @@ export function assertOpPermission(claim: RoleClaim, op: ValidatedOp): void {
       assertPermission(claim, op.namespace, "create");
       return;
     case "patch":
+    case "upsert":
     case "update":
     case "merge":
       assertPermission(claim, op.namespace, "update");
@@ -287,7 +288,11 @@ function targetOf(op: ValidatedOp, rowExists: boolean): RowTarget {
     namespace: op.namespace,
     action,
     id: op.id,
-    values: op.values,
+    // An upsert that creates is judged on what it will create.
+    values:
+      op.kind === "upsert" && !rowExists && op.createValues !== undefined
+        ? op.createValues
+        : op.values,
   };
 }
 
