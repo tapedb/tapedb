@@ -64,10 +64,24 @@ they are worth stating:
 
 ## Releasing
 
-`tapedb` is unscoped, so no npm org is needed:
+Before publishing, run the package the way a consumer gets it, not the way
+the repo has it. Every bug found late in 0.1.0 — the CLI exiting silently
+under `npx`, uploads refusing to run under `tapedb dev` — was invisible to
+`bun test` and obvious within a minute of this:
 
 ```bash
 bun run verify
+bun pm pack --destination /tmp/pack          # the published artifact
+cd $(mktemp -d) && npm init -y && npm i /tmp/pack/tapedb-*.tgz wrangler
+npx tapedb init && npx tapedb dev            # then drive it with a script:
+                                             # writes, a live subscription,
+                                             # an upload, a migration
+```
+
+`tapedb` is unscoped and the name was free on npm as of 0.1.0, so no org is
+needed:
+
+```bash
 npm login
 npm publish --access public
 ```
