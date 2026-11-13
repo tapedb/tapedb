@@ -26,6 +26,8 @@ export type QueryScalar = string | number | boolean | null;
 export interface QueryComparison {
   $ne?: QueryScalar;
   $in?: QueryScalar[];
+  /** Not in the list. Like `$ne`, also matches rows where the value is null. */
+  $nin?: QueryScalar[];
   $gt?: QueryScalar;
   $gte?: QueryScalar;
   $lt?: QueryScalar;
@@ -34,9 +36,19 @@ export interface QueryComparison {
 
 export type QueryWhereValue = QueryScalar | QueryComparison;
 
+/**
+ * Attribute conditions, ANDed. Three reserved keys combine whole filters:
+ * `$or` and `$and` take non-empty arrays of filters, `$not` takes one.
+ */
 export interface QueryWhere {
-  [attribute: string]: QueryWhereValue;
+  [attribute: string]: QueryWhereValue | QueryWhere | QueryWhere[] | undefined;
+  $or?: QueryWhere[];
+  $and?: QueryWhere[];
+  $not?: QueryWhere;
 }
+
+/** How deep `$or` / `$and` / `$not` may nest inside one filter. */
+export const MAX_WHERE_DEPTH = 4;
 
 export interface QueryOptions {
   where?: QueryWhere;
@@ -48,6 +60,11 @@ export interface QueryOptions {
    * order.
    */
   after?: string;
+  /**
+   * Top level only: also report how many rows match, ignoring `after` and
+   * `limit`, as `pageInfo[namespace].count`. With `limit: 0` no rows are read.
+   */
+  count?: boolean;
 }
 
 /**
@@ -87,6 +104,8 @@ export interface PageInfo {
    * the query has an explicit `order`. Pass it back as `$: { after }`.
    */
   nextCursor?: string;
+  /** Total matching rows, when the query asked for `count`. */
+  count?: number;
 }
 
 export type QueryPageInfo = Record<string, PageInfo>;
@@ -104,10 +123,12 @@ export interface QueryErrorResponse {
   };
 }
 
-const OPTION_KEYS = new Set(["where", "order", "limit", "after"]);
+const OPTION_KEYS = new Set(["where", "order", "limit", "after", "count"]);
+const LOGICAL_KEYS = new Set(["$or", "$and", "$not"]);
 const COMPARISON_OPERATORS = new Set([
   "$ne",
   "$in",
+  "$nin",
   "$gt",
   "$gte",
   "$lt",
@@ -167,8 +188,16 @@ export function parseQueryOptions(value: unknown): QueryOptions {
   if ("order" in value) {
     options.order = parseOrder(value.order);
   }
+  if ("count" in value) {
+    if (typeof value.count !== "boolean") {
+      throw invalidValue('"count" must be true or false.');
+    }
+    options.count = value.count;
+  }
   if ("limit" in value) {
-    options.limit = parseLimit(value.limit);
+    // limit 0 only makes sense as "count, read no rows".
+    options.limit =
+      value.limit === 0 && options.count === true ? 0 : parseLimit(value.limit);
   }
   if ("after" in value) {
     options.after = parseCursor(value.after);
@@ -243,13 +272,36 @@ function parseCursor(value: unknown): string {
 }
 
 /** Validates a `where` object. Exported for view rules, which share the shape. */
-export function parseWhere(value: unknown): QueryWhere {
+export function parseWhere(value: unknown, depth = 0): QueryWhere {
   if (!isPlainObject(value)) {
     throw invalidOp('"where" must be an object.');
   }
 
   const where: QueryWhere = {};
   for (const [attribute, raw] of Object.entries(value)) {
+    if (attribute.startsWith("$")) {
+      if (!LOGICAL_KEYS.has(attribute)) {
+        throw invalidOp(`Unknown where key "${attribute}".`);
+      }
+      if (depth >= MAX_WHERE_DEPTH) {
+        throw invalidOp(
+          `"$or", "$and" and "$not" may nest at most ${MAX_WHERE_DEPTH} levels.`
+        );
+      }
+      if (attribute === "$not") {
+        where.$not = parseWhere(raw, depth + 1);
+        continue;
+      }
+      if (!Array.isArray(raw) || raw.length === 0) {
+        // An empty $or would match nothing and an empty $and everything; both
+        // are more likely a bug in the caller than a request.
+        throw invalidOp(`"${attribute}" needs a non-empty array of filters.`);
+      }
+      where[attribute as "$or" | "$and"] = raw.map((branch) =>
+        parseWhere(branch, depth + 1)
+      );
+      continue;
+    }
     if (isPlainObject(raw)) {
       where[attribute] = parseComparison(attribute, raw);
     } else {
@@ -284,6 +336,14 @@ function parseComparison(
         }
         comparison.$in = operand.map((item, index) =>
           parseScalar(`${attribute}.$in[${index}]`, item)
+        );
+        break;
+      case "$nin":
+        if (!Array.isArray(operand)) {
+          throw invalidValue(`"$nin" on "${attribute}" requires an array.`);
+        }
+        comparison.$nin = operand.map((item, index) =>
+          parseScalar(`${attribute}.$nin[${index}]`, item)
         );
         break;
       case "$ne":
