@@ -250,14 +250,9 @@ describe("compileQuery", () => {
     );
   });
 
-  test("enforces two link levels, limits and array shape", () => {
-    expectCode(
-      () =>
-        compileQuery({
-          folders: { children: { children: { children: {} } } },
-        }),
-      "invalid_op"
-    );
+  test("compiles links at any depth; enforces limits and array shape", () => {
+    const deep = compileQuery({ folders: { children: { children: { children: {} } } } });
+    expect(deep.nodes[0]?.children[0]?.node.children[0]?.node.children[0]?.node.depth).toBe(3);
     expectCode(
       () => compileQuery({ folders: { $: { limit: 0 } } }),
       "invalid_value"
