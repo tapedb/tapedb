@@ -325,7 +325,7 @@ async function publish(
 function entityRows(db: Database): Record<string, Record<string, unknown>[]> {
   const result: Record<string, Record<string, unknown>[]> = {};
 
-  for (const table of [...namespaceTables(), "$files"]) {
+  for (const table of [...namespaceTables(), "_files"]) {
     result[table] = db
       .query(`SELECT * FROM "${table}" ORDER BY "id"`)
       .all() as Record<string, unknown>[];
@@ -425,9 +425,10 @@ describe("recoverWorkspace", () => {
     const manifest = await manifestOf(bucket);
     expect(manifest.baseSeq).toBe(1);
     expect(manifest.logSeq).toBe(1);
-    expect(manifest.tables.map((table) => table.name)).toEqual(
-      namespaceTables()
-    );
+    expect(manifest.tables.map((table) => table.name)).toEqual([
+      ...namespaceTables(),
+      "_files",
+    ]);
 
     const target = createSource();
     const result = (await recoverWorkspace(
@@ -441,7 +442,7 @@ describe("recoverWorkspace", () => {
       recovered: true,
       baseSeq: 1,
       logSeq: 1,
-      tables: namespaceTables().length,
+      tables: namespaceTables().length + 1, // the models plus the file index
       rows: 22,
       replayed: 0,
     });
@@ -1033,7 +1034,7 @@ describe("recoverWorkspace", () => {
 describe("file index across a restore", () => {
   function files(db: Database): Array<{ path: string; r2_key: string; size: number }> {
     return db
-      .query(`SELECT "path", "r2_key", "size" FROM "$files" ORDER BY "path"`)
+      .query(`SELECT "path", "r2_key", "size" FROM "_files" ORDER BY "path"`)
       .all() as Array<{ path: string; r2_key: string; size: number }>;
   }
 
@@ -1201,5 +1202,43 @@ describe("strict ops through a restore", () => {
     await recoverWorkspace(bucket as unknown as R2Bucket, exec, TEST_WORKSPACE, { force: true, now: NOW + 30 });
     expect(scalar(target.db, `SELECT name FROM "folders" WHERE "id" = 'f-strict'`)).toBe("Renamed");
     expect(entityRows(target.db)).toEqual(entityRows(source.db));
+  });
+});
+
+describe("the file index in snapshots", () => {
+  async function uploadedBeforeSnapshot() {
+    const source = createSource();
+    seedWorkspace(source);
+    recordFileEntry(txExecutor(source.db), { path: "old.png", key: "k/old", size: 5, contentType: null });
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW); // the file entry is at or below the base
+    return { source, bucket };
+  }
+
+  async function restoredPaths(bucket: FakeR2Bucket): Promise<unknown[]> {
+    const target = createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now: NOW + 10 });
+    return target.db.query(`SELECT "path" FROM "_files"`).all();
+  }
+
+  test("a file uploaded before the snapshot survives a restore", async () => {
+    const { bucket } = await uploadedBeforeSnapshot();
+    const manifest = JSON.parse(new TextDecoder().decode(bucket.bodyOf(manifestKey(TEST_WORKSPACE))!));
+    expect(manifest.tables.map((table: { name: string }) => table.name)).toContain("_files");
+
+    // Without the snapshot the segment would be the only copy; drop it.
+    for (const key of [...bucket.objects.keys()]) if (key.includes("/log/")) bucket.objects.delete(key);
+    expect(await restoredPaths(bucket)).toEqual([{ path: "old.png" }]);
+  });
+
+  test("an older snapshot without the index is filled from retained segments", async () => {
+    const { bucket } = await uploadedBeforeSnapshot();
+    // Rewrite the manifest the way an older engine wrote it: no _files table.
+    const key = manifestKey(TEST_WORKSPACE);
+    const manifest = JSON.parse(new TextDecoder().decode(bucket.bodyOf(key)!));
+    manifest.tables = manifest.tables.filter((table: { name: string }) => table.name !== "_files");
+    bucket.seed(key, JSON.stringify(manifest));
+
+    expect(await restoredPaths(bucket)).toEqual([{ path: "old.png" }]);
   });
 });
