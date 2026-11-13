@@ -57,6 +57,7 @@ export type QueryScalar = string | number | boolean | null;
 export interface QueryComparison {
   $ne?: QueryScalar;
   $in?: QueryScalar[];
+  $nin?: QueryScalar[];
   $gt?: QueryScalar;
   $gte?: QueryScalar;
   $lt?: QueryScalar;
@@ -66,7 +67,10 @@ export interface QueryComparison {
 export type QueryWhereValue = QueryScalar | QueryComparison;
 
 export interface QueryWhere {
-  [attribute: string]: QueryWhereValue;
+  [attribute: string]: QueryWhereValue | QueryWhere | QueryWhere[] | undefined;
+  $or?: QueryWhere[];
+  $and?: QueryWhere[];
+  $not?: QueryWhere;
 }
 
 export interface QueryOptions {
@@ -79,6 +83,8 @@ export interface QueryOptions {
    * meaningful against a total order. `db.loadMore()` sends this for you.
    */
   after?: string;
+  /** Top level only: report the total matching rows as `pageInfo[ns].count`. */
+  count?: boolean;
 }
 
 export interface QueryNode {
@@ -112,6 +118,8 @@ export interface PageInfo {
    * as `$: { after }`.
    */
   nextCursor?: string;
+  /** Total matching rows, when the query asked for `count`. */
+  count?: number;
 }
 
 export type QueryPageInfo = Record<string, PageInfo>;

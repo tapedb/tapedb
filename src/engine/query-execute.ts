@@ -28,6 +28,7 @@ import { findNamespace, toSnakeCase, type AttributeType } from "./registry";
 import {
   allowRowView,
   assertPermission,
+  hasFunctionViewRule,
   viewWhereBranches,
 } from "./tx-permissions";
 import { quoteIdentifier } from "./tx-apply";
@@ -173,15 +174,24 @@ export function executeCompiledQueryWithPageInfo(
       continue;
     }
 
-    const { page, hasMore } = fillPage(sql, node, claim, limit);
+    const count = node.count ? countRows(sql, node, claim) : undefined;
+
+    // limit 0 is a count with no rows: nothing to fill, nothing to resume.
+    const { page, hasMore } =
+      limit === 0
+        ? { page: [] as HydratedEntity[], hasMore: (count ?? 0) > 0 }
+        : fillPage(sql, node, claim, limit);
 
     data[node.namespace] = page.map(toApiEntity);
 
     const nextCursor = cursorFor(node, page, hasMore);
-    pageInfo[node.namespace] =
-      nextCursor === undefined
-        ? { limit, returned: page.length, hasMore }
-        : { limit, returned: page.length, hasMore, nextCursor };
+    pageInfo[node.namespace] = {
+      limit,
+      returned: page.length,
+      hasMore,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+      ...(count === undefined ? {} : { count }),
+    };
   }
 
   return { data, pageInfo };
@@ -208,6 +218,35 @@ function withViewConditions(node: CompiledNode, claim: RoleClaim): CompiledNode 
     ],
     children,
   };
+}
+
+/**
+ * Rows matching the node's filters, ignoring `after` and `limit`. Uses the
+ * same conditions the page used, `where` view rules included, so the count
+ * never sees a row the caller could not read.
+ */
+function countRows(
+  sql: SqlExecutor,
+  node: CompiledNode,
+  claim: RoleClaim | undefined
+): number {
+  if (claim !== undefined && hasFunctionViewRule(node.namespace)) {
+    throw new TxError(
+      "invalid_op",
+      `"count" is not available on "${node.namespace}": its view rule is a function, which runs after fetch, so a count would include hidden rows. Use a { where } view rule.`
+    );
+  }
+
+  const conditions = node.conditions.filter((condition) => !condition.cursor);
+  const whereSql =
+    conditions.length > 0
+      ? ` WHERE ${conditions.map((condition) => `(${condition.sql})`).join(" AND ")}`
+      : "";
+  const row = sql.one<{ total: number }>(
+    `SELECT COUNT(*) AS "total" FROM ${quoteIdentifier(node.table)}${whereSql}`,
+    ...conditions.flatMap((condition) => condition.params)
+  );
+  return Number(row?.total ?? 0);
 }
 
 /** Rows the namespace's `view` rule hides are dropped at every link depth. */

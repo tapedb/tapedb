@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Query filters gain `$nin` and the logical keys `$or`, `$and` (non-empty
+  arrays of filters) and `$not`, nesting up to four levels. Null handling
+  matches `$ne`: a row whose field is null is "not in" a list and matches the
+  negation of a filter on that field.
+- `$: { count: true }` reports the total matching rows, ignoring `after` and
+  `limit`, as `pageInfo[ns].count`; with `limit: 0` no rows are read. Counts
+  honour `{ where }` view rules and are refused on a namespace whose view rule
+  is a function, since that rule runs after fetch and the count would include
+  hidden rows. Counts stay live through the page-metadata path.
+
 - `insert` and `patch` transaction ops, the strict halves of `update`'s
   upsert: `insert` fails with `unique_violation` when the id exists and is
   gated by the `create` decision; `patch` fails with `not_found` when the row
