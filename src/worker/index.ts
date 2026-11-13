@@ -166,10 +166,18 @@ async function handleStorage(
       trustedClaim
     );
     if (!recorded.ok) {
+      // Take the bytes back out: an object nobody can list is an orphan that
+      // costs storage forever. If the delete fails too, the 502 still tells
+      // the caller to retry, and a retried upload overwrites the same key.
+      try {
+        await bucket.delete(key);
+      } catch {
+        // Best effort.
+      }
       return apiError(
         502,
         "file_index_failed",
-        "Stored the object but could not record it in the workspace index."
+        "Could not record the upload in the workspace index; nothing was stored."
       );
     }
 

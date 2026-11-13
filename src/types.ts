@@ -12,7 +12,7 @@ export interface Env {
   WORKSPACE: DurableObjectNamespace<WorkspaceRoom>;
   /** Transaction log segments and snapshots. */
   DATA: R2Bucket;
-  /** Uploaded files. Optional unless `db.storage` is used. */
+  /** Uploaded files. Optional unless `db.$files` is used. */
   FILES?: R2Bucket;
 
   ENVIRONMENT?: string;

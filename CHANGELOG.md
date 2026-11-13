@@ -102,6 +102,10 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- A failed upload no longer leaves an orphan in R2. When the bytes are stored
+  but the index row cannot be written, the Worker deletes the object before
+  answering 502, so nothing unlisted is left behind.
+
 - The local transaction log is bounded. Each snapshot trims `_tx_log` rows that
   are flushed to R2 and at least `DEDUPE_HORIZON_SEQ` below the snapshot, the
   same window R2 keeps, and raises `dedupe_floor_seq` to the cut so a retry
