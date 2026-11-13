@@ -634,6 +634,32 @@ describe("WorkspaceRoom live queries", () => {
     ]);
   });
 
+  test("a diff carries the order when rows moved or arrived out of place", async () => {
+    await transact([{ op: "insert", namespace: "kanbanTasks", id: "task2", values: { columnId: "col1", title: "Second", order: 2 } }], "t0");
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "ordered",
+      query: { kanbanTasks: { $: { order: { order: "asc" }, select: ["title"] } } },
+    });
+    socket.clear();
+
+    // Sorts between the two existing rows.
+    await transact([{ op: "insert", namespace: "kanbanTasks", id: "task3", values: { columnId: "col1", title: "Between", order: 1 } }], "t1");
+    await delay(100);
+    expect(queryMessages(socket)).toEqual([
+      expect.objectContaining({ type: "query:diff", added: [expect.objectContaining({ id: "task3" })], order: ["task1", "task3", "task2"] }),
+    ]);
+    socket.clear();
+
+    // An edit that keeps the order sends none.
+    await transact([{ op: "update", namespace: "kanbanTasks", id: "task3", values: { title: "Renamed" } }], "t2");
+    await delay(100);
+    const [unchanged] = queryMessages(socket);
+    expect(unchanged).toMatchObject({ type: "query:diff", updated: [expect.objectContaining({ id: "task3" })] });
+    expect(unchanged?.order).toBeUndefined();
+  });
+
   test("leaves page metadata off a diff when it did not change", async () => {
     const socket = await connect();
     await send(socket, {

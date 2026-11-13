@@ -589,6 +589,26 @@ describe("live reads", () => {
     ]);
   });
 
+  test("a live diff keeps rows in the query's order", async () => {
+    const { db, socket } = await live();
+    const seen: unknown[] = [];
+    db.task.findMany({ orderBy: { title: "asc" }, select: { title: true } }).subscribe((state) => seen.push(state.data));
+    await tick();
+    socket.onopen?.({});
+    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    await tick();
+    const subscribe = socket.sent.find((message) => message.type === "query:subscribe")!;
+    socket.push({ type: "query:data", id: subscribe.id, seq: 1, data: { task: [{ id: "b", title: "B" }, { id: "c", title: "C" }] }, pageInfo: {} });
+
+    // "A" sorts first; the engine sends the order along with the new row.
+    socket.push({ type: "query:diff", id: subscribe.id, seq: 2, namespace: "task", added: [{ id: "a", title: "A" }], updated: [], removed: [], order: ["a", "b", "c"] });
+    expect(seen.at(-1)).toEqual([{ title: "A" }, { title: "B" }, { title: "C" }]);
+
+    // A renamed row moves.
+    socket.push({ type: "query:diff", id: subscribe.id, seq: 3, namespace: "task", added: [], updated: [{ id: "a", title: "D" }], removed: [], order: ["b", "c", "a"] });
+    expect(seen.at(-1)).toEqual([{ title: "B" }, { title: "C" }, { title: "D" }]);
+  });
+
   test("a live count reads pageInfo", async () => {
     const { db, socket } = await live();
     const counts: Array<number | undefined> = [];

@@ -409,6 +409,8 @@ export type ServerMessage =
       added: unknown[];
       updated: unknown[];
       removed: string[];
+      /** Every id in the result, in order, when the diff alone would misplace rows. */
+      order?: string[];
       pageInfo?: QueryPageInfo;
     }
   | { type: "query:unsubscribed"; id: string }

@@ -22,6 +22,8 @@ export interface NamespaceDiff {
   added: unknown[];
   updated: unknown[];
   removed: string[];
+  /** The engine's order for every id, when the diff alone would misplace rows. */
+  order?: string[];
 }
 
 function entityId(value: unknown): string | undefined {
@@ -80,6 +82,15 @@ export function applyQueryDiff(
       order.push(id);
       seen.add(id);
     }
+  }
+
+  if (diff.order !== undefined) {
+    // The engine's order wins. A row it does not list yet (an optimistic
+    // insert still in flight) keeps its place after the listed ones.
+    const rank = new Map(diff.order.map((id, index) => [id, index]));
+    const unlisted = order.filter((id) => !rank.has(id));
+    order.length = 0;
+    order.push(...diff.order.filter((id) => byId.has(id)), ...unlisted);
   }
 
   const next = order
