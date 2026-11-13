@@ -167,10 +167,12 @@ REMAINING:
 - View rules still cannot use an index. Pages are filled by scanning up to
   `max(limit * 10, 200)` rows, so a rule that hides almost everything costs a
   bounded scan per page and can return a short page at the cap.
-- `clientTxId` idempotency does not survive a cold start: recovery clears the
-  local `_tx_log` because the R2 segments are the durable copy, and a stale row
-  could collide with the next sequence. A retry that crosses a cold start is
-  re-applied (upserts make this mostly harmless, counters would not be).
+- `clientTxId` idempotency survives a cold start only for transactions still
+  held in retained log segments. A snapshot does not carry idempotency keys, so
+  once a transaction is folded into a snapshot a retry is re-applied. Measured
+  live: the segment-backed retry returned `applied: 0, seq 3`; the
+  snapshot-backed retry was re-applied. Carrying keys in the snapshot is the
+  fix, and it is a format change.
 - `db.loadMore()` resets to page one on reconnect: the live subscription
   re-subscribes the original query. Deep pagination over a long session is
   therefore cursor-based per request, not accumulated client-side forever.
