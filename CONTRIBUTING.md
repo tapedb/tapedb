@@ -60,6 +60,27 @@ they are worth stating:
   this repo's history.
 - Do not push to `main`. Branches and pull requests.
 
+## End to end
+
+`bun run verify` runs on bun's SQLite, which allows far more than a Durable
+Object's (32,766 bound parameters against 100, expression depth 1000 against
+100). Anything that touches SQL or the socket is checked in workerd too:
+
+```bash
+node scripts/e2e.mjs                    # pack, fresh project, tapedb dev, every scenario + drills
+node scripts/e2e.mjs --only select,bulk
+node scripts/e2e.mjs --url https://<staging worker>   # a deployed Worker with dev claims on
+```
+
+It packs this checkout, installs the tarball and wrangler into an empty
+project, runs `tapedb init` and `tapedb dev`, and runs each scenario in
+`scripts/e2e/` as a consumer would. Locally it then runs the drills: seed past
+a snapshot, let the durability alarm flush and snapshot, rebuild a referenced
+table through a migration, wipe the Durable Object's storage, and check the
+workspace comes back from R2 identical — every row, the file index, the
+sequence, the idempotency receipts. About four minutes, most of it waiting for
+the alarm.
+
 ## The soak
 
 `bun test` runs a small recovery drill on every change. The long one is a
