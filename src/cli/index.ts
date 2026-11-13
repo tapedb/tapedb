@@ -14,7 +14,7 @@
  * development configuration or an unmigrated schema.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, extname, join, resolve } from "node:path";
@@ -22,7 +22,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, readMigrations, readSnapshot } from "./migrate";
-import { startStudio } from "./studio";
+import { mintToken, startStudio } from "./studio";
 
 let schemaLoads = 0;
 
@@ -354,6 +354,7 @@ Usage:
   tapedb deploy [--dir <path>] [--env <name>]
   tapedb dev  [--dir <path>] [--port <port>]
   tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
+  tapedb export --workspace <uuid> [--url <worker-url>] [--out <file>]
 
 Commands:
   init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,
@@ -365,6 +366,7 @@ Commands:
   deploy  [--env <name>]  Check ENVIRONMENT, dev claims and migrations, then wrangler deploy.
   dev     Run the local database with wrangler dev on port 8787.
   studio  Open a local table browser against a running Worker.
+  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).
 `);
   return 0;
 }
@@ -408,6 +410,65 @@ function dev(argv: string[]): number {
   return run.status ?? 1;
 }
 
+/**
+ * Streams a workspace export to a file or stdout. Uses TAPEDB_TOKEN when set,
+ * otherwise mints a dev claim (which only `tapedb dev` serves).
+ */
+export async function exportWorkspace(argv: string[]): Promise<number> {
+  const flags = parseFlags(argv);
+  const url = (typeof flags.url === "string" ? flags.url : "http://localhost:8787").replace(/\/+$/, "");
+  const workspace = typeof flags.workspace === "string" ? flags.workspace : process.env.TAPEDB_WORKSPACE ?? "";
+  if (!workspace) {
+    console.error("Name the workspace: tapedb export --workspace <uuid> [--url <worker>] [--out <file>]");
+    return 1;
+  }
+
+  let response: Response;
+  try {
+    const token = process.env.TAPEDB_TOKEN || (await mintToken(url, workspace));
+    response = await fetch(`${url}/engine/workspaces/${workspace}/export`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  if (!response.ok || !response.body) {
+    console.error(`Export failed with HTTP ${response.status}: ${(await response.text()).slice(0, 300)}`);
+    return 1;
+  }
+
+  const out = typeof flags.out === "string" ? resolve(flags.out) : null;
+  if (out) writeFileSync(out, "");
+  const write = (text: string) => (out ? appendFileSync(out, text) : process.stdout.write(text));
+
+  const decoder = new TextDecoder();
+  let tail = "";
+  const reader = response.body.getReader();
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    const text = decoder.decode(value, { stream: true });
+    write(text);
+    tail = (tail + text).slice(-65_536);
+  }
+  const last = tail.trim().split("\n").at(-1) ?? "";
+  let end: { type?: string; rows?: number; consistent?: boolean; seq?: number; message?: string } = {};
+  try {
+    end = JSON.parse(last);
+  } catch {
+    // Reported below as an incomplete export.
+  }
+  if (end.type !== "end") {
+    console.error(`Export incomplete: ${end.type === "error" ? end.message : "the stream ended without an end line"}.`);
+    return 1;
+  }
+  console.error(
+    `Exported ${end.rows} rows at seq ${end.seq}${end.consistent ? "" : " (writes landed during the export; it is not a single point in time)"}${out ? ` to ${out}` : ""}.`
+  );
+  return 0;
+}
+
 async function studio(argv: string[]): Promise<number> {
   const flags = parseFlags(argv);
 
@@ -446,6 +507,7 @@ export async function run(argv: string[]): Promise<number> {
   if (command === "deploy") return deploy(argv.slice(1));
   if (command === "dev") return dev(argv.slice(1));
   if (command === "studio") return studio(argv.slice(1));
+  if (command === "export") return exportWorkspace(argv.slice(1));
   if (command === undefined || command === "--help" || command === "-h") {
     return usage();
   }

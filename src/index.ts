@@ -16,6 +16,7 @@ export type {
   Client,
   ClientConfig,
   BroadcastTopic,
+  ExportRecord,
   FilesClient,
   FindArgs,
   LiveState,
