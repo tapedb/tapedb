@@ -15,6 +15,14 @@
 import { DEDUPE_FLOOR_META_KEY } from "../tx-pipeline";
 import { applyFileOps, isFileOpList } from "../file-index";
 import {
+  changesAfter,
+  evolveColumn,
+  evolveField,
+  evolveModel,
+  evolveTable,
+  type SchemaChange,
+} from "../schema-evolution";
+import {
   manifestKey,
   readManifest,
   workspacePrefix,
@@ -25,6 +33,7 @@ import { listAllR2 } from "../r2-list";
 import {
   ENGINE_TABLES,
   findNamespace,
+  LINKS,
   NAMESPACES,
   namespaceTables,
   registryGeneration,
@@ -36,7 +45,7 @@ import type {
   SqlExecutor as TxSqlExecutor,
   SqlRow as TxSqlRow,
 } from "../tx-sql";
-import { isLinkOp, validateEnvelope, type ValidatedOp } from "../tx-validate";
+import { acceptsValue, isLinkOp, validateEnvelope, type ValidatedOp } from "../tx-validate";
 import { sha256Hex } from "./snapshot";
 import type { SqlCursor, SqlExecutor, SqlValue } from "./sql";
 
@@ -325,8 +334,10 @@ function validateManifestTables(manifest: WorkspaceManifest): void {
     manifest.workspaceId
   )}/snapshots/${manifest.baseSeq}/`;
 
+  const changes = changesAfter(manifest.schemaVersion);
   for (const table of manifest.tables) {
-    if (!allowedTables().has(table.name)) {
+    const current = evolveTable(table.name, changes);
+    if (current !== null && !allowedTables().has(current)) {
       throw new Error(`Manifest contains unknown table "${table.name}".`);
     }
 
@@ -437,6 +448,70 @@ function orderParentsFirst(
   return ordered;
 }
 
+/** Snapshot rows from an older schema, with dropped columns removed and renamed ones moved. */
+function evolveRows(
+  rows: RestorableRow[],
+  table: string,
+  changes: SchemaChange[]
+): RestorableRow[] {
+  if (changes.length === 0) return rows;
+  return rows.map((row) => {
+    const out: RestorableRow = {};
+    for (const [column, value] of Object.entries(row)) {
+      const current = evolveColumn(table, column, changes);
+      if (current !== null) out[current] = value;
+    }
+    return out;
+  });
+}
+
+/**
+ * Log ops from an older schema, read through the changes made since. A model
+ * or link a migration dropped drops the op; a dropped field drops the value;
+ * renames are followed; a retyped value that no longer fits is dropped.
+ */
+function evolveOps(ops: unknown[], changes: SchemaChange[]): unknown[] {
+  if (changes.length === 0) return ops;
+  const out: unknown[] = [];
+  for (const raw of ops) {
+    if (!isPlainRecord(raw) || typeof raw.namespace !== "string") {
+      out.push(raw);
+      continue;
+    }
+    const namespace = evolveModel(raw.namespace, changes);
+    if (namespace === null) continue;
+    const op: Record<string, unknown> = { ...raw, namespace };
+
+    if (raw.op === "link" || raw.op === "unlink") {
+      if (typeof raw.link === "string" && !(raw.link in LINKS)) {
+        // Model-API link names are "<model>.<field>"; follow their renames.
+        const [model, field] = raw.link.split(".");
+        const evolved = field === undefined ? null : evolveField(model, field, changes);
+        const owner = evolveModel(model, changes);
+        if (evolved === null || owner === null) continue;
+        op.link = `${owner}.${evolved.field}`;
+      }
+      out.push(op);
+      continue;
+    }
+
+    for (const key of ["values", "create"] as const) {
+      const values = raw[key];
+      if (!isPlainRecord(values)) continue;
+      const projected: Record<string, unknown> = {};
+      for (const [attribute, value] of Object.entries(values)) {
+        const evolved = evolveField(raw.namespace, attribute, changes);
+        if (evolved === null) continue;
+        if (evolved.retyped && !acceptsValue(namespace, evolved.field, value)) continue;
+        projected[evolved.field] = value;
+      }
+      op[key] = projected;
+    }
+    out.push(op);
+  }
+  return out;
+}
+
 function insertChunk(
   sql: RecoverySqlExecutor,
   table: string,
@@ -483,8 +558,9 @@ function insertChunk(
 async function restoreTable(
   bucket: R2Bucket,
   sql: RecoverySqlExecutor,
-  table: ManifestTable,
-  allowedColumns: Set<string>
+  table: ManifestTable & { sourceName?: string },
+  allowedColumns: Set<string>,
+  changes: SchemaChange[]
 ): Promise<number> {
   let inserted = 0;
 
@@ -509,9 +585,10 @@ async function restoreTable(
       );
     }
 
-    const rows = parseNdjson(
-      textDecoder.decode(await gunzipBytes(compressed)),
-      chunk.key
+    const rows = evolveRows(
+      parseNdjson(textDecoder.decode(await gunzipBytes(compressed)), chunk.key),
+      table.sourceName ?? table.name,
+      changes
     );
 
     if (rows.length !== chunk.rows) {
@@ -537,12 +614,13 @@ async function restoreSnapshot(
   sql: RecoverySqlExecutor,
   manifest: WorkspaceManifest
 ): Promise<{ tables: number; rows: number }> {
+  const changes = changesAfter(manifest.schemaVersion);
   const tables = orderedTables(manifest);
   let rows = 0;
 
   for (const table of tables) {
     const columns = readColumns(sql, table.name);
-    rows += await restoreTable(bucket, sql, table, columns);
+    rows += await restoreTable(bucket, sql, table, columns, changes);
   }
 
   return { tables: tables.length, rows };
@@ -736,7 +814,10 @@ function replayLine(
     return true;
   }
 
-  const tx = validateEnvelope({ txId: "recovery", ops: line.ops });
+  const ops = evolveOps(line.ops, changesAfter(line.schemaVersion));
+  // Every op in the line belonged to something a migration later dropped.
+  if (ops.length === 0) return false;
+  const tx = validateEnvelope({ txId: "recovery", ops });
   const touched = new Set<string>();
   let applied = false;
 
@@ -969,8 +1050,18 @@ export async function recoverWorkspace(
       `Manifest for workspace ${stored.manifest.workspaceId} cannot restore ${workspaceId}.`
     );
   }
-  const manifest = stored.manifest;
-  validateManifestTables(manifest);
+  // Chunk keys keep the table names of the schema the snapshot was taken
+  // under, so they are checked first; the rows then restore into today's
+  // tables. A table a later migration dropped is skipped.
+  validateManifestTables(stored.manifest);
+  const changes = changesAfter(stored.manifest.schemaVersion);
+  const manifest: WorkspaceManifest = {
+    ...stored.manifest,
+    tables: stored.manifest.tables.flatMap((table) => {
+      const current = evolveTable(table.name, changes);
+      return current === null ? [] : [{ ...table, name: current, sourceName: table.name }];
+    }),
+  };
 
   markRunning(sql, now);
 

@@ -147,6 +147,16 @@ const SQL_TYPE: Record<string, string> = {
   boolean: "INTEGER",
 };
 
+/** A SQL literal for a column default. Numbers must be finite; strings are quoted. */
+export function sqlLiteral(value: string | number | null): string {
+  if (value === null) return "NULL";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`Default ${value} is not a finite number.`);
+    return String(value);
+  }
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
 function entityDdl(
   namespace: NamespaceDefinition,
   attributes: EntityConfig
@@ -161,6 +171,7 @@ function entityDdl(
   for (const [name, attribute] of Object.entries(attributes)) {
     const column = toSnakeCase(name);
     let sql = `"${column}" ${SQL_TYPE[attribute.type] ?? "TEXT"}`;
+    if (attribute.default !== undefined) sql += ` DEFAULT ${sqlLiteral(attribute.default)}`;
     if (attribute.references) {
       const onDelete = attribute.references.onDelete ?? "SET NULL";
       sql += ` REFERENCES "${attribute.references.table}"("${attribute.references.column}") ON DELETE ${onDelete}`;

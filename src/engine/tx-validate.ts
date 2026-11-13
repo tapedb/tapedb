@@ -336,6 +336,21 @@ function validateLinkOp(
   };
 }
 
+/**
+ * True when `value` is acceptable for the attribute under today's registry.
+ * Recovery uses it to drop an old value a later type change no longer fits.
+ */
+export function acceptsValue(namespaceName: string, attribute: string, value: unknown): boolean {
+  const definition = findNamespace(namespaceName)?.attributes[attribute];
+  if (!definition) return false;
+  try {
+    normaliseValue(attribute, definition, value, { txId: "recovery", opIndex: 0 });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function normaliseValue(
   attribute: string,
   definition: AttributeDefinition,

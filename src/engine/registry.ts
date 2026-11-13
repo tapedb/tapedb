@@ -31,6 +31,12 @@ export interface AttributeReference {
 export interface AttributeDefinition {
   type: AttributeType;
   optional?: boolean;
+  /**
+   * Column default, as stored (booleans 0/1, dates epoch ms, json as text).
+   * Fills the field for rows written before it existed: replayed inserts and,
+   * through the migration, rows already in the table.
+   */
+  default?: string | number | null;
   indexed?: boolean;
   unique?: boolean;
   references?: AttributeReference;

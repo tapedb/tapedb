@@ -11,9 +11,16 @@
  * `migrations.ts` can keep its default-argument shape.
  */
 
+import type { SchemaChange } from "./schema-evolution";
+
 export interface BundledWorkspaceMigration {
   id: string;
   sql: string;
+  /**
+   * What this migration changed, for reading data written before it. Not part
+   * of the checksum: only the SQL changes a workspace.
+   */
+  changes?: SchemaChange[];
 }
 
 export const BASELINE_MIGRATION_ID = "0001_baseline";

@@ -42,6 +42,8 @@ export interface WorkspaceManifest {
   /** ISO 8601 timestamp for when the manifest was written. */
   createdAt: string;
   engineVersion: string;
+  /** The app schema the snapshot was taken under; absent before it was recorded. */
+  schemaVersion?: string;
   tables: ManifestTable[];
   totalRows: number;
   totalBytes: number;
