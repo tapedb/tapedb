@@ -319,29 +319,35 @@ function cursorCondition(
     throw invalidOp('"after" cursor does not match this query\'s "$.order".');
   }
 
-  if (cursor.vals.some((value) => value === null)) {
-    throw invalidOp('"after" cannot resume from a row with null values.');
-  }
+  return conditionAfterValues(order, cursor.vals);
+}
 
+/** SQLite puts NULL first in ascending order and last in descending order. */
+export function conditionAfterValues(
+  order: CompiledOrder[],
+  values: readonly (string | number | null)[]
+): CompiledCondition {
   const clauses: string[] = [];
   const params: SqlValue[] = [];
-
   for (let index = 0; index < order.length; index += 1) {
+    const entry = order[index];
+    const value = values[index];
+    if (value === null && entry.direction === "desc") continue;
     const parts: string[] = [];
-
     for (let prior = 0; prior < index; prior += 1) {
-      parts.push(`${quoteIdentifier(order[prior].column)} = ?`);
-      params.push(cursor.vals[prior] as SqlValue);
+      parts.push(`${quoteIdentifier(order[prior].column)} IS ?`);
+      params.push(values[prior]);
     }
-
-    const operator = order[index].direction === "desc" ? "<" : ">";
-    parts.push(`${quoteIdentifier(order[index].column)} ${operator} ?`);
-    params.push(cursor.vals[index] as SqlValue);
-
+    const column = quoteIdentifier(entry.column);
+    if (value === null) {
+      parts.push(`${column} IS NOT NULL`);
+    } else {
+      parts.push(entry.direction === "desc" ? `(${column} < ? OR ${column} IS NULL)` : `${column} > ?`);
+      params.push(value);
+    }
     clauses.push(`(${parts.join(" AND ")})`);
   }
-
-  return { sql: clauses.join(" OR "), params };
+  return { sql: clauses.length ? clauses.join(" OR ") : "0 = 1", params };
 }
 
 /**

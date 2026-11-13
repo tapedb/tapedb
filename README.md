@@ -127,7 +127,7 @@ const { data, isLoading } = useLive(
   db.task.findMany({ where: { columnId }, orderBy: { position: "asc" } })
 );
 
-const feed = useLivePage(db.task.findPage({ orderBy: { createdAt: "desc" }, take: 50 }));
+const feed = useLivePage(db.task.findPage({ orderBy: { id: "desc" }, take: 50 }));
 // feed.rows, feed.hasMore, feed.loadMore() — loaded pages survive reconnects
 
 const peers = usePresence(db, "board:" + boardId, { name, color });
@@ -214,9 +214,9 @@ Each model's actions take one of three decisions:
   counts correctly. An array is OR; the caller's own filter ANDs with it.
 - `check(({ auth, row, data, changed }) => boolean)` — any action, arbitrary
   TypeScript. Write checks run inside the transaction next to the write they
-  gate. On `read` they run after fetch, bounded by a scan cap of
-  `max(limit * 10, 200)` rows per page — prefer `filter` when visibility can
-  be written as one. A rule that throws denies.
+  gate. On `read` they scan matching rows until the page is full or the
+  result set is exhausted. Counts apply the same visibility rule.
+  A rule that throws denies.
 
 ## Migrations
 
@@ -325,16 +325,10 @@ snapshot.
 | `tapedb/worker` | `defineTapeDB`, the Durable Object class | no |
 | `tapedb/cli` | `init`, `migrate`, `dev`, `studio`, `deploy` | no |
 
-## Status
+## Development
 
-`0.1.0` is the first release with the surface this README documents: models,
-typed queries, committed migrations. The engine is tested hard — 314 tests,
-durability drills that wipe a Durable Object's SQLite and replay from R2, and
-end-to-end runs of the packed tarball against `wrangler dev`.
-
-Pre-1.0, so the API can still move; breaking changes will be listed in
-[CHANGELOG.md](./CHANGELOG.md). Known trade-offs are in
-[SCOPE.md](./SCOPE.md).
+TapeDB is under active development and has no public release. The package is
+not ready for production use.
 
 ## License
 

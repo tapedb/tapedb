@@ -11,6 +11,7 @@ import type { RoleClaim } from "../claims";
 import {
   buildSelectSql,
   compileQuery,
+  conditionAfterValues,
   compileViewCondition,
   type ViewAccess,
   type CompiledChild,
@@ -140,22 +141,6 @@ export function executeCompiledQuery(
 }
 
 /**
- * Multiplier and floor for the scan cap. One page may read at most
- * `max(limit * 10, 200)` matching rows before it gives up filling: a rule that
- * hides every row must terminate instead of walking the whole namespace.
- */
-const SCAN_CAP_FACTOR = 10;
-const SCAN_CAP_FLOOR = 200;
-
-/**
- * Hard ceiling on how many rows one page may read while filling. Returns rows
- * are bounded by `limit`; this bounds the work behind them.
- */
-export function pageScanCap(limit: number): number {
-  return Math.max(limit * SCAN_CAP_FACTOR, SCAN_CAP_FLOOR);
-}
-
-/**
  * Executes a compiled query and reports truncation per namespace.
  *
  * Each chunk asks for one row beyond the limit so `hasMore` is exact instead of
@@ -163,8 +148,8 @@ export function pageScanCap(limit: number): number {
  *
  * Row-level `view` rules run in TypeScript, so they cannot be pushed into SQL:
  * they see API-shaped values and may be arbitrary predicates. A page is
- * therefore filled by scanning further when a rule hides rows, up to
- * `pageScanCap(limit)`. `hasMore` and `nextCursor` stay honest: `returned`
+ * therefore filled by scanning further until it has enough visible rows or
+ * exhausts the matching rows. `hasMore` and `nextCursor` stay honest: `returned`
  * counts visible rows only, `hasMore` means matching rows remain outside this
  * page, and `nextCursor` resumes after the last VISIBLE row.
  */
@@ -225,7 +210,7 @@ export function executeCompiledQueryWithPageInfo(
 /**
  * Pushes `where` view rules into the SQL of every level that reads a
  * namespace with one. Those rows never reach the post-fetch filter, so a page
- * fills from an index instead of a bounded scan.
+ * fills directly from its SQL index.
  */
 function withViewConditions(node: CompiledNode, claim: RoleClaim): CompiledNode {
   const branches = viewWhereBranches(claim, node.namespace);
@@ -256,10 +241,26 @@ function countRows(
   claim: RoleClaim | undefined
 ): number {
   if (claim !== undefined && hasFunctionViewRule(node.namespace)) {
-    throw new TxError(
-      "invalid_op",
-      `"count" is not available on "${node.namespace}": its view rule is a function, which runs after fetch, so a count would include hidden rows. Use a { where } view rule.`
-    );
+    // Arbitrary predicates cannot be compiled to SQL. Walk bounded chunks in
+    // primary-key order, applying the same rule as reads, without limiting how
+    // far through the matching set the count may look.
+    const base: CompiledNode = {
+      ...node,
+      conditions: node.conditions.filter((condition) => !condition.cursor),
+      order: [{ column: "id", direction: "asc" }],
+      children: [],
+      limit: 200,
+    };
+    let cursor: CompiledCondition | null = null;
+    let total = 0;
+    for (;;) {
+      const rows = hydrateNode(sql, cursor === null ? base : {
+        ...base, conditions: [...base.conditions, cursor],
+      });
+      total += visibleOnly(rows, claim).length;
+      if (rows.length < 200) return total;
+      cursor = conditionAfter(base.order, rows[rows.length - 1].row)!;
+    }
   }
 
   const conditions = node.conditions.filter((condition) => !condition.cursor);
@@ -287,10 +288,9 @@ function visibleOnly(
 /**
  * Fills one page by scanning forward while `view` rules hide rows.
  *
- * Stops on the first of: a full page, an exhausted match set, or the scan cap.
- * `hasMore` is only ever set when a row outside the page is known to exist, so
- * a cap-limited page resumes from its last visible row without skipping or
- * repeating anything.
+ * Stops on the first of a full page with another visible row, or exhaustion.
+ * `hasMore` requires another visible row; hidden rows cannot truncate a
+ * page or create an empty follow-up page.
  */
 function fillPage(
   sql: SqlExecutor,
@@ -298,16 +298,13 @@ function fillPage(
   claim: RoleClaim | undefined,
   limit: number
 ): { page: HydratedEntity[]; hasMore: boolean } {
-  const maxScan = pageScanCap(limit);
   const page: HydratedEntity[] = [];
 
   const more =
     node.order.length === 0
-      ? fillUnordered(sql, node, claim, limit, maxScan, page)
-      : fillOrdered(sql, node, claim, limit, maxScan, page);
+      ? fillUnordered(sql, node, claim, limit, page)
+      : fillOrdered(sql, node, claim, limit, page);
 
-  // A cap-limited page with nothing visible has no valid cursor to hand back,
-  // so it must be terminal rather than an unactionable `hasMore: true`.
   return { page, hasMore: more && page.length > 0 };
 }
 
@@ -327,14 +324,12 @@ function fillOrdered(
   node: CompiledNode,
   claim: RoleClaim | undefined,
   limit: number,
-  maxScan: number,
   page: HydratedEntity[]
 ): boolean {
-  let scanned = 0;
   let cursor: CompiledCondition | null = null;
 
-  while (scanned < maxScan) {
-    const chunkLimit = Math.min(limit + 1, maxScan - scanned);
+  for (;;) {
+    const chunkLimit = limit + 1;
     const chunkNode: CompiledNode =
       cursor === null
         ? { ...node, limit: chunkLimit }
@@ -342,8 +337,6 @@ function fillOrdered(
 
     const chunk = hydrateNode(sql, chunkNode);
     if (chunk.length === 0) return false;
-
-    scanned += chunk.length;
 
     for (const entity of chunk) {
       const visible = claim === undefined ? entity : filterVisible(entity, claim);
@@ -359,30 +352,25 @@ function fillOrdered(
     if (chunk.length < chunkLimit) return false;
 
     const next = conditionAfter(node.order, chunk[chunk.length - 1].row);
-    // A null ordering value has no total order to advance along, so the scan
-    // cannot continue; report the rows it may not have reached.
-    if (next === null) return true;
+    if (next === null) throw new TxError("storage_error", "Cannot read an ordering column from the stored row.");
     cursor = next;
   }
-
-  return true; // scan cap: rows were left unread
 }
 
 /**
  * Unordered scan: no total order exists, so there is no keyset to advance.
  * Re-read one widening window from the start instead of inventing offsets.
- * Bounded by the same cap, so it terminates; the window doubles, so it costs
- * a logarithmic number of queries.
+ * The window doubles until enough visible rows or the end of the result set
+ * is reached.
  */
 function fillUnordered(
   sql: SqlExecutor,
   node: CompiledNode,
   claim: RoleClaim | undefined,
   limit: number,
-  maxScan: number,
   page: HydratedEntity[]
 ): boolean {
-  let window = Math.min(limit + 1, maxScan);
+  let window = limit + 1;
 
   for (;;) {
     const rows = hydrateNode(sql, { ...node, limit: window });
@@ -392,10 +380,9 @@ function fillUnordered(
     page.push(...visible.slice(0, limit));
 
     if (rows.length < window) return false; // exhausted
-    if (visible.length >= limit) return true; // window held more than a page
-    if (window >= maxScan) return true; // cap: rows were left unread
+    if (visible.length > limit) return true; // window held more than a page
 
-    window = Math.min(window * 2, maxScan);
+    window *= 2;
   }
 }
 
@@ -404,44 +391,16 @@ function fillUnordered(
  *
  * Mirrors the compiler's private `cursorCondition`: for `(a ASC, b DESC)` it
  * builds `a > ? OR (a = ? AND b < ?)`. The executor needs it mid-scan, from a
- * row it just read rather than an opaque client cursor, so it cannot reuse the
- * compile-time helper. Returns null when a value cannot be compared, matching
- * the compiler's refusal to resume from a null.
+ * row it just read rather than an opaque client cursor. Both paths share the
+ * same null-aware tuple comparison. Missing or invalid ordering columns fail closed.
  */
 function conditionAfter(
   order: CompiledOrder[],
   row: PhysicalRow
 ): CompiledCondition | null {
-  const clauses: string[] = [];
-  const params: SqlValue[] = [];
-
-  for (let index = 0; index < order.length; index += 1) {
-    const parts: string[] = [];
-
-    for (let prior = 0; prior < index; prior += 1) {
-      const value = row[order[prior].column];
-      if (!isComparable(value)) return null;
-      parts.push(`${quoteIdentifier(order[prior].column)} = ?`);
-      params.push(value);
-    }
-
-    const value = row[order[index].column];
-    if (!isComparable(value)) return null;
-    const operator = order[index].direction === "desc" ? "<" : ">";
-    parts.push(`${quoteIdentifier(order[index].column)} ${operator} ?`);
-    params.push(value);
-
-    clauses.push(`(${parts.join(" AND ")})`);
-  }
-
-  if (clauses.length === 0) return null;
-  return { sql: clauses.join(" OR "), params };
-}
-
-function isComparable(
-  value: SqlValue | undefined
-): value is string | number {
-  return typeof value === "string" || typeof value === "number";
+  const values = order.map(entry => row[entry.column]);
+  if (values.some(value => value !== null && typeof value !== "string" && typeof value !== "number")) return null;
+  return conditionAfterValues(order, values as (string | number | null)[]);
 }
 
 /** Drops rows the namespace's `view` rule hides, at every link depth. */
@@ -489,8 +448,7 @@ function rowToApi(entity: HydratedEntity): Record<string, unknown> {
  * Cursor for the next page, or undefined when there is nothing to resume from.
  *
  * Requires an explicit order: without one there is no total order for a keyset
- * cursor to sit in. A null ordering value also yields no cursor, because
- * comparisons against null never select a row.
+ * cursor to sit in. Null ordering values use SQLite's null-aware ordering.
  */
 function cursorFor(
   node: CompiledNode,
@@ -504,8 +462,7 @@ function cursorFor(
 
   for (const entry of node.order) {
     const value = last.row[entry.column];
-    if (value === null || value === undefined) return undefined;
-    if (typeof value !== "string" && typeof value !== "number") return undefined;
+    if (value !== null && typeof value !== "string" && typeof value !== "number") return undefined;
     values.push(value);
   }
 

@@ -86,6 +86,8 @@ export class QuerySocket {
   private retryTimer: ReturnType<typeof setTimeout> | null = null;
   private attempt = 0;
   private manuallyClosed = false;
+  private generation = 0;
+  private cancelPending: (() => void) | null = null;
   /** True when reconnecting is paused until an explicit `connect()`. */
   private suspended = false;
   private onlineHandler: (() => void) | null = null;
@@ -115,13 +117,21 @@ export class QuerySocket {
   }
 
   connect(): Promise<void> {
-    if (this.ws) return Promise.resolve();
     if (this.connectPromise) return this.connectPromise;
+    if (this.ws) return Promise.resolve();
 
     this.manuallyClosed = false;
     this.suspended = false;
+    const generation = ++this.generation;
     this.connectPromise = new Promise<void>((resolve, reject) => {
-      void this.open(resolve, reject);
+      this.cancelPending = () => reject(new Error("Connection attempt cancelled."));
+      void this.open(generation, () => {
+        if (generation === this.generation) this.cancelPending = null;
+        resolve();
+      }, (error) => {
+        if (generation === this.generation) this.cancelPending = null;
+        reject(error);
+      });
     });
     return this.connectPromise;
   }
@@ -144,6 +154,7 @@ export class QuerySocket {
   suspend(): void {
     this.suspended = true;
     this.clearRetryTimer();
+    this.cancelOpen();
 
     const previous = this.ws;
     this.ws = null;
@@ -160,6 +171,7 @@ export class QuerySocket {
   reconnectNow(): void {
     if (this.manuallyClosed) return;
     this.clearRetryTimer();
+    this.cancelOpen();
 
     const previous = this.ws;
     this.ws = null;
@@ -181,6 +193,7 @@ export class QuerySocket {
   close(): void {
     this.manuallyClosed = true;
     this.clearRetryTimer();
+    this.cancelOpen();
 
     const previous = this.ws;
     this.ws = null;
@@ -203,7 +216,15 @@ export class QuerySocket {
     }
   }
 
+  private cancelOpen(): void {
+    this.generation += 1;
+    this.cancelPending?.();
+    this.cancelPending = null;
+    this.connectPromise = null;
+  }
+
   private async open(
+    generation: number,
     resolve: () => void,
     reject: (error: unknown) => void
   ): Promise<void> {
@@ -211,11 +232,15 @@ export class QuerySocket {
 
     try {
       const token = await this.getToken();
+      if (generation !== this.generation || this.manuallyClosed || this.suspended) {
+        reject(new Error("Connection attempt cancelled."));
+        return;
+      }
       const ws = this.createWebSocket(withClaim(this.baseUrl, token));
       this.ws = ws;
 
       ws.onopen = () => {
-        if (settled) return;
+        if (settled || generation !== this.generation || this.ws !== ws) return;
         settled = true;
         this.attempt = 0;
         resolve();
@@ -247,6 +272,10 @@ export class QuerySocket {
         if (!this.manuallyClosed) this.scheduleReconnect();
       };
     } catch (error) {
+      if (generation !== this.generation) {
+        reject(error);
+        return;
+      }
       this.ws = null;
       this.connectPromise = null;
       if (!settled) {
