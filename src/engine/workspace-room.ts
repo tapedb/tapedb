@@ -239,6 +239,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
           `${request.method} is not supported for ${url.pathname}.`
         );
       }
+      try {
+        readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(403, error.code, error.message);
+        throw error;
+      }
       return this.status();
     }
 

@@ -78,3 +78,29 @@ describe("uploads", () => {
     expect([...target.files.objects.keys()]).toEqual([]);
   });
 });
+
+describe("engine routes", () => {
+  test("never reach a Durable Object without a verified claim, status included", async () => {
+    for (const path of ["status", "query", "transact", "export", "schema", "websocket"]) {
+      const target = env(200);
+      const response = await tapedb.worker.fetch(
+        new Request(`http://worker.test/engine/workspaces/${WORKSPACE}/${path}`),
+        target.env as never,
+        {} as ExecutionContext
+      );
+      expect([path, response.status]).toEqual([path, 401]);
+      // No object is woken, migrated or created for an unauthenticated caller.
+      expect(target.roomCalls).toEqual([]);
+    }
+
+    const target = env(200);
+    const { token } = await signRoleClaim(SECRET, { sub: "u1", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER });
+    const status = await tapedb.worker.fetch(
+      new Request(`http://worker.test/engine/workspaces/${WORKSPACE}/status`, { headers: { authorization: `Bearer ${token}` } }),
+      target.env as never,
+      {} as ExecutionContext
+    );
+    expect(status.status).toBe(200);
+    expect(target.roomCalls).toEqual(["GET /status"]);
+  });
+});
