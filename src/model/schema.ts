@@ -315,6 +315,47 @@ export type Selected<M extends Models, F extends Fields, S> = {
   >;
 };
 
+// ---- Aggregates -------------------------------------------------------------
+
+type NumberKeys<F> = {
+  [K in ScalarKeys<F>]: F[K] extends Field<"number", boolean, boolean> ? K : never;
+}[ScalarKeys<F>];
+
+/** Fields a group can be keyed by: anything filterable, and the timestamps. */
+export type GroupKeys<F> = FilterKeys<F> | "createdAt" | "updatedAt";
+
+/** Fields with an order, so a minimum and maximum: not booleans or json. */
+type OrderedKeys<F> =
+  | Exclude<GroupKeys<F>, { [K in ScalarKeys<F>]: F[K] extends Field<"boolean", boolean, boolean> ? K : never }[ScalarKeys<F>]>;
+
+type Flags<K extends PropertyKey> = { [P in K]?: boolean };
+
+export interface AggregateMeasures<F> {
+  /** `true` counts rows; an object counts rows (`_all`) and non-null values per field. */
+  _count?: true | ({ _all?: boolean } & Flags<keyof Row<F>>);
+  _sum?: Flags<NumberKeys<F>>;
+  _avg?: Flags<NumberKeys<F>>;
+  _min?: Flags<OrderedKeys<F>>;
+  _max?: Flags<OrderedKeys<F>>;
+}
+
+type On<S> = { [K in keyof S]: S[K] extends false | undefined ? never : K }[keyof S];
+
+/** What a set of measures returns. */
+export type AggregateOutput<F, A> = (A extends { _count: infer C }
+  ? { _count: C extends true ? number : { [K in On<C>]: number } }
+  : unknown) &
+  (A extends { _sum: infer S } ? { _sum: { [K in On<S>]: number | null } } : unknown) &
+  (A extends { _avg: infer S } ? { _avg: { [K in On<S>]: number | null } } : unknown) &
+  (A extends { _min: infer S } ? { _min: { [K in On<S> & keyof Row<F>]: Row<F>[K] | null } } : unknown) &
+  (A extends { _max: infer S } ? { _max: { [K in On<S> & keyof Row<F>]: Row<F>[K] | null } } : unknown);
+
+/** One `groupBy` row: the key fields, then the measures. */
+export type GroupRow<F, A> = (A extends { by: ReadonlyArray<infer K> }
+  ? { [P in K & keyof Row<F>]: Row<F>[P] }
+  : unknown) &
+  AggregateOutput<F, A>;
+
 // ---- The schema ------------------------------------------------------------
 
 export interface RelationInfo {

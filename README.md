@@ -99,6 +99,33 @@ sequence, which live updates key on), and the result type narrows to match.
 It works the same for `findPage` and live subscriptions; `select` and
 `include` are not combined at one level.
 
+Aggregates take the same `where` and return only the measures asked for:
+
+```ts
+const stats = await db.task.aggregate({
+  where: { done: false },
+  _count: true,                       // or { _all: true, due: true } for non-null counts
+  _sum: { points: true },
+  _avg: { points: true },
+  _min: { due: true },
+  _max: { due: true },
+});
+
+const perColumn = await db.task.groupBy({
+  by: ["columnId"],
+  _count: true,
+  _sum: { points: true },
+  orderBy: { columnId: "asc" },
+  take: 20,
+});
+// [{ columnId, _count, _sum: { points } }, ...]
+```
+
+They run as one `GROUP BY` statement over the rows the caller may read: a
+`filter()` read rule is compiled into it, and a model whose read rule is a
+function is folded row by row after the rule runs. Both are live with
+`subscribe`, like `count`.
+
 Everything is typed from the schema: a misspelt field in `where` is a compile
 error, and `include` / `select` shape the result type. Filters take `not`, `in`,
 `notIn`, `gt`, `gte`, `lt`, `lte`, and `AND` / `OR` / `NOT` over whole
@@ -149,7 +176,7 @@ const peers = usePresence(db, "board:" + boardId, { name, color });
 ```
 
 After a commit, only subscriptions whose query touches a changed model re-run,
-batched at 50 ms, and clients receive row-level diffs. Counts stay live too.
+batched at 50 ms, and clients receive row-level diffs. Counts and aggregates stay live too.
 
 ## Writes
 
