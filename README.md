@@ -84,8 +84,23 @@ const page = await db.task.findPage({ orderBy: { due: "asc" }, take: 50 });
 // { rows, hasMore, cursor } — pass cursor back as `after`
 ```
 
+`select` returns only the fields you name, and relations named in it are
+included with their own `select`:
+
+```ts
+const titles = await db.task.findMany({
+  select: { title: true, column: { select: { name: true } } },
+});
+// { title: string; column: { name: string } | null }[]
+```
+
+The engine reads and sends only those columns (plus the row's id and
+sequence, which live updates key on), and the result type narrows to match.
+It works the same for `findPage` and live subscriptions; `select` and
+`include` are not combined at one level.
+
 Everything is typed from the schema: a misspelt field in `where` is a compile
-error, and `include` shapes the result type. Filters take `not`, `in`,
+error, and `include` / `select` shape the result type. Filters take `not`, `in`,
 `notIn`, `gt`, `gte`, `lt`, `lte`, and `AND` / `OR` / `NOT` over whole
 filters. Pagination is keyset, so an insert above the window cannot repeat a
 row.

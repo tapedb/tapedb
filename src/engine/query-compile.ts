@@ -68,8 +68,14 @@ export interface CompiledNode {
   table: string;
   /** 0 for a top-level namespace, 1 or 2 for link levels. */
   depth: number;
-  /** Quoted-ready physical columns. */
+  /**
+   * Physical columns to read. With a `select` this is the selected columns
+   * plus what the engine itself needs: id, sequence, ordering keys and the
+   * foreign keys that join link levels.
+   */
   columns: string[];
+  /** API attribute names to return, or null for every attribute. */
+  select: string[] | null;
   conditions: CompiledCondition[];
   order: CompiledOrder[];
   /** `null` means "no SQL LIMIT" (nested levels are unbounded by default). */
@@ -233,6 +239,8 @@ function compileNode(
   const options: QueryOptions = "$" in value ? parseQueryOptions(value.$) : {};
 
   const children: CompiledChild[] = [];
+  /** Columns this level must read for its links, whatever it selects. */
+  const linkColumns: string[] = [];
   for (const [label, raw] of Object.entries(value)) {
     if (label === "$") continue;
 
@@ -255,13 +263,22 @@ function compileNode(
     }
 
     const target = linkTarget(info);
+    const foreignKeyColumn = toSnakeCase(info.link.foreignKey.attribute);
+    const node = compileNode(target.namespace, raw, depth + 1, view);
+    // Forward links group the child rows by their key; reverse links look
+    // the target up by this row's key. Either way the key is read.
+    if (info.direction === "forward") {
+      if (!node.columns.includes(foreignKeyColumn)) node.columns.push(foreignKeyColumn);
+    } else {
+      linkColumns.push(foreignKeyColumn);
+    }
     children.push({
       label,
       target: target.namespace,
       direction: info.direction,
       multiplicity: linkMultiplicity(info),
-      foreignKeyColumn: toSnakeCase(info.link.foreignKey.attribute),
-      node: compileNode(target.namespace, raw, depth + 1, view),
+      foreignKeyColumn,
+      node,
     });
   }
 
@@ -278,11 +295,25 @@ function compileNode(
     conditions.push({ ...cursorCondition(options.after, order), cursor: true });
   }
 
+  const select =
+    options.select === undefined ? null : compileSelect(namespace, options.select);
+  const columns =
+    select === null
+      ? selectColumns(namespace)
+      : unique([
+          "id",
+          "updated_seq",
+          ...select.map((name) => selectableColumn(namespace, name)!),
+          ...order.map((entry) => entry.column),
+          ...linkColumns,
+        ]);
+
   return {
     namespace: namespaceName,
     table: namespace.table,
     depth,
-    columns: selectColumns(namespace),
+    columns,
+    select,
     conditions,
     order,
     // Only the top level gets the implicit result cap. A nested level is
@@ -396,7 +427,42 @@ export function compileViewCondition(
   return { sql: parts.map((part) => `(${part})`).join(" OR "), params };
 }
 
-function selectColumns(namespace: NamespaceDefinition): string[] {
+/** The physical column behind a selectable API name, or undefined. */
+function selectableColumn(
+  namespace: NamespaceDefinition,
+  name: string
+): string | undefined {
+  switch (name) {
+    case "id":
+      return "id";
+    case "createdAt":
+      return "created_at";
+    case "updatedAt":
+      return "updated_at";
+    case "updatedSeq":
+      return "updated_seq";
+  }
+  return name in namespace.attributes ? toSnakeCase(name) : undefined;
+}
+
+function compileSelect(namespace: NamespaceDefinition, names: string[]): string[] {
+  for (const name of names) {
+    if (selectableColumn(namespace, name) === undefined) {
+      throw new TxError(
+        "unknown_attribute",
+        `Unknown attribute "${name}" on namespace "${namespace.apiName}".`
+      );
+    }
+  }
+  return names;
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)];
+}
+
+/** Every column of a namespace: what a read without `select` returns. */
+export function selectColumns(namespace: NamespaceDefinition): string[] {
   const columns = new Set<string>(["id"]);
   for (const attribute of Object.keys(namespace.attributes)) {
     columns.add(toSnakeCase(attribute));

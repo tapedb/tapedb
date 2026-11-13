@@ -87,6 +87,12 @@ export interface QueryOptions {
    * `limit`, as `pageInfo[namespace].count`. With `limit: 0` no rows are read.
    */
   count?: boolean;
+  /**
+   * Attributes to return, by API name. Omitted means every attribute. `id`
+   * and `updatedSeq` are always returned: live diffs key rows by id, and the
+   * client's retry basis reads the sequence.
+   */
+  select?: string[];
 }
 
 /**
@@ -145,7 +151,7 @@ export interface QueryErrorResponse {
   };
 }
 
-const OPTION_KEYS = new Set(["where", "order", "limit", "after", "count"]);
+const OPTION_KEYS = new Set(["where", "order", "limit", "after", "count", "select"]);
 const LOGICAL_KEYS = new Set(["$or", "$and", "$not", "$link"]);
 const RELATION_MODES = new Set(["parent", "some", "every", "none"]);
 const COMPARISON_OPERATORS = new Set([
@@ -225,6 +231,9 @@ export function parseQueryOptions(value: unknown): QueryOptions {
   if ("after" in value) {
     options.after = parseCursor(value.after);
   }
+  if ("select" in value) {
+    options.select = parseSelect(value.select);
+  }
 
   return options;
 }
@@ -285,6 +294,20 @@ export function decodeQueryCursor(value: string): QueryCursor {
   }
 
   return { v: 1, cols: cols as string[], vals: vals as (string | number | null)[] };
+}
+
+function parseSelect(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw invalidOp('"select" must be a non-empty array of attribute names.');
+  }
+  const names = new Set<string>();
+  for (const name of value) {
+    if (typeof name !== "string" || name.length === 0) {
+      throw invalidOp('"select" must be a non-empty array of attribute names.');
+    }
+    names.add(name);
+  }
+  return [...names];
 }
 
 function parseCursor(value: unknown): string {
