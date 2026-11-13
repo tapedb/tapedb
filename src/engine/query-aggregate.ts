@@ -15,6 +15,7 @@
 
 import { invalidOp, invalidValue, isPlainObject, MAX_QUERY_LIMIT } from "./query-types";
 import { toSnakeCase, type AttributeType, type NamespaceDefinition } from "./registry";
+import { balancedJoin } from "./sql-binding";
 import { quoteIdentifier } from "./tx-apply";
 import type { SqlValue } from "./tx-sql";
 import { TxError } from "./tx-types";
@@ -228,7 +229,7 @@ export function aggregateColumns(aggregate: CompiledAggregate): string[] {
   ].map((field) => field.column);
 }
 
-/** One `SELECT ... GROUP BY` over the read's conditions. */
+/** One `SELECT ... GROUP BY` over the read's conditions (joined like `buildSelectSql`). */
 export function buildAggregateSql(
   table: string,
   aggregate: CompiledAggregate,
@@ -254,7 +255,7 @@ export function buildAggregateSql(
   const params = conditions.flatMap((condition) => condition.params);
   const whereSql =
     conditions.length > 0
-      ? ` WHERE ${conditions.map((condition) => `(${condition.sql})`).join(" AND ")}`
+      ? ` WHERE ${balancedJoin(conditions.map((condition) => condition.sql), " AND ")}`
       : "";
   const groupSql =
     aggregate.groupBy.length > 0

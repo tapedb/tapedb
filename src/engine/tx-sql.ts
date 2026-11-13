@@ -8,6 +8,8 @@
  * Booleans are normalised to 0/1 by validation before they reach a binding.
  */
 
+import { fitBindings } from "./sql-binding";
+
 export type SqlValue = string | number | null | ArrayBuffer;
 
 export type SqlRow = Record<string, SqlValue>;
@@ -26,22 +28,30 @@ export interface SqlExecutor {
   transactionSync<T>(fn: () => T): T;
 }
 
-/** Adapts a Durable Object's SQLite storage to `SqlExecutor`. */
+/**
+ * Adapts a Durable Object's SQLite storage to `SqlExecutor`. Every statement
+ * goes through `fitBindings`, which keeps it within the object's limit of 100
+ * bound parameters.
+ */
 export function durableObjectSqlExecutor(
   storage: DurableObjectStorage
 ): SqlExecutor {
+  const run = <T extends SqlRow>(sql: string, params: SqlValue[]) => {
+    const fitted = fitBindings(sql, params);
+    return storage.sql.exec<T>(fitted.sql, ...fitted.params);
+  };
   return {
     exec(sql, ...params) {
-      return storage.sql.exec(sql, ...params).rowsWritten;
+      return run(sql, params).rowsWritten;
     },
     all<T extends SqlRow = SqlRow>(sql: string, ...params: SqlValue[]): T[] {
-      return storage.sql.exec<T>(sql, ...params).toArray();
+      return run<T>(sql, params).toArray();
     },
     one<T extends SqlRow = SqlRow>(
       sql: string,
       ...params: SqlValue[]
     ): T | undefined {
-      return storage.sql.exec<T>(sql, ...params).toArray()[0];
+      return run<T>(sql, params).toArray()[0];
     },
     transactionSync<T>(fn: () => T): T {
       return storage.transactionSync(fn);

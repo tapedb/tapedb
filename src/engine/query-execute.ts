@@ -29,6 +29,7 @@ import {
   groupsFromSql,
 } from "./query-aggregate";
 import type { AggregateGroup } from "./query-aggregate";
+import { balancedJoin } from "./sql-binding";
 import {
   encodeQueryCursor,
   parseQueryEnvelope,
@@ -347,7 +348,7 @@ function countRows(
   const conditions = node.conditions.filter((condition) => !condition.cursor);
   const whereSql =
     conditions.length > 0
-      ? ` WHERE ${conditions.map((condition) => `(${condition.sql})`).join(" AND ")}`
+      ? ` WHERE ${balancedJoin(conditions.map((condition) => condition.sql), " AND ")}`
       : "";
   const row = sql.one<{ total: number }>(
     `SELECT COUNT(*) AS "total" FROM ${quoteIdentifier(node.table)}${whereSql}`,
