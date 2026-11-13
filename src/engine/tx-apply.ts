@@ -142,7 +142,9 @@ function insertRow(
   namespace: NamespaceDefinition,
   table: string
 ): number {
-  for (const column of requiredColumns(namespace)) {
+  // A replayed insert was valid when it was written; a field made required
+  // since then is filled by its column default instead.
+  for (const column of context.replay ? [] : requiredColumns(namespace)) {
     if (!(column in op.values)) {
       throw new TxError(
         "invalid_op",

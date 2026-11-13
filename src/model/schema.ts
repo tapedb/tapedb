@@ -323,6 +323,7 @@ export function schema<M extends Models>(models: M): Schema<M> {
           optional: member.isOptional,
           indexed: member.isIndexed || undefined,
           unique: member.isUnique || undefined,
+          ...(member.hasDefault ? { default: storedDefault(member.kind, member.defaultValue) } : {}),
         } as AttributeDefinition;
         info.scalars[name] = {
           kind: member.kind,
@@ -426,6 +427,23 @@ export function schema<M extends Models>(models: M): Schema<M> {
 
   const compiled = defineSchema({ entities, links, permissions, tables });
   return { ...compiled, models, graph };
+}
+
+/** A default in the form the column stores it. */
+function storedDefault(kind: ScalarKind, value: unknown): string | number | null {
+  if (value === null || value === undefined) return null;
+  switch (kind) {
+    case "boolean":
+      return value ? 1 : 0;
+    case "date":
+      return value instanceof Date ? value.getTime() : typeof value === "string" ? Date.parse(value) : Number(value);
+    case "json":
+      return JSON.stringify(value);
+    case "number":
+      return Number(value);
+    default:
+      return String(value);
+  }
 }
 
 function accessOverrides(

@@ -8,6 +8,16 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- Recovery reads old data through later schema changes. Migrations can
+  declare what they changed (`dropModel`, `renameModel`, `dropField`,
+  `renameField`, `retypeField`); a snapshot row or log line written before
+  them is projected through every later change, so a dropped field no longer
+  leaves a restored workspace unable to boot. Undeclared differences still
+  fail closed. Log lines and snapshot manifests now record the app schema
+  version they were written under.
+- Field defaults become column defaults, so rows written before a field
+  existed get its default rather than null.
+
 - Engine migrations run on their own track (`tapedb_NNNN_*`), after the
   frozen `0001_baseline` and before the app's migrations, so the engine's own
   tables can change without touching a checksum a deployed workspace holds.
