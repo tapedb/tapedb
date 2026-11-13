@@ -270,6 +270,45 @@ export interface NodeArgs {
   take?: number;
   after?: string;
   include?: Record<string, unknown>;
+  select?: Record<string, unknown>;
+}
+
+/** Fields a `select` may name besides relations: the keys of a stored row. */
+function selectable(model: ModelInfo, name: string): boolean {
+  return (
+    name === "id" ||
+    name === "createdAt" ||
+    name === "updatedAt" ||
+    name in model.scalars ||
+    model.filterable.has(name)
+  );
+}
+
+/**
+ * Splits `select` into the engine's attribute list and the relations it
+ * includes. Relations named in `select` are fetched exactly like `include`.
+ */
+export function splitSelect(
+  model: ModelInfo,
+  select: Record<string, unknown>
+): { fields: string[]; relations: Record<string, unknown> } {
+  const fields: string[] = [];
+  const relations: Record<string, unknown> = {};
+  for (const [name, value] of Object.entries(select)) {
+    if (value === undefined || value === false) continue;
+    if (name in model.relations) {
+      relations[name] = value;
+      continue;
+    }
+    if (!selectable(model, name)) {
+      throw new Error(`"${model.key}" has no field "${name}" to select.`);
+    }
+    if (value !== true) {
+      throw new Error(`"${model.key}.${name}" in select takes true or false.`);
+    }
+    fields.push(name);
+  }
+  return { fields, relations };
 }
 
 /** One level of an engine query document: `{ $: options, label: child, ... }`. */
@@ -286,8 +325,22 @@ export function toEngineNode(
   if (args.take !== undefined) options.limit = args.take;
   if (args.after !== undefined) options.after = args.after;
 
+  let relations = args.include ?? {};
+  if (args.select !== undefined) {
+    if (args.include !== undefined) {
+      throw new Error(
+        `"${model.key}": use select or include, not both. Relations listed in select are included.`
+      );
+    }
+    const split = splitSelect(model, args.select);
+    // The engine always returns the id, so a select of relations alone
+    // still asks for one column.
+    options.select = split.fields.length > 0 ? split.fields : ["id"];
+    relations = split.relations;
+  }
+
   const node: Record<string, unknown> = { $: options };
-  for (const [name, value] of Object.entries(args.include ?? {})) {
+  for (const [name, value] of Object.entries(relations)) {
     if (value === undefined || value === false) continue;
     const relation = model.relations[name];
     if (!relation) {
@@ -300,4 +353,56 @@ export function toEngineNode(
     );
   }
   return node;
+}
+
+type Shape = (row: Record<string, unknown>) => Record<string, unknown>;
+
+/**
+ * Narrows result rows to what the arguments asked for, at every level, or
+ * returns null when nothing is narrowed. The engine already sends only the
+ * selected fields; this keeps optimistic writes, which patch whole values
+ * into cached rows, from widening a narrowed row again.
+ */
+export function shapeFor(
+  graph: Record<string, ModelInfo>,
+  model: ModelInfo,
+  args: NodeArgs
+): Shape | null {
+  const split =
+    args.select === undefined ? null : splitSelect(model, args.select);
+  const relations = split?.relations ?? args.include ?? {};
+
+  const nested: Array<[string, Shape | null]> = [];
+  for (const [name, value] of Object.entries(relations)) {
+    if (value === undefined || value === false) continue;
+    const relation = model.relations[name];
+    if (!relation) continue;
+    nested.push([
+      name,
+      value === true ? null : shapeFor(graph, graph[relation.target], value as NodeArgs),
+    ]);
+  }
+  if (split === null && nested.every(([, shape]) => shape === null)) return null;
+
+  const fields = split?.fields ?? null;
+  return (row) => {
+    let output: Record<string, unknown>;
+    if (fields === null) {
+      output = { ...row };
+    } else {
+      output = {};
+      for (const field of fields) if (field in row) output[field] = row[field];
+    }
+    for (const [name, shape] of nested) {
+      const value = row[name];
+      if (value === undefined) continue;
+      output[name] =
+        shape === null || value === null
+          ? value
+          : Array.isArray(value)
+            ? value.map((child) => shape(child as Record<string, unknown>))
+            : shape(value as Record<string, unknown>);
+    }
+    return output;
+  };
 }

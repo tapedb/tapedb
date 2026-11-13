@@ -76,4 +76,25 @@ export async function assertions(): Promise<void> {
   await db.board.findMany({ where: { columns: { name: "x" } } });
   // @ts-expect-error a to-one link is filtered directly
   await db.column.findMany({ where: { board: { some: { name: "x" } } } });
+
+  // select narrows the row to the named fields, at every level.
+  const picked = await db.column.findMany({ select: { name: true, boardId: true } });
+  expectType<Equal<keyof (typeof picked)[0], "name" | "boardId">>();
+  expectType<Equal<(typeof picked)[0]["name"], string>>();
+  const nestedPick = await db.board.findFirst({
+    select: { id: true, columns: { select: { position: true }, orderBy: { position: "asc" } } },
+  });
+  expectType<Equal<keyof NonNullable<typeof nestedPick>, "id" | "columns">>();
+  expectType<Equal<keyof NonNullable<typeof nestedPick>["columns"][0], "position">>();
+  const withSelectedParent = await db.column.findMany({ include: { parent: { select: { name: true } } } });
+  expectType<Equal<keyof NonNullable<(typeof withSelectedParent)[0]["parent"]>, "name">>();
+  const page = await db.column.findPage({ select: { note: true } });
+  expectType<Equal<keyof (typeof page)["rows"][0], "note">>();
+  const unique = await db.column.findUnique({ where: { id: "x" }, select: { archived: true } });
+  expectType<Equal<keyof NonNullable<typeof unique>, "archived">>();
+  db.column.findMany({ select: { name: true } }).subscribe((state) => {
+    expectType<Equal<keyof NonNullable<typeof state.data>[0], "name">>();
+  });
+  // @ts-expect-error not a field of column
+  await db.column.findMany({ select: { nope: true } });
 }

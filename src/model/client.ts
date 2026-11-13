@@ -43,10 +43,12 @@ import type {
   OrderBy,
   Row,
   Schema,
+  Select,
+  Selected,
   UpdateData,
   WithInclude,
 } from "./schema";
-import { toEngineNode, toEngineWhere, type NodeArgs, type Where } from "./where";
+import { shapeFor, toEngineNode, toEngineWhere, type NodeArgs, type Where } from "./where";
 
 // ---- Public types ----------------------------------------------------------
 
@@ -80,6 +82,12 @@ export interface FindArgs<M extends Models, F extends Fields> {
   orderBy?: OrderBy<F>;
   take?: number;
   include?: Include<M, F>;
+  /**
+   * Return only these fields. The engine reads and sends only them, plus the
+   * id and sequence it needs for live updates; the result type narrows to
+   * match. Relations named here are included. Not combined with `include`.
+   */
+  select?: Select<M, F>;
 }
 
 export interface PageArgs<M extends Models, F extends Fields> extends FindArgs<M, F> {
@@ -87,13 +95,14 @@ export interface PageArgs<M extends Models, F extends Fields> extends FindArgs<M
   after?: string | null;
 }
 
-export type Result<M extends Models, F extends Fields, A> = Row<F> &
-  (A extends { include: infer I } ? WithInclude<M, F, I> : unknown);
+export type Result<M extends Models, F extends Fields, A> = A extends { select: infer S }
+  ? Selected<M, F, S>
+  : Row<F> & (A extends { include: infer I } ? WithInclude<M, F, I> : unknown);
 
 export interface ModelClient<M extends Models, F extends Fields> {
   findMany<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A): Query<Result<M, F, A>[]>;
   findFirst<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A): Query<Result<M, F, A> | null>;
-  findUnique<A extends { where: { id: string }; include?: Include<M, F> }>(
+  findUnique<A extends { where: { id: string }; include?: Include<M, F>; select?: Select<M, F> }>(
     args: A
   ): Query<Result<M, F, A> | null>;
   /** One page in a stable order. Defaults to `orderBy: { id: "asc" }` (ids are time-ordered). */
@@ -409,21 +418,37 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
   const document = (args: NodeArgs, extra: Record<string, unknown> = {}): QueryDocument => ({
     [model.key]: toEngineNode(runtime.graph, model, args, extra) as QueryDocument[string],
   });
-  const rows = (data: QueryResult) => (data[model.key] ?? []) as never[];
+  const reader = (args: NodeArgs | undefined) => {
+    const shape = shapeFor(runtime.graph, model, args ?? {});
+    return (data: QueryResult) => {
+      const list = (data[model.key] ?? []) as Record<string, unknown>[];
+      return (shape === null ? list : list.map(shape)) as never[];
+    };
+  };
 
   return {
-    findMany: (args?: NodeArgs) => new Query(runtime, document(args ?? {}), rows, "many"),
-    findFirst: (args?: NodeArgs) =>
-      new Query(runtime, document({ ...args, take: 1 }), (data) => rows(data)[0] ?? null, "first"),
-    findUnique: (args: { where: { id?: unknown }; include?: Record<string, unknown> }) =>
-      new Query(
+    findMany: (args?: NodeArgs) => new Query(runtime, document(args ?? {}), reader(args), "many"),
+    findFirst: (args?: NodeArgs) => {
+      const rows = reader(args);
+      return new Query(runtime, document({ ...args, take: 1 }), (data) => rows(data)[0] ?? null, "first");
+    },
+    findUnique: (args: { where: { id?: unknown }; include?: Record<string, unknown>; select?: Record<string, unknown> }) => {
+      const rows = reader(args);
+      return new Query(
         runtime,
-        document({ where: { id: requireId(model, args.where) }, include: args.include, take: 1 }),
+        document({
+          where: { id: requireId(model, args.where) },
+          include: args.include,
+          select: args.select,
+          take: 1,
+        }),
         (data) => rows(data)[0] ?? null,
         "first"
-      ),
+      );
+    },
     findPage: (args?: NodeArgs & { after?: string | null }) => {
       const { after, ...rest } = args ?? {};
+      const rows = reader(rest);
       return new PageQuery(
         runtime,
         document({

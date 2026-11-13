@@ -11,6 +11,7 @@ import type { RoleClaim } from "../claims";
 import {
   buildSelectSql,
   compileQuery,
+  selectColumns,
   conditionAfterValues,
   compileViewCondition,
   type ViewAccess,
@@ -43,6 +44,8 @@ type PhysicalRow = Record<string, SqlValue>;
 interface HydratedEntity {
   namespace: string;
   row: PhysicalRow;
+  /** API attributes the query selected, or null for all of them. */
+  select: string[] | null;
   links: Record<string, HydratedEntity | HydratedEntity[] | null>;
 }
 
@@ -218,10 +221,18 @@ function withViewConditions(node: CompiledNode, claim: RoleClaim): CompiledNode 
     ...child,
     node: withViewConditions(child.node, claim),
   }));
-  if (branches === null) return { ...node, children };
+  // A function read rule sees the whole row, so a projected read still
+  // fetches every column; only the response is narrowed.
+  const namespace = findNamespace(node.namespace);
+  const columns =
+    node.select !== null && namespace !== undefined && hasFunctionViewRule(node.namespace)
+      ? [...new Set([...node.columns, ...selectColumns(namespace)])]
+      : node.columns;
+  if (branches === null) return { ...node, columns, children };
 
   return {
     ...node,
+    columns,
     conditions: [
       ...node.conditions,
       compileViewCondition(node.namespace, branches),
@@ -483,6 +494,7 @@ function hydrateNode(
   const entities: HydratedEntity[] = rows.map((row) => ({
     namespace: node.namespace,
     row,
+    select: node.select,
     links: {},
   }));
 
@@ -603,6 +615,22 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
   }
 
   const output: Record<string, unknown> = { id: entity.row.id };
+  if (entity.select !== null) {
+    for (const name of entity.select) {
+      if (name === "id") continue;
+      const definition = namespace.attributes[name];
+      if (definition !== undefined) {
+        output[name] = fromStoredValue(definition.type, entity.row[toSnakeCase(name)]);
+      } else if (name === "createdAt") {
+        output.createdAt = fromStoredValue("date", entity.row.created_at);
+      } else if (name === "updatedAt") {
+        output.updatedAt = fromStoredValue("date", entity.row.updated_at);
+      }
+    }
+    output.updatedSeq = fromStoredValue("number", entity.row.updated_seq) ?? 0;
+    appendLinks(output, entity);
+    return output;
+  }
   const attributes = new Set<string>(["id"]);
 
   for (const [attribute, definition] of Object.entries(namespace.attributes)) {
@@ -622,7 +650,11 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
     output.updatedAt = fromStoredValue("date", entity.row.updated_at);
   }
   output.updatedSeq = fromStoredValue("number", entity.row.updated_seq) ?? 0;
+  appendLinks(output, entity);
+  return output;
+}
 
+function appendLinks(output: Record<string, unknown>, entity: HydratedEntity): void {
   for (const [label, value] of Object.entries(entity.links)) {
     output[label] = Array.isArray(value)
       ? value.map(toApiEntity)
@@ -630,8 +662,6 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
         ? null
         : toApiEntity(value);
   }
-
-  return output;
 }
 
 /** Converts a stored value to the API shape for its registry type. */
