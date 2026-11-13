@@ -8,6 +8,20 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `tapedb migrate dev --name <name>` diffs the schema against
+  `tapedb/schema.snapshot.json` and writes the next numbered SQL migration,
+  with its change declarations, plus the `tapedb/migrations.gen.ts` bundle
+  that `defineTapeDB({ schema, migrations })` takes. Added fields, indexes,
+  defaults and models; drops (behind `--accept-data-loss`); renames (with
+  `--rename old=new` or `model.old=new`); type changes by table rebuild,
+  refused for tables other tables reference. The first migration is
+  byte-identical to the SQL `defineSchema` always generated, so deployed
+  workspaces keep a matching checksum. `migrate status` and `migrate check`.
+- `tapedb deploy [--env]` refuses unless `ENVIRONMENT` is `production`,
+  `TAPEDB_DEV_CLAIMS` is unset and migrations match the schema, then runs
+  `wrangler deploy`.
+- `tapedb init` writes a model-API schema and its first migration.
+
 - Recovery reads old data through later schema changes. Migrations can
   declare what they changed (`dropModel`, `renameModel`, `dropField`,
   `renameField`, `retypeField`); a snapshot row or log line written before
@@ -76,6 +90,11 @@ All notable changes to this project are documented here. The format follows
   also fires for any other permanent refusal during a background flush.
 
 ### Fixed
+
+- A schema change no longer stops every existing workspace from booting.
+  Every change used to regenerate the single `0002_entities` migration; its
+  checksum then mismatched what workspaces had recorded and they refused to
+  boot. Migrations are now committed files that only ever grow.
 
 - Snapshots now include the file index. They covered model tables only, so a
   restore kept just the files written after the last snapshot: anything
