@@ -107,11 +107,12 @@ describe("compileQuery", () => {
       ids: ["d1", "d2"],
     });
 
-    expect(sql).toContain('("document_id" IN (?, ?))');
+    // One parameter however many parents: a Durable Object binds at most 100.
+    expect(sql).toContain('("document_id" IN (SELECT value FROM json_each(?)))');
     // A nested level carries no implicit LIMIT: one LIMIT over `fk IN (...)` is
     // shared by every parent, which silently truncates the later parents.
     expect(sql.endsWith("LIMIT ?")).toBe(false);
-    expect(params).toEqual(["d1", "d2"]);
+    expect(params).toEqual(['["d1","d2"]']);
   });
 
   test("keeps an explicit limit on a nested level", () => {
@@ -199,10 +200,10 @@ describe("compileQuery", () => {
 
     const { sql, params } = buildSelectSql(node(compiled));
     expect(sql).toContain('("status" IS NULL OR "status" <> ?)');
-    expect(sql).toContain('("status" IN (?, ?))');
+    expect(sql).toContain('("status" IN (SELECT value FROM json_each(?)))');
     expect(sql).toContain('("order" > ?)');
     expect(sql).toContain('("order" <= ?)');
-    expect(params).toEqual(["done", "todo", "done", 1, 4, 100]);
+    expect(params).toEqual(["done", '["todo","done"]', 1, 4, 100]);
   });
 
   test("compiles an empty $in to a false predicate", () => {

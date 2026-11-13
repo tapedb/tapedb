@@ -10,12 +10,14 @@
  *
  * Supported subset: equality and `$ne`/`$in`/`$gt`/`$gte`/`$lt`/`$lte` on
  * scalar attributes, `order` and `limit` (1..1000). JSON/`any` attributes are
- * returned but cannot be filtered or ordered on. Links and relation filters
- * nest as deep as the document asks; the bound is SQLite's own statement
- * size, reported as a bad request (`sqliteLimitError`).
+ * returned but cannot be filtered or ordered on. Links nest as deep as the
+ * document asks (one statement per level); relation filters nest until
+ * SQLite's expression depth (about eight hops in a Durable Object), past
+ * which the query is a bad request (`sqliteLimitError`).
  */
 
 import { compileAggregate, type CompiledAggregate } from "./query-aggregate";
+import { balancedJoin } from "./sql-binding";
 import {
   DEFAULT_QUERY_LIMIT,
   invalidOp,
@@ -176,13 +178,18 @@ export function compileQuery(value: unknown, view?: ViewAccess): CompiledQuery {
 }
 
 /**
- * SQLite's own bounds on one statement, which a deeply nested filter can
- * reach: about thirty relation filters inside each other exceed its
- * expression depth. Reported as a bad request, naming the bound.
+ * SQLite's own bounds on one statement, reported as a bad request naming
+ * the bound. The one a query can realistically reach is expression depth:
+ * a Durable Object's SQLite allows 100, and each relation filter nested
+ * inside another costs more than the last (SQLite counts the enclosing
+ * expression again for every subquery), so about eight hops fit in one
+ * filter, measured in workerd. Wide filters do not count against it:
+ * `balancedJoin` keeps AND/OR chains logarithmic and lists travel as one
+ * JSON parameter.
  */
 export function sqliteLimitError(error: unknown): TxError | null {
   const message = error instanceof Error ? error.message : String(error);
-  if (/expression tree is too large|recursion limit|too many terms|parser stack overflow|too many SQL variables/i.test(message)) {
+  if (/expression tree is too large|recursion limit|too many terms|parser stack overflow|too many SQL variables|string or blob too big/i.test(message)) {
     return invalidOp(`The query is larger than SQLite can run as one statement (${message}). Split the filter.`);
   }
   return null;
@@ -203,11 +210,11 @@ export function buildSelectSql(
     if (extra.ids.length === 0) {
       conditions.push({ sql: "0 = 1", params: [] });
     } else {
+      // One parameter for the whole list: a page of parents can hold a
+      // thousand ids, and a Durable Object binds at most 100 parameters.
       conditions.push({
-        sql: `${quoteIdentifier(extra.column)} IN (${extra.ids
-          .map(() => "?")
-          .join(", ")})`,
-        params: [...extra.ids],
+        sql: `${quoteIdentifier(extra.column)} IN ${valueList()}`,
+        params: [JSON.stringify(extra.ids)],
       });
     }
   }
@@ -215,9 +222,7 @@ export function buildSelectSql(
   const params = conditions.flatMap((condition) => condition.params);
   const whereSql =
     conditions.length > 0
-      ? ` WHERE ${conditions
-          .map((condition) => `(${condition.sql})`)
-          .join(" AND ")}`
+      ? ` WHERE ${balancedJoin(conditions.map((condition) => condition.sql), " AND ")}`
       : "";
   const orderSql =
     node.order.length > 0
@@ -427,9 +432,9 @@ export function conditionAfterValues(
       parts.push(entry.direction === "desc" ? `(${column} < ? OR ${column} IS NULL)` : `${column} > ?`);
       params.push(value);
     }
-    clauses.push(`(${parts.join(" AND ")})`);
+    clauses.push(balancedJoin(parts, " AND "));
   }
-  return { sql: clauses.length ? clauses.join(" OR ") : "0 = 1", params };
+  return { sql: clauses.length ? balancedJoin(clauses, " OR ") : "0 = 1", params };
 }
 
 /**
@@ -472,11 +477,11 @@ export function compileViewCondition(
       parts.push("1 = 1");
       continue;
     }
-    parts.push(conditions.map((condition) => `(${condition.sql})`).join(" AND "));
+    parts.push(balancedJoin(conditions.map((condition) => condition.sql), " AND "));
     for (const condition of conditions) params.push(...condition.params);
   }
 
-  return { sql: parts.map((part) => `(${part})`).join(" OR "), params };
+  return { sql: balancedJoin(parts, " OR "), params };
 }
 
 /** The physical column behind a selectable API name, or undefined. */
@@ -685,7 +690,7 @@ function compileRelationFilter(
 
   const params: SqlValue[] = inner.flatMap((condition) => condition.params);
   const innerSql =
-    inner.length === 0 ? "1 = 1" : inner.map((condition) => `(${condition.sql})`).join(" AND ");
+    inner.length === 0 ? "1 = 1" : balancedJoin(inner.map((condition) => condition.sql), " AND ");
   const from = `${quoteIdentifier(target.table)} AS ${quoteIdentifier(alias)}`;
 
   if (relation.mode === "parent") {
@@ -721,10 +726,11 @@ function joinConditions(
   joiner: " AND " | " OR "
 ): CompiledCondition {
   return {
-    sql: conditions.map((condition) => `(${condition.sql})`).join(joiner),
+    sql: balancedJoin(conditions.map((condition) => condition.sql), joiner),
     params: conditions.flatMap((condition) => condition.params),
   };
 }
+
 
 function compileOrder(
   namespace: NamespaceDefinition,
@@ -764,6 +770,15 @@ function resolveAttribute(
   if (!definition) return undefined;
 
   return { column: toSnakeCase(attribute), type: definition.type };
+}
+
+/**
+ * A list bound as one JSON array parameter. Values compare exactly as bound
+ * ones would: the column's affinity applies to the right-hand side either
+ * way.
+ */
+function valueList(): string {
+  return "(SELECT value FROM json_each(?))";
 }
 
 /** `"column"` or `"alias"."column"`: unqualified names bind to the nearest FROM. */
@@ -834,8 +849,8 @@ function compileComparison(
         } else {
           const parts: string[] = [];
           if (nonNull.length > 0) {
-            parts.push(`${column} IN (${nonNull.map(() => "?").join(", ")})`);
-            params.push(...nonNull);
+            parts.push(`${column} IN ${valueList()}`);
+            params.push(JSON.stringify(nonNull));
           }
           if (hasNull) parts.push(`${column} IS NULL`);
           clauses.push(parts.join(" OR "));
@@ -855,8 +870,8 @@ function compileComparison(
         const excludesNull = values.length !== nonNull.length;
         const parts: string[] = [];
         if (nonNull.length > 0) {
-          parts.push(`${column} NOT IN (${nonNull.map(() => "?").join(", ")})`);
-          params.push(...nonNull);
+          parts.push(`${column} NOT IN ${valueList()}`);
+          params.push(JSON.stringify(nonNull));
         }
         if (excludesNull) {
           parts.unshift(`${column} IS NOT NULL`);
@@ -897,7 +912,7 @@ function compileComparison(
   return {
     sql:
       clauses.length > 0
-        ? clauses.map((clause) => `(${clause})`).join(" AND ")
+        ? balancedJoin(clauses, " AND ")
         : "1 = 1",
     params,
   };
