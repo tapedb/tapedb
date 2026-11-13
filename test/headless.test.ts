@@ -89,7 +89,7 @@ describe("headless client", () => {
     }
 
     const react = await import("../src/react/index");
-    expect(Object.keys(react).sort()).toEqual(["useLive", "useLivePage", "usePresence"]);
+    expect(Object.keys(react).sort()).toEqual(["useBroadcast", "useLive", "useLivePage", "usePresence"]);
   });
 
 });

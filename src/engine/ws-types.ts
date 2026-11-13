@@ -1,9 +1,11 @@
 /**
  * WebSocket wire contract for workspace live queries.
  *
- * Client -> server: `ping`, `query:subscribe`, `query:unsubscribe`.
+ * Client -> server: `ping`, `query:subscribe`, `query:unsubscribe`, the
+ * presence messages, `topic:join`, `topic:leave`, `topic:send`.
  * Server -> client: `session:ready`, `session:error`, `pong`, `query:data`,
- * `query:diff`, `query:unsubscribed`, `query:error`, `error`.
+ * `query:diff`, `query:unsubscribed`, `query:error`, the presence updates,
+ * `topic:message`, `topic:error`, `error`.
  *
  * The socket attachment is the only durable copy of a subscription, so it is
  * persisted with `serializeAttachment` and re-read after hibernation.
@@ -15,6 +17,7 @@ import {
   type WorkspaceRole,
 } from "../claims";
 import type { QueryDocument, QueryPageInfo, QueryResult } from "./query-types";
+import { isTopic } from "./topics";
 
 export interface StoredSubscription {
   id: string;
@@ -54,6 +57,8 @@ export interface SocketAttachment {
   subscriptions: StoredSubscription[];
   /** Current ephemeral presence target and values for this socket. */
   presence?: PresenceState;
+  /** Broadcast topics this socket has joined. */
+  topics?: string[];
 }
 
 export interface PingMessage {
@@ -100,7 +105,26 @@ export interface DragClearMessage {
   target: string;
 }
 
+export interface TopicJoinMessage {
+  type: "topic:join";
+  topic: string;
+}
+
+export interface TopicLeaveMessage {
+  type: "topic:leave";
+  topic: string;
+}
+
+export interface TopicSendMessage {
+  type: "topic:send";
+  topic: string;
+  message: unknown;
+}
+
 export type ClientMessage =
+  | TopicJoinMessage
+  | TopicLeaveMessage
+  | TopicSendMessage
   | PingMessage
   | QuerySubscribeMessage
   | QueryUnsubscribeMessage
@@ -187,6 +211,21 @@ export interface DragUpdateMessage {
   drag: unknown;
 }
 
+export interface TopicMessage {
+  type: "topic:message";
+  topic: string;
+  message: unknown;
+  /** The sending socket's client id and the claim subject behind it. */
+  from: { clientId: string; sub: string };
+}
+
+export interface TopicErrorMessage {
+  type: "topic:error";
+  topic: string | null;
+  code: string;
+  message: string;
+}
+
 export interface ErrorMessage {
   type: "error";
   code: string;
@@ -204,6 +243,8 @@ export type ServerMessage =
   | PresenceUpdateMessage
   | CursorUpdateMessage
   | DragUpdateMessage
+  | TopicMessage
+  | TopicErrorMessage
   | ErrorMessage;
 
 /**
@@ -214,7 +255,7 @@ export type ServerMessage =
 export function parseSocketAttachment(value: unknown): SocketAttachment | null {
   if (!isRecord(value)) return null;
 
-  const { clientId, sub, role, exp, subscriptions, presence } = value;
+  const { clientId, sub, role, exp, subscriptions, presence, topics } = value;
   if (typeof clientId !== "string" || clientId.length === 0) return null;
   if (typeof sub !== "string" || sub.length === 0) return null;
   if (
@@ -238,6 +279,10 @@ export function parseSocketAttachment(value: unknown): SocketAttachment | null {
   const parsedPresence = parsePresenceState(presence);
   if (parsedPresence === null) return null;
 
+  if (topics !== undefined && (!Array.isArray(topics) || !topics.every(isTopic))) {
+    return null;
+  }
+
   return {
     clientId,
     sub,
@@ -245,6 +290,7 @@ export function parseSocketAttachment(value: unknown): SocketAttachment | null {
     exp,
     subscriptions: stored,
     ...(parsedPresence ? { presence: parsedPresence } : {}),
+    ...(Array.isArray(topics) && topics.length > 0 ? { topics: [...topics] } : {}),
   };
 }
 

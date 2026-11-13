@@ -609,6 +609,45 @@ describe("live reads", () => {
     expect(seen.at(-1)).toEqual([{ title: "B" }, { title: "C" }, { title: "D" }]);
   });
 
+  test("broadcast topics join, rejoin, deliver and leave on the workspace socket", async () => {
+    const { db, socket } = await live();
+    const topic = db.$broadcast<{ x: number }>("board:1");
+    // Not open yet: the message is dropped, not delivered late.
+    expect(topic.send({ x: 0 })).toBe(false);
+
+    const heard: unknown[] = [];
+    const errors: unknown[] = [];
+    const stop = topic.subscribe((message, from) => heard.push([message, from]), { onError: (error) => errors.push(error) });
+    const second = topic.subscribe(() => {});
+    await tick();
+    socket.onopen?.({});
+    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    await tick();
+    expect(socket.sent.filter((message) => message.type === "topic:join")).toEqual([{ type: "topic:join", topic: "board:1" }]);
+
+    expect(topic.send({ x: 1 })).toBe(true);
+    expect(socket.sent.at(-1)).toEqual({ type: "topic:send", topic: "board:1", message: { x: 1 } });
+
+    socket.push({ type: "topic:message", topic: "board:1", message: { x: 2 }, from: { clientId: "c2", sub: "bob" } });
+    expect(heard).toEqual([[{ x: 2 }, { clientId: "c2", userId: "bob" }]]);
+    socket.push({ type: "topic:error", topic: "board:1", code: "permission_denied", message: "no" });
+    expect(errors).toEqual([{ code: "permission_denied", message: "no" }]);
+
+    // A reconnect rejoins.
+    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    expect(socket.sent.filter((message) => message.type === "topic:join")).toHaveLength(2);
+
+    // The socket leaves with the last listener, not before.
+    stop();
+    expect(socket.sent.some((message) => message.type === "topic:leave")).toBe(false);
+    second();
+    expect(socket.sent.at(-1)).toEqual({ type: "topic:leave", topic: "board:1" });
+    socket.push({ type: "topic:message", topic: "board:1", message: { x: 3 }, from: { clientId: "c2", sub: "bob" } });
+    expect(heard).toHaveLength(1);
+
+    expect(() => db.$broadcast("no spaces")).toThrow(/not a topic name/);
+  });
+
   test("a live count reads pageInfo", async () => {
     const { db, socket } = await live();
     const counts: Array<number | undefined> = [];

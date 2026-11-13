@@ -16,7 +16,7 @@ import type { Root } from "react-dom/client";
 import { MemoryOutbox } from "../src/client/outbox";
 import type { WebSocketLike } from "../src/client/socket";
 import { createClient } from "../src/model/client";
-import { useLive, useLivePage, usePresence } from "../src/react/index";
+import { useBroadcast, useLive, useLivePage, usePresence } from "../src/react/index";
 import { model, schema, t } from "../src/schema";
 
 // A DOM only while this file runs: registering it for the whole process
@@ -285,5 +285,39 @@ describe("usePresence", () => {
     });
 
     expect(peers).toEqual([{ clientId: "c1", presence: { name: "carol" } }]);
+  });
+});
+
+describe("useBroadcast", () => {
+  test("listens while mounted with the latest handler, and leaves on unmount", async () => {
+    const { db, socket } = harness();
+    const heard: string[] = [];
+    let prefix = "a";
+    let send: (message: string) => boolean = () => false;
+    const { rerender, unmount } = render(() => {
+      send = useBroadcast<string>(db, "board:1", (message) => heard.push(`${prefix}:${message}`));
+      return null;
+    });
+    await act(async () => {
+      await tick();
+      socket.onopen?.({});
+      socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    });
+    const message = (text: string) =>
+      socket.push({ type: "topic:message", topic: "board:1", message: text, from: { clientId: "c2", sub: "bob" } });
+
+    message("one");
+    // A new handler every render: no rejoin, and the newest one runs.
+    prefix = "b";
+    rerender();
+    message("two");
+    expect(heard).toEqual(["a:one", "b:two"]);
+    expect(socket.sent.filter((sent) => sent.type === "topic:join")).toHaveLength(1);
+
+    expect(send("hi")).toBe(true);
+    expect(socket.sent.at(-1)).toEqual({ type: "topic:send", topic: "board:1", message: "hi" });
+
+    unmount();
+    expect(socket.sent.at(-1)).toEqual({ type: "topic:leave", topic: "board:1" });
   });
 });
