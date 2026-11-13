@@ -120,12 +120,6 @@ interface CacheEntry {
   window?: Record<string, number>;
 }
 
-/**
- * The engine's per-level limit ceiling. A live window wider than this is
- * clamped: a reconnect then comes back with this many rows, and `loadMore()`
- * continues from its cursor.
- */
-export const MAX_LIVE_WINDOW = 1000;
 
 interface CacheSnapshot {
   key: string;
@@ -804,10 +798,9 @@ class DataClientImpl {
       const node = entry.query[namespace];
       if (!isRecord(node)) continue;
       const options: QueryOptions = isRecord(node.$) ? node.$ : {};
-      const limit = Math.min(
-        Math.max(rows, typeof options.limit === "number" ? options.limit : 0),
-        MAX_LIVE_WINDOW
-      );
+      // However many rows are loaded: the engine reads a wide window in
+      // bounded chunks, so the subscription can cover every loaded page.
+      const limit = Math.max(rows, typeof options.limit === "number" ? options.limit : 0);
       document[namespace] = { ...node, $: { ...options, limit } };
     }
     return document;
