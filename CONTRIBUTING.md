@@ -62,6 +62,32 @@ they are worth stating:
   this repo's history.
 - Do not push to `main`. Branches and pull requests.
 
+## The soak
+
+`bun test` runs a small recovery drill on every change. The long one is a
+script, because it takes minutes:
+
+```bash
+bun scripts/soak.ts --generations 10 --ops 2000      # ~20k transactions
+bun scripts/soak.ts --generations 5 --ops 1200 --seed 7
+```
+
+It runs generations of mixed traffic through the real pipeline, flushing and
+snapshotting as it goes, then wipes the database and rebuilds it from R2 —
+and carries the rebuilt database forward, so a restore has to survive being
+restored again. Each generation checks every table row for row, the sequence
+state, the file index, that a retry inside the horizon is still deduped, and
+that a second forced recovery changes nothing. A failure prints the seed to
+replay it.
+
+It also prints timings. Two numbers are worth watching, because the design
+depends on them: segment count must stay flat as history grows (pruning), and
+recovery time must track row count rather than how long the workspace has
+existed.
+
+Run it before a release and after anything that touches the engine, the
+flusher, snapshots or recovery.
+
 ## Releasing
 
 Before publishing, run the package the way a consumer gets it, not the way
