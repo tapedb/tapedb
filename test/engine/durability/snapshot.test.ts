@@ -76,7 +76,7 @@ describe("snapshotWorkspace", () => {
     expect(manifest.logSeq).toBe(5);
     expect(
       manifest.tables.map((table: { name: string }) => table.name)
-    ).toEqual(namespaceTables());
+    ).toEqual([...namespaceTables(), "_files"]);
     expect(manifest.totalRows).toBe(5);
 
     const folderTable = manifest.tables.find(

@@ -61,7 +61,7 @@ export interface OneToOneLink {
 export type LinkDefinition = OneToManyLink | OneToOneLink;
 
 /**
- * Engine-owned tables. `$files` holds file metadata; the rest hold migration
+ * Engine-owned tables. `_files` holds file metadata; the rest hold migration
  * state, the transaction log, flush and snapshot bookkeeping, and engine
  * metadata.
  */
@@ -72,7 +72,7 @@ export const ENGINE_TABLES = {
   flushState: "_flush_state",
   snapshotState: "_snapshot_state",
   engineMeta: "_engine_meta",
-  files: "$files",
+  files: "_files",
 } as const;
 
 /** Configured namespaces, keyed by API name. Mutated by `configureRegistry`. */

@@ -115,7 +115,7 @@ describe("schema()", () => {
     expect(tasks.table).toBe("task");
     expect(tasks.attributes.columnId).toMatchObject({ type: "string", optional: true, indexed: true });
     expect(appSchema.registry.links.map((link) => link.apiName).sort()).toEqual(["column.board", "task.column"]);
-    expect(appSchema.migrations[1].sql).toContain('REFERENCES "board"("id") ON DELETE CASCADE');
+    expect(appSchema.migrations.at(-1)!.sql).toContain('REFERENCES "board"("id") ON DELETE CASCADE');
   });
 
   test("maps a model onto an existing table", () => {
@@ -123,8 +123,8 @@ describe("schema()", () => {
       boards: model({ name: t.string(), columns: t.hasMany("columns") }, { table: "kanban_boards" }),
       columns: model({ board: t.belongsTo("boards") }, { table: "kanban_columns" }),
     });
-    expect(mapped.migrations[1].sql).toContain('CREATE TABLE IF NOT EXISTS "kanban_boards"');
-    expect(mapped.migrations[1].sql).toContain('REFERENCES "kanban_boards"("id")');
+    expect(mapped.migrations.at(-1)!.sql).toContain('CREATE TABLE IF NOT EXISTS "kanban_boards"');
+    expect(mapped.migrations.at(-1)!.sql).toContain('REFERENCES "kanban_boards"("id")');
   });
 
   test("refuses relations it cannot resolve", () => {

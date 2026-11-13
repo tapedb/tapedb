@@ -1,3 +1,4 @@
+import { BASELINE_MIGRATION_ID, isEngineMigration } from "./migrations-bundle";
 import {
   WORKSPACE_MIGRATIONS,
   type BundledWorkspaceMigration,
@@ -36,22 +37,33 @@ export function assertMigrationOrder(
     throw new Error("No workspace migrations are bundled.");
   }
 
+  if (migrations[0].id !== BASELINE_MIGRATION_ID) {
+    throw new Error(`The first workspace migration must be ${BASELINE_MIGRATION_ID}.`);
+  }
+
+  // Each track is sorted on its own; the engine track comes first.
   const seen = new Set<string>();
-  let previous = "";
+  const previous = { engine: "", app: "" };
+  let appStarted = false;
   for (const migration of migrations) {
-    if (!/^\d{4}_[a-z0-9_]+$/.test(migration.id)) {
+    if (!/^(tapedb_)?\d{4}_[a-z0-9_]+$/.test(migration.id)) {
       throw new Error(`Invalid workspace migration id "${migration.id}".`);
     }
     if (seen.has(migration.id)) {
       throw new Error(`Duplicate workspace migration id "${migration.id}".`);
     }
-    if (previous && migration.id <= previous) {
+    const track = isEngineMigration(migration.id) ? "engine" : "app";
+    if (track === "engine" && appStarted) {
+      throw new Error(`Engine migration "${migration.id}" must come before app migrations.`);
+    }
+    if (track === "app") appStarted = true;
+    if (previous[track] && migration.id <= previous[track]) {
       throw new Error(
-        `Workspace migrations must be sorted; "${migration.id}" follows "${previous}".`
+        `Workspace migrations must be sorted; "${migration.id}" follows "${previous[track]}".`
       );
     }
     seen.add(migration.id);
-    previous = migration.id;
+    previous[track] = migration.id;
   }
 }
 

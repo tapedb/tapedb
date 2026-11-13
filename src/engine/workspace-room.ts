@@ -1155,7 +1155,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       .exec<CountRow>(`SELECT COUNT(*) AS total FROM "_tx_log"`)
       .one().total;
     const files = sql
-      .exec<CountRow>(`SELECT COUNT(*) AS total FROM "$files"`)
+      .exec<CountRow>(`SELECT COUNT(*) AS total FROM "${ENGINE_TABLES.files}"`)
       .one().total;
 
     return json({
