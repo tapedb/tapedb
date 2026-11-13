@@ -33,6 +33,7 @@ import { balancedJoin } from "./sql-binding";
 import {
   encodeQueryCursor,
   parseQueryEnvelope,
+  QUERY_CHUNK_ROWS,
   type QueryPageInfo,
   type QueryResult,
 } from "./query-types";
@@ -193,17 +194,19 @@ function executePages(
     const limit = node.limit;
 
     if (limit === null) {
-      // A nested level is bounded per parent, not by a page: there is no page
-      // to fill and no cursor to resume from.
+      // No limit: every matching row, so there is no page to fill and no
+      // cursor to resume from.
       const entities = hydrateNode(sql, node);
       const visible =
         claim === undefined ? entities : visibleOnly(entities, claim);
+      const count = node.count ? countRows(sql, node, claim) : undefined;
 
       data[node.namespace] = visible.map(toApiEntity);
       pageInfo[node.namespace] = {
         limit,
         returned: visible.length,
         hasMore: false,
+        ...(count === undefined ? {} : { count }),
       };
       continue;
     }
@@ -411,7 +414,8 @@ function fillOrdered(
   let cursor: CompiledCondition | null = null;
 
   for (;;) {
-    const chunkLimit = limit + 1;
+    // A wide page is read in bounded chunks, each resuming after the last.
+    const chunkLimit = Math.min(limit, QUERY_CHUNK_ROWS) + 1;
     const chunkNode: CompiledNode =
       cursor === null
         ? { ...node, limit: chunkLimit }
@@ -576,7 +580,24 @@ function hydrateNode(
   return entities;
 }
 
+/**
+ * Hydrates one link level for every parent, a chunk of parents at a time: the
+ * parents' keys travel as one JSON list per statement, and a list of every
+ * key on an unbounded page would outgrow what one bound value may hold.
+ * Each parent's children come from the one statement that holds its key, so
+ * per-parent order and limits are unchanged.
+ */
 function hydrateChild(
+  sql: SqlExecutor,
+  entities: HydratedEntity[],
+  child: CompiledChild
+): void {
+  for (let start = 0; start < entities.length; start += QUERY_CHUNK_ROWS) {
+    hydrateChildChunk(sql, entities.slice(start, start + QUERY_CHUNK_ROWS), child);
+  }
+}
+
+function hydrateChildChunk(
   sql: SqlExecutor,
   entities: HydratedEntity[],
   child: CompiledChild

@@ -138,6 +138,36 @@ describe("under a Durable Object's 100-parameter limit", () => {
   });
 });
 
+describe("wide reads", () => {
+  test("findMany without take returns every row, includes hydrated chunk by chunk", async () => {
+    await seedColumns(150);
+    const db = client();
+    await db.$transaction(
+      Array.from({ length: 2400 }, (_, n) => db.task.create({ data: { id: `x${String(n).padStart(4, "0")}`, title: `x${n}`, column: { connect: `c${String(n % 150).padStart(3, "0")}` } } }))
+    );
+
+    const tasks = await db.task.findMany({ include: { column: true } });
+    expect(tasks).toHaveLength(2550);
+    expect(tasks.every((task) => task.column?.id === task.columnId)).toBe(true);
+
+    // A take past a thousand, ordered, in keyset chunks.
+    const ordered = await db.task.findMany({ take: 2500, orderBy: { title: "desc" }, select: { title: true } });
+    expect(ordered).toHaveLength(2500);
+    const titles = ordered.map((task) => task.title);
+    expect(titles).toEqual([...titles].sort().reverse());
+
+    const page = await db.task.findPage({ take: 2000, select: { id: true } });
+    expect(page.rows).toHaveLength(2000);
+    expect(page.hasMore).toBe(true);
+    const rest = await db.task.findPage({ take: 2000, after: page.cursor, select: { id: true } });
+    expect(rest.rows).toHaveLength(550);
+    expect(new Set([...page.rows, ...rest.rows].map((row) => row.id)).size).toBe(2550);
+
+    const columns = await db.column.findMany({ include: { tasks: { orderBy: { title: "asc" }, take: 2 } } });
+    expect(columns.every((column) => column.tasks.length === 2)).toBe(true);
+  });
+});
+
 describe("fitBindings", () => {
   test("leaves a statement within the limit alone", () => {
     expect(fitBindings("SELECT ? AS a", [1])).toEqual({ sql: "SELECT ? AS a", params: [1] });

@@ -14,8 +14,12 @@
 import { parseAggregate, type AggregateGroup, type QueryAggregate } from "./query-aggregate";
 import { TxError } from "./tx-types";
 
-export const DEFAULT_QUERY_LIMIT = 100;
-export const MAX_QUERY_LIMIT = 1000;
+/**
+ * Rows one statement reads. A read with a larger `limit`, or none, is served
+ * in keyset chunks of this size, and includes hydrate this many parents per
+ * statement, so no single statement grows with the result.
+ */
+export const QUERY_CHUNK_ROWS = 1000;
 
 export type SortDirection = "asc" | "desc";
 
@@ -455,15 +459,8 @@ function parseOrder(value: unknown): Record<string, SortDirection> {
 }
 
 function parseLimit(value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isInteger(value) ||
-    value < 1 ||
-    value > MAX_QUERY_LIMIT
-  ) {
-    throw invalidValue(
-      `Limit must be an integer from 1 to ${MAX_QUERY_LIMIT}.`
-    );
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw invalidValue("Limit must be a positive integer.");
   }
   return value;
 }
