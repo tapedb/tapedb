@@ -615,6 +615,25 @@ describe("WorkspaceRoom live queries", () => {
     ]);
   });
 
+  test("re-runs a subscription whose relation filter reads a changed namespace", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "filtered",
+      query: { kanbanTasks: { $: { where: { $link: [{ label: "column", mode: "parent", where: { name: "Todo" } }] } } } },
+    });
+    expect((socket.messages()[1]?.data as { kanbanTasks: unknown[] }).kanbanTasks).toHaveLength(1);
+    socket.clear();
+
+    // No task changed; the column the filter reads did.
+    await transact([{ op: "update", namespace: "kanbanColumns", id: "col1", values: { name: "Doing" } }], "t1");
+    await delay(100);
+
+    expect(queryMessages(socket)).toEqual([
+      expect.objectContaining({ type: "query:diff", id: "filtered", removed: ["task1"] }),
+    ]);
+  });
+
   test("leaves page metadata off a diff when it did not change", async () => {
     const socket = await connect();
     await send(socket, {

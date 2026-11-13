@@ -85,6 +85,12 @@ export interface CompiledNode {
   explicitLimit: boolean;
   /** Top level only: also count every matching row. */
   count: boolean;
+  /**
+   * Namespaces this level's filters read through relation subqueries, and
+   * through the read rules compiled into them. A write to one changes which
+   * rows match, so live subscriptions re-run on it.
+   */
+  references: string[];
   /** Top level only: aggregate the matching rows instead of reading them. */
   aggregate: CompiledAggregate | null;
   children: CompiledChild[];
@@ -309,7 +315,18 @@ function compileNode(
   }
 
   const order = compileOrder(namespace, options.order);
-  const conditions = compileWhere(namespace, options.where, { view });
+  const references = new Set<string>();
+  const conditions = compileWhere(namespace, options.where, { view, references });
+  // The caller's own `where` read rule is ANDed in at execution; a relation
+  // filter inside it reads other namespaces just the same.
+  const ownRule = view?.branches(namespaceName);
+  if (ownRule !== undefined && ownRule !== null) {
+    try {
+      compileViewCondition(namespaceName, ownRule, undefined, references);
+    } catch {
+      // An invalid rule is refused when the query executes.
+    }
+  }
   if (options.after !== undefined) {
     conditions.push({ ...cursorCondition(options.after, order), cursor: true });
   }
@@ -334,6 +351,7 @@ function compileNode(
     columns,
     select,
     conditions,
+    references: [...references],
     order,
     // Only the top level gets the implicit result cap. A nested level is
     // bounded per parent (see `hydrateChild`), never by one shared LIMIT.
@@ -416,7 +434,8 @@ export function conditionAfterValues(
 export function compileViewCondition(
   namespaceName: string,
   branches: readonly unknown[],
-  alias?: string
+  alias?: string,
+  references?: Set<string>
 ): CompiledCondition {
   const namespace = findNamespace(namespaceName);
   if (!namespace) {
@@ -432,7 +451,7 @@ export function compileViewCondition(
   for (const branch of branches) {
     let conditions: CompiledCondition[];
     try {
-      conditions = compileWhere(namespace, parseWhere(branch), { alias });
+      conditions = compileWhere(namespace, parseWhere(branch), { alias, references });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new TxError(
@@ -516,6 +535,8 @@ interface WhereContext {
   depth?: number;
   /** Shared counter, so every subquery in one statement gets its own alias. */
   aliases?: { next: number };
+  /** Collects every namespace a relation subquery reads. */
+  references?: Set<string>;
 }
 
 function compileWhere(
@@ -624,6 +645,7 @@ function compileRelationFilter(
     );
   }
 
+  context.references?.add(target.apiName);
   const refusal = context.view?.refusal(target.apiName);
   if (refusal !== undefined && refusal !== null) {
     throw new TxError("invalid_op", refusal);
@@ -649,11 +671,12 @@ function compileRelationFilter(
     view: context.view,
     depth: depth + 1,
     aliases,
+    references: context.references,
   });
 
   const viewBranches = context.view?.branches(target.apiName);
   if (viewBranches !== undefined && viewBranches !== null) {
-    inner.push(compileViewCondition(target.apiName, viewBranches, alias));
+    inner.push(compileViewCondition(target.apiName, viewBranches, alias, context.references));
   }
 
   const params: SqlValue[] = inner.flatMap((condition) => condition.params);
