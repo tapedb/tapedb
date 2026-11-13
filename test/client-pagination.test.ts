@@ -309,4 +309,69 @@ describe("client pagination", () => {
     expect(typeof db.loadMore).toBe("function");
     db.close();
   });
+
+  /** Loads page two and answers it, leaving a 4-row window. */
+  async function withTwoPages() {
+    const { db, socket } = await withFirstPage(firstPageInfo);
+    const live = lastQueryOf(socket, "query:subscribe").id;
+    const pending = db.loadMore(query);
+    await flush();
+    const request = lastQueryOf(socket, "query:subscribe");
+    socket.push({
+      type: "query:data",
+      id: request.id,
+      seq: 2,
+      data: { boards: [board("b3"), board("b4")] },
+      pageInfo: { boards: { limit: 2, returned: 2, hasMore: true, nextCursor: "cursor-2" } },
+    });
+    expect(await pending).toBe(true);
+    return { db, socket, live };
+  }
+
+  test("loadMore widens the live subscription to every loaded row", async () => {
+    const { socket, live } = await withTwoPages();
+
+    const widened = lastQueryOf(socket, "query:subscribe");
+    expect(widened.id).toBe(live);
+    expect(widened.query).toEqual({ boards: { $: { order: { name: "asc" }, limit: 4 } } });
+  });
+
+  test("a reconnect restores every loaded page instead of resetting to one", async () => {
+    const { db, socket, live } = await withTwoPages();
+
+    // The socket drops and a new session starts: the client re-subscribes.
+    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    await flush();
+    const resubscribe = lastQueryOf(socket, "query:subscribe");
+    expect(resubscribe.id).toBe(live);
+    expect(resubscribe.query.boards.$?.limit).toBe(4);
+
+    socket.push({
+      type: "query:data",
+      id: live,
+      seq: 3,
+      data: { boards: ["b1", "b2", "b3", "b4"].map(board) },
+      pageInfo: { boards: { limit: 4, returned: 4, hasMore: true, nextCursor: "cursor-2" } },
+    });
+    const state = db.getQueryState(query);
+    expect(state.data?.boards?.map((row) => row.id)).toEqual(["b1", "b2", "b3", "b4"]);
+    expect(state.pageInfo?.boards.nextCursor).toBe("cursor-2");
+  });
+
+  test("the live window is clamped to the engine's limit", async () => {
+    const { db, socket } = await withFirstPage(firstPageInfo);
+    const pending = db.loadMore(query);
+    await flush();
+    const request = lastQueryOf(socket, "query:subscribe");
+    const many = Array.from({ length: 1200 }, (_, n) => board(`x${n}`));
+    socket.push({
+      type: "query:data",
+      id: request.id,
+      seq: 2,
+      data: { boards: many },
+      pageInfo: { boards: { limit: 2, returned: 1200, hasMore: false } },
+    });
+    expect(await pending).toBe(true);
+    expect(lastQueryOf(socket, "query:subscribe").query.boards.$?.limit).toBe(1000);
+  });
 });
