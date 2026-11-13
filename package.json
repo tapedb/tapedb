@@ -50,7 +50,8 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit",
-    "verify": "bun run typecheck && bun test && bun run build",
+    "verify": "bun run typecheck && bun test && bun run build && bun run test:package",
+    "test:package": "node scripts/package-smoke.mjs",
     "test": "bun test test"
   },
   "dependencies": {},
