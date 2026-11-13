@@ -16,6 +16,9 @@ All notable changes to this project are documented here. The format follows
 - The starter example is on the model API, with its migrations committed, and
   is installable and runnable from the repo.
 
+- Nested `create`: a write can create the rows it links to, in one
+  transaction, ordered so that each row exists before anything points at it.
+  Both directions, up to three levels, typed one level deep.
 - `updateMany` and `deleteMany`. The engine resolves the matching rows inside
   the transaction and logs those rows, not the filter, so a replay changes
   what the original changed. They are bounded at 1000 rows, reach only rows
