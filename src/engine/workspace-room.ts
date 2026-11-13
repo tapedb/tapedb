@@ -537,7 +537,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
   webSocketClose(ws: WebSocket, code: number, reason: string): void {
     this.dropSubscriptionResults(ws);
     this.removePresence(ws);
-    this.closeSocket(ws, code, reason);
+    // Completes the closing handshake. A client that closes without a status
+    // arrives as 1005 (an abnormal drop as 1006); those codes may not be sent,
+    // and echoing them threw, so the client never got its close frame and
+    // waited out its timeout. Reply 1000 instead.
+    this.closeSocket(ws, sendableCloseCode(code), reason);
   }
 
   webSocketError(ws: WebSocket): void {
@@ -1309,6 +1313,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
       counts: { txLog, files },
     });
   }
+}
+
+/** Close codes the runtime refuses to send (reserved for local use). */
+const RESERVED_CLOSE_CODES = new Set([1004, 1005, 1006, 1015]);
+
+function sendableCloseCode(code: number): number {
+  return RESERVED_CLOSE_CODES.has(code) || code < 1000 || code > 4999 ? 1000 : code;
 }
 
 /**
