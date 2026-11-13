@@ -225,12 +225,15 @@ export interface TxPatchManyOp {
   namespace: string;
   where: Record<string, unknown>;
   values: Record<string, unknown>;
+  /** Resume after this id: the engine's `more` cursor from the previous batch. */
+  after?: string;
 }
 
 export interface TxDeleteManyOp {
   op: "deleteMany";
   namespace: string;
   where: Record<string, unknown>;
+  after?: string;
 }
 
 export type TxOp =

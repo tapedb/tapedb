@@ -22,36 +22,42 @@ import { TxError } from "./tx-types";
 import { validateEnvelope, type ValidatedBulkOp, type ValidatedOp } from "./tx-validate";
 
 /**
- * How many rows one bulk op may touch. A transaction is applied and logged in
- * one go, so an unbounded one is an unbounded log entry and an unbounded
- * replay; past this the caller pages instead.
+ * How many rows one bulk op writes per transaction. A transaction is applied
+ * and logged in one go, and one Durable Object request has bounded time, so a
+ * filter matching more is written in batches: the result carries a cursor
+ * (the last id written) and the next transaction resumes after it. The model
+ * client sends the batches until the filter is exhausted.
  */
-export const MAX_BULK_ROWS = 1000;
+export const BULK_BATCH_ROWS = 1000;
 
 function isBulk(op: ValidatedOp): op is ValidatedBulkOp {
   return op.kind === "patchMany" || op.kind === "deleteMany";
 }
 
-/** The ids a bulk op's filter matches, for this caller. */
+/**
+ * The next batch of ids a bulk op's filter matches, for this caller, in id
+ * order after `op.after`, and whether more match beyond it.
+ *
+ * Resuming by id rather than re-running the filter from the start is what
+ * makes batching terminate: a patch that leaves rows matching would
+ * otherwise match the same rows again.
+ */
 function resolveIds(
   sql: SqlExecutor,
   claim: RoleClaim,
   op: ValidatedBulkOp
-): string[] {
+): { ids: string[]; more: boolean } {
+  const where =
+    op.after === undefined ? op.where : { $and: [op.where, { id: { $gt: op.after } }] };
   const compiled = compileQuery(
-    { [op.namespace]: { $: { where: op.where, order: { id: "asc" }, limit: MAX_BULK_ROWS } } },
+    { [op.namespace]: { $: { where, order: { id: "asc" }, limit: BULK_BATCH_ROWS, select: ["id"] } } },
     viewAccess(claim)
   );
   const { data, pageInfo } = executeCompiledQueryWithPageInfo(sql, compiled, claim);
-
-  if (pageInfo[op.namespace]?.hasMore === true) {
-    throw new TxError(
-      "invalid_op",
-      `"${op.kind}" on "${op.namespace}" matches more than ${MAX_BULK_ROWS} rows. Narrow the filter, or page through the rows and write them in batches.`
-    );
-  }
-
-  return (data[op.namespace] ?? []).map((row) => (row as { id: string }).id);
+  return {
+    ids: (data[op.namespace] ?? []).map((row) => (row as { id: string }).id),
+    more: pageInfo[op.namespace]?.hasMore === true,
+  };
 }
 
 export interface ExpandedTransaction {
@@ -60,6 +66,8 @@ export interface ExpandedTransaction {
   ops: ValidatedOp[];
   /** Rows matched, keyed by the op's index in the original envelope. */
   matched: Record<number, number>;
+  /** For a bulk op with rows left: the `after` that resumes it. */
+  more: Record<number, string>;
 }
 
 /**
@@ -74,11 +82,12 @@ export function expandBulkOps(
   ops: readonly ValidatedOp[]
 ): ExpandedTransaction {
   if (!ops.some(isBulk)) {
-    return { rawOps: [...rawOps], ops: [...ops], matched: {} };
+    return { rawOps: [...rawOps], ops: [...ops], matched: {}, more: {} };
   }
 
   const expandedRaw: unknown[] = [];
   const matched: Record<number, number> = {};
+  const more: Record<number, string> = {};
 
   for (const [index, op] of ops.entries()) {
     if (!isBulk(op)) {
@@ -91,8 +100,10 @@ export function expandBulkOps(
       throw new TxError("unknown_namespace", `Unknown namespace "${op.namespace}".`);
     }
 
-    const ids = resolveIds(sql, claim, op);
+    const batch = resolveIds(sql, claim, op);
+    const ids = batch.ids;
     matched[index] = ids.length;
+    if (batch.more && ids.length > 0) more[index] = ids[ids.length - 1];
 
     // The client's own values, not the column-keyed ones: a replay validates
     // these again, so they must be what a client would have sent.
@@ -108,10 +119,10 @@ export function expandBulkOps(
 
   // Nothing matched, so there is nothing to write; the caller skips the
   // transaction rather than logging an entry with no ops.
-  if (expandedRaw.length === 0) return { rawOps: [], ops: [], matched };
+  if (expandedRaw.length === 0) return { rawOps: [], ops: [], matched, more };
 
   // Re-validating the expansion is what guarantees the log holds ops a replay
   // can read, rather than something shaped like them.
   const expanded = validateEnvelope({ txId, ops: expandedRaw });
-  return { rawOps: expandedRaw, ops: expanded.ops, matched };
+  return { rawOps: expandedRaw, ops: expanded.ops, matched, more };
 }

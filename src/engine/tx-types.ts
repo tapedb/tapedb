@@ -94,6 +94,8 @@ export interface TxPatchManyOp {
   namespace: string;
   where: Record<string, unknown>;
   values: Record<string, unknown>;
+  /** Resume after this id: the `more` cursor of the previous batch. */
+  after?: string;
 }
 
 /** Deletes every row matching `where`. Resolved and logged like `patchMany`. */
@@ -101,6 +103,7 @@ export interface TxDeleteManyOp {
   op: "deleteMany";
   namespace: string;
   where: Record<string, unknown>;
+  after?: string;
 }
 
 export type TxOp =
@@ -135,6 +138,11 @@ export interface TxResult {
   txId: string;
   /** Rows a bulk op matched, keyed by its index in the envelope. */
   matched?: Record<number, number>;
+  /**
+   * For a bulk op that matched more rows than one batch holds: the cursor to
+   * send back as its `after`, keyed by its index in the envelope.
+   */
+  more?: Record<number, string>;
   /** `_tx_log.seq` assigned to this transaction. */
   seq: number;
   /** Number of ops that changed a row. */

@@ -137,13 +137,18 @@ export interface ModelClient<M extends Models, F extends Fields> {
 
   create(args: { data: CreateData<F, M> }): Write;
   /**
-   * Writes every row matching `where`, up to 1000. Sent straight to the
-   * engine, which resolves the rows: unlike single-row writes it is not
-   * applied optimistically and not queued offline, because which rows match
-   * is the engine's answer, not the cache's.
+   * Writes every row matching `where`. Sent straight to the engine, which
+   * resolves the rows: unlike single-row writes it is not applied
+   * optimistically and not queued offline, because which rows match is the
+   * engine's answer, not the cache's.
+   *
+   * Up to 1000 rows commit as one transaction. Past that the rows are written
+   * in batches of 1000, in id order, each its own transaction; if one fails,
+   * a `BulkWriteError` reports how many rows the earlier batches wrote, and
+   * running the same call again continues with the rows still matching.
    */
   updateMany(args: { where: Where<F, M>; data: UpdateData<F, M> }): Promise<BulkResult>;
-  /** Deletes every row matching `where`, up to 1000. Sent like `updateMany`. */
+  /** Deletes every row matching `where`. Batched like `updateMany`. */
   deleteMany(args: { where: Where<F, M> }): Promise<BulkResult>;
   update(args: { where: { id: string }; data: UpdateData<F, M> }): Write;
   upsert(args: { where: { id: string }; create: CreateData<F, M>; update: UpdateData<F, M> }): Write;
