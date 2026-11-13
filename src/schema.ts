@@ -138,7 +138,7 @@ INSERT OR IGNORE INTO "_engine_meta" ("key", value) VALUES
   ('schema_version', '0001_baseline');
 `;
 
-const SQL_TYPE: Record<string, string> = {
+export const SQL_TYPE: Record<string, string> = {
   string: "TEXT",
   json: "TEXT",
   date: "INTEGER",
@@ -157,7 +157,8 @@ export function sqlLiteral(value: string | number | null): string {
   return `'${value.replace(/'/g, "''")}'`;
 }
 
-function entityDdl(
+/** CREATE TABLE plus its indexes, for one namespace. Shared with `tapedb migrate`. */
+export function entityDdl(
   namespace: NamespaceDefinition,
   attributes: EntityConfig
 ): string[] {
