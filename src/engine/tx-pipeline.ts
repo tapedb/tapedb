@@ -9,6 +9,7 @@
 
 import type { RoleClaim } from "../claims";
 import { applyOps } from "./tx-apply";
+import { expandBulkOps } from "./tx-bulk";
 import { opsHash, stableStringify } from "./tx-hash";
 import { assertRowPermissions, authorizeOps } from "./tx-permissions";
 import type { SqlExecutor } from "./tx-sql";
@@ -50,7 +51,9 @@ export function runTransaction(
   const tx = validateEnvelope(envelope);
   authorizeOps(claim, tx.ops);
 
-  const serialisedOps = stableStringify(tx.rawOps);
+  // The hash is of what the client sent, so a retry of the same request is
+  // recognised. What gets logged may differ: a bulk write logs the rows it
+  // resolved.
   const hash = opsHash(tx.rawOps);
 
   return sql.transactionSync(() => {
@@ -87,24 +90,39 @@ export function runTransaction(
       }
     }
 
+    // Bulk writes become one op per matching row, here, so everything below
+    // this point sees ordinary ops: the row rules judge each row, the log
+    // records which rows were written, and a replay writes those same rows.
+    const expanded = expandBulkOps(sql, claim, tx.txId, tx.rawOps, tx.ops);
+    const matched = Object.keys(expanded.matched).length > 0 ? { matched: expanded.matched } : {};
+
+    if (expanded.ops.length === 0) {
+      // Every op was a bulk write that matched nothing. There is nothing to
+      // apply and nothing to replay, so no sequence is spent on it.
+      const state = sql.one<TxStateRow>(
+        `SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`
+      );
+      return { txId: tx.txId, seq: state?.high_water_seq ?? 0, applied: 0, ...matched };
+    }
+
     // Row rules read the stored row, so they belong inside the transaction,
     // after the idempotency check (a replay of an applied tx must not re-judge)
     // and before the sequence is allocated (a denial burns nothing).
-    assertRowPermissions(sql, claim, tx.ops);
+    assertRowPermissions(sql, claim, expanded.ops);
 
     const now = Date.now();
     const seq = appendLogEntry(sql, {
       clientTxId: tx.clientTxId ?? null,
-      ops: serialisedOps,
+      ops: stableStringify(expanded.rawOps),
       opsHash: hash,
       userId: claim.sub,
       role: claim.role,
       at: now,
     });
 
-    const applied = applyOps({ sql, seq, now, txId: tx.txId }, tx.ops);
+    const applied = applyOps({ sql, seq, now, txId: tx.txId }, expanded.ops);
 
-    return { txId: tx.txId, seq, applied };
+    return { txId: tx.txId, seq, applied, ...matched };
   });
 }
 

@@ -45,7 +45,7 @@ import type {
   SqlExecutor as TxSqlExecutor,
   SqlRow as TxSqlRow,
 } from "../tx-sql";
-import { acceptsValue, isLinkOp, validateEnvelope, type ValidatedOp } from "../tx-validate";
+import { acceptsValue, isBulkOp, isLinkOp, validateEnvelope, type ValidatedOp } from "../tx-validate";
 import { sha256Hex } from "./snapshot";
 import type { SqlCursor, SqlExecutor, SqlValue } from "./sql";
 
@@ -87,6 +87,8 @@ interface UpdatedSeqRow extends Record<string, SqlValue> {
 }
 
 interface LogLine {
+  /** The client's ops hash, when the segment carries one. */
+  opsHash?: string;
   seq: number;
   at: number;
   ops: unknown[];
@@ -716,6 +718,7 @@ function parseLogLines(text: string, source: string): LogLine[] {
     // them is what lets recovery rebuild `_tx_log` faithfully instead of
     // forgetting every transaction it just restored.
     const clientTxId = parsed.clientTxId;
+    const opsHashValue = parsed.opsHash;
     const userId = parsed.userId;
     const role = parsed.role;
     const schemaVersion = parsed.schemaVersion;
@@ -726,6 +729,9 @@ function parseLogLines(text: string, source: string): LogLine[] {
       ops,
       ...(typeof clientTxId === "string" && clientTxId.length > 0
         ? { clientTxId }
+        : {}),
+      ...(typeof opsHashValue === "string" && opsHashValue.length > 0
+        ? { opsHash: opsHashValue }
         : {}),
       userId: typeof userId === "string" ? userId : null,
       role: typeof role === "number" ? role : null,
@@ -738,6 +744,10 @@ function parseLogLines(text: string, source: string): LogLine[] {
 }
 
 function targetFor(op: ValidatedOp): TargetRow {
+  if (isBulkOp(op)) {
+    // The log holds the rows a bulk write resolved, never the filter.
+    throw new Error(`A log line holds an unresolved "${op.kind}".`);
+  }
   if (isLinkOp(op)) {
     const child = findNamespace(op.childNamespace);
     if (!child) {
@@ -871,7 +881,10 @@ function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
     line.seq,
     line.clientTxId ?? null,
     stableStringify(ops),
-    opsHash(ops),
+    // Older segments carry no hash, so it is recomputed from the ops; a bulk
+    // write's stored ops are the rows it resolved, whose hash is not the
+    // client's, which is why newer segments carry the original.
+    line.opsHash ?? opsHash(ops),
     line.userId ?? null,
     line.role ?? null,
     line.at,

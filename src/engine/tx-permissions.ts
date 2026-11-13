@@ -23,7 +23,7 @@ import type { QueryWhere } from "./query-types";
 import { findNamespace, toSnakeCase } from "./registry";
 import type { SqlExecutor, SqlRow } from "./tx-sql";
 import { TxError } from "./tx-types";
-import { isLinkOp, type ValidatedOp } from "./tx-validate";
+import { isBulkOp, isLinkOp, type ValidatedOp } from "./tx-validate";
 
 export type PermissionAction = "view" | "create" | "update" | "delete";
 
@@ -232,6 +232,12 @@ export function assertOpPermission(claim: RoleClaim, op: ValidatedOp): void {
   }
 
   switch (op.kind) {
+    case "patchMany":
+      assertPermission(claim, op.namespace, "update");
+      return;
+    case "deleteMany":
+      assertPermission(claim, op.namespace, "delete");
+      return;
     case "insert":
       assertPermission(claim, op.namespace, "create");
       return;
@@ -267,6 +273,13 @@ interface RowTarget {
  * create rule entirely.
  */
 function targetOf(op: ValidatedOp, rowExists: boolean): RowTarget {
+  if (isBulkOp(op)) {
+    // expandBulkOps resolves these to per-row ops before rules are evaluated.
+    throw new TxError(
+      "invalid_op",
+      `"${op.kind}" reached the row rules; it should have been resolved to rows first.`
+    );
+  }
   if (isLinkOp(op)) {
     // A link writes the child's foreign key, so the child's update rule decides.
     return { namespace: op.childNamespace, action: "update", id: op.childId };
@@ -351,6 +364,12 @@ export function assertRowPermissions(
   ops: ValidatedOp[]
 ): void {
   for (const op of ops) {
+    if (isBulkOp(op)) {
+      throw new TxError(
+        "invalid_op",
+        `"${op.kind}" reached the row rules; it should have been resolved to rows first.`
+      );
+    }
     const id = isLinkOp(op) ? op.childId : op.id;
     const namespace = isLinkOp(op) ? op.childNamespace : op.namespace;
     const data = readRow(sql, namespace, id);

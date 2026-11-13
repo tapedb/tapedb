@@ -170,6 +170,21 @@ starts too. After a restore, keys reach back a bounded window
 (`DEDUPE_HORIZON_SEQ`, 2000 sequence numbers past the snapshot base); a retry
 from further back is refused with `dedupe_expired` — never applied twice.
 
+### Writing many rows
+
+```ts
+const { count } = await db.task.updateMany({ where: { done: true }, data: { archived: true } });
+await db.task.deleteMany({ where: { columnId: null } });
+```
+
+The engine resolves which rows match, inside the transaction, and logs the
+rows rather than the filter — a replay has to change what the original
+changed, and re-running a filter later cannot promise that. A bulk write
+touches at most 1000 rows, reaches only rows the caller may read, and still
+runs the row rules for `update` and `delete` on each one. Unlike single-row
+writes it is not applied optimistically and not queued offline: which rows
+match is the engine's answer, not the cache's.
+
 ## Access rules
 
 Each model's actions take one of three decisions:
