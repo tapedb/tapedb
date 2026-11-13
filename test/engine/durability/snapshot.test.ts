@@ -178,7 +178,11 @@ describe("snapshotWorkspace", () => {
       );
     }
 
-    const result = await snapshotWorkspace(bucket, sql, TEST_WORKSPACE, 30);
+    // Horizon 0 isolates the pruning contract from the idempotency retention
+    // policy, which the next test covers.
+    const result = await snapshotWorkspace(bucket, sql, TEST_WORKSPACE, 30, {
+      dedupeHorizonSeq: 0,
+    });
     expect(result.snapshotted).toBe(true);
 
     for (const [from, to] of logs) {
@@ -205,6 +209,36 @@ describe("snapshotWorkspace", () => {
     }
   });
 
+  test("retains covered segments inside the idempotency horizon", async () => {
+    const { sql } = openTestDb();
+    insertFolder(sql, "a", "Folder a");
+    setHighWater(sql, 20);
+    setFlushSeq(sql, 20);
+
+    const bucket = new FakeR2Bucket();
+    const logs: Array<[number, number]> = [
+      [1, 5],
+      [6, 10],
+      [11, 15],
+      [16, 20],
+    ];
+    for (const [from, to] of logs) {
+      bucket.seed(`ws/${TEST_WORKSPACE}/log/${from}-${to}.ndjson`, "old");
+    }
+
+    // Base 20 with a horizon of 10 keeps everything after seq 10: a snapshot
+    // stores rows, not idempotency keys, so those segments are the only copy of
+    // the keys for a retry that crosses the snapshot.
+    await snapshotWorkspace(bucket, sql, TEST_WORKSPACE, 30, {
+      dedupeHorizonSeq: 10,
+    });
+
+    for (const [from, to] of logs) {
+      const key = `ws/${TEST_WORKSPACE}/log/${from}-${to}.ndjson`;
+      expect(bucket.objects.has(key)).toBe(to > 10);
+    }
+  });
+
   test("does not fail the snapshot when pruning fails", async () => {
     const { sql } = openTestDb();
     insertFolder(sql, "a", "Folder a");
@@ -217,7 +251,9 @@ describe("snapshotWorkspace", () => {
     bucket.seed(`ws/${TEST_WORKSPACE}/snapshots/1/folders/0.ndjson.gz`, "old");
     bucket.seed(`ws/${TEST_WORKSPACE}/snapshots/2/folders/0.ndjson.gz`, "old");
 
-    const result = await snapshotWorkspace(bucket, sql, TEST_WORKSPACE, 10);
+    const result = await snapshotWorkspace(bucket, sql, TEST_WORKSPACE, 10, {
+      dedupeHorizonSeq: 0,
+    });
     expect(result.snapshotted).toBe(true);
     expect(result.warnings?.length).toBe(2);
     expect(readSnapshotState(sql).status).toBe("completed");

@@ -13,9 +13,13 @@ All notable changes to this project are documented here. The format follows
   `applied: 0` rather than applying twice. Segment lines already carried the
   idempotency key and attribution; the recovery parser was dropping them, and
   `ops_hash` is recomputed canonically rather than stored.
-- Known ceiling, now documented: a snapshot does not carry idempotency keys, so
-  transactions already folded into one are re-applied if retried after a cold
-  start.
+- Covered log segments are retained for `DEDUPE_HORIZON_SEQ` (2000 sequence
+  numbers) past the snapshot base instead of being pruned the moment a snapshot
+  lands. A snapshot stores rows, not idempotency keys, so the segment was the
+  only remaining copy of the key for a retry that crosses the snapshot; pruning
+  it immediately is what made the retry re-apply. Measured live on a fresh
+  workspace whose first snapshot folded both transactions: the retry now returns
+  `applied: 0`.
 
 ## [0.0.1]
 

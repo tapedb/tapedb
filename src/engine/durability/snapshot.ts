@@ -253,20 +253,41 @@ async function snapshotTable(
 
 const LOG_SEGMENT_NAME = /^(\d+)-(\d+)\.ndjson$/;
 
-/** Deletes log segments wholly covered by `baseSeq`. */
+/**
+ * How far below the snapshot base a log segment is kept.
+ *
+ * A snapshot stores rows, not idempotency keys, so a segment folded into a
+ * snapshot is still the only durable record of the `clientTxId` values it
+ * carried. Deleting it the moment the snapshot lands is what made a retried
+ * write apply twice after an eviction. Keeping roughly two snapshots' worth of
+ * covered segments bounds the retry window explicitly instead of pretending it
+ * is unlimited: R2 holds a few small objects, and the guarantee matches what a
+ * client outbox can realistically replay.
+ */
+export const DEDUPE_HORIZON_SEQ = 2 * SNAPSHOT_SEQ_THRESHOLD;
+
+/**
+ * Deletes log segments wholly covered by `baseSeq`, keeping those inside the
+ * idempotency horizon so cold-start recovery can still rebuild `_tx_log`.
+ */
 export async function pruneCoveredLogSegments(
   bucket: R2Bucket,
   workspaceId: string,
-  baseSeq: number
+  baseSeq: number,
+  options: { dedupeHorizonSeq?: number } = {}
 ): Promise<number> {
   const prefix = `${workspacePrefix(workspaceId)}/log/`;
   const objects = await listAllR2(bucket, prefix);
   const keys: string[] = [];
+  const horizon = options.dedupeHorizonSeq ?? DEDUPE_HORIZON_SEQ;
+  const retainFrom = baseSeq - horizon;
 
   for (const object of objects) {
     const match = LOG_SEGMENT_NAME.exec(object.key.slice(prefix.length));
     if (!match) continue;
-    if (Number(match[2]) <= baseSeq) keys.push(object.key);
+    // A segment that overlaps the horizon stays: its lines below the snapshot
+    // base are the only remaining copy of their idempotency keys.
+    if (Number(match[2]) <= retainFrom) keys.push(object.key);
   }
 
   await deleteR2Keys(bucket, keys);
@@ -313,12 +334,15 @@ async function pruneSafely(
   bucket: R2Bucket,
   workspaceId: string,
   baseSeq: number,
-  retention: number
+  retention: number,
+  dedupeHorizonSeq?: number
 ): Promise<string[]> {
   const warnings: string[] = [];
 
   try {
-    await pruneCoveredLogSegments(bucket, workspaceId, baseSeq);
+    await pruneCoveredLogSegments(bucket, workspaceId, baseSeq, {
+      dedupeHorizonSeq,
+    });
   } catch (cause) {
     warnings.push(
       `log prune failed: ${cause instanceof Error ? cause.message : String(cause)}`
@@ -408,7 +432,13 @@ export async function snapshotWorkspace(
 
     markSnapshotCompleted(sql, workspaceId, baseSeq, now);
 
-    const warnings = await pruneSafely(bucket, workspaceId, baseSeq, retention);
+    const warnings = await pruneSafely(
+      bucket,
+      workspaceId,
+      baseSeq,
+      retention,
+      options.dedupeHorizonSeq
+    );
 
     return {
       snapshotted: true,
