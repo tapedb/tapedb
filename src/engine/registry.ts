@@ -74,6 +74,7 @@ export type LinkDefinition = OneToManyLink | OneToOneLink;
 export const ENGINE_TABLES = {
   migrations: "_migrations",
   txLog: "_tx_log",
+  txReceipts: "_tx_receipts",
   txState: "_tx_state",
   flushState: "_flush_state",
   snapshotState: "_snapshot_state",

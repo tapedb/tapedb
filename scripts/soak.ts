@@ -23,7 +23,7 @@ import { flushPending } from "../src/engine/durability/flusher";
 import { recoverWorkspace, type RecoverySqlExecutor } from "../src/engine/durability/recovery";
 import {
   snapshotWorkspace,
-  DEDUPE_HORIZON_SEQ,
+  LOG_RETENTION_SEQ,
   SNAPSHOT_SEQ_THRESHOLD,
 } from "../src/engine/durability/snapshot";
 import type { SqlValue } from "../src/engine/durability/sql";
@@ -252,7 +252,7 @@ let lastWrite: { clientTxId: string; ops: Record<string, unknown>[] } | null = n
 const timings: Array<Record<string, number>> = [];
 
 console.log(
-  `soak: ${GENERATIONS} generations x ${OPS_PER_GENERATION} ops, snapshot every ${SNAPSHOT_SEQ_THRESHOLD} seq, dedupe horizon ${DEDUPE_HORIZON_SEQ}\n`
+  `soak: ${GENERATIONS} generations x ${OPS_PER_GENERATION} ops, snapshot every ${SNAPSHOT_SEQ_THRESHOLD} seq, dedupe horizon ${LOG_RETENTION_SEQ}\n`
 );
 
 for (let generation = 1; generation <= GENERATIONS; generation += 1) {

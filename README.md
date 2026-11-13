@@ -165,10 +165,10 @@ apply optimistically, queue in an IndexedDB outbox while offline, and resolve
 to `{ id, status: "applied" | "queued" }`. A write the engine refuses for
 good during a background flush reaches `onWriteRejected`.
 
-Exactly-once: retries are deduplicated by client transaction id, across cold
-starts too. After a restore, keys reach back a bounded window
-(`DEDUPE_HORIZON_SEQ`, 2000 sequence numbers past the snapshot base); a retry
-from further back is refused with `dedupe_expired` — never applied twice.
+Retries are deduplicated by client transaction id. Durable transaction
+receipts survive snapshots, replay-log pruning and recovery from R2, so a
+previously applied request is acknowledged without applying it again. Reusing
+an id with different operations is rejected.
 
 Related rows can be created with the row that needs them:
 

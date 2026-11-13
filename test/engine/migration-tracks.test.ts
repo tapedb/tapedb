@@ -103,17 +103,19 @@ describe("migration tracks", () => {
     }
     db.prepare(`INSERT INTO "$files" (id, path, r2_key, size, created_at, updated_at) VALUES ('f1', 'a.png', 'k', 3, 1, 1)`).run();
 
+    db.prepare(`INSERT INTO "_tx_log" (seq,client_tx_id,ops,ops_hash,at,schema_version) VALUES (1,'existing-client','[]','existing-hash',1,'0002_entities')`).run();
     configureRegistry(schema.registry);
     configurePermissions(schema.permissions);
     configureMigrations(schema.migrations);
     await boot(db);
+    expect(db.query(`SELECT id,seq,ops_hash FROM "_tx_receipts"`).all()).toEqual([{id:"existing-client",seq:1,ops_hash:"existing-hash"}]);
 
     expect(db.query(`SELECT path FROM "_files"`).all()).toEqual([{ path: "a.png" }]);
     expect(db.query(`SELECT name FROM sqlite_master WHERE name = '$files'`).all()).toEqual([]);
     expect((db.query(`SELECT id FROM "_migrations" ORDER BY id`).all() as Array<{ id: string }>).map((row) => row.id)).toEqual([
       "0001_baseline",
       "0002_entities",
-      "tapedb_0002_files_table",
+      ...ENGINE_MIGRATIONS.map(migration => migration.id),
     ]);
   });
 });

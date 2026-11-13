@@ -32,6 +32,16 @@ export const ENGINE_MIGRATIONS: readonly BundledWorkspaceMigration[] = [
     id: "tapedb_0002_files_table",
     sql: 'ALTER TABLE "$files" RENAME TO "_files";',
   },
+  {
+    id: "tapedb_0003_tx_receipts",
+    sql: `CREATE TABLE "_tx_receipts" (
+      id TEXT PRIMARY KEY NOT NULL,
+      seq INTEGER NOT NULL,
+      ops_hash TEXT NOT NULL
+    );
+    INSERT INTO "_tx_receipts" (id, seq, ops_hash)
+      SELECT client_tx_id, seq, ops_hash FROM "_tx_log" WHERE client_tx_id IS NOT NULL;`,
+  },
 ];
 
 /** Configured migrations, applied in order on Durable Object boot. */

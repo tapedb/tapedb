@@ -134,11 +134,11 @@ describe("updateMany", () => {
     expect(JSON.stringify(ops)).not.toContain("ownerId");
   });
 
-  test("a relation-free filter with no matches writes nothing and spends no sequence", async () => {
+  test("a no-match write records its receipt without changing application rows", async () => {
     seed(2);
     const before = db.query(`SELECT high_water_seq AS seq FROM "_tx_state"`).get() as { seq: number };
     expect(await client().task.updateMany({ where: { ownerId: "nobody" }, data: { done: true } })).toEqual({ count: 0 });
-    expect(db.query(`SELECT high_water_seq AS seq FROM "_tx_state"`).get()).toEqual(before);
+    expect(db.query(`SELECT high_water_seq AS seq FROM "_tx_state"`).get()).toEqual({seq:before.seq+1});
   });
 
   test("refuses to connect relations, and refuses unknown fields", async () => {

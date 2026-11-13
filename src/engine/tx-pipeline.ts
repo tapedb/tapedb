@@ -59,7 +59,7 @@ export function runTransaction(
   return sql.transactionSync(() => {
     if (tx.clientTxId !== undefined) {
       const prior = sql.one<TxLogRow>(
-        `SELECT seq, ops_hash FROM "_tx_log" WHERE client_tx_id = ?`,
+        `SELECT seq, ops_hash FROM "_tx_receipts" WHERE id = ?`,
         tx.clientTxId
       );
 
@@ -74,10 +74,9 @@ export function runTransaction(
         );
       }
 
-      // An unknown key is only proof the retry was never applied when this
-      // database holds every key above the client's basis. After a restore
-      // whose older segments were pruned, it may not: refuse rather than risk
-      // applying the same write twice.
+      // Only legacy snapshots can lack historical receipts. Preserve their
+      // recorded uncertainty instead of inventing receipts already discarded
+      // by that older engine. New workspaces retain every receipt.
       if (tx.basisSeq !== undefined) {
         const floor = readDedupeFloor(sql);
         if (floor > tx.basisSeq) {
@@ -97,12 +96,14 @@ export function runTransaction(
     const matched = Object.keys(expanded.matched).length > 0 ? { matched: expanded.matched } : {};
 
     if (expanded.ops.length === 0) {
-      // Every op was a bulk write that matched nothing. There is nothing to
-      // apply and nothing to replay, so no sequence is spent on it.
-      const state = sql.one<TxStateRow>(
-        `SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`
-      );
-      return { txId: tx.txId, seq: state?.high_water_seq ?? 0, applied: 0, ...matched };
+      // A no-op is still a completed request: preserve its idempotency key so
+      // retrying later cannot suddenly match newly-created rows.
+      const state = sql.one<TxStateRow>(`SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`);
+      const seq = tx.clientTxId === undefined ? (state?.high_water_seq ?? 0) : appendLogEntry(sql, {
+        clientTxId: tx.clientTxId, ops: "[]", opsHash: hash,
+        userId: claim.sub, role: claim.role, at: Date.now(),
+      });
+      return { txId: tx.txId, seq, applied: 0, ...matched };
     }
 
     // Row rules read the stored row, so they belong inside the transaction,
@@ -180,6 +181,9 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
     readSchemaVersion(sql)
   );
 
+  if (entry.clientTxId !== null) {
+    sql.exec(`INSERT INTO "_tx_receipts" (id, seq, ops_hash) VALUES (?, ?, ?)`, entry.clientTxId, seq, entry.opsHash);
+  }
   sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
   return seq;
 }
@@ -188,9 +192,8 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
 export const DEDUPE_FLOOR_META_KEY = "dedupe_floor_seq";
 
 /**
- * Highest sequence whose idempotency key may be missing locally. Every key
- * above it is in `_tx_log`. Zero for a database that was never restored, since
- * its log holds every key it ever wrote.
+ * Highest sequence whose receipt was already missing in an older snapshot.
+ * New workspaces keep this at zero, including after replay-log pruning.
  */
 export function readDedupeFloor(sql: SqlExecutor): number {
   const row = sql.one<EngineMetaRow>(
