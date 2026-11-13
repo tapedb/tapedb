@@ -11,6 +11,10 @@ bun install
 bun run verify      # typecheck + test + build, the same thing CI runs
 ```
 
+The CI workflow is kept, but GitHub Actions does not start on this repository.
+`bun run verify` on your machine is therefore the gate: run it before opening a
+pull request and list what you ran in the description.
+
 No Cloudflare account is needed for the test suite: the engine tests run against
 in-memory SQLite, and the client tests use a fake socket and a fake fetch.
 
