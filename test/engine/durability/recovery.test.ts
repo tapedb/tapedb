@@ -18,7 +18,7 @@ import {
   type RecoveryResult,
   type RecoverySqlExecutor,
 } from "../../../src/engine/durability/recovery";
-import { snapshotWorkspace } from "../../../src/engine/durability/snapshot";
+import { snapshotWorkspace, trimLocalLog } from "../../../src/engine/durability/snapshot";
 import { forgetFileEntry, recordFileEntry } from "../../../src/engine/file-index";
 import type { SqlExecutor as DurabilitySql, SqlValue } from "../../../src/engine/durability/sql";
 import { FakeR2Bucket, openTestDb, TEST_WORKSPACE } from "../../fixtures/test-support";
@@ -1240,5 +1240,58 @@ describe("the file index in snapshots", () => {
     bucket.seed(key, JSON.stringify(manifest));
 
     expect(await restoredPaths(bucket)).toEqual([{ path: "old.png" }]);
+  });
+});
+
+describe("the local log is bounded", () => {
+  const write = (source: Source, n: number) =>
+    run(source, {
+      txId: `t${n}`,
+      clientTxId: `c${n}`,
+      ops: [{ op: "update", namespace: "folders", id: `f${n}`, values: { name: `F${n}` } }],
+    } as TxEnvelope);
+
+  test("a snapshot trims flushed rows past the horizon and raises the dedupe floor", async () => {
+    const source = createSource();
+    seedWorkspace(source); // seq 1
+    for (let n = 2; n <= 10; n += 1) write(source, n);
+    const bucket = new FakeR2Bucket();
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
+    await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW, { dedupeHorizonSeq: 3 });
+
+    // base 10, horizon 3: rows 1..7 go, 8..10 stay.
+    expect(scalar(source.db, `SELECT GROUP_CONCAT(seq) FROM (SELECT seq FROM "_tx_log" ORDER BY seq)`)).toBe("8,9,10");
+    expect(scalar(source.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe("7");
+
+    // A retry from below the cut cannot be vouched for and is refused...
+    expect(() =>
+      run(source, { txId: "r", clientTxId: "c4", basisSeq: 3, ops: [{ op: "update", namespace: "folders", id: "f4", values: { name: "F4" } }] } as TxEnvelope)
+    ).toThrow(/may already be applied/);
+    // ...one above it is still deduped, and new writes continue the sequence.
+    expect(run(source, { txId: "r2", clientTxId: "c9", basisSeq: 8, ops: [{ op: "update", namespace: "folders", id: "f9", values: { name: "F9" } }] } as TxEnvelope)).toMatchObject({ seq: 9, applied: 0 });
+    expect(write(source, 11).seq).toBe(11);
+  });
+
+  test("never trims a row that has not reached R2", () => {
+    const source = createSource();
+    seedWorkspace(source);
+    for (let n = 2; n <= 10; n += 1) write(source, n);
+    source.db.exec(`UPDATE "_flush_state" SET last_seq = 4 WHERE id = 1`);
+
+    // A snapshot base of 10 alone would allow cutting to 7; flushed is 4.
+    trimLocalLog(source.sql, 10, { dedupeHorizonSeq: 3 });
+    expect(scalar(source.db, `SELECT MIN(seq) FROM "_tx_log"`)).toBe(2);
+    expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(9);
+  });
+
+  test("the floor never moves backwards", () => {
+    const source = createSource();
+    seedWorkspace(source);
+    for (let n = 2; n <= 10; n += 1) write(source, n);
+    source.db.exec(`UPDATE "_flush_state" SET last_seq = 10 WHERE id = 1`);
+    // A restore can leave a floor above what a trim would cut.
+    source.db.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('dedupe_floor_seq', '9')`);
+    expect(trimLocalLog(source.sql, 10, { dedupeHorizonSeq: 4 })).toBe(6); // rows 1..6
+    expect(scalar(source.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe("9");
   });
 });
