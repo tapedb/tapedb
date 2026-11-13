@@ -640,6 +640,34 @@ describe("storage without getToken", () => {
 });
 
 describe("nested create", () => {
+  test("nests as deep as the data does", () => {
+    const tree = schema({
+      node: model({
+        label: t.string(),
+        parent: t.belongsTo("node").optional(),
+        children: t.hasMany("node", { inverse: "parent" }),
+      }),
+    });
+    const db = createClient(
+      { schema: tree, url: "http://engine.test", workspace: WORKSPACE, getToken: async () => "token" },
+      { fetch: async () => { throw new Error("not sent"); }, outbox: new MemoryOutbox(), createWebSocket: () => { throw new Error("no socket"); } }
+    );
+    let data: Record<string, unknown> = { id: "n6", label: "6" };
+    for (let level = 5; level >= 1; level -= 1) {
+      data = { id: `n${level}`, label: String(level), children: { create: [data] } };
+    }
+    // Six levels: each child is inserted after the row it points at.
+    const write = db.node.create({ data: data as never });
+    expect(write.ops.map((op) => [op.op, (op as { id: string }).id, (op as { values?: { parentId?: string } }).values?.parentId])).toEqual([
+      ["insert", "n1", undefined],
+      ["insert", "n2", "n1"],
+      ["insert", "n3", "n2"],
+      ["insert", "n4", "n3"],
+      ["insert", "n5", "n4"],
+      ["insert", "n6", "n5"],
+    ]);
+  });
+
   test("creates children with the parent, in one transaction", async () => {
     const db = client();
     const created = await db.board.create({

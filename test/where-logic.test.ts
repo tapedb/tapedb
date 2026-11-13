@@ -103,13 +103,23 @@ describe("$or, $and, $not", () => {
     expect(titles(sql, { $not: { $or: [{ ownerId: "alice" }, { points: null }] } })).toEqual(["b"]);
   });
 
-  test("refuses empty arrays, unknown $ keys and runaway nesting", () => {
+  test("refuses empty arrays and unknown $ keys", () => {
     const sql = setup();
     expect(() => titles(sql, { $or: [] })).toThrow(/non-empty array/);
     expect(() => titles(sql, { $xor: [{ status: "a" }] })).toThrow(/Unknown where key/);
+  });
+
+  test("logical filters nest as deep as they are written", () => {
+    const sql = setup();
     let deep: Record<string, unknown> = { status: "todo" };
-    for (let i = 0; i < 5; i += 1) deep = { $not: deep };
-    expect(() => titles(sql, deep)).toThrow(/nest at most/);
+    for (let i = 0; i < 12; i += 1) deep = i % 3 === 2 ? { $and: [deep] } : { $not: { $or: [deep] } };
+    // Eight NOTs cancel out.
+    expect(titles(sql, deep)).toEqual(titles(sql, { status: "todo" }));
+
+    // A document deep enough to exhaust the stack is a bad request.
+    let runaway: Record<string, unknown> = { status: "todo" };
+    for (let i = 0; i < 200_000; i += 1) runaway = { $not: runaway };
+    expect(() => titles(sql, runaway)).toThrow(/nests too deeply/);
   });
 });
 

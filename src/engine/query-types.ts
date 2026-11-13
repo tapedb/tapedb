@@ -1,8 +1,8 @@
 /**
  * Query document wire contract for the workspace engine.
  *
- * Only the subset the plan promises is supported: `where`, `order`, `limit`
- * and nested link traversal up to two levels. This module owns the typed
+ * `where`, `order`, `limit`, `after`, `count`, `select`, `aggregate` and
+ * nested link traversal at any depth. This module owns the typed
  * shapes and the registry-independent validation. Registry-specific checks
  * (namespace, attribute and link existence) live in `query-compile.ts`.
  *
@@ -16,7 +16,6 @@ import { TxError } from "./tx-types";
 
 export const DEFAULT_QUERY_LIMIT = 100;
 export const MAX_QUERY_LIMIT = 1000;
-export const MAX_LINK_DEPTH = 2;
 
 export type SortDirection = "asc" | "desc";
 
@@ -67,11 +66,6 @@ export interface QueryWhere {
   $link?: QueryRelationFilter[];
 }
 
-/** How deep relation filters may nest, matching `include`. */
-export const MAX_RELATION_DEPTH = 2;
-
-/** How deep `$or` / `$and` / `$not` may nest inside one filter. */
-export const MAX_WHERE_DEPTH = 4;
 
 export interface QueryOptions {
   where?: QueryWhere;
@@ -332,7 +326,7 @@ function parseCursor(value: unknown): string {
 }
 
 /** Validates a `where` object. Exported for view rules, which share the shape. */
-export function parseWhere(value: unknown, depth = 0): QueryWhere {
+export function parseWhere(value: unknown): QueryWhere {
   if (!isPlainObject(value)) {
     throw invalidOp('"where" must be an object.');
   }
@@ -343,20 +337,15 @@ export function parseWhere(value: unknown, depth = 0): QueryWhere {
       if (!LOGICAL_KEYS.has(attribute)) {
         throw invalidOp(`Unknown where key "${attribute}".`);
       }
-      if (depth >= MAX_WHERE_DEPTH) {
-        throw invalidOp(
-          `"$or", "$and" and "$not" may nest at most ${MAX_WHERE_DEPTH} levels.`
-        );
-      }
       if (attribute === "$not") {
-        where.$not = parseWhere(raw, depth + 1);
+        where.$not = parseWhere(raw);
         continue;
       }
       if (attribute === "$link") {
         if (!Array.isArray(raw) || raw.length === 0) {
           throw invalidOp('"$link" needs a non-empty array of relation filters.');
         }
-        where.$link = raw.map((entry) => parseRelationFilter(entry, depth));
+        where.$link = raw.map((entry) => parseRelationFilter(entry));
         continue;
       }
       if (!Array.isArray(raw) || raw.length === 0) {
@@ -365,7 +354,7 @@ export function parseWhere(value: unknown, depth = 0): QueryWhere {
         throw invalidOp(`"${attribute}" needs a non-empty array of filters.`);
       }
       where[attribute as "$or" | "$and"] = raw.map((branch) =>
-        parseWhere(branch, depth + 1)
+        parseWhere(branch)
       );
       continue;
     }
@@ -378,7 +367,7 @@ export function parseWhere(value: unknown, depth = 0): QueryWhere {
   return where;
 }
 
-function parseRelationFilter(value: unknown, depth: number): QueryRelationFilter {
+function parseRelationFilter(value: unknown): QueryRelationFilter {
   if (!isPlainObject(value)) {
     throw invalidOp('Each "$link" entry must be an object.');
   }
@@ -391,9 +380,7 @@ function parseRelationFilter(value: unknown, depth: number): QueryRelationFilter
       `"$link" mode for "${label}" must be one of parent, some, every, none.`
     );
   }
-  // The inner filter starts its own logical nesting; the relation depth is
-  // bounded separately, by the compiler, which knows the link it resolved.
-  return { label, mode: mode as RelationMode, where: parseWhere(where, depth) };
+  return { label, mode: mode as RelationMode, where: parseWhere(where) };
 }
 
 function parseComparison(

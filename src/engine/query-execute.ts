@@ -11,6 +11,7 @@ import type { RoleClaim } from "../claims";
 import {
   buildSelectSql,
   compileQuery,
+  sqliteLimitError,
   selectColumns,
   conditionAfterValues,
   compileViewCondition,
@@ -164,6 +165,18 @@ export function executeCompiledQuery(
  * page, and `nextCursor` resumes after the last VISIBLE row.
  */
 export function executeCompiledQueryWithPageInfo(
+  sql: SqlExecutor,
+  compiled: CompiledQuery,
+  claim?: RoleClaim
+): { data: QueryResult; pageInfo: QueryPageInfo } {
+  try {
+    return executePages(sql, compiled, claim);
+  } catch (error) {
+    throw sqliteLimitError(error) ?? error;
+  }
+}
+
+function executePages(
   sql: SqlExecutor,
   compiled: CompiledQuery,
   claim?: RoleClaim

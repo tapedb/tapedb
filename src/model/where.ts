@@ -42,13 +42,13 @@ export interface ManyFilter<W> {
 }
 
 /**
- * Filters, in three concrete levels rather than one recursive type.
+ * Filters, in two concrete levels rather than one recursive type.
  *
- * The engine compiles relation filters at most two links deep, so the type
- * stops there too: the bottom level has no relation keys. Spelling the levels
- * out keeps the checker from unfolding models into each other forever —
- * boards hold columns hold boards — which it does if the depth is a type
- * parameter it has to count down.
+ * The engine compiles relation filters at any depth; the types describe the
+ * first hop and accept deeper ones untyped. Spelling the levels out keeps the
+ * checker from unfolding models into each other forever — boards hold columns
+ * hold boards — which it does if the depth is a type parameter it has to
+ * count down.
  */
 type Scalars<F extends Fields> = {
   [K in FilterKeys<F>]?: Scalar | FieldFilter;
@@ -58,8 +58,8 @@ type Scalars<F extends Fields> = {
  * The deepest level the types follow: the target's own fields.
  *
  * Relation keys are accepted here but not described. The engine compiles
- * relation filters two links deep and validates every level against the
- * registry, so a second hop still works and a wrong name is still an error —
+ * relation filters at any depth and validates every level against the
+ * registry, so a further hop still works and a wrong name is still an error —
  * at the call, not in the editor. Typing the second hop as well means
  * resolving the model graph into itself for every key, which runs the
  * checker out of memory on schemas whose models point at each other.

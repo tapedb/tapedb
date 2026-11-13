@@ -236,7 +236,7 @@ describe("access", () => {
 });
 
 describe("refusals", () => {
-  test("wrong mode for the link's multiplicity, unknown relation, too deep", async () => {
+  test("wrong mode for the link's multiplicity, unknown relation", async () => {
     await seed();
     const db = client();
     expect(() => db.column.findMany({ where: { board: { some: { name: "x" } } } as never })).toThrow(
@@ -246,8 +246,47 @@ describe("refusals", () => {
       /some, every or none/
     );
     expect(() => db.board.findMany({ where: { nope: { some: {} } } as never })).toThrow(/no filterable field/);
-    await expect(
-      db.task.findMany({ where: { column: { board: { columns: { some: { name: "x" } } } } } as never }).then()
-    ).rejects.toThrow(/nest at most/);
+  });
+});
+
+describe("depth", () => {
+  test("relation filters and includes nest past two links", async () => {
+    await seed();
+    const db = client();
+
+    // Three hops: tasks whose column's board has a column named "Done".
+    const tasks = await db.task.findMany({
+      where: { column: { board: { columns: { some: { name: "Done" } } } } } as never,
+      orderBy: { id: "asc" },
+    });
+    expect(tasks.map((task) => task.id)).toEqual(["t1", "t2", "t3"]);
+
+    // Four hops of include, back round to the board.
+    const boards = await db.board.findMany({
+      where: { id: "b-open" },
+      select: {
+        name: true,
+        columns: {
+          orderBy: { position: "asc" },
+          select: { tasks: { orderBy: { id: "asc" }, select: { column: { select: { board: { select: { name: true } } } } } } },
+        },
+      },
+    });
+    expect(boards[0].columns[0].tasks.map((task) => (task as { column: { board: { name: string } } }).column.board.name)).toEqual(["Open", "Open"]);
+  });
+
+  test("a filter deeper than SQLite can run is a bad request, not a server error", async () => {
+    await seed();
+    // Alternates column -> tasks -> column ..., 41 hops, ending on column.
+    let where: Record<string, unknown> = { title: "one" };
+    for (let hop = 0; hop < 41; hop += 1) {
+      where = hop % 2 === 0 ? { tasks: { some: where } } : { column: where };
+    }
+    const outcome = await client().column.findMany({ where: where as never }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(outcome).toMatchObject({ code: "invalid_op", status: 400 });
+    expect(String(outcome)).toMatch(/larger than SQLite can run/);
   });
 });
