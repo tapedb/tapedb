@@ -76,6 +76,7 @@ function clone<T>(value: T): T {
 (globalThis as { WebSocketPair?: unknown }).WebSocketPair = FakeWebSocketPair;
 
 const { WorkspaceRoom } = await import("../../src/engine/workspace-room");
+const { configureTopics } = await import("../../src/engine/topics");
 
 const WORKSPACE = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a6b";
 const MIGRATIONS_DIR = resolve(
@@ -664,6 +665,69 @@ describe("WorkspaceRoom live queries", () => {
     const [unchanged] = queryMessages(socket);
     expect(unchanged).toMatchObject({ type: "query:diff", updated: [expect.objectContaining({ id: "task3" })] });
     expect(unchanged?.order).toBeUndefined();
+  });
+
+  describe("broadcast topics", () => {
+    const topicMessages = (ws: FakeWebSocket) =>
+      ws.messages().filter((message) => String(message.type).startsWith("topic:"));
+
+    test("a message reaches every other joined socket, not the sender or the unjoined", async () => {
+      const sender = await connect();
+      const joined = await connect();
+      const elsewhere = await connect();
+      await send(sender, { type: "topic:join", topic: "board:1" });
+      await send(joined, { type: "topic:join", topic: "board:1" });
+      await send(elsewhere, { type: "topic:join", topic: "board:2" });
+      // Joined topics are on the attachment, so they survive hibernation.
+      expect(joined.attachment).toMatchObject({ topics: ["board:1"] });
+
+      await send(sender, { type: "topic:send", topic: "board:1", message: { ping: 1 } });
+      expect(topicMessages(joined)).toEqual([
+        {
+          type: "topic:message",
+          topic: "board:1",
+          message: { ping: 1 },
+          from: { clientId: (sender.attachment as { clientId: string }).clientId, sub: "user-1" },
+        },
+      ]);
+      expect(topicMessages(sender)).toEqual([]);
+      expect(topicMessages(elsewhere)).toEqual([]);
+
+      // Sending does not need a join; leaving stops delivery.
+      await send(elsewhere, { type: "topic:send", topic: "board:1", message: "hi" });
+      expect(topicMessages(sender).map((message) => message.message)).toEqual(["hi"]);
+      await send(joined, { type: "topic:leave", topic: "board:1" });
+      joined.clear();
+      await send(sender, { type: "topic:send", topic: "board:1", message: "gone" });
+      expect(topicMessages(joined)).toEqual([]);
+    });
+
+    test("an authorize hook decides who may join and send", async () => {
+      configureTopics({
+        authorize: ({ auth, topic, action }) =>
+          !topic.startsWith("admin:") || (action === "join" ? auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN : false),
+      });
+      try {
+        const member = await connect(WORKSPACE_ROLE_LEVELS.MEMBER);
+        const admin = await connect(WORKSPACE_ROLE_LEVELS.ADMIN);
+        await send(member, { type: "topic:join", topic: "admin:alerts" });
+        expect(topicMessages(member)).toEqual([expect.objectContaining({ type: "topic:error", code: "permission_denied", topic: "admin:alerts" })]);
+        expect(member.attachment).not.toHaveProperty("topics");
+
+        await send(admin, { type: "topic:join", topic: "admin:alerts" });
+        await send(member, { type: "topic:send", topic: "admin:alerts", message: "spoof" });
+        expect(topicMessages(admin)).toEqual([]);
+      } finally {
+        configureTopics(undefined);
+      }
+    });
+
+    test("refuses a malformed topic", async () => {
+      const socket = await connect();
+      await send(socket, { type: "topic:join", topic: "has spaces" });
+      await send(socket, { type: "topic:send", topic: "ok" });
+      expect(topicMessages(socket).map((message) => message.code)).toEqual(["invalid_topic", "invalid_topic_message"]);
+    });
   });
 
   test("leaves page metadata off a diff when it did not change", async () => {

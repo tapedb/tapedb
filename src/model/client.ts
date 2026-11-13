@@ -25,6 +25,7 @@ import type { StorageObject } from "../client/storage-client";
 import type {
   AggregateGroup,
   PresencePeer,
+  TopicSender,
   QueryDocument,
   QueryError,
   QueryPageInfo,
@@ -171,11 +172,32 @@ export interface PresenceRoom {
   leave(): void;
 }
 
+/** A broadcast topic: fire-and-forget messages between clients of a workspace. */
+export interface BroadcastTopic<T = unknown> {
+  /**
+   * Sends to every other client listening on the topic. Returns false, and
+   * drops the message, when the socket is not open: a broadcast is never
+   * delivered late.
+   */
+  send(message: T): boolean;
+  /**
+   * Listens until the returned function is called. Your own messages are not
+   * delivered back to you. `onError` hears refusals, such as an `authorize`
+   * hook saying no.
+   */
+  subscribe(
+    listener: (message: T, from: TopicSender) => void,
+    options?: { onError?: (error: QueryError) => void }
+  ): () => void;
+}
+
 export interface ClientExtras {
   /** Sends several writes as one log entry: one sequence, all or nothing. */
   $transaction(writes: Write[]): Promise<WriteResult[]>;
   $files: FilesClient;
   $presence(room: string): PresenceRoom;
+  /** A broadcast topic on the workspace socket. Topics are 1-128 of A-Z a-z 0-9 : _ . - */
+  $broadcast<T = unknown>(topic: string): BroadcastTopic<T>;
   /** Retries queued writes now (also runs on reconnect and when back online). */
   $flush(): Promise<void>;
   /** Closes the socket. */
@@ -751,6 +773,19 @@ export function createClient<M extends Models>(
       subscribe: (listener) => impl.subscribePresence(room, listener),
       leave: () => impl.clearPresence(room),
     }),
+    $broadcast: <T>(topic: string): BroadcastTopic<T> => {
+      if (!/^[A-Za-z0-9:_.-]{1,128}$/.test(topic)) {
+        throw new Error(`"${topic}" is not a topic name: use 1-128 of A-Z a-z 0-9 : _ . -`);
+      }
+      return {
+        send: (message) => impl.sendTopic(topic, message),
+        subscribe: (listener, options) =>
+          impl.subscribeTopic(topic, {
+            message: (message, from) => listener(message as T, from),
+            error: options?.onError,
+          }),
+      };
+    },
     $flush: () => impl.flushOutbox(),
     $close: () => impl.close(),
   };

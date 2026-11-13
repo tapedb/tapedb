@@ -29,6 +29,8 @@ import type {
   QueryState,
   SchemaDefinition,
   ServerMessage,
+  TopicListener,
+  TopicSender,
   TransactInput,
   TxOp,
   TxStep,
@@ -348,6 +350,7 @@ class DataClientImpl {
   /** Unacked optimistic ops, replayed over server data until they are acked. */
   private readonly pendingOps = new Map<string, readonly TxOp[]>();
   private readonly presencePeers = new Map<string, PresencePeer[]>();
+  private readonly topicListeners = new Map<string, Set<TopicListener>>();
   private readonly presenceListeners = new Map<
     string,
     Set<(peers: PresencePeer[]) => void>
@@ -673,6 +676,38 @@ class DataClientImpl {
     };
   }
 
+  /**
+   * Listens on a broadcast topic. The socket joins the topic with the first
+   * listener and leaves it with the last, and rejoins after a reconnect.
+   */
+  subscribeTopic(topic: string, listener: TopicListener): () => void {
+    let listeners = this.topicListeners.get(topic);
+    if (!listeners) {
+      listeners = new Set();
+      this.topicListeners.set(topic, listeners);
+    }
+    listeners.add(listener);
+    this.ensureSocket();
+    if (listeners.size === 1) this.socket?.send({ type: "topic:join", topic });
+
+    return () => {
+      const current = this.topicListeners.get(topic);
+      if (!current?.delete(listener) || current.size > 0) return;
+      this.topicListeners.delete(topic);
+      this.socket?.send({ type: "topic:leave", topic });
+    };
+  }
+
+  /**
+   * Sends to everyone else joined to `topic`. Fire-and-forget: returns false
+   * when the socket is not open, and the message is dropped rather than
+   * delivered late.
+   */
+  sendTopic(topic: string, message: unknown): boolean {
+    this.ensureSocket();
+    return this.socket?.send({ type: "topic:send", topic, message }) ?? false;
+  }
+
   async connect(): Promise<void> {
     const problem = this.configProblem();
     if (problem) {
@@ -965,6 +1000,9 @@ class DataClientImpl {
         this.authFailures = 0;
         this.resubscribeAll();
         this.republishPresence();
+        for (const topic of this.topicListeners.keys()) {
+          this.socket?.send({ type: "topic:join", topic });
+        }
         void this.flushOutbox();
       },
       onMessage: (message) => this.handleServerMessage(message),
@@ -1017,6 +1055,27 @@ class DataClientImpl {
 
   private handleServerMessage(message: ServerMessage): void {
     switch (message.type) {
+      case "topic:message": {
+        const from: TopicSender = { clientId: message.from.clientId, userId: message.from.sub };
+        for (const listener of [...(this.topicListeners.get(message.topic) ?? [])]) {
+          try {
+            listener.message(message.message, from);
+          } catch {
+            // One listener's error must not keep the message from the rest.
+          }
+        }
+        return;
+      }
+      case "topic:error": {
+        const targets =
+          message.topic === null
+            ? [...this.topicListeners.values()].flatMap((set) => [...set])
+            : [...(this.topicListeners.get(message.topic) ?? [])];
+        for (const listener of targets) {
+          listener.error?.({ code: message.code, message: message.message });
+        }
+        return;
+      }
       case "presence:update": {
         this.presencePeers.set(message.target, message.peers);
         this.notifyPresence(message.target);

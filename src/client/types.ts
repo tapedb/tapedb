@@ -381,6 +381,9 @@ export type ClientMessage =
   | { type: "cursor:set"; target: string; cursor: unknown }
   | { type: "drag:set"; target: string; drag: unknown }
   | { type: "drag:clear"; target: string }
+  | { type: "topic:join"; topic: string }
+  | { type: "topic:leave"; topic: string }
+  | { type: "topic:send"; topic: string; message: unknown }
   | { type: "ping"; at?: unknown };
 
 export type ServerMessage =
@@ -416,4 +419,19 @@ export type ServerMessage =
       cursor: unknown;
     }
   | { type: "drag:update"; target: string; clientId: string; drag: unknown }
+  | { type: "topic:message"; topic: string; message: unknown; from: { clientId: string; sub: string } }
+  | { type: "topic:error"; topic: string | null; code: string; message: string }
   | { type: "error"; code: string; message?: string };
+
+/** Who sent a broadcast message. */
+export interface TopicSender {
+  /** The sending socket's client id: one per open client. */
+  clientId: string;
+  /** The claim subject (user id) the sender connected with. */
+  userId: string;
+}
+
+export interface TopicListener {
+  message: (message: unknown, from: TopicSender) => void;
+  error?: (error: QueryError) => void;
+}

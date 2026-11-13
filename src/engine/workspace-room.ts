@@ -45,6 +45,7 @@ import {
   queryMatchesTouched,
   touchedNamespacesFromEnvelope,
 } from "./subscriptions";
+import { isTopic, topicAllowed } from "./topics";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { runTransaction } from "./tx-pipeline";
 import { durableObjectSqlExecutor, type SqlValue } from "./tx-sql";
@@ -498,6 +499,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       case "drag:clear":
         this.handleDragClear(ws, attachment, payload);
         return;
+      case "topic:join":
+        this.handleTopicJoin(ws, attachment, payload);
+        return;
+      case "topic:leave":
+        this.handleTopicLeave(ws, attachment, payload);
+        return;
+      case "topic:send":
+        this.handleTopicSend(ws, attachment, payload);
+        return;
       default:
         this.send(ws, { type: "error", code: "unsupported_message_type" });
     }
@@ -522,6 +532,88 @@ export class WorkspaceRoom extends DurableObject<Env> {
     };
     if ("at" in payload) pong.at = payload.at;
     this.send(ws, pong);
+  }
+
+  // ---- Broadcast topics ------------------------------------------------------
+
+  private topicError(ws: WebSocket, topic: unknown, code: string, message: string): void {
+    this.send(ws, { type: "topic:error", topic: isTopic(topic) ? topic : null, code, message });
+  }
+
+  private handleTopicJoin(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    payload: Record<string, unknown>
+  ): void {
+    const topic = payload.topic;
+    if (!isTopic(topic)) {
+      this.topicError(ws, topic, "invalid_topic", "A topic is 1 to 128 of A-Z a-z 0-9 : _ . -");
+      return;
+    }
+    if (!topicAllowed(claimFromAttachment(attachment, this.workspaceId), topic, "join")) {
+      this.topicError(ws, topic, "permission_denied", `Not allowed to join topic "${topic}".`);
+      return;
+    }
+    const topics = attachment.topics ?? [];
+    if (!topics.includes(topic)) {
+      attachment.topics = [...topics, topic];
+      ws.serializeAttachment(attachment);
+    }
+  }
+
+  private handleTopicLeave(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    payload: Record<string, unknown>
+  ): void {
+    const topic = payload.topic;
+    if (!isTopic(topic)) {
+      this.topicError(ws, topic, "invalid_topic", "A topic is 1 to 128 of A-Z a-z 0-9 : _ . -");
+      return;
+    }
+    const topics = attachment.topics ?? [];
+    if (topics.includes(topic)) {
+      attachment.topics = topics.filter((joined) => joined !== topic);
+      ws.serializeAttachment(attachment);
+    }
+  }
+
+  /**
+   * Delivers to every other socket joined to the topic. The sender need not
+   * be joined; it never receives its own message.
+   */
+  private handleTopicSend(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    payload: Record<string, unknown>
+  ): void {
+    const topic = payload.topic;
+    if (!isTopic(topic) || !("message" in payload)) {
+      this.topicError(ws, topic, "invalid_topic_message", "topic:send needs a topic and a message.");
+      return;
+    }
+    if (!topicAllowed(claimFromAttachment(attachment, this.workspaceId), topic, "send")) {
+      this.topicError(ws, topic, "permission_denied", `Not allowed to send to topic "${topic}".`);
+      return;
+    }
+    const delivery = JSON.stringify({
+      type: "topic:message",
+      topic,
+      message: payload.message,
+      from: { clientId: attachment.clientId, sub: attachment.sub },
+    });
+    const now = Math.floor(Date.now() / 1000);
+    for (const other of this.ctx.getWebSockets?.() ?? []) {
+      if (other === ws) continue;
+      const peer = parseSocketAttachment(other.deserializeAttachment());
+      // A socket whose claim has run out hears nothing more.
+      if (!peer?.topics?.includes(topic) || peer.exp <= now) continue;
+      try {
+        other.send(delivery);
+      } catch {
+        // A closing socket is cleaned up by its close handler.
+      }
+    }
   }
 
   private handlePresenceSet(

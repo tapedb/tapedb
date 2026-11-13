@@ -13,6 +13,7 @@
 import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
+import { configureTopics, type TopicAuthorizer } from "../engine/topics";
 import { isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
 import { apiError, discardBody, json } from "../http";
@@ -57,6 +58,12 @@ export interface DefineTapeDBOptions {
    * session. Always refused when `ENVIRONMENT` is `production`.
    */
   devClaims?: boolean;
+  /**
+   * Broadcast topics. `authorize` decides whether a caller may join a topic
+   * or send to it; without it any member of the workspace may, as with
+   * presence.
+   */
+  topics?: { authorize?: TopicAuthorizer };
 }
 
 export interface TapeDBWorker {
@@ -235,6 +242,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
     migrations === undefined ? schema.migrations : [schema.migrations[0], ...migrations]
   );
   configurePermissions(schema.permissions);
+  configureTopics(options.topics);
 
   const worker = {
     async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -322,6 +330,7 @@ export {
 };
 export { mintClaim, mintDevClaim, signRoleClaim } from "../mint";
 export type { ClaimIdentity, MintClaimDependencies } from "../mint";
+export type { TopicAction, TopicAuthorizer } from "../engine/topics";
 export { WorkspaceRoom };
 export { WORKSPACE_ROLE_LEVELS };
 export type { Env };
