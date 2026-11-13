@@ -1,150 +1,217 @@
-# TapeDB
+# tapedb
 
-**A log-structured database for Cloudflare Durable Objects.** One SQLite
-database per workspace lives inside a single Durable Object. Every write is a
-transaction appended to a log, the log ships to R2, and a cold start replays
-it. Clients subscribe to live queries over one WebSocket, with an optimistic
-cache and a durable outbox.
+**A typed database for Cloudflare.** Describe your models once; `tapedb init`
+provisions one Durable Object class and two R2 buckets in your own account.
+Each workspace gets its own SQLite database inside a Durable Object, every
+write is appended to a transaction log, the log ships to R2, and a cold start
+replays it. Reads can be awaited once or kept live over a WebSocket; writes
+are optimistic and survive going offline.
 
-You bring the Cloudflare account. TapeDB brings the database.
-
-```bash
-npx tapedb init
-npx tapedb dev
-```
-
-`init` writes four files and needs three resources: one Durable Object class,
-and two R2 buckets (`DATA` for the log and snapshots, `FILES` for uploads).
-There is no D1 and no hosted control plane. Your data never leaves your
+Think of it as an ORM whose database is Cloudflare: schema in TypeScript,
+committed migrations, typed queries — plus live queries and offline writes,
+because the engine underneath is built for them. It is a library, not a
+service: there is no hosted control plane, and your data never leaves your
 account.
 
-`studio` opens a local table browser at `http://127.0.0.1:4400`: pick a
-namespace, page through rows, switch between the workspaces you have opened,
-and send transactions. It proxies through the dev claim route, so it needs no
-separate credentials.
+```bash
+npx tapedb init     # schema, worker, wrangler config, first migration
+npx tapedb dev      # local database with a dev claim route
+npx tapedb studio   # local table browser on http://127.0.0.1:4400
+```
 
-`dev` runs that Worker locally with an in-memory Durable Object and passes
-`TAPEDB_DEV_CLAIMS=true` on the command line, which enables
-`POST /_tapedb/claim` so the client works with no session and no configuration.
-The flag is never written to `wrangler.jsonc` and is also refused when
-`ENVIRONMENT` is `production`, so a plain `wrangler deploy` has no dev claim
-route.
-
-## Usage
+## The schema
 
 ```ts
-// tapedb.schema.ts — one schema, two artifacts
-import { defineSchema } from "tapedb";
+// tapedb.schema.ts
+import { check, filter, model, role, schema, t } from "tapedb/schema";
 
-export const schema = defineSchema({
-  entities: {
-    boards: { name: { type: "string" } },
-    columns: { name: { type: "string" }, boardId: { type: "string", optional: true } },
-    tasks: { title: { type: "string" }, done: { type: "boolean", optional: true } },
-  },
-  links: [
-    {
-      apiName: "boardColumns",
-      kind: "one-to-many",
-      forward: { namespace: "boards", label: "columns", has: "many" },
-      reverse: { namespace: "columns", label: "board", has: "one" },
-      foreignKey: { namespace: "columns", attribute: "boardId" },
-    },
-  ],
+export default schema({
+  board: model({
+    name: t.string(),
+    ownerId: t.string().index(),
+    archived: t.boolean().default(false),
+    columns: t.hasMany("column"),
+  }).access({
+    read: filter(({ auth }) => ({ ownerId: auth.sub })),
+    update: check(({ auth, row }) => row?.ownerId === auth.sub),
+    delete: role("moderator"),
+  }),
+
+  column: model({
+    name: t.string(),
+    position: t.number().default(0).index(),
+    board: t.belongsTo("board", { onDelete: "cascade" }),
+    tasks: t.hasMany("task"),
+  }),
+
+  task: model({
+    title: t.string(),
+    done: t.boolean().default(false),
+    due: t.date().optional(),
+    meta: t.json().optional(),
+    column: t.belongsTo("column").optional(),
+  }),
 });
 ```
 
+One `schema()` call produces the engine's table registry, the SQL migrations
+and the client's types. Fields: `t.string()`, `t.number()`, `t.boolean()`,
+`t.date()` (stored as epoch milliseconds), `t.json()`. Modifiers:
+`.optional()`, `.default(v)`, `.index()`, `.unique()`. Relations:
+`t.belongsTo("model")` owns the foreign key (`board` stores `boardId`);
+`t.hasMany("model")` is its inverse. Every row carries `id` (client-generated,
+time-ordered), `createdAt` and `updatedAt`.
+
+## Reads
+
 ```ts
-// worker.ts — the entire Worker entry
-import { defineTapeDB } from "tapedb/worker";
-import { schema } from "./tapedb.schema";
+import { createClient } from "tapedb";
+import schema from "./tapedb.schema";
 
-const tapedb = defineTapeDB({ schema });
+const db = createClient({ schema, url, workspace, getToken });
 
-export const WorkspaceRoom = tapedb.WorkspaceRoom;
-export default tapedb.worker;
+const open = await db.task.findMany({
+  where: { done: false, due: { lt: Date.now() } },
+  orderBy: { due: "asc" },
+  take: 50,
+  include: { column: { include: { board: true } } },
+});
+
+const one = await db.task.findUnique({ where: { id } });   // row or null
+const total = await db.task.count({ where: { done: false } });
+
+const page = await db.task.findPage({ orderBy: { due: "asc" }, take: 50 });
+// { rows, hasMore, cursor } — pass cursor back as `after`
+```
+
+Everything is typed from the schema: a misspelt field in `where` is a compile
+error, and `include` shapes the result type. Filters take `not`, `in`,
+`notIn`, `gt`, `gte`, `lt`, `lte`, and `AND` / `OR` / `NOT` over whole
+filters. Pagination is keyset, so an insert above the window cannot repeat a
+row.
+
+Building a query validates it against the schema, so an unknown field,
+operator or relation throws there and then, at the call, rather than
+resolving to an error later. Everything the engine decides — permissions, a
+missing row, a conflict — surfaces when you await the query or in a live
+query's `error`.
+
+### Live
+
+The same query object becomes live when you subscribe to it:
+
+```ts
+const stop = db.task
+  .findMany({ where: { done: false }, orderBy: { due: "asc" } })
+  .subscribe(({ data }) => render(data));
 ```
 
 ```tsx
-// client (React)
-import { init, id } from "tapedb/react";
+// React (tapedb/react)
+const { data, isLoading } = useLive(
+  db.task.findMany({ where: { columnId }, orderBy: { position: "asc" } })
+);
 
-const db = init({ workspaceId, apiUrl, schema, getToken });
+const feed = useLivePage(db.task.findPage({ orderBy: { createdAt: "desc" }, take: 50 }));
+// feed.rows, feed.hasMore, feed.loadMore() — loaded pages survive reconnects
 
-const { data, isLoading } = db.useQuery({ boards: { columns: { tasks: {} } } });
+const peers = usePresence(db, "board:" + boardId, { name, color });
+```
 
-await db.transact([
-  db.tx.tasks[taskId].update({ done: true }),
-  db.tx.columns[columnId].link({ tasks: taskId }),
+After a commit, only subscriptions whose query touches a changed model re-run,
+batched at 50 ms, and clients receive row-level diffs. Counts stay live too.
+
+## Writes
+
+```ts
+const { id } = await db.task.create({
+  data: { title: "Ship it", column: { connect: columnId } },
+});
+
+await db.task.update({ where: { id }, data: { done: true } });
+await db.task.upsert({ where: { id }, create: { title: "A" }, update: { title: "B" } });
+await db.task.delete({ where: { id } });
+
+await db.column.update({
+  where: { id: columnId },
+  data: { tasks: { connect: [a, b], disconnect: [c] } },
+});
+
+// Several writes, one log entry, all or nothing
+await db.$transaction([
+  db.task.update({ where: { id: a }, data: { position: 2 } }),
+  db.task.update({ where: { id: b }, data: { position: 1 } }),
 ]);
 ```
 
-### Without React
+`create` fails if the id exists; `update` fails if the row is missing;
+`upsert` chooses inside the engine's transaction, so it cannot race. Writes
+apply optimistically, queue in an IndexedDB outbox while offline, and resolve
+to `{ id, status: "applied" | "queued" }`. A write the engine refuses for
+good during a background flush reaches `onWriteRejected`.
 
-`tapedb` itself is framework-free, with the same socket, cache and outbox:
+Exactly-once: retries are deduplicated by client transaction id, across cold
+starts too. After a restore, keys reach back a bounded window
+(`DEDUPE_HORIZON_SEQ`, 2000 sequence numbers past the snapshot base); a retry
+from further back is refused with `dedupe_expired` — never applied twice.
+
+## Access rules
+
+Each model's actions take one of three decisions:
+
+- `role("member" | "editor" | "moderator" | ...)` — a minimum role, checked
+  before any SQL. Defaults: read `member`, create/update `editor`, delete
+  `moderator`.
+- `filter(({ auth }) => where)` — `read` only. Compiled into the SQL of every
+  query that touches the model, so it uses indexes, fills every page, and
+  counts correctly. An array is OR; the caller's own filter ANDs with it.
+- `check(({ auth, row, data, changed }) => boolean)` — any action, arbitrary
+  TypeScript. Write checks run inside the transaction next to the write they
+  gate. On `read` they run after fetch, bounded by a scan cap of
+  `max(limit * 10, 200)` rows per page — prefer `filter` when visibility can
+  be written as one. A rule that throws denies.
+
+## Migrations
+
+```bash
+# edit tapedb.schema.ts, then
+npx tapedb migrate dev --name add_task_priority
+```
+
+`migrate dev` diffs the schema against `tapedb/schema.snapshot.json` and
+writes the next numbered SQL file — reviewed and committed like any ORM
+migration — plus the bundle `worker.ts` imports. Each workspace's Durable
+Object applies pending migrations on its next wake, one transaction per
+migration.
+
+- A new required field needs `.default(...)` or `.optional()`.
+- Drops need `--accept-data-loss`; renames need `--rename old=new` or
+  `--rename model.old=new`, otherwise they read as a drop plus an add.
+- Type changes rebuild the table; tables other tables reference are refused
+  with an add-copy-drop alternative.
+- Migrations declare what they changed, so recovery can replay log segments
+  and snapshots written under an older schema. Undeclared drift fails closed.
+
+`migrate check` fails CI (or a pre-commit hook) when the schema has changes
+with no migration. `tapedb deploy` refuses to ship a dev configuration or an
+unmigrated schema, then runs `wrangler deploy`.
+
+## Files and presence
 
 ```ts
-import { init } from "tapedb";
+const file = await db.$files.upload(blob, { path: "avatars/me.png" });
+const all = await db.$files.list({ prefix: "avatars/" });
+await db.$files.delete("avatars/me.png");
 
-const db = init({ workspaceId, schema });   // one import, no config
-
-db.subscribeQuery({ boards: {} }, () => {
-  console.log(db.getQueryState({ boards: {} }).data);
-});
-
-await db.transact([db.tx.boards[id()].update({ name: "New" })]);
+const room = db.$presence("board:" + boardId);
+room.set({ name, color });
+room.cursor({ x, y });
+const stop = room.subscribe((peers) => render(peers));
 ```
 
-## What it does
-
-- **Relational queries** in the shape of the result you want, with nested link
-  traversal, compiled to SQL.
-- **Transactions** with `update`, `merge`, `delete`, `link` and `unlink`,
-  idempotent per `clientTxId`, applied inside one SQLite transaction with the
-  log append and the sequence advance.
-- **Cursor pagination**: `$: { limit, order }` returns
-  `pageInfo[ns].nextCursor`; pass it back as `$: { after }`. Keyset, not
-  offset, so an insert above the window cannot repeat a row. On the client,
-  `db.loadMore(query)` appends the next page and widens the live subscription
-  to every loaded row (up to 1000 per namespace), so a reconnect restores the
-  pages instead of resetting to the first.
-- **Live queries** by default: after a commit, only subscriptions whose
-  compiled query touches a changed namespace re-run, batched at 50 ms, and
-  clients receive entity-level diffs.
-- **Offline writes**: optimistic application to the query cache plus an
-  IndexedDB outbox keyed by `clientTxId`, replayed on reconnect.
-- **Durability**: log segments and chunked snapshots to R2, with an idempotent
-  cold-start replay. Verified against a real Worker: rows and the sequence
-  survive deleting the Durable Object's entire SQLite (snapshot plus replayed
-  segment), and the next transaction continues from the right sequence.
-  Recovery rebuilds `_tx_log` from the log segments, so a retried `clientTxId`
-  returns `applied: 0` after a cold start - measured live, including for a
-  transaction that a snapshot had already folded in. A snapshot stores rows and
-  not keys, so covered segments are retained for `DEDUPE_HORIZON_SEQ` (2000
-  sequence numbers) past the snapshot base; beyond that the segment is pruned
-  and the key with it. A retry from further back is refused, never applied
-  twice: the client sends the highest sequence it had seen when it created the
-  write (`basisSeq`), and when the restored database no longer holds keys that
-  far back the engine answers `dedupe_expired` (409) and applies nothing. The
-  client drops the entry and calls `onWriteRejected` so the app can decide.
-- **Presence** and **file uploads** on the same socket and the same bucket set.
-  Uploads write bytes to R2 and a metadata row into the workspace, through the
-  transaction log so a restore keeps it, and
-  `GET /engine/workspaces/:id/files` lists what the workspace contains.
-
-## Architecture
-
-One Durable Object per workspace is the only writer, which is what makes
-transactions serializable without a lock manager. `_tx_log` is the source of
-truth; snapshots are a checkpoint over it.
-
-```
-client ──HTTP /transact──▶ Worker ──claim──▶ WorkspaceRoom (SQLite)
-   ▲                                             │
-   └──WebSocket query:subscribe / presence ◀─────┘
-                                                 │
-                                          R2 DATA (log + snapshots)
-```
+File bytes live in the `FILES` bucket (25 MB cap, member read / editor
+write); their index is written through the transaction log, so a restore
+keeps it. Presence is ephemeral and rides the workspace socket.
 
 ## Claims and identity
 
@@ -153,126 +220,74 @@ stays yours: implement two methods and the library serves the claim route.
 
 ```ts
 import { defineTapeDB, WORKSPACE_ROLE_LEVELS } from "tapedb/worker";
+import schema from "./tapedb.schema";
+import { migrations } from "./tapedb/migrations.gen";
 
 const tapedb = defineTapeDB({
   schema,
+  migrations,
   identity: {
     async getSubject(headers) {
       const session = await auth.api.getSession({ headers });
       return session ? { sub: session.user.id } : null;
     },
     async getRole(workspaceId, sub) {
-      const member = await db.membership(workspaceId, sub);
+      const member = await memberships.get(workspaceId, sub);
       return member ? WORKSPACE_ROLE_LEVELS[member.role] : null;
     },
   },
 });
+
+export const WorkspaceRoom = tapedb.WorkspaceRoom;
+export default tapedb.worker;
 ```
 
-`POST /_tapedb/claim` then returns `{ token, workspaceId, roleLevel, expiresAt }`
-and the client sends it as `Authorization: Bearer <token>`. Claims last five
-minutes and the client renews on reconnect.
+`POST /_tapedb/claim` returns `{ token, workspaceId, roleLevel, expiresAt }`;
+the client sends it as `Authorization: Bearer <token>` and renews on
+reconnect. In development, `tapedb dev` enables a dev claim route so the
+client needs no session at all; `ENVIRONMENT=production` refuses that route,
+and `tapedb deploy` refuses to ship the flag.
 
-Rate limiting is the deployment's call: pass `allowRequest` to `mintClaim`, or
-put the route behind a Cloudflare rate-limit binding.
+## Architecture
 
-## Permissions
+One Durable Object per workspace is the only writer, which is what makes
+transactions serializable without a lock manager. The log is the source of
+truth; snapshots are a checkpoint over it, and the local log is trimmed to
+the same window R2 keeps.
 
-Role levels by default: `view` needs MEMBER, `create`/`update` need EDITOR,
-`delete` needs MODERATOR. Anything finer is a row rule: a predicate that sees
-the caller and the stored row.
-
-```ts
-defineSchema({
-  entities: {
-    documents: { title: { type: "string" }, ownerId: { type: "string" } },
-  },
-  permissions: {
-    documents: {
-      create: ({ auth, next }) => next?.ownerId === auth.sub,
-      update: ({ auth, data }) => data?.ownerId === auth.sub,
-      delete: ({ auth, data }) =>
-        data?.ownerId === auth.sub && auth.role >= WORKSPACE_ROLE_LEVELS.EDITOR,
-    },
-  },
-});
+```
+client ──HTTP /transact──▶ Worker ──claim──▶ WorkspaceRoom (SQLite)
+   ▲                                             │
+   └──WebSocket subscribe / presence ◀───────────┘
+                                                 │
+                                          R2 DATA (log + snapshots)
 ```
 
-Rules run inside the transaction, so `data` is the row being changed, and a
-replayed `clientTxId` is not re-judged. A rule that throws denies: a broken
-rule can never widen access. `update` is an upsert, so an insert must satisfy
-the **create** rule, not the update one.
-
-`view` takes two rule forms. Prefer `where`: it returns a filter for the
-caller, which is compiled into the query's SQL at every level that reads the
-namespace, so it uses indexes and always fills the page.
-
-```ts
-permissions: {
-  documents: { view: { where: (auth) => ({ ownerId: auth.sub }) } },
-  // An array is OR: mine, or anything public.
-  notes: { view: { where: (auth) => [{ ownerId: auth.sub }, { isPublic: true }] } },
-}
-```
-
-The filter uses the same operators as a query's `where`, and it ANDs with the
-caller's own filter, so a client cannot widen it. An unsupported operator is an
-error rather than ignored, and a rule that throws hides every row. Give the
-attribute you filter on `indexed: true`.
-
-When visibility cannot be written as a filter, `view` can be a function:
-
-```ts
-permissions: {
-  documents: { view: ({ auth, data }) => data?.ownerId === auth.sub },
-}
-```
-
-Function rules are arbitrary TypeScript, so they run after the SQL page. The
-engine then keeps scanning (by keyset when the query has an `order`) until the
-page is full, the rows run out, or a cap of `max(limit * 10, 200)` scanned rows
-is reached, so a rule that hides almost everything can return a short page.
-A rule that throws hides the row.
-
-Rules also receive `changed`, the attribute names an op writes, which is how
-one field is gated:
-
-```ts
-update: ({ auth, data, changed }) =>
-  changed?.includes("price") ? data?.ownerId === auth.sub : true
-```
-
-## Releasing
-
-`tapedb` is unscoped, so publishing needs no npm org:
-
-```bash
-npm login
-npm publish --access public
-```
-
-Only a *scoped* release (`@tapedb/*`) needs an org, and orgs are created in the
-web UI at `https://www.npmjs.com/org/create`. There is no `npm org create`
-command; `npm org` only manages members of an existing org.
+Durability is tested by deleting the Durable Object's entire SQLite and
+rebuilding from R2: rows, sequence numbers, idempotency keys and the file
+index all survive, including across schema migrations made since the
+snapshot.
 
 ## Entry points
 
 | import | contains | React |
 | --- | --- | --- |
-| `tapedb` | `defineSchema`, schema builders, `id`, cache and outbox primitives | no |
-| `tapedb/react` | `init`, `useQuery`, `transact`, `storage`, presence | yes, peer |
-| `tapedb/worker` | `defineTapeDB`, the Durable Object class, routing | no |
-| `tapedb/cli` | `init`, `dev`, `studio` | no |
+| `tapedb` | `createClient`, schema builders, `id` | no (zero runtime deps) |
+| `tapedb/schema` | `schema`, `model`, `t`, `role`, `filter`, `check` | no |
+| `tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer |
+| `tapedb/worker` | `defineTapeDB`, the Durable Object class | no |
+| `tapedb/cli` | `init`, `migrate`, `dev`, `studio`, `deploy` | no |
 
 ## Status
 
-`0.0.1`, extracted from a production application. The engine, the client and
-the claim path are exercised by 166 tests, including the upstream engine suite
-and a headless client run against a live Worker. Live `wrangler dev` runs cover
-init, mint, transact, idempotent replay, nested query, cursor pagination,
-upload and listing, and every auth refusal.
+`0.1.0` is the first release with the surface this README documents: models,
+typed queries, committed migrations. The engine is tested hard — 314 tests,
+durability drills that wipe a Durable Object's SQLite and replay from R2, and
+end-to-end runs of the packed tarball against `wrangler dev`.
 
-Remaining gaps and their trade-offs are tracked in [SCOPE.md](./SCOPE.md).
+Pre-1.0, so the API can still move; breaking changes will be listed in
+[CHANGELOG.md](./CHANGELOG.md). Known trade-offs are in
+[SCOPE.md](./SCOPE.md).
 
 ## License
 
