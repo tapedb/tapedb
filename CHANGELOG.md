@@ -91,6 +91,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `npx tapedb` did nothing. The CLI runs only when it is the entry point, and
+  compared `process.argv[1]` with `import.meta.url` without resolving
+  symlinks; npx runs it through the `node_modules/.bin` link, so the two never
+  matched under Node. They are compared after `realpath` now.
+
 - A schema change no longer stops every existing workspace from booting.
   Every change used to regenerate the single `0002_entities` migration; its
   checksum then mismatched what workspaces had recorded and they refused to
