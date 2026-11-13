@@ -104,6 +104,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- File uploads work under `tapedb dev`. `db.$files` demanded an explicit
+  `getToken` and threw without one, so uploads were the only part of the
+  client that could not run against the dev claim route that serves every
+  read and write.
+
 - A failed upload no longer leaves an orphan in R2. When the bytes are stored
   but the index row cannot be written, the Worker deletes the object before
   answering 502, so nothing unlisted is left behind.

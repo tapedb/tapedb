@@ -351,3 +351,36 @@ describe("live reads", () => {
     expect(counts.slice(-2)).toEqual([4, 5]);
   });
 });
+
+describe("storage without getToken", () => {
+  test("uploads through the dev claim route, as `tapedb dev` serves it", async () => {
+    // Reads and writes already worked with no getToken; uploads asked for one
+    // and threw, so files were the one feature `tapedb dev` could not run.
+    const realFetch = globalThis.fetch;
+    const claims: string[] = [];
+    const authorizations: Array<string | null> = [];
+    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith("/_tapedb/claim")) {
+        claims.push(url);
+        return Response.json({ token: "dev-token" });
+      }
+      authorizations.push(new Headers(init?.headers).get("authorization"));
+      return Response.json({ id: "f1", key: "k", size: 3, etag: "e", contentType: "text/plain" }, { status: 201 });
+    }) as typeof fetch;
+
+    try {
+      const db = createClient(
+        { schema: appSchema, url: "http://engine.test", workspace: WORKSPACE },
+        { outbox: new MemoryOutbox(), createWebSocket: () => { throw new Error("no socket"); } }
+      );
+      const uploaded = await db.$files.upload(new Blob(["abc"], { type: "text/plain" }), { path: "a/b.txt" });
+      expect(uploaded).toMatchObject({ id: "f1" });
+      expect(claims).toHaveLength(1);
+      expect(authorizations).toEqual(["Bearer dev-token"]);
+      db.$close();
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+});
