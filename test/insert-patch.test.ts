@@ -113,6 +113,45 @@ describe("patch", () => {
   });
 });
 
+describe("upsert", () => {
+  const upsert = (title: string, createTitle: string) => ({
+    op: "upsert",
+    namespace: "tasks",
+    id: "t1",
+    values: { title },
+    create: { title: createTitle, done: false },
+  });
+
+  test("creates from create when missing, writes values when present", () => {
+    const sql = setup();
+    write(sql, [upsert("updated", "created")]);
+    expect(row(sql, "t1")).toEqual({ title: "created", done: 0 });
+
+    write(sql, [upsert("updated", "created again")]);
+    expect(row(sql, "t1")).toEqual({ title: "updated", done: 0 });
+  });
+
+  test("a create rule judges the create values, an update rule the values", () => {
+    const sql = setup({
+      tasks: {
+        create: ({ next }) => next?.title === "allowed",
+        update: ({ next }) => next?.title !== "forbidden",
+      },
+    });
+    expect(() => write(sql, [upsert("x", "nope")])).toThrow(/Row rule denied create/);
+    write(sql, [upsert("x", "allowed")]);
+    expect(() => write(sql, [upsert("forbidden", "allowed")])).toThrow(/Row rule denied update/);
+    expect(row(sql, "t1")?.title).toBe("allowed");
+  });
+
+  test("requires both value sets", () => {
+    const sql = setup();
+    expect(() =>
+      write(sql, [{ op: "upsert", namespace: "tasks", id: "t1", values: { title: "x" } }])
+    ).toThrow(/values must be a plain object/);
+  });
+});
+
 describe("replay", () => {
   test("re-applies an insert over its own row and skips a patch of a vanished one", () => {
     const sql = setup();

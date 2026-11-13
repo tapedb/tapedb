@@ -31,6 +31,7 @@ const ENGINE_MANAGED_ATTRIBUTES = new Set(["createdAt", "updatedAt"]);
 const OP_KINDS = new Set<TxOpKind>([
   "insert",
   "patch",
+  "upsert",
   "update",
   "merge",
   "link",
@@ -39,11 +40,13 @@ const OP_KINDS = new Set<TxOpKind>([
 ]);
 
 export interface ValidatedValuesOp {
-  kind: "insert" | "patch" | "update" | "merge";
+  kind: "insert" | "patch" | "upsert" | "update" | "merge";
   namespace: string;
   id: string;
   /** Values keyed by SQLite column name. */
   values: Record<string, SqlValue>;
+  /** `upsert` only: the values for the row when it does not exist yet. */
+  createValues?: Record<string, SqlValue>;
 }
 
 export interface ValidatedDeleteOp {
@@ -194,6 +197,14 @@ function validateOp(value: unknown, context: ValidationContext): ValidatedOp {
         namespace: namespaceName,
         id,
         values: validateValues(namespace, value.values, context),
+      };
+    case "upsert":
+      return {
+        kind: "upsert",
+        namespace: namespaceName,
+        id,
+        values: validateValues(namespace, value.values, context),
+        createValues: validateValues(namespace, value.create, context),
       };
     case "delete":
       return { kind: "delete", namespace: namespaceName, id };

@@ -106,6 +106,7 @@ export function applyOptimisticOps(
     if (op.op === "link" || op.op === "unlink" || op.op === "delete") continue;
     pendingValues.set(op.id, {
       ...(pendingValues.get(op.id) ?? {}),
+      ...(op.op === "upsert" ? op.create : {}),
       ...op.values,
     });
   }
@@ -128,6 +129,16 @@ export function applyOptimisticOp(
     case "update":
     case "merge":
       applyValues(data, op.namespace, op.id, op.values);
+      return data;
+    case "upsert":
+      // The cache decides the same way the engine will: a row it already
+      // holds gets `values`, an unknown one is created from `create`.
+      applyValues(
+        data,
+        op.namespace,
+        op.id,
+        findEntity(data, op.id) === undefined ? op.create : op.values
+      );
       return data;
     case "delete":
       removeEntity(data, op.namespace, op.id);

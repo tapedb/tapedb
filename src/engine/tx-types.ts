@@ -13,6 +13,7 @@
 export type TxOpKind =
   | "insert"
   | "patch"
+  | "upsert"
   | "update"
   | "merge"
   | "link"
@@ -46,6 +47,16 @@ export interface TxUpdateOp extends TxOpBase {
 }
 
 /** Same as `update`: an upsert of the supplied attributes. Kept for old clients. */
+/**
+ * Creates the row from `create` when it is missing, otherwise writes `values`.
+ * The engine decides inside the transaction, so the choice cannot race.
+ */
+export interface TxUpsertOp extends TxOpBase {
+  op: "upsert";
+  values: Record<string, unknown>;
+  create: Record<string, unknown>;
+}
+
 export interface TxMergeOp extends TxOpBase {
   op: "merge";
   values: Record<string, unknown>;
@@ -74,6 +85,7 @@ export interface TxDeleteOp extends TxOpBase {
 export type TxOp =
   | TxInsertOp
   | TxPatchOp
+  | TxUpsertOp
   | TxUpdateOp
   | TxMergeOp
   | TxLinkOp
