@@ -568,11 +568,13 @@ describe("recoverWorkspace", () => {
 
     expect(scalar(target.db, `SELECT high_water_seq FROM "_tx_state"`)).toBe(3);
 
-    // Recovery drops the local transaction log on purpose: the durable copy is
-    // the R2 segments, and a stale local row could hand out a seq that already
-    // exists. Consequence, verified live: clientTxId dedupe covers only the
-    // window since the last cold start, not all history.
-    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(0);
+    // The replayed lines are written back into `_tx_log`, so the idempotency
+    // keys survive the cold start for as long as the segments are retained.
+    // Seq 1 is inside the snapshot base and is therefore not replayed.
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(2);
+    expect(
+      scalar(target.db, `SELECT GROUP_CONCAT(seq) FROM (SELECT seq FROM "_tx_log" ORDER BY seq)`)
+    ).toBe("2,3");
     expect(scalar(target.db, `SELECT last_seq FROM "_flush_state"`)).toBe(3);
     expect(scalar(target.db, `SELECT base_seq FROM "_snapshot_state"`)).toBe(1);
 
@@ -585,6 +587,65 @@ describe("recoverWorkspace", () => {
       { force: true, now: NOW + 30 }
     );
     expect(entityRows(target.db)).toEqual(entityRows(source.db));
+  });
+
+  test("keeps clientTxId dedupe across a cold start", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+
+    const ops = [
+      {
+        op: "update",
+        namespace: "folders",
+        id: "f-dedupe",
+        values: { name: "Once" },
+      },
+    ];
+
+    const first = run(source, { txId: "t1", clientTxId: "client-1", ops } as TxEnvelope);
+    expect(first).toMatchObject({ applied: 1 });
+
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+
+    // Cold start into an empty database: everything comes from R2.
+    const target = createSource();
+    await recoverWorkspace(
+      bucket as unknown as R2Bucket,
+      recoveryExecutor(target.db, target.sql),
+      TEST_WORKSPACE,
+      { now: NOW + 20 }
+    );
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(1);
+
+    // The client never saw the acknowledgement and retries after the eviction.
+    const retry = run(target, {
+      txId: "t2",
+      clientTxId: "client-1",
+      ops,
+    } as TxEnvelope);
+    expect(retry).toMatchObject({ applied: 0 });
+    expect(scalar(target.db, `SELECT name FROM "folders" WHERE "id" = 'f-dedupe'`)).toBe(
+      "Once"
+    );
+
+    // Reusing the key for different ops is still refused after recovery.
+    expect(() =>
+      run(target, {
+        txId: "t3",
+        clientTxId: "client-1",
+        ops: [
+          {
+            op: "update",
+            namespace: "folders",
+            id: "f-dedupe",
+            values: { name: "Changed" },
+          },
+        ],
+      } as TxEnvelope)
+    ).toThrow(/already used with different ops/);
   });
 
   test("is idempotent when recovery is repeated", async () => {

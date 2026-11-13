@@ -29,6 +29,7 @@ import {
   toSnakeCase,
 } from "../registry";
 import { applyOps, quoteIdentifier } from "../tx-apply";
+import { opsHash, stableStringify } from "../tx-hash";
 import type {
   SqlExecutor as TxSqlExecutor,
   SqlRow as TxSqlRow,
@@ -78,6 +79,11 @@ interface LogLine {
   seq: number;
   at: number;
   ops: unknown[];
+  /** The idempotency key. Present when the client supplied one. */
+  clientTxId?: string;
+  userId?: string | null;
+  role?: number | null;
+  schemaVersion?: string;
 }
 
 interface LogSegmentRef {
@@ -626,7 +632,26 @@ function parseLogLines(text: string, source: string): LogLine[] {
       throw new Error(`Log line in ${source} at line ${index + 1} has no ops.`);
     }
 
-    lines.push({ seq, at, ops });
+    // The segment carries the idempotency key and attribution too. Keeping
+    // them is what lets recovery rebuild `_tx_log` faithfully instead of
+    // forgetting every transaction it just restored.
+    const clientTxId = parsed.clientTxId;
+    const userId = parsed.userId;
+    const role = parsed.role;
+    const schemaVersion = parsed.schemaVersion;
+
+    lines.push({
+      seq,
+      at,
+      ops,
+      ...(typeof clientTxId === "string" && clientTxId.length > 0
+        ? { clientTxId }
+        : {}),
+      userId: typeof userId === "string" ? userId : null,
+      role: typeof role === "number" ? role : null,
+      schemaVersion:
+        typeof schemaVersion === "string" ? schemaVersion : "unknown",
+    });
   }
 
   return lines;
@@ -705,6 +730,12 @@ function replayLine(
   const touched = new Set<string>();
   let applied = false;
 
+  // Rebuild the local log as we replay, so `clientTxId` dedupe survives the
+  // cold start for as long as the segments are retained. Without this the
+  // engine forgets every transaction it just restored, and a client retrying
+  // across an eviction re-applies its write.
+  recordReplayedLine(sql, line);
+
   for (const op of tx.ops) {
     const target = targetFor(op);
     const key = `${target.table}:${target.id}`;
@@ -728,6 +759,32 @@ function replayLine(
   }
 
   return applied;
+}
+
+/**
+ * Writes one replayed segment line back into `_tx_log`.
+ *
+ * `ops_hash` is recomputed rather than carried in the segment: the segment
+ * stores the ops themselves, and the hash is a canonical function of them, so
+ * recomputing keeps the idempotency check byte-identical to the original
+ * insert.
+ */
+function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
+  const ops = line.ops as readonly unknown[];
+
+  sql.exec(
+    `INSERT OR IGNORE INTO "_tx_log"
+       (seq, client_tx_id, ops, ops_hash, user_id, role, at, schema_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    line.seq,
+    line.clientTxId ?? null,
+    stableStringify(ops),
+    opsHash(ops),
+    line.userId ?? null,
+    line.role ?? null,
+    line.at,
+    line.schemaVersion ?? "unknown"
+  );
 }
 
 async function replayLogs(
@@ -784,12 +841,6 @@ function writeFinalState(
   maxReplayedSeq: number,
   now: number
 ): void {
-  // The flushed log segments in R2 are the durable copy. Local `_tx_log` rows
-  // are either already covered by the snapshot/segments or fall inside the
-  // documented RPO window. Drop them so a stale seq cannot collide with the
-  // next transaction after recovery.
-  sql.exec(`DELETE FROM "_tx_log"`);
-
   const highWater = Math.max(manifest.logSeq, maxReplayedSeq);
 
   sql.exec(
@@ -874,6 +925,11 @@ export async function recoverWorkspace(
   markRunning(sql, now);
 
   try {
+    // Drop any stale log rows before replaying. The replay below rebuilds
+    // `_tx_log` from the durable segments, so a row here belongs to a database
+    // that is about to be replaced.
+    sql.exec(`DELETE FROM "_tx_log"`);
+
     // Foreign keys are disabled for the restore so chunk order cannot break
     // self-references; `PRAGMA foreign_key_check` below is the safety net.
     // When the pragma cannot change (for example inside an outer transaction)
