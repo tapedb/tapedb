@@ -6,7 +6,7 @@ import {
   type ManifestTable,
 } from "../r2-keys";
 import { deleteR2Keys, listAllR2 } from "../r2-list";
-import { namespaceTables } from "../registry";
+import { ENGINE_TABLES, namespaceTables } from "../registry";
 import { readFlushState } from "./flusher";
 import {
   commitManifest,
@@ -396,7 +396,9 @@ export async function snapshotWorkspace(
     let totalBytes = 0;
     let totalChunks = 0;
 
-    for (const table of namespaceTables()) {
+    // The file index is part of the workspace's state like any table: without
+    // it a restore keeps only files written after the snapshot.
+    for (const table of [...namespaceTables(), ENGINE_TABLES.files]) {
       const snapshot = await snapshotTable(
         bucket,
         sql,

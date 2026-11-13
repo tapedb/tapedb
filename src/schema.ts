@@ -19,7 +19,11 @@ import type {
   NamespaceDefinition,
   RegistryDefinition,
 } from "./engine/registry";
-import type { BundledWorkspaceMigration } from "./engine/migrations-bundle";
+import {
+  BASELINE_MIGRATION_ID,
+  ENGINE_MIGRATIONS,
+  type BundledWorkspaceMigration,
+} from "./engine/migrations-bundle";
 import { assertDecisionShape } from "./engine/permission-shape";
 import type {
   PermissionConfig,
@@ -60,6 +64,11 @@ export interface TapeDBSchema {
  * Engine bookkeeping tables. Copied verbatim from the engine's baseline
  * migration: the transaction pipeline, flusher and recovery all depend on
  * these exact names and columns.
+ *
+ * FROZEN. Deployed workspaces recorded this text's checksum when they applied
+ * 0001_baseline and refuse to boot if it changes. Engine schema changes go in
+ * ENGINE_MIGRATIONS instead; that is why the file table is created here under
+ * its old name and renamed by tapedb_0002_files_table.
  */
 const ENGINE_TABLE_DDL = `
 CREATE TABLE IF NOT EXISTS "_migrations" (
@@ -109,7 +118,7 @@ CREATE TABLE IF NOT EXISTS "_engine_meta" (
   value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS "${ENGINE_TABLES.files}" (
+CREATE TABLE IF NOT EXISTS "$files" (
   id TEXT PRIMARY KEY NOT NULL,
   path TEXT NOT NULL UNIQUE,
   r2_key TEXT NOT NULL,
@@ -252,7 +261,8 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
   }
 
   const migrations: BundledWorkspaceMigration[] = [
-    { id: "0001_baseline", sql: ENGINE_TABLE_DDL.trim() },
+    { id: BASELINE_MIGRATION_ID, sql: ENGINE_TABLE_DDL.trim() },
+    ...ENGINE_MIGRATIONS,
     {
       id: "0002_entities",
       sql: entityStatements.join("\n\n"),

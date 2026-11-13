@@ -1,3 +1,4 @@
+import { ENGINE_MIGRATIONS } from "../../src/engine/migrations-bundle";
 import { readdirSync, readFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 
@@ -44,11 +45,15 @@ const MIGRATIONS_DIR = new URL(
 );
 
 /** Apply every workspace migration in order so 0002+ needs no test changes. */
-const SCHEMA_SQL = readdirSync(MIGRATIONS_DIR)
-  .filter((file) => file.endsWith(".sql"))
-  .sort()
-  .map((file) => readFileSync(new URL(file, MIGRATIONS_DIR), "utf8"))
-  .join("\n");
+const SCHEMA_SQL = [
+  ...readdirSync(MIGRATIONS_DIR)
+    .filter((file) => file.endsWith(".sql"))
+    .sort()
+    .map((file) => readFileSync(new URL(file, MIGRATIONS_DIR), "utf8")),
+  // The engine track runs after the baseline; the fixture's app migrations
+  // never touch the tables it changes, so appending it is equivalent.
+  ...ENGINE_MIGRATIONS.map((migration) => migration.sql),
+].join("\n");
 
 export function openTestDb(): { db: Database; sql: SqlExecutor } {
   const db = new Database(":memory:");

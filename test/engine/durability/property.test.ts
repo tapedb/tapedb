@@ -516,7 +516,7 @@ function generateStream(seed: number): GeneratedStream {
 function entityRows(db: Database): Record<string, Record<string, unknown>[]> {
   const result: Record<string, Record<string, unknown>[]> = {};
 
-  for (const table of [...namespaceTables(), "$files"]) {
+  for (const table of [...namespaceTables(), "_files"]) {
     result[table] = db
       .query(`SELECT * FROM "${table}" ORDER BY "id"`)
       .all() as Record<string, unknown>[];

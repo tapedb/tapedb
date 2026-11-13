@@ -804,7 +804,8 @@ async function replayLogs(
   txSql: TxSqlExecutor,
   workspaceId: string,
   baseSeq: number,
-  logSeq: number
+  logSeq: number,
+  snapshotHasFiles: boolean
 ): Promise<{ replayed: number; maxSeq: number }> {
   const segments = await listLogSegments(bucket, workspaceId);
   let replayed = 0;
@@ -842,6 +843,12 @@ async function replayLogs(
         // them, so this line is the only copy left.
         if (line.seq <= baseSeq) {
           recordReplayedLine(sql, line);
+          // Snapshots taken before the file index was snapshotted do not
+          // hold it, so the segments are its only copy below the base. File
+          // ops are last-writer-wins on path, so applying them is safe.
+          if (!snapshotHasFiles && isFileOpList(line.ops)) {
+            applyFileOps(txSql, line.ops, line.at);
+          }
           continue;
         }
 
@@ -957,12 +964,12 @@ export async function recoverWorkspace(
     return { recovered: false, reason: "no_manifest" };
   }
 
-  const manifest = stored.manifest;
-  if (manifest.workspaceId !== workspaceId) {
+  if (stored.manifest.workspaceId !== workspaceId) {
     throw new Error(
-      `Manifest for workspace ${manifest.workspaceId} cannot restore ${workspaceId}.`
+      `Manifest for workspace ${stored.manifest.workspaceId} cannot restore ${workspaceId}.`
     );
   }
+  const manifest = stored.manifest;
   validateManifestTables(manifest);
 
   markRunning(sql, now);
@@ -1002,7 +1009,8 @@ export async function recoverWorkspace(
       txSql,
       workspaceId,
       manifest.baseSeq,
-      manifest.logSeq
+      manifest.logSeq,
+      manifest.tables.some((table) => table.name === ENGINE_TABLES.files)
     );
 
     // Bookkeeping and the success marker commit together so the workspace can
