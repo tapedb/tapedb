@@ -93,7 +93,10 @@ export function runTransaction(
     // this point sees ordinary ops: the row rules judge each row, the log
     // records which rows were written, and a replay writes those same rows.
     const expanded = expandBulkOps(sql, claim, tx.txId, tx.rawOps, tx.ops);
-    const matched = Object.keys(expanded.matched).length > 0 ? { matched: expanded.matched } : {};
+    const matched = {
+      ...(Object.keys(expanded.matched).length > 0 ? { matched: expanded.matched } : {}),
+      ...(Object.keys(expanded.more).length > 0 ? { more: expanded.more } : {}),
+    };
 
     if (expanded.ops.length === 0) {
       // A no-op is still a completed request: preserve its idempotency key so

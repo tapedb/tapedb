@@ -59,6 +59,8 @@ export interface ValidatedBulkOp {
   where: Record<string, unknown>;
   /** `patchMany` only: values keyed by SQLite column name. */
   values?: Record<string, SqlValue>;
+  /** Resume after this id. */
+  after?: string;
 }
 
 export interface ValidatedDeleteOp {
@@ -198,10 +200,14 @@ function validateOp(value: unknown, context: ValidationContext): ValidatedOp {
     if (!isPlainObject(value.where)) {
       throw invalidOp(`"${opKind}" needs a "where" object.`, context);
     }
+    if (value.after !== undefined && (typeof value.after !== "string" || !ID_PATTERN.test(value.after))) {
+      throw invalidOp(`"${opKind}" "after" must be a row id.`, context);
+    }
     return {
       kind: opKind,
       namespace: namespaceName,
       where: value.where,
+      ...(value.after !== undefined ? { after: value.after } : {}),
       ...(opKind === "patchMany"
         ? { values: validateValues(namespace, value.values, context) }
         : {}),
