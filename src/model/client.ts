@@ -39,6 +39,7 @@ import type {
   Include,
   ModelInfo,
   Models,
+  RelationInfo,
   OrderBy,
   Row,
   Schema,
@@ -99,18 +100,18 @@ export interface ModelClient<M extends Models, F extends Fields> {
   findPage<A extends PageArgs<M, F> = PageArgs<M, F>>(args?: A): PageQuery<Result<M, F, A>>;
   count(args?: { where?: Where<F, M> }): Query<number>;
 
-  create(args: { data: CreateData<F> }): Write;
+  create(args: { data: CreateData<F, M> }): Write;
   /**
    * Writes every row matching `where`, up to 1000. Sent straight to the
    * engine, which resolves the rows: unlike single-row writes it is not
    * applied optimistically and not queued offline, because which rows match
    * is the engine's answer, not the cache's.
    */
-  updateMany(args: { where: Where<F, M>; data: UpdateData<F> }): Promise<BulkResult>;
+  updateMany(args: { where: Where<F, M>; data: UpdateData<F, M> }): Promise<BulkResult>;
   /** Deletes every row matching `where`, up to 1000. Sent like `updateMany`. */
   deleteMany(args: { where: Where<F, M> }): Promise<BulkResult>;
-  update(args: { where: { id: string }; data: UpdateData<F> }): Write;
-  upsert(args: { where: { id: string }; create: CreateData<F>; update: UpdateData<F> }): Write;
+  update(args: { where: { id: string }; data: UpdateData<F, M> }): Write;
+  upsert(args: { where: { id: string }; create: CreateData<F, M>; update: UpdateData<F, M> }): Write;
   delete(args: { where: { id: string } }): Write;
 }
 
@@ -267,14 +268,50 @@ function inputValue(model: ModelInfo, field: string, value: unknown): unknown {
 }
 
 /** Splits write data into column values and the link ops for hasMany relations. */
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** How deep `create` may nest. Past this a schema is better written as several writes. */
+const MAX_NESTED_CREATE_DEPTH = 3;
+
+interface SplitResult {
+  values: Record<string, unknown>;
+  /** Rows this one points at: inserted before it, so its key resolves. */
+  before: TxOp[];
+  /** Rows that point at this one, and link ops: applied after it exists. */
+  after: TxOp[];
+}
+
 function splitData(
+  graph: Record<string, ModelInfo>,
   model: ModelInfo,
   rowId: string,
   data: Record<string, unknown>,
-  allowLinks: boolean
-): { values: Record<string, unknown>; links: TxOp[] } {
+  allowLinks: boolean,
+  depth = 0
+): SplitResult {
   const values: Record<string, unknown> = {};
-  const links: TxOp[] = [];
+  const before: TxOp[] = [];
+  const after: TxOp[] = [];
+
+  /** Expands a nested `create` into its own insert, recursively. */
+  const nested = (relation: RelationInfo, input: Record<string, unknown>): string => {
+    if (depth >= MAX_NESTED_CREATE_DEPTH) {
+      throw new Error(
+        `"${model.key}": nested create may go at most ${MAX_NESTED_CREATE_DEPTH} levels deep.`
+      );
+    }
+    const target = graph[relation.target];
+    const id = typeof input.id === "string" ? input.id : newId();
+    const child = splitData(graph, target, id, input, true, depth + 1);
+    const childValues = withDefaults(target, child.values);
+
+    before.push(...child.before);
+    before.push({ op: "insert", namespace: target.key, id, values: childValues });
+    after.push(...child.after);
+    return id;
+  };
 
   for (const [key, value] of Object.entries(data)) {
     if (value === undefined || key === "id") continue;
@@ -292,28 +329,61 @@ function splitData(
       throw new Error(`"${model.key}" has no field "${key}".`);
     }
     if (relation.kind === "belongsTo") {
+      const create = (value as { create?: unknown } | null)?.create;
       if (value === null || (value as { disconnect?: unknown }).disconnect === true) {
         values[relation.foreignKey!] = null;
       } else if (typeof (value as { connect?: unknown }).connect === "string") {
         values[relation.foreignKey!] = (value as { connect: string }).connect;
+      } else if (isRecord(create)) {
+        if (!allowLinks) {
+          throw new Error(`"${model.key}.${key}": upsert cannot create related rows.`);
+        }
+        // The parent is inserted first, so this row's key points at a row
+        // that exists by the time it is written.
+        values[relation.foreignKey!] = nested(relation, create as Record<string, unknown>);
       } else {
-        throw new Error(`"${model.key}.${key}" takes { connect: id }, { disconnect: true } or null.`);
+        throw new Error(
+          `"${model.key}.${key}" takes { connect: id }, { create: {...} }, { disconnect: true } or null.`
+        );
       }
       continue;
     }
     if (!allowLinks) {
       throw new Error(`"${model.key}.${key}": connect children with create or update, not upsert.`);
     }
-    const { connect = [], disconnect = [] } = value as { connect?: string[]; disconnect?: string[] };
+    const {
+      connect = [],
+      disconnect = [],
+      create = [],
+    } = value as { connect?: string[]; disconnect?: string[]; create?: Record<string, unknown>[] };
+    for (const child of Array.isArray(create) ? create : [create]) {
+      if (!isRecord(child)) {
+        throw new Error(`"${model.key}.${key}.create" takes a row, or an array of rows.`);
+      }
+      // Children carry this row's key, so they are written after it exists.
+      const childOps: TxOp[] = [];
+      const target = graph[relation.target];
+      const id = typeof child.id === "string" ? child.id : newId();
+      const split = splitData(graph, target, id, child, true, depth + 1);
+      if (depth >= MAX_NESTED_CREATE_DEPTH) {
+        throw new Error(
+          `"${model.key}": nested create may go at most ${MAX_NESTED_CREATE_DEPTH} levels deep.`
+        );
+      }
+      const childValues = withDefaults(target, split.values);
+      childValues[relation.foreignKey!] = rowId;
+      childOps.push(...split.before, { op: "insert", namespace: target.key, id, values: childValues }, ...split.after);
+      after.push(...childOps);
+    }
     for (const targetId of connect) {
-      links.push({ op: "link", namespace: model.key, id: rowId, link: relation.link, targetId });
+      after.push({ op: "link", namespace: model.key, id: rowId, link: relation.link, targetId });
     }
     for (const targetId of disconnect) {
-      links.push({ op: "unlink", namespace: model.key, id: rowId, link: relation.link, targetId });
+      after.push({ op: "unlink", namespace: model.key, id: rowId, link: relation.link, targetId });
     }
   }
 
-  return { values, links };
+  return { values, before, after };
 }
 
 function withDefaults(model: ModelInfo, values: Record<string, unknown>): Record<string, unknown> {
@@ -380,22 +450,42 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
 
     create: ({ data }: { data: Record<string, unknown> }) => {
       const rowId = typeof (data as { id?: unknown }).id === "string" ? (data as { id: string }).id : newId();
-      const { values, links } = splitData(model, rowId, data as Record<string, unknown>, true);
+      const { values, before, after } = splitData(
+        runtime.graph,
+        model,
+        rowId,
+        data as Record<string, unknown>,
+        true
+      );
       return new Write(
         runtime,
-        [{ op: "insert", namespace: model.key, id: rowId, values: withDefaults(model, values) }, ...links],
+        [
+          ...before,
+          { op: "insert", namespace: model.key, id: rowId, values: withDefaults(model, values) },
+          ...after,
+        ],
         rowId
       );
     },
     update: ({ where, data }: { where: { id?: unknown }; data: Record<string, unknown> }) => {
       const rowId = requireId(model, where);
-      const { values, links } = splitData(model, rowId, data as Record<string, unknown>, true);
-      return new Write(runtime, [{ op: "patch", namespace: model.key, id: rowId, values }, ...links], rowId);
+      const { values, before, after } = splitData(
+        runtime.graph,
+        model,
+        rowId,
+        data as Record<string, unknown>,
+        true
+      );
+      return new Write(
+        runtime,
+        [...before, { op: "patch", namespace: model.key, id: rowId, values }, ...after],
+        rowId
+      );
     },
     upsert: ({ where, create, update }: { where: { id?: unknown }; create: Record<string, unknown>; update: Record<string, unknown> }) => {
       const rowId = requireId(model, where);
-      const created = splitData(model, rowId, create as Record<string, unknown>, false);
-      const updated = splitData(model, rowId, update as Record<string, unknown>, false);
+      const created = splitData(runtime.graph, model, rowId, create as Record<string, unknown>, false);
+      const updated = splitData(runtime.graph, model, rowId, update as Record<string, unknown>, false);
       return new Write(
         runtime,
         [
@@ -416,8 +506,8 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
     },
 
     updateMany: async ({ where, data }: { where: unknown; data: Record<string, unknown> }) => {
-      const { values, links } = splitData(model, "", data, false);
-      if (links.length > 0) {
+      const { values, after } = splitData(runtime.graph, model, "", data, false);
+      if (after.length > 0) {
         throw new Error(`"${model.key}.updateMany" cannot connect or disconnect relations.`);
       }
       return runtime.impl.bulk({

@@ -386,3 +386,79 @@ describe("storage without getToken", () => {
     }
   });
 });
+
+describe("nested create", () => {
+  test("creates children with the parent, in one transaction", async () => {
+    const db = client();
+    const created = await db.board.create({
+      data: {
+        name: "Nested",
+        ownerId: "alice",
+        columns: {
+          create: [
+            { name: "Todo", position: 1, tasks: { create: [{ title: "first" }, { title: "second" }] } },
+            { name: "Doing", position: 2 },
+          ],
+        },
+      },
+    });
+
+    const board = await db.board.findUnique({
+      where: { id: created.id },
+      include: { columns: { orderBy: { position: "asc" }, include: { tasks: { orderBy: { title: "asc" } } } } },
+    });
+    expect(board?.columns.map((column) => column.name)).toEqual(["Todo", "Doing"]);
+    expect(board?.columns[0].tasks.map((task) => task.title)).toEqual(["first", "second"]);
+    expect(board?.columns[1].tasks).toEqual([]);
+    // Defaults still apply to rows created this way.
+    expect(board?.columns[0].tasks[0].done).toBe(false);
+  });
+
+  test("creates the row a new row points at, before it", async () => {
+    const db = client();
+    const column = await db.column.create({
+      data: { name: "Solo", position: 1, board: { create: { name: "Made for it", ownerId: "alice" } } },
+    });
+
+    const row = await db.column.findUnique({ where: { id: column.id }, include: { board: true } });
+    expect(row?.board.name).toBe("Made for it");
+  });
+
+  test("adds children to a row that already exists", async () => {
+    const db = client();
+    const board = await db.board.create({ data: { name: "Later", ownerId: "alice" } });
+    await db.board.update({ where: { id: board.id }, data: { columns: { create: { name: "Added", position: 9 } } } });
+
+    const row = await db.board.findUnique({ where: { id: board.id }, include: { columns: true } });
+    expect(row?.columns.map((column) => column.name)).toEqual(["Added"]);
+  });
+
+  test("one failure rolls the whole tree back", async () => {
+    const db = client();
+    await expect(
+      db.board
+        .create({
+          data: {
+            id: "rollback",
+            name: "Doomed",
+            ownerId: "alice",
+            columns: { create: [{ id: "dup", name: "One", position: 1 }, { id: "dup", name: "Two", position: 2 }] },
+          },
+        })
+        .then()
+    ).rejects.toThrow(/already exists/);
+    expect(await db.board.findUnique({ where: { id: "rollback" } })).toBeNull();
+    expect(await db.column.findUnique({ where: { id: "dup" } })).toBeNull();
+  });
+
+  test("upsert cannot create related rows", () => {
+    const db = client();
+    expect(() =>
+      db.task.upsert({
+        where: { id: "x" },
+        create: { title: "a", column: { create: { name: "no", position: 1 } } as never },
+        update: { title: "b" },
+      })
+    ).toThrow(/cannot create related rows/);
+  });
+});

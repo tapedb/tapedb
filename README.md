@@ -170,6 +170,23 @@ starts too. After a restore, keys reach back a bounded window
 (`DEDUPE_HORIZON_SEQ`, 2000 sequence numbers past the snapshot base); a retry
 from further back is refused with `dedupe_expired` — never applied twice.
 
+Related rows can be created with the row that needs them:
+
+```ts
+await db.board.create({
+  data: {
+    name: "Launch",
+    columns: { create: [{ name: "Todo", position: 1, tasks: { create: { title: "Ship" } } }] },
+  },
+});
+
+await db.column.create({ data: { name: "Solo", board: { create: { name: "New board" } } } });
+```
+
+It is one transaction, ordered so each row exists before anything points at
+it, and one failure rolls the whole tree back. The types follow one level;
+deeper nesting is checked by the engine.
+
 ### Writing many rows
 
 ```ts

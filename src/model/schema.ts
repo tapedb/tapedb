@@ -170,7 +170,29 @@ type RequiredScalarKeys<F> = {
 }[ScalarKeys<F>];
 type OptionalScalarKeys<F> = Exclude<ScalarKeys<F>, RequiredScalarKeys<F>>;
 
-type BelongsToInput = { connect: string } | { disconnect: true } | null;
+/**
+ * Rows a write may create alongside the row it addresses.
+ *
+ * Typed one level deep, for the same reason relation filters are: resolving
+ * the model graph into itself for every key exhausts the type checker on
+ * models that point at each other. A `create` nested inside a `create` is
+ * accepted here and checked by the engine, which validates every op.
+ */
+type NestedCreate<F> = { id?: string } & {
+  [K in RequiredScalarKeys<F>]: InputOf<F[K]>;
+} & {
+  [K in OptionalScalarKeys<F>]?: InputOf<F[K]>;
+} & {
+  [K in RelationKeys<F>]?: unknown;
+} & {
+  [K in BelongsToKeys<F> as `${K}Id`]?: string | null;
+};
+
+type BelongsToInput<F, M extends Models> =
+  | { connect: string }
+  | { create: NestedCreate<TargetFieldsOf<F, M>> }
+  | { disconnect: true }
+  | null;
 
 type RequiredBelongsToKeys<F> = {
   [K in BelongsToKeys<F>]: F[K] extends BelongsTo<string, false> ? K : never;
@@ -200,28 +222,33 @@ type RequiredParents<F> = [RequiredBelongsToKeys<F>] extends [never]
     >;
 
 type Unbox<T> = T extends { box: infer B } ? B : never;
-type HasManyInput = { connect?: string[]; disconnect?: string[] };
+type HasManyInput<F, M extends Models> = {
+  connect?: string[];
+  disconnect?: string[];
+  /** Rows created with this one, carrying its key. */
+  create?: NestedCreate<TargetFieldsOf<F, M>> | NestedCreate<TargetFieldsOf<F, M>>[];
+};
 
-export type CreateData<F> = { id?: string } & RequiredParents<F> & {
+export type CreateData<F, M extends Models = Models> = { id?: string } & RequiredParents<F> & {
   [K in RequiredScalarKeys<F>]: InputOf<F[K]>;
 } & {
   [K in OptionalScalarKeys<F>]?: InputOf<F[K]>;
 } & {
-  [K in BelongsToKeys<F>]?: BelongsToInput;
+  [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>;
 } & {
   [K in BelongsToKeys<F> as `${K}Id`]?: string | null;
 } & {
-  [K in HasManyKeys<F>]?: HasManyInput;
+  [K in HasManyKeys<F>]?: HasManyInput<F[K], M>;
 };
 
-export type UpdateData<F> = {
+export type UpdateData<F, M extends Models = Models> = {
   [K in ScalarKeys<F>]?: InputOf<F[K]>;
 } & {
-  [K in BelongsToKeys<F>]?: BelongsToInput;
+  [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>;
 } & {
   [K in BelongsToKeys<F> as `${K}Id`]?: string | null;
 } & {
-  [K in HasManyKeys<F>]?: HasManyInput;
+  [K in HasManyKeys<F>]?: HasManyInput<F[K], M>;
 };
 
 export type Models = Record<string, Model>;
