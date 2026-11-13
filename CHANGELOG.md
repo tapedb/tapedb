@@ -8,6 +8,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The CLI loads TypeScript schemas as ES modules independently of the host
+  package type, so initialization and migrations work in default npm and
+  CommonJS projects. A failed first migration now exits unsuccessfully instead
+  of reporting a completed setup. Packed-package checks run under Node as
+  part of `verify`.
+
 - `@cloudflare/workers-types` moved to v5, the major current wrangler asks
   for. Installing the starter example failed outright on the conflict.
 

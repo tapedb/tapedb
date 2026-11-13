@@ -38,7 +38,11 @@ async function loadSchema(root: string, flags: Record<string, string | boolean>)
     // A counter, not the clock: two loads within one millisecond must still
     // get different files.
     schemaLoads += 1;
-    const copy = join(dirname(path), `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}${extname(path)}`);
+    // TapeDB's TypeScript schema is ESM even when the host application is
+    // CommonJS. An explicit .mts copy avoids inheriting its package type;
+    // leave explicit .cts and JavaScript module formats alone.
+    const extension = extname(path) === ".ts" ? ".mts" : extname(path);
+    const copy = join(dirname(path), `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}${extension}`);
     copyFileSync(path, copy);
     try {
       loaded = (await import(pathToFileURL(copy).href)) as Record<string, unknown>;
@@ -321,9 +325,10 @@ async function init(argv: string[]): Promise<number> {
       if (result.status === "created") console.log(`  created  tapedb/migrations/${result.id}.sql`);
     }
   } catch (error) {
-    console.log(
-      `\n  Could not generate the first migration here (${error instanceof Error ? error.message : String(error)}).\n  Run \`npx tapedb migrate dev\` after \`npm i tapedb\`.`
+    console.error(
+      `\n  Could not generate the first migration (${error instanceof Error ? error.message : String(error)}).\n  Fix the schema and run \`npx tapedb init\` again; existing files are kept.`
     );
+    return 1;
   }
 
   console.log(`
