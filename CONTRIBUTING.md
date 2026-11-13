@@ -8,7 +8,7 @@ without your change.
 
 ```bash
 bun install
-bun run verify      # typecheck + test + build, the same thing CI runs
+bun run verify      # typecheck + test + build + packed-package checks
 ```
 
 Run `bun run verify` before opening a pull request and list what you ran.
@@ -87,6 +87,11 @@ Run it before a release and after anything that touches the engine, the
 flusher, snapshots or recovery.
 
 ## Releasing
+
+The package smoke check in `verify` uses Node 22.18 or newer and npm. It
+installs the built tarball into default npm, CommonJS and ESM projects, then
+checks initialization, migration generation and failure handling. It never
+publishes to npm or changes the consumer package type.
 
 Before publishing, run the package the way a consumer gets it, not the way
 the repo has it. Every bug found late in 0.1.0 — the CLI exiting silently
