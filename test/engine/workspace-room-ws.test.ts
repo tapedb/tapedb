@@ -579,6 +579,42 @@ describe("WorkspaceRoom live queries", () => {
     expect(diff?.updated).toEqual([{ id: "task1", title: "Renamed", updatedSeq: 1 }]);
   });
 
+  test("a live aggregate updates when a matching row is written", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "agg",
+      query: { kanbanTasks: { $: { aggregate: { groupBy: ["columnId"], count: true, sum: ["progress"] } } } },
+    });
+    expect(socket.messages()[1]).toMatchObject({
+      pageInfo: { kanbanTasks: { aggregate: [{ key: { columnId: "col1" }, count: 1, sum: { progress: null } }] } },
+    });
+    socket.clear();
+
+    await transact(
+      [
+        { op: "insert", namespace: "kanbanTasks", id: "task2", values: { columnId: "col1", title: "Two", order: 1, progress: 4 } },
+        { op: "insert", namespace: "kanbanTasks", id: "task3", values: { title: "Loose", order: 2, progress: 2 } },
+      ],
+      "t1"
+    );
+    await delay(100);
+
+    expect(queryMessages(socket)).toEqual([
+      expect.objectContaining({
+        type: "query:diff",
+        pageInfo: {
+          kanbanTasks: expect.objectContaining({
+            aggregate: [
+              { key: { columnId: null }, count: 1, sum: { progress: 2 } },
+              { key: { columnId: "col1" }, count: 2, sum: { progress: 4 } },
+            ],
+          }),
+        },
+      }),
+    ]);
+  });
+
   test("leaves page metadata off a diff when it did not change", async () => {
     const socket = await connect();
     await send(socket, {

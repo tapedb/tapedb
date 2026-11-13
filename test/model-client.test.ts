@@ -43,6 +43,7 @@ const appSchema = schema({
     done: t.boolean().default(false),
     due: t.date().optional(),
     meta: t.json().optional(),
+    points: t.number().optional(),
     column: t.belongsTo("column").optional(),
   }).access({ delete: role("moderator") }),
   note: model({
@@ -313,6 +314,118 @@ describe("select", () => {
   });
 });
 
+describe("aggregates", () => {
+  async function seedPoints(db = client()) {
+    const ids = await seed(db);
+    await db.$transaction([
+      db.task.update({ where: { id: "t1" }, data: { points: 3 } }),
+      db.task.update({ where: { id: "t2" }, data: { points: 5, done: true } }),
+      db.task.create({ data: { id: "t4", title: "Also todo", points: 1, column: { connect: ids.todo } } }),
+    ]);
+    return ids;
+  }
+
+  test("aggregate returns the measures asked for", async () => {
+    const db = client();
+    await seedPoints(db);
+
+    expect(
+      await db.task.aggregate({
+        _count: true,
+        _sum: { points: true },
+        _avg: { points: true },
+        _min: { points: true, title: true, due: true },
+        _max: { points: true },
+      })
+    ).toEqual({
+      _count: 4,
+      _sum: { points: 9 },
+      _avg: { points: 3 },
+      _min: { points: 1, title: "Also todo", due: Date.parse("2026-12-01T00:00:00Z") },
+      _max: { points: 5 },
+    });
+
+    // Counting a field counts its non-null values; no match sums to null.
+    expect(await db.task.aggregate({ _count: { _all: true, points: true, due: true } })).toEqual({
+      _count: { _all: 4, points: 3, due: 1 },
+    });
+    expect(await db.task.aggregate({ where: { title: "none" }, _count: true, _sum: { points: true } })).toEqual({
+      _count: 0,
+      _sum: { points: null },
+    });
+  });
+
+  test("groupBy returns one row per key, ordered and limited", async () => {
+    const db = client();
+    const ids = await seedPoints(db);
+
+    const byColumn = await db.task.groupBy({ by: ["columnId"], _count: true, _sum: { points: true } });
+    expect(byColumn).toEqual([
+      { columnId: null, _count: 1, _sum: { points: null } },
+      ...[
+        { columnId: ids.todo, _count: 2, _sum: { points: 4 } },
+        { columnId: ids.doing, _count: 1, _sum: { points: 5 } },
+      ].sort((a, b) => (a.columnId < b.columnId ? -1 : 1)),
+    ]);
+
+    const byDone = await db.task.groupBy({ by: ["done"], _count: true, orderBy: { done: "desc" }, take: 1 });
+    expect(byDone).toEqual([{ done: true, _count: 1 }]);
+
+    // Filters, relation filters included, narrow the rows first.
+    expect(
+      await db.task.groupBy({ by: ["done"], where: { column: { name: "Todo" } }, _avg: { points: true } })
+    ).toEqual([{ done: false, _avg: { points: 2 } }]);
+  });
+
+  test("a where read rule scopes aggregates in SQL", async () => {
+    await client("alice").board.create({ data: { name: "A1", ownerId: "alice" } });
+    await client("alice").board.create({ data: { name: "A2", ownerId: "alice" } });
+    await client("bob").board.create({ data: { name: "B1", ownerId: "bob" } });
+
+    expect(await client("alice").board.aggregate({ _count: true, _min: { name: true } })).toEqual({
+      _count: 2,
+      _min: { name: "A1" },
+    });
+    expect(await client("bob").board.groupBy({ by: ["ownerId"], _count: true })).toEqual([
+      { ownerId: "bob", _count: 1 },
+    ]);
+  });
+
+  test("a function read rule is applied row by row, past one chunk", async () => {
+    const writes = [];
+    for (let n = 0; n < 450; n += 1) {
+      writes.push(client(n % 3 === 0 ? "alice" : "bob").note.create({ data: { body: `n${n}`, author: n % 3 === 0 ? "alice" : "bob" } }));
+    }
+    for (const write of writes) await write;
+
+    expect(await client("alice").note.aggregate({ _count: true, _max: { body: true } })).toEqual({
+      _count: 150,
+      _max: { body: "n99" },
+    });
+    expect(await client("alice").note.groupBy({ by: ["author"], _count: true })).toEqual([
+      { author: "alice", _count: 150 },
+    ]);
+  });
+
+  test("bad measures fail before the request; the engine refuses them too", async () => {
+    const db = client();
+    expect(() => db.task.aggregate({ _sum: { title: true } } as never)).toThrow(/cannot measure "title"/);
+    expect(() => db.task.groupBy({ by: ["meta"], _count: true } as never)).toThrow(/cannot be grouped by "meta"/);
+    expect(() => db.task.groupBy({ by: ["done"], orderBy: { title: "asc" } } as never)).toThrow(/only order by a "by" field/);
+
+    const now = Math.floor(Date.now() / 1000);
+    const claim: RoleClaim = { sub: "alice", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.EDITOR, exp: now + 600, iat: now };
+    const run = (options: object) => () => executeQueryWithPageInfo(sql, claim, { query: { task: { $: options } } });
+    expect(run({ aggregate: { sum: ["title"] } })).toThrow(/Cannot sum "title"/);
+    expect(run({ aggregate: { count: true, limit: 5 } })).toThrow(/needs a groupBy/);
+    expect(run({ aggregate: { count: true }, order: { title: "asc" } })).toThrow(/cannot be combined with "order"/);
+    expect(run({ aggregate: {} })).toThrow(/needs count/);
+    expect(() =>
+      executeQueryWithPageInfo(sql, claim, { query: { column: { tasks: { $: { aggregate: { count: true } } } } } })
+    ).toThrow(/only available on a top-level namespace/);
+  });
+});
+
 describe("ids", () => {
   test("sort in the order they were made, within one millisecond too", async () => {
     const { id } = await import("../src/client/id");
@@ -454,6 +567,26 @@ describe("live reads", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     expect(states.at(-1)?.data).toEqual([{ title: "B" }]);
+  });
+
+  test("a live aggregate reads its groups from pageInfo", async () => {
+    const { db, socket } = await live();
+    const seen: unknown[] = [];
+    db.task.groupBy({ by: ["done"], _count: true }).subscribe((state) => seen.push(state.data));
+    await tick();
+    socket.onopen?.({});
+    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    await tick();
+    const subscribe = socket.sent.find((message) => message.type === "query:subscribe")!;
+    expect(subscribe.query).toEqual({ task: { $: { limit: 0, aggregate: { count: true, groupBy: ["done"] } } } });
+
+    const info = (groups: unknown[]) => ({ task: { limit: 0, returned: 0, hasMore: false, aggregate: groups } });
+    socket.push({ type: "query:data", id: subscribe.id, seq: 1, data: { task: [] }, pageInfo: info([{ key: { done: false }, count: 2 }]) });
+    socket.push({ type: "query:diff", id: subscribe.id, seq: 2, namespace: "task", added: [], updated: [], removed: [], pageInfo: info([{ key: { done: false }, count: 2 }, { key: { done: true }, count: 1 }]) });
+    expect(seen.slice(-2)).toEqual([
+      [{ done: false, _count: 2 }],
+      [{ done: false, _count: 2 }, { done: true, _count: 1 }],
+    ]);
   });
 
   test("a live count reads pageInfo", async () => {

@@ -23,6 +23,7 @@ import { id as newId } from "../client/id";
 import { stableStringify } from "../client/stable";
 import type { StorageObject } from "../client/storage-client";
 import type {
+  AggregateGroup,
   PresencePeer,
   QueryDocument,
   QueryError,
@@ -43,6 +44,10 @@ import type {
   OrderBy,
   Row,
   Schema,
+  AggregateMeasures,
+  AggregateOutput,
+  GroupKeys,
+  GroupRow,
   Select,
   Selected,
   UpdateData,
@@ -90,6 +95,20 @@ export interface FindArgs<M extends Models, F extends Fields> {
   select?: Select<M, F>;
 }
 
+export interface AggregateArgs<M extends Models, F extends Fields> extends AggregateMeasures<F> {
+  where?: Where<F, M>;
+}
+
+export interface GroupByArgs<M extends Models, F extends Fields> extends AggregateMeasures<F> {
+  /** Fields to group by: one result row per distinct combination. */
+  by: GroupKeys<F>[];
+  where?: Where<F, M>;
+  /** Orders groups by their key fields. Default: every key ascending. */
+  orderBy?: Partial<Record<GroupKeys<F>, "asc" | "desc">>;
+  /** At most this many groups (1 to 1000). */
+  take?: number;
+}
+
 export interface PageArgs<M extends Models, F extends Fields> extends FindArgs<M, F> {
   /** A previous page's `cursor`. */
   after?: string | null;
@@ -108,6 +127,13 @@ export interface ModelClient<M extends Models, F extends Fields> {
   /** One page in a stable order. Defaults to `orderBy: { id: "asc" }` (ids are time-ordered). */
   findPage<A extends PageArgs<M, F> = PageArgs<M, F>>(args?: A): PageQuery<Result<M, F, A>>;
   count(args?: { where?: Where<F, M> }): Query<number>;
+  /**
+   * Count, sum, average, minimum and maximum over the rows matching `where`,
+   * as the caller's read rules see them. Await it or subscribe to it.
+   */
+  aggregate<A extends AggregateArgs<M, F>>(args: A): Query<AggregateOutput<F, A>>;
+  /** The same measures, one row per distinct value of the `by` fields. */
+  groupBy<A extends GroupByArgs<M, F>>(args: A): Query<GroupRow<F, A>[]>;
 
   create(args: { data: CreateData<F, M> }): Write;
   /**
@@ -412,6 +438,101 @@ function requireId(model: ModelInfo, where: { id?: unknown } | undefined): strin
   return where.id;
 }
 
+// ---- Aggregates ------------------------------------------------------------
+
+function requireGroupKey(model: ModelInfo, field: unknown): string {
+  if (
+    typeof field !== "string" ||
+    !(model.filterable.has(field) || field === "createdAt" || field === "updatedAt")
+  ) {
+    throw new Error(`"${model.key}" cannot be grouped by "${String(field)}".`);
+  }
+  return field;
+}
+
+/** Fields named by one measure, checked against the model. */
+function measureFields(
+  model: ModelInfo,
+  measure: string,
+  value: unknown,
+  accepts: (field: string) => boolean
+): string[] {
+  if (value === undefined) return [];
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`"${model.key}.${measure}" takes an object of fields.`);
+  }
+  const fields: string[] = [];
+  for (const [field, on] of Object.entries(value)) {
+    if (on === undefined || on === false) continue;
+    if (!accepts(field)) {
+      throw new Error(`"${model.key}.${measure}" cannot measure "${field}".`);
+    }
+    fields.push(field);
+  }
+  return fields;
+}
+
+/**
+ * Translates `_count` / `_sum` / `_avg` / `_min` / `_max` into the engine's
+ * aggregate, and back from one engine group into the public shape.
+ */
+function aggregateMeasures(model: ModelInfo, args: Record<string, unknown>) {
+  const kind = (field: string) => model.scalars[field]?.kind;
+  const isRowField = (field: string) =>
+    field === "id" || field === "createdAt" || field === "updatedAt" || field in model.scalars || model.filterable.has(field);
+  const isNumber = (field: string) => kind(field) === "number";
+  const isOrdered = (field: string) =>
+    isRowField(field) && kind(field) !== "boolean" && kind(field) !== "json";
+
+  const countArg = args._count;
+  const countAll = countArg === true || (typeof countArg === "object" && countArg !== null && (countArg as { _all?: unknown })._all === true);
+  const countOf =
+    countArg === true || countArg === undefined || countArg === false
+      ? []
+      : measureFields(
+          model,
+          "_count",
+          Object.fromEntries(Object.entries(countArg as object).filter(([field]) => field !== "_all")),
+          isRowField
+        );
+  const sum = measureFields(model, "_sum", args._sum, isNumber);
+  const avg = measureFields(model, "_avg", args._avg, isNumber);
+  const min = measureFields(model, "_min", args._min, isOrdered);
+  const max = measureFields(model, "_max", args._max, isOrdered);
+
+  const engine: Record<string, unknown> = {};
+  if (countAll) engine.count = true;
+  if (countOf.length > 0) engine.countOf = countOf;
+  if (sum.length > 0) engine.sum = sum;
+  if (avg.length > 0) engine.avg = avg;
+  if (min.length > 0) engine.min = min;
+  if (max.length > 0) engine.max = max;
+
+  const output = (group: AggregateGroup): Record<string, unknown> => {
+    const out: Record<string, unknown> = {};
+    if (countArg === true) {
+      out._count = group.count ?? 0;
+    } else if (typeof countArg === "object" && countArg !== null) {
+      const counts: Record<string, number> = {};
+      if (countAll) counts._all = group.count ?? 0;
+      for (const field of countOf) counts[field] = group.countOf?.[field] ?? 0;
+      out._count = counts;
+    }
+    if (args._sum !== undefined) out._sum = pick(sum, group.sum);
+    if (args._avg !== undefined) out._avg = pick(avg, group.avg);
+    if (args._min !== undefined) out._min = pick(min, group.min);
+    if (args._max !== undefined) out._max = pick(max, group.max);
+    return out;
+  };
+  return { engine, output };
+}
+
+function pick(fields: string[], values: Record<string, unknown> | undefined): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const field of fields) out[field] = values?.[field] ?? null;
+  return out;
+}
+
 // ---- Client ----------------------------------------------------------------
 
 function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fields> {
@@ -472,6 +593,53 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
         (_data, pageInfo) => pageInfo[model.key]?.count ?? 0,
         "count"
       ),
+
+    aggregate: (args: Record<string, unknown>) => {
+      const measures = aggregateMeasures(model, args);
+      return new Query(
+        runtime,
+        document({ where: args.where }, { limit: 0, aggregate: measures.engine }),
+        (_data, pageInfo) => {
+          const group = pageInfo[model.key]?.aggregate?.[0];
+          return group === undefined ? null : measures.output(group);
+        },
+        "aggregate"
+      );
+    },
+    groupBy: (args: Record<string, unknown>) => {
+      const measures = aggregateMeasures(model, args);
+      const by = args.by;
+      if (!Array.isArray(by) || by.length === 0) {
+        throw new Error(`"${model.key}.groupBy" needs a non-empty "by" array.`);
+      }
+      for (const field of by) requireGroupKey(model, field);
+      const order: Record<string, "asc" | "desc"> = {};
+      for (const [field, direction] of Object.entries((args.orderBy ?? {}) as Record<string, unknown>)) {
+        if (!by.includes(field)) {
+          throw new Error(`"${model.key}.groupBy" can only order by a "by" field; "${field}" is not one.`);
+        }
+        if (direction !== "asc" && direction !== "desc") {
+          throw new Error(`Order for "${model.key}.${field}" must be "asc" or "desc".`);
+        }
+        order[field] = direction;
+      }
+      const engine = {
+        ...measures.engine,
+        groupBy: by as string[],
+        ...(Object.keys(order).length > 0 ? { order } : {}),
+        ...(args.take !== undefined ? { limit: args.take } : {}),
+      };
+      return new Query(
+        runtime,
+        document({ where: args.where }, { limit: 0, aggregate: engine }),
+        (_data, pageInfo) =>
+          (pageInfo[model.key]?.aggregate ?? []).map((group) => ({
+            ...group.key,
+            ...measures.output(group),
+          })),
+        "groupBy"
+      );
+    },
 
     create: ({ data }: { data: Record<string, unknown> }) => {
       const rowId = typeof (data as { id?: unknown }).id === "string" ? (data as { id: string }).id : newId();

@@ -14,6 +14,7 @@
  * levels.
  */
 
+import { compileAggregate, type CompiledAggregate } from "./query-aggregate";
 import {
   DEFAULT_QUERY_LIMIT,
   invalidOp,
@@ -84,6 +85,8 @@ export interface CompiledNode {
   explicitLimit: boolean;
   /** Top level only: also count every matching row. */
   count: boolean;
+  /** Top level only: aggregate the matching rows instead of reading them. */
+  aggregate: CompiledAggregate | null;
   children: CompiledChild[];
 }
 
@@ -288,6 +291,22 @@ function compileNode(
   if (options.limit === 0 && children.length > 0) {
     throw invalidOp('"limit: 0" reads no rows, so it cannot traverse links.');
   }
+  if (options.aggregate !== undefined) {
+    if (depth > 0) {
+      throw invalidOp('"aggregate" is only available on a top-level namespace.');
+    }
+    if (options.limit !== undefined && options.limit !== 0) {
+      throw invalidOp('"aggregate" reads no rows: leave "limit" out or set it to 0.');
+    }
+    for (const key of ["after", "order", "select"] as const) {
+      if (options[key] !== undefined) {
+        throw invalidOp(`"aggregate" cannot be combined with "${key}"; order groups with "aggregate.order".`);
+      }
+    }
+    if (children.length > 0) {
+      throw invalidOp('"aggregate" reads no rows, so it cannot traverse links.');
+    }
+  }
 
   const order = compileOrder(namespace, options.order);
   const conditions = compileWhere(namespace, options.where, { view });
@@ -318,9 +337,14 @@ function compileNode(
     order,
     // Only the top level gets the implicit result cap. A nested level is
     // bounded per parent (see `hydrateChild`), never by one shared LIMIT.
-    limit: options.limit ?? (depth === 0 ? DEFAULT_QUERY_LIMIT : null),
+    limit:
+      options.aggregate !== undefined
+        ? 0
+        : (options.limit ?? (depth === 0 ? DEFAULT_QUERY_LIMIT : null)),
     explicitLimit: options.limit !== undefined,
     count: options.count === true,
+    aggregate:
+      options.aggregate === undefined ? null : compileAggregate(namespace, options.aggregate),
     children,
   };
 }

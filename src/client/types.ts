@@ -118,6 +118,20 @@ export interface PageInfo {
   nextCursor?: string;
   /** Total matching rows, when the query asked for `count`. */
   count?: number;
+  /** The groups, when the query asked for `aggregate`. */
+  aggregate?: AggregateGroup[];
+}
+
+/** One group of an aggregate, as the engine reports it. */
+export interface AggregateGroup {
+  /** The group's key values; empty without a groupBy. */
+  key: Record<string, unknown>;
+  count?: number;
+  countOf?: Record<string, number>;
+  sum?: Record<string, number | null>;
+  avg?: Record<string, number | null>;
+  min?: Record<string, unknown>;
+  max?: Record<string, unknown>;
 }
 
 export type QueryPageInfo = Record<string, PageInfo>;
