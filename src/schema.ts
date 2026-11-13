@@ -45,6 +45,8 @@ export interface SchemaConfig {
    * `view` also takes `{ where: (auth) => filter }`, which runs in SQL.
    */
   permissions?: PermissionOverrides;
+  /** Table name per namespace, for mapping onto existing tables. Default: snake_case. */
+  tables?: Record<string, string>;
 }
 
 export interface TapeDBSchema {
@@ -203,7 +205,7 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
   const namespaces: NamespaceDefinition[] = Object.entries(config.entities).map(
     ([apiName, attributes]) => ({
       apiName,
-      table: toSnakeCase(apiName),
+      table: config.tables?.[apiName] ?? toSnakeCase(apiName),
       attributes,
     })
   );
@@ -236,7 +238,7 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
         : link.forward.namespace;
 
     attribute.references = {
-      table: toSnakeCase(target),
+      table: config.tables?.[target] ?? toSnakeCase(target),
       column: "id",
       onDelete: attribute.references?.onDelete ?? "SET NULL",
     };
@@ -286,3 +288,21 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
     clientSchema: i.schema({ entities: clientEntities, links: clientLinks }),
   };
 }
+
+// The model API. `defineSchema` above stays as the engine-level compiler that
+// `schema()` builds on.
+export { t } from "./model/fields";
+export type { DeleteBehaviour, ScalarKind } from "./model/fields";
+export { schema, model, role, filter, check, Model } from "./model/schema";
+export type {
+  Access,
+  AccessAuth,
+  CheckContext,
+  CreateData,
+  Include,
+  OrderBy,
+  Row,
+  Schema,
+  UpdateData,
+} from "./model/schema";
+export type { Where, FieldFilter } from "./model/where";

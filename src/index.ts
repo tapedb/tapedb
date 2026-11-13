@@ -6,6 +6,20 @@
  * provisioning CLI behind `tapedb/cli`.
  */
 
+export { createClient, Query, PageQuery, Write } from "./model/client";
+export type {
+  Client,
+  ClientConfig,
+  FilesClient,
+  LiveState,
+  ModelClient,
+  Page,
+  PresenceRoom,
+  WriteResult,
+} from "./model/client";
+export { schema, model, t, role, filter, check } from "./schema";
+export type { Row, Where, CreateData, UpdateData, Schema } from "./schema";
+
 export { defineSchema } from "./schema";
 export type { EntityConfig, SchemaConfig, TapeDBSchema } from "./schema";
 

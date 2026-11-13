@@ -77,7 +77,7 @@ export type FetchLike = (
   init: {
     method: string;
     headers: Record<string, string>;
-    body: string;
+    body?: string;
   }
 ) => Promise<FetchResponseLike>;
 
@@ -87,6 +87,17 @@ export interface ClientDeps {
   createWebSocket?: WebSocketFactory;
   outbox?: Outbox;
   now?: () => number;
+}
+
+/** One row of the workspace's file index. */
+export interface StoredFile {
+  id: string;
+  path: string;
+  r2Key: string;
+  size: number;
+  contentType: string | null;
+  createdAt: number;
+  updatedAt: number;
 }
 
 interface ResolvedConfig {
@@ -444,9 +455,14 @@ class DataClientImpl {
     }
   }
 
-  async transact(input: TransactInput): Promise<void> {
+  /**
+   * Applies ops optimistically, queues them, and sends them. Resolves to
+   * "applied" once the engine acknowledged them, or "queued" when the send
+   * failed transiently and the outbox will retry. Permanent refusals reject.
+   */
+  async transact(input: TransactInput): Promise<"applied" | "queued"> {
     const ops = normalizeOps(input);
-    if (ops.length === 0) return;
+    if (ops.length === 0) return "applied";
 
     const problem = this.configProblem();
     if (problem) {
@@ -489,6 +505,7 @@ class DataClientImpl {
       this.pendingOps.delete(clientTxId);
       this.retryAttempt = 0;
       this.clearRetryTimer();
+      return "applied";
     } catch (error) {
       if (isServerError(error) && !isRetryableServerError(error)) {
         try {
@@ -502,9 +519,68 @@ class DataClientImpl {
       // Transient (network, 5xx, 408, 429) or a rejected-after-retry write:
       // keep the optimistic state and the outbox entry so a later flush lands it.
       this.scheduleRetry();
+      return "queued";
     } finally {
       this.inFlight.delete(clientTxId);
     }
+  }
+
+  /** One-shot read over HTTP: no socket, no cache, no live updates. */
+  async queryOnce(
+    query: QueryDocument
+  ): Promise<{ data: QueryResult; pageInfo: QueryPageInfo }> {
+    const problem = this.configProblem();
+    if (problem) throw new Error(problem);
+
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/query`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query }),
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as {
+      ok?: boolean;
+      data?: QueryResult;
+      pageInfo?: QueryPageInfo;
+    } | null;
+    if (!response.ok || payload?.ok !== true || payload.data === undefined) {
+      const error = readServerError(payload);
+      throw new ServerError(
+        error?.code ?? "http_error",
+        error?.message ?? `Query failed with HTTP ${response.status}.`,
+        response.status
+      );
+    }
+    this.noteRows(payload.data);
+    return { data: payload.data, pageInfo: payload.pageInfo ?? {} };
+  }
+
+  /** The workspace's file index. */
+  async listFiles(): Promise<StoredFile[]> {
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/files`,
+      { method: "GET", headers: { authorization: `Bearer ${token}` } }
+    );
+    const payload = (await response.json().catch(() => null)) as {
+      ok?: boolean;
+      data?: StoredFile[];
+    } | null;
+    if (!response.ok || payload?.ok !== true || !Array.isArray(payload.data)) {
+      const error = readServerError(payload);
+      throw new ServerError(
+        error?.code ?? "http_error",
+        error?.message ?? `Listing files failed with HTTP ${response.status}.`,
+        response.status
+      );
+    }
+    return payload.data;
   }
 
   subscribeQuery(query: QueryDocument, listener: () => void): () => void {

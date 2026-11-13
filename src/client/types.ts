@@ -306,7 +306,7 @@ export interface DataRoom {
 
 export interface DataClient {
   useQuery(query: QueryDocument): QueryState;
-  transact(input: TransactInput): Promise<void>;
+  transact(input: TransactInput): Promise<"applied" | "queued">;
   tx: TxProxy;
   /** R2 files for an explicitly registered app id; never derives tenant identity from a path. */
   storage(appId: string): StorageClient;

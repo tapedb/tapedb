@@ -44,13 +44,37 @@ function fallbackId(): string {
   return formatUuid(bytes);
 }
 
-/** Returns a UUIDv7 (or a random UUID when the platform cannot do better). */
+/** Last timestamp and 12-bit counter handed out, for monotonic ids. */
+let lastMs = -1;
+let counter = 0;
+
+/**
+ * Returns a UUIDv7 (or a random UUID when the platform cannot do better).
+ *
+ * Ids from one client sort in the order they were made, even within one
+ * millisecond: the 12 bits after the version carry a counter (RFC 9562,
+ * method 1), seeded randomly in the lower half each millisecond so there is
+ * room to count up. When the counter runs out the timestamp moves forward by
+ * one, which keeps order at the cost of a millisecond of drift.
+ */
 export function id(): string {
   const random = randomBytes(10);
   if (!random) return fallbackId();
 
   const bytes = new Uint8Array(16);
-  const now = Date.now();
+  let now = Date.now();
+  if (now > lastMs) {
+    lastMs = now;
+    counter = ((random[0]! << 8) | random[1]!) & 0x7ff;
+  } else {
+    now = lastMs;
+    counter += 1;
+    if (counter > 0xfff) {
+      lastMs += 1;
+      now = lastMs;
+      counter = 0;
+    }
+  }
 
   bytes[0] = Math.floor(now / 2 ** 40) & 0xff;
   bytes[1] = Math.floor(now / 2 ** 32) & 0xff;
@@ -60,8 +84,9 @@ export function id(): string {
   bytes[5] = now & 0xff;
   bytes.set(random, 6);
 
-  // Version 7 + RFC 4122 variant.
-  bytes[6] = (bytes[6]! & 0x0f) | 0x70;
+  // Version 7, the counter in rand_a, then the RFC 4122 variant.
+  bytes[6] = 0x70 | ((counter >> 8) & 0x0f);
+  bytes[7] = counter & 0xff;
   bytes[8] = (bytes[8]! & 0x3f) | 0x80;
 
   return formatUuid(bytes);
