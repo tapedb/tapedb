@@ -1,5 +1,5 @@
 /**
- * Registry mapping InstantDB-style API names to workspace SQLite tables.
+ * Registry mapping model names to workspace SQLite tables.
  *
  * The registry is the runtime contract shared by query compilation, envelope
  * validation, permissions and durability. It is *not* a hardcoded schema: the

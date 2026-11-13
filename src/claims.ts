@@ -1,6 +1,6 @@
 /**
  * Shared role-claim contract between the Worker (JWT verification) and the
- * workspace engine (permission checks). KAN-390 owns verification; KAN-391
+ * workspace engine (permission checks).
  * consumes this shape.
  */
 

@@ -5,7 +5,7 @@ import {
 } from "./claims";
 
 /**
- * Engine role-claim verification (KAN-390).
+ * Engine role-claim verification.
  *
  * The platform mints a short-lived HS256 JWT whose payload matches the frozen
  * `RoleClaim` contract in `./claims.ts`. This module is the Worker half: it

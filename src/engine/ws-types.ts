@@ -1,5 +1,5 @@
 /**
- * WebSocket wire contract for workspace live queries (KAN-393).
+ * WebSocket wire contract for workspace live queries.
  *
  * Client -> server: `ping`, `query:subscribe`, `query:unsubscribe`.
  * Server -> client: `session:ready`, `session:error`, `pong`, `query:data`,

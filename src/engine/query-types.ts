@@ -1,5 +1,5 @@
 /**
- * InstaQL query wire contract for the workspace engine (KAN-392).
+ * Query document wire contract for the workspace engine.
  *
  * Only the subset the plan promises is supported: `where`, `order`, `limit`
  * and nested link traversal up to two levels. This module owns the typed

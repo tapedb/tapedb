@@ -1,12 +1,10 @@
 import type { StorageClient } from "./storage-client";
 
 /**
- * Public and wire types for the ndex data client (KAN-394).
- *
- * The client keeps InstantDB's surface (`i.schema`, `id`, `init`, `useQuery`,
- * `transact`, `tx`) with native room/storage adapters while the engine is the
- * workspace Durable Object. These types intentionally mirror the engine wire
- * contracts in `apps/tapedb-sync/src/engine` without importing across apps.
+ * Types for the client runtime: engine query documents, wire ops, outbox
+ * entries and the runtime facade the model client drives. They mirror the
+ * engine's wire contracts without importing the engine, so the client bundle
+ * stays free of server code.
  */
 
 // ---- Schema builders -------------------------------------------------------
@@ -50,7 +48,7 @@ export interface SchemaDefinition {
   links: Record<string, LinkDefinition>;
 }
 
-// ---- InstaQL query documents ----------------------------------------------
+// ---- Engine query documents ------------------------------------------------
 
 export type QueryScalar = string | number | boolean | null;
 
@@ -216,10 +214,7 @@ export type TxOp =
   | TxUnlinkOp
   | TxDeleteOp;
 
-/**
- * One chainable `tx` step. `op` is provided for the common single-op case;
- * `ops` lets a multi-label `link({...})` call expand into several wire ops.
- */
+/** A group of ops that travels together. */
 export interface TxStep {
   readonly ops: readonly TxOp[];
   readonly op: TxOp;
@@ -229,16 +224,6 @@ export type TransactInput = ReadonlyArray<
   TxStep | TxOp | ReadonlyArray<TxStep | TxOp>
 >;
 
-export interface TxEntity {
-  update(values: Record<string, unknown>): TxStep;
-  merge(values: Record<string, unknown>): TxStep;
-  delete(): TxStep;
-  link(links: Record<string, string>): TxStep;
-  unlink(links: Record<string, string>): TxStep;
-}
-
-/** `db.tx.columns[id].update({...})` */
-export type TxProxy = Record<string, Record<string, TxEntity>>;
 
 // ---- Outbox ----------------------------------------------------------------
 
@@ -268,7 +253,7 @@ export interface WriteRejection {
 // ---- Config and public client ---------------------------------------------
 
 export interface InitConfig {
-  /** Workspace UUID. Falls back to NEXT_PUBLIC_NDEX_WORKSPACE_ID. */
+  /** Workspace UUID. */
   workspaceId?: string;
   /** Engine origin, e.g. http://localhost:8787. */
   apiUrl?: string;
@@ -284,16 +269,9 @@ export interface InitConfig {
    * nothing: check the data before writing again.
    */
   onWriteRejected?: (rejection: WriteRejection) => void;
-
-  /** @deprecated InstantDB compatibility; accepted but ignored. */
-  appId?: string;
-  /** @deprecated InstantDB compatibility; accepted but ignored. */
-  apiURI?: string;
-  /** @deprecated InstantDB compatibility; accepted but ignored. */
-  websocketURI?: string;
 }
 
-/** Ephemeral presence channel within this client's workspace socket. Not a Yjs document room. */
+/** Ephemeral presence channel on this client's workspace socket. */
 export interface DataRoom {
   publishPresence(presence: unknown): void;
   publishCursor(cursor: unknown): void;
@@ -305,11 +283,7 @@ export interface DataRoom {
 }
 
 export interface DataClient {
-  useQuery(query: QueryDocument): QueryState;
   transact(input: TransactInput): Promise<"applied" | "queued">;
-  tx: TxProxy;
-  /** R2 files for an explicitly registered app id; never derives tenant identity from a path. */
-  storage(appId: string): StorageClient;
   /** Files scoped to the configured workspace and authenticated by its claim. */
   files: StorageClient;
   /** Reuses the workspace socket and its reconnect/replay behavior. */
@@ -320,10 +294,7 @@ export interface DataClient {
   /** Retries pending writes now (also runs on reconnect and `online`). */
   flushOutbox(): Promise<void>;
 
-  /**
-   * Non-React subscription helper. `useQuery` is built on this, and tests use
-   * it without a DOM environment.
-   */
+  /** Subscribes to a query document; the model client's live reads use it. */
   subscribeQuery(query: QueryDocument, listener: () => void): () => void;
 
   /** Current cached state for a query, without subscribing to it. */
@@ -340,9 +311,8 @@ export interface DataClient {
    * Nested link results arrive with the page and are not paginated: a cursor is
    * only defined for the top-level namespace's order.
    *
-   * The result lives in the cache until the next full `query:data` (a reconnect
-   * re-subscribes the original query, which resets the cached list to page one);
-   * call `loadMore()` again to rebuild it.
+   * After a page lands the live subscription widens to every loaded row, so a
+   * reconnect restores the whole window.
    */
   loadMore(query: QueryDocument): Promise<boolean>;
 

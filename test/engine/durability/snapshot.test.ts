@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../../fixtures/registry";
+useLegacyFixture();
 
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
