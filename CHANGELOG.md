@@ -19,6 +19,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- React hooks are covered by render tests (`react-dom`, `@happy-dom/global-registrator` as dev dependencies).
+
 - `tapedb migrate dev --name <name>` diffs the schema against
   `tapedb/schema.snapshot.json` and writes the next numbered SQL migration,
   with its change declarations, plus the `tapedb/migrations.gen.ts` bundle
