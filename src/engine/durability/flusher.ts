@@ -163,7 +163,6 @@ export async function flushPending(
       createdAt: current?.createdAt ?? manifestCreatedAt(now),
       engineVersion: readEngineVersion(sql),
       schemaVersion: current?.schemaVersion,
-      dedupeFloorSeq: current?.dedupeFloorSeq,
       tables: current?.tables ?? [],
       totalRows: current?.totalRows ?? 0,
       totalBytes: current?.totalBytes ?? 0,

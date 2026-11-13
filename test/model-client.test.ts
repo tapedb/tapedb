@@ -229,12 +229,12 @@ describe("select", () => {
     return { sub, workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.EDITOR, exp: now + 600, iat: now };
   };
 
-  test("the engine sends only the selected fields, plus id and sequence", async () => {
+  test("the engine sends only the selected fields, plus the id", async () => {
     await seed();
     const { data } = executeQueryWithPageInfo(sql, claimFor("alice"), {
       query: { task: { $: { select: ["title"], where: { id: "t1" } } } },
     });
-    expect(data.task).toEqual([{ id: "t1", title: "Write spec", updatedSeq: expect.any(Number) }]);
+    expect(data.task).toEqual([{ id: "t1", title: "Write spec" }]);
 
     expect(() =>
       executeQueryWithPageInfo(sql, claimFor("alice"), { query: { task: { $: { select: ["nope"] } } } })

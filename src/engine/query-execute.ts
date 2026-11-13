@@ -717,9 +717,10 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
         output.createdAt = fromStoredValue("date", entity.row.created_at);
       } else if (name === "updatedAt") {
         output.updatedAt = fromStoredValue("date", entity.row.updated_at);
+      } else if (name === "updatedSeq") {
+        output.updatedSeq = fromStoredValue("number", entity.row.updated_seq) ?? 0;
       }
     }
-    output.updatedSeq = fromStoredValue("number", entity.row.updated_seq) ?? 0;
     appendLinks(output, entity);
     return output;
   }

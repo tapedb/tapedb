@@ -94,8 +94,6 @@ export type ValidatedOp =
 export interface ValidatedTx {
   txId: string;
   clientTxId?: string;
-  /** See `TxEnvelope.basisSeq`. */
-  basisSeq?: number;
   ops: ValidatedOp[];
   /** Original ops array, used for the stable log hash. */
   rawOps: unknown[];
@@ -131,27 +129,6 @@ export function validateEnvelope(value: unknown): ValidatedTx {
     );
   }
 
-  const basisSeq = value.basisSeq;
-  if (
-    basisSeq !== undefined &&
-    (typeof basisSeq !== "number" ||
-      !Number.isSafeInteger(basisSeq) ||
-      basisSeq < 0)
-  ) {
-    throw new TxError(
-      "invalid_envelope",
-      "basisSeq must be a non-negative integer when present.",
-      { txId }
-    );
-  }
-  if (basisSeq !== undefined && clientTxId === undefined) {
-    throw new TxError(
-      "invalid_envelope",
-      "basisSeq is only meaningful with a clientTxId.",
-      { txId }
-    );
-  }
-
   const rawOps = value.ops;
   if (!Array.isArray(rawOps) || rawOps.length < 1) {
     throw new TxError(
@@ -166,7 +143,6 @@ export function validateEnvelope(value: unknown): ValidatedTx {
   return {
     txId,
     ...(clientTxId === undefined ? {} : { clientTxId }),
-    ...(basisSeq === undefined ? {} : { basisSeq }),
     ops,
     rawOps,
   };

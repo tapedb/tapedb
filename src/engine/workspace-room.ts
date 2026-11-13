@@ -1238,7 +1238,6 @@ function statusForTxError(code: TxErrorCode): number {
       return 403;
     case "conflict":
     case "duplicate_tx":
-    case "dedupe_expired":
     case "not_found":
     case "unique_violation":
     case "foreign_key_violation":

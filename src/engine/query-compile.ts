@@ -71,8 +71,8 @@ export interface CompiledNode {
   depth: number;
   /**
    * Physical columns to read. With a `select` this is the selected columns
-   * plus what the engine itself needs: id, sequence, ordering keys and the
-   * foreign keys that join link levels.
+   * plus what the engine itself needs: id, ordering keys and the foreign keys
+   * that join link levels.
    */
   columns: string[];
   /** API attribute names to return, or null for every attribute. */
@@ -351,7 +351,6 @@ function compileNode(
       ? selectColumns(namespace)
       : unique([
           "id",
-          "updated_seq",
           ...select.map((name) => selectableColumn(namespace, name)!),
           ...order.map((entry) => entry.column),
           ...linkColumns,

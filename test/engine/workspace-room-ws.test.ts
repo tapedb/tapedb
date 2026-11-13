@@ -564,7 +564,7 @@ describe("WorkspaceRoom live queries", () => {
       query: { kanbanTasks: { $: { select: ["title"] } } },
     });
     expect(socket.messages()[1]?.data).toEqual({
-      kanbanTasks: [{ id: "task1", title: "First", updatedSeq: 0 }],
+      kanbanTasks: [{ id: "task1", title: "First" }],
     });
     socket.clear();
 
@@ -576,7 +576,13 @@ describe("WorkspaceRoom live queries", () => {
 
     const [diff] = queryMessages(socket);
     expect(diff).toMatchObject({ type: "query:diff", namespace: "kanbanTasks" });
-    expect(diff?.updated).toEqual([{ id: "task1", title: "Renamed", updatedSeq: 1 }]);
+    expect(diff?.updated).toEqual([{ id: "task1", title: "Renamed" }]);
+    socket.clear();
+
+    // A change to a field the select leaves out changes nothing it sends.
+    await transact([{ op: "update", namespace: "kanbanTasks", id: "task1", values: { progress: 7 } }], "t2");
+    await delay(100);
+    expect(queryMessages(socket)).toEqual([]);
   });
 
   test("a live aggregate updates when a matching row is written", async () => {
