@@ -1,10 +1,10 @@
 /**
- * Bounded page filling for row-level `view` rules.
+ * Complete page filling for row-level `view` rules.
  *
  * A `view` rule is arbitrary TypeScript, so it runs after the SQL page. Without
  * filling, a namespace with a selective rule returns far fewer rows than the
  * limit even when more visible rows exist. These tests prove the page is filled
- * by scanning further, that the scan is capped so a rule hiding everything
+ * by scanning further, that a rule hiding everything
  * terminates, and that `pageInfo` stays honest while paging.
  */
 
@@ -17,7 +17,6 @@ import { configurePermissions } from "../src/engine/tx-permissions";
 import { compileQuery } from "../src/engine/query-compile";
 import {
   executeCompiledQueryWithPageInfo,
-  pageScanCap,
 } from "../src/engine/query-execute";
 import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
@@ -149,13 +148,7 @@ beforeEach(() => {
   configurePermissions(schema.permissions);
 });
 
-describe("bounded page filling", () => {
-  test("the scan cap is explicit: ten times the limit, never below two hundred", () => {
-    expect(pageScanCap(10)).toBe(200);
-    expect(pageScanCap(4)).toBe(200);
-    expect(pageScanCap(100)).toBe(1000);
-  });
-
+describe("complete page filling", () => {
   test("fills a page of 10 when only 1 row in 5 is visible", () => {
     const sql = freshDatabase();
     seed(sql, (rank) => rank % 5 === 0); // ranks 0,5,...,45 are visible
@@ -224,13 +217,12 @@ describe("bounded page filling", () => {
       hasMore: false,
     });
 
-    // The scan stopped at the cap instead of walking the whole table, and it
-    // read no row twice: 200 rows is pageScanCap(10), and the table has 50.
-    expect(stats.rowsRead).toBeLessThanOrEqual(pageScanCap(10));
+    // Exhaust the matching set without revisiting rows.
+    expect(stats.rowsRead).toBeLessThanOrEqual(ROW_COUNT);
     expect(stats.rowsRead).toBe(ROW_COUNT);
   });
 
-  test("stops at the cap when a namespace is larger than the cap", () => {
+  test("exhausts a large hidden result without inventing another page", () => {
     const sql = freshDatabase();
     seed(sql, () => false);
     // Grow the table past the cap so the cap, not exhaustion, is what ends it.
@@ -253,8 +245,27 @@ describe("bounded page filling", () => {
     expect(pageInfo.records.hasMore).toBe(false);
     expect(pageInfo.records.nextCursor).toBeUndefined();
 
-    // Hard stop: 450 hidden rows, and the page read exactly the cap.
-    expect(stats.rowsRead).toBe(pageScanCap(10));
+    // Every matching row was checked, even beyond the former scan cap.
+    expect(stats.rowsRead).toBe(450);
+  });
+
+  test("finds visible rows beyond the former scan boundary and counts them", () => {
+    const sql = freshDatabase();
+    runTransaction(sql, WORKSPACE_ID, claimFor("alice"), {
+      txId: "sparse",
+      ops: Array.from({ length: 450 }, (_, rank) => ({
+        op: "update" as const, namespace: "records", id: `sparse-${String(rank).padStart(3, "0")}`,
+        values: { label: `Row ${rank}`, rank, visible: rank >= 430 },
+      })),
+    });
+    const first = executeCompiledQueryWithPageInfo(sql, compileQuery({
+      records: { $: { limit: 5, count: true, order: { rank: "asc" } } },
+    }), claimFor("bob"));
+    expect(first.data.records.map(row => row.rank)).toEqual([430, 431, 432, 433, 434]);
+    expect(first.pageInfo.records.count).toBe(20);
+    expect(first.pageInfo.records.hasMore).toBe(true);
+    const second = page(sql, 5, first.pageInfo.records.nextCursor);
+    expect(second.data.records.map(row => row.rank)).toEqual([435, 436, 437, 438, 439]);
   });
 
   test("pages through every visible row exactly once", () => {
