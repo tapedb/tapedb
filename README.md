@@ -100,8 +100,8 @@ await db.transact([db.tx.boards[id()].update({ name: "New" })]);
 - **Relational queries** in the shape of the result you want, with nested link
   traversal, compiled to SQL.
 - **Transactions** with `update`, `merge`, `delete`, `link` and `unlink`,
-  idempotent per `clientTxId` within a cold-start window, applied inside one
-  SQLite transaction with the log append and the sequence advance.
+  idempotent per `clientTxId`, applied inside one SQLite transaction with the
+  log append and the sequence advance.
 - **Cursor pagination**: `$: { limit, order }` returns
   `pageInfo[ns].nextCursor`; pass it back as `$: { after }`. Keyset, not
   offset, so an insert above the window cannot repeat a row.
@@ -113,9 +113,11 @@ await db.transact([db.tx.boards[id()].update({ name: "New" })]);
 - **Durability**: log segments and chunked snapshots to R2, with an idempotent
   cold-start replay. Verified against a real Worker: rows and the sequence
   survive deleting the Durable Object's entire SQLite (snapshot plus replayed
-  segment), and the next transaction continues from the right sequence. The
-  local `_tx_log` is intentionally not restored, so `clientTxId` dedupe spans
-  the window since the last cold start rather than all history.
+  segment), and the next transaction continues from the right sequence.
+  Recovery rebuilds `_tx_log` from the replayed segments, so a retried
+  `clientTxId` returns `applied: 0` after a cold start - measured live. The
+  ceiling is the snapshot: once a transaction is folded into a snapshot its key
+  is gone, and a retry crossing that boundary is re-applied.
 - **Presence** and **file uploads** on the same socket and the same bucket set.
   Uploads write bytes to R2 and a metadata row into the workspace, so
   `GET /engine/workspaces/:id/files` lists what the workspace contains.

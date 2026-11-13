@@ -6,7 +6,16 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
-Nothing yet.
+### Fixed
+
+- Recovery rebuilds `_tx_log` from the replayed log segments instead of
+  discarding it, so a `clientTxId` retry that crosses a cold start returns
+  `applied: 0` rather than applying twice. Segment lines already carried the
+  idempotency key and attribution; the recovery parser was dropping them, and
+  `ops_hash` is recomputed canonically rather than stored.
+- Known ceiling, now documented: a snapshot does not carry idempotency keys, so
+  transactions already folded into one are re-applied if retried after a cold
+  start.
 
 ## [0.0.1]
 
