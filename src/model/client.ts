@@ -191,6 +191,38 @@ export interface BroadcastTopic<T = unknown> {
   ): () => void;
 }
 
+/** One line of `$export()`. */
+export type ExportRecord<M extends Models = Models> =
+  | {
+      type: "header";
+      format: "tapedb-export";
+      version: 1;
+      workspaceId: string;
+      /** Workspace sequence when the export started. */
+      seq: number;
+      exportedAt: number;
+      schemaVersion: string | null;
+      /** Models exported, in order. */
+      models: string[];
+      /** Models the caller may not read, and why. */
+      skipped: Array<{ model: string; reason: string }>;
+    }
+  | {
+      [K in keyof M & string]: { type: "row"; model: K; data: Row<FieldsOf<M[K]>> };
+    }[keyof M & string]
+  | { type: "file"; file: StoredFile & { id: string; r2Key: string; createdAt: number; updatedAt: number } }
+  | {
+      type: "end";
+      startSeq: number;
+      /** Workspace sequence when the export finished. */
+      seq: number;
+      rows: number;
+      counts: Record<string, number>;
+      /** True when no write landed during the export: it is the workspace exactly at `seq`. */
+      consistent: boolean;
+    }
+  | { type: "error"; code: string; message: string };
+
 export interface ClientExtras {
   /** Sends several writes as one log entry: one sequence, all or nothing. */
   $transaction(writes: Write[]): Promise<WriteResult[]>;
@@ -198,6 +230,12 @@ export interface ClientExtras {
   $presence(room: string): PresenceRoom;
   /** A broadcast topic on the workspace socket. Topics are 1-128 of A-Z a-z 0-9 : _ . - */
   $broadcast<T = unknown>(topic: string): BroadcastTopic<T>;
+  /**
+   * Every row the caller may read, model by model, then the file index, as
+   * the engine streams it. Read rules apply. The last record is `end` (or
+   * `error` if the export stopped).
+   */
+  $export(): AsyncIterable<ExportRecord<Models>>;
   /** Retries queued writes now (also runs on reconnect and when back online). */
   $flush(): Promise<void>;
   /** Closes the socket. */
@@ -206,7 +244,9 @@ export interface ClientExtras {
 
 export type Client<M extends Models> = {
   [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>;
-} & ClientExtras;
+} & Omit<ClientExtras, "$export"> & {
+  $export(): AsyncIterable<ExportRecord<M>>;
+};
 
 export interface ClientConfig<M extends Models> {
   schema: Schema<M>;
@@ -786,6 +826,7 @@ export function createClient<M extends Models>(
           }),
       };
     },
+    $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),
     $close: () => impl.close(),
   };
