@@ -144,7 +144,7 @@ describe("count", () => {
     expect(() => compileQuery({ tasks: { $: { limit: 0 } } })).toThrow(/Limit must be/);
   });
 
-  test("respects a where view rule and refuses under a function rule", () => {
+  test("counts only visible rows under both SQL and function view rules", () => {
     const filtered = setup({ tasks: { view: { where: ({ sub }) => ({ ownerId: sub }) } } });
     const { pageInfo } = executeCompiledQueryWithPageInfo(
       filtered,
@@ -154,9 +154,9 @@ describe("count", () => {
     expect(pageInfo.tasks.count).toBe(2);
 
     const fn = setup({ tasks: { view: ({ auth, data }) => data?.ownerId === auth.sub } });
-    expect(() =>
-      executeCompiledQueryWithPageInfo(fn, compileQuery({ tasks: { $: { count: true } } }), claim("alice"))
-    ).toThrow(/would include hidden rows/);
+    const counted = executeCompiledQueryWithPageInfo(fn, compileQuery({ tasks: { $: { count: true, limit: 0 } } }), claim("alice"));
+    expect(counted.pageInfo.tasks.count).toBe(2);
+    expect(counted.data.tasks).toEqual([]);
   });
 
   test("is top level only", () => {
@@ -176,4 +176,25 @@ describe("count", () => {
     expect(() => compileQuery({ boards: { cards: {} } })).not.toThrow();
     expect(() => compileQuery({ boards: { cards: { $: { count: true } } } })).toThrow(/only available on a top-level/);
   });
+});
+
+
+describe("nullable ordering", () => {
+  for (const direction of ["asc", "desc"] as const) {
+    test(`paginates nullable fields in ${direction} order without skipping or repeating`, () => {
+      const sql = setup();
+      const seen: string[] = [];
+      let after: string | undefined;
+      for (let step = 0; step < 5; step++) {
+        const result = executeCompiledQueryWithPageInfo(sql, compileQuery({
+          tasks: { $: { limit: 1, order: { points: direction }, ...(after ? { after } : {}) } },
+        }), claim());
+        seen.push(...result.data.tasks.map(row => row.id as string));
+        if (!result.pageInfo.tasks.hasMore) break;
+        expect(result.pageInfo.tasks.nextCursor).toBeDefined();
+        after = result.pageInfo.tasks.nextCursor;
+      }
+      expect(seen).toEqual(direction === "asc" ? ["d", "a", "b", "c"] : ["c", "b", "a", "d"]);
+    });
+  }
 });

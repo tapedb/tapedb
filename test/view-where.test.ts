@@ -13,7 +13,7 @@ import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../src/claims";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { configurePermissions, type PermissionOverrides } from "../src/engine/tx-permissions";
 import { compileQuery } from "../src/engine/query-compile";
-import { executeCompiledQueryWithPageInfo, pageScanCap } from "../src/engine/query-execute";
+import { executeCompiledQueryWithPageInfo } from "../src/engine/query-execute";
 import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
@@ -123,7 +123,7 @@ describe("where view rules", () => {
     expect(statements.some((line) => line.startsWith("PLAN") && line.includes("notes_owner_id_idx"))).toBe(true);
   });
 
-  test("fill a full page where the function form short-fills at the scan cap", () => {
+  test("SQL and function rules both fill a page beyond hidden rows", () => {
     // 300 rows owned by someone else sort ahead of the caller's five rows.
     const rows = [
       ...Array.from({ length: 300 }, (_, n) => ({ id: `x${pad(n)}`, title: `a-${pad(n)}`, ownerId: "other" })),
@@ -131,12 +131,11 @@ describe("where view rules", () => {
     ];
     const query = compileQuery({ notes: { $: { order: { title: "asc" }, limit: 5 } } });
 
-    // Negative control: the same visibility as a function rule hits the cap.
-    expect(pageScanCap(5)).toBeLessThan(300);
+    // Both access-rule forms must return the same complete visible page.
     const asFunction = setup({ notes: { view: ({ auth, data }) => data?.ownerId === auth.sub } });
     seedNotes(asFunction.sql, rows);
     const capped = executeCompiledQueryWithPageInfo(asFunction.sql, query, claimFor("alice"));
-    expect(capped.data.notes).toHaveLength(0);
+    expect(capped.data.notes).toHaveLength(5);
 
     const asWhere = setup({ notes: { view: mine } });
     seedNotes(asWhere.sql, rows);
