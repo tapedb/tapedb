@@ -119,9 +119,14 @@ await db.transact([db.tx.boards[id()].update({ name: "New" })]);
   transaction that a snapshot had already folded in. A snapshot stores rows and
   not keys, so covered segments are retained for `DEDUPE_HORIZON_SEQ` (2000
   sequence numbers) past the snapshot base; beyond that the segment is pruned
-  and the key with it. That is the retry window, stated rather than implied.
+  and the key with it. A retry from further back is refused, never applied
+  twice: the client sends the highest sequence it had seen when it created the
+  write (`basisSeq`), and when the restored database no longer holds keys that
+  far back the engine answers `dedupe_expired` (409) and applies nothing. The
+  client drops the entry and calls `onWriteRejected` so the app can decide.
 - **Presence** and **file uploads** on the same socket and the same bucket set.
-  Uploads write bytes to R2 and a metadata row into the workspace, so
+  Uploads write bytes to R2 and a metadata row into the workspace, through the
+  transaction log so a restore keeps it, and
   `GET /engine/workspaces/:id/files` lists what the workspace contains.
 
 ## Architecture

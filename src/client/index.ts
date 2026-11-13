@@ -34,6 +34,7 @@ export type {
   LinkDefinition,
   LinkSide,
   OutboxEntry,
+  WriteRejection,
   QueryComparison,
   QueryDocument,
   QueryEntity,

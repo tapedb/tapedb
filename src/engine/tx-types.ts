@@ -59,6 +59,14 @@ export interface TxEnvelope {
   txId: string;
   /** Client id used to dedupe retries of the same optimistic write. */
   clientTxId?: string;
+  /**
+   * Sent on a retry only: the highest sequence the client had observed when it
+   * created this transaction. Any earlier attempt that was applied got a
+   * sequence above it, so the server can tell whether its idempotency keys
+   * reach back far enough to answer the retry, and refuses it with
+   * `dedupe_expired` when they do not instead of applying it a second time.
+   */
+  basisSeq?: number;
   ops: TxOp[];
 }
 
@@ -80,6 +88,7 @@ export type TxErrorCode =
   | "not_found"
   | "conflict"
   | "duplicate_tx"
+  | "dedupe_expired"
   | "unique_violation"
   | "foreign_key_violation"
   | "permission_denied"

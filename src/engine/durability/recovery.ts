@@ -12,6 +12,7 @@
  * therefore safe.
  */
 
+import { DEDUPE_FLOOR_META_KEY } from "../tx-pipeline";
 import { applyFileOps, isFileOpList } from "../file-index";
 import {
   manifestKey,
@@ -902,6 +903,30 @@ function writeFinalState(
 }
 
 /**
+ * Records the highest sequence whose idempotency key did not survive.
+ *
+ * Every line above the snapshot base was replayed, so a missing key can only
+ * sit at or below it, where pruned segments leave a gap. The pipeline refuses
+ * a retry whose basis is below this floor instead of trusting an absent key.
+ */
+function writeDedupeFloor(sql: RecoverySqlExecutor, baseSeq: number): void {
+  const present = sql
+    .exec<{ seq: number }>(
+      `SELECT seq FROM "_tx_log" WHERE seq <= ? ORDER BY seq DESC`,
+      baseSeq
+    )
+    .toArray();
+
+  let floor = baseSeq;
+  for (const row of present) {
+    if (Number(row.seq) !== floor) break;
+    floor -= 1;
+  }
+
+  setMeta(sql, DEDUPE_FLOOR_META_KEY, String(floor));
+}
+
+/**
  * Rebuilds `workspaceId` from its R2 manifest, snapshot chunks and log
  * segments.
  *
@@ -983,6 +1008,7 @@ export async function recoverWorkspace(
     // never look caught up while its sequence state is only half written.
     sql.transactionSync(() => {
       writeFinalState(sql, manifest, replay.maxSeq, now);
+      writeDedupeFloor(sql, manifest.baseSeq);
       markComplete(sql, manifest, now);
     });
 
