@@ -64,4 +64,16 @@ export async function assertions(): Promise<void> {
   await db.column.findMany({ include: { tasks: true } });
   // @ts-expect-error findUnique needs an id
   await db.column.findUnique({ where: {} });
+
+  // Relation filters: one hop is typed against the target's own fields.
+  await db.column.findMany({ where: { board: { name: "Roadmap" } } });
+  await db.column.findMany({ where: { board: null } });
+  await db.board.findMany({ where: { columns: { some: { position: { gt: 2 } } } } });
+  await db.board.findMany({ where: { columns: { none: {} }, name: "x" } });
+  // @ts-expect-error the target has no such field
+  await db.column.findMany({ where: { board: { nope: 1 } } });
+  // @ts-expect-error a to-many link needs some, every or none
+  await db.board.findMany({ where: { columns: { name: "x" } } });
+  // @ts-expect-error a to-one link is filtered directly
+  await db.column.findMany({ where: { board: { some: { name: "x" } } } });
 }

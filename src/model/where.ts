@@ -9,7 +9,17 @@
  */
 
 import type { QueryWhere } from "../engine/query-types";
-import type { FilterKeys, Fields, ModelInfo } from "./schema";
+import type { HasMany } from "./fields";
+import type {
+  BelongsToKeys,
+  FilterKeys,
+  Fields,
+  HasManyKeys,
+  ModelInfo,
+  Models,
+  RelationKeys,
+  TargetFieldsOf,
+} from "./schema";
 
 type Scalar = string | number | boolean | null | Date;
 
@@ -24,12 +34,52 @@ export interface FieldFilter<T = Scalar> {
   lte?: T;
 }
 
-export type Where<F extends Fields = Fields> = {
+/** Filters on a to-many relation: at least one, all, or no related row. */
+export interface ManyFilter<W> {
+  some?: W;
+  every?: W;
+  none?: W;
+}
+
+/**
+ * Filters, in three concrete levels rather than one recursive type.
+ *
+ * The engine compiles relation filters at most two links deep, so the type
+ * stops there too: the bottom level has no relation keys. Spelling the levels
+ * out keeps the checker from unfolding models into each other forever —
+ * boards hold columns hold boards — which it does if the depth is a type
+ * parameter it has to count down.
+ */
+type Scalars<F extends Fields> = {
   [K in FilterKeys<F>]?: Scalar | FieldFilter;
+};
+
+/**
+ * The deepest level the types follow: the target's own fields.
+ *
+ * Relation keys are accepted here but not described. The engine compiles
+ * relation filters two links deep and validates every level against the
+ * registry, so a second hop still works and a wrong name is still an error —
+ * at the call, not in the editor. Typing the second hop as well means
+ * resolving the model graph into itself for every key, which runs the
+ * checker out of memory on schemas whose models point at each other.
+ */
+export type WhereLeaf<F extends Fields> = Scalars<F> & {
+  [K in RelationKeys<F>]?: unknown;
 } & {
-  AND?: Where<F> | Where<F>[];
-  OR?: Where<F>[];
-  NOT?: Where<F> | Where<F>[];
+  AND?: WhereLeaf<F> | WhereLeaf<F>[];
+  OR?: WhereLeaf<F>[];
+  NOT?: WhereLeaf<F> | WhereLeaf<F>[];
+};
+
+export type Where<F extends Fields = Fields, M extends Models = Models> = Scalars<F> & {
+  [K in RelationKeys<F>]?: F[K] extends HasMany
+    ? ManyFilter<WhereLeaf<TargetFieldsOf<F[K], M>>>
+    : WhereLeaf<TargetFieldsOf<F[K], M>> | null;
+} & {
+  AND?: Where<F, M> | Where<F, M>[];
+  OR?: Where<F, M>[];
+  NOT?: Where<F, M> | Where<F, M>[];
 };
 
 const OPERATORS: Record<string, string> = {
@@ -89,32 +139,79 @@ function fieldConditions(field: string, value: unknown): EngineWhere[] {
   return extra;
 }
 
+/** One relation filter, as the engine's `$link` entry. */
+function relationCondition(
+  graph: Record<string, ModelInfo>,
+  model: ModelInfo,
+  key: string,
+  value: unknown
+): EngineWhere {
+  const relation = model.relations[key];
+  const target = graph[relation.target];
+
+  if (relation.kind === "belongsTo") {
+    if (value === null) return { [relation.foreignKey!]: null };
+    if (!isFilterObject(value)) {
+      throw new Error(`"${model.key}.${key}" takes a filter object or null.`);
+    }
+    for (const mode of ["some", "every", "none"]) {
+      if (mode in value) {
+        throw new Error(
+          `"${model.key}.${key}" is a to-one link: filter it directly, as { ${key}: { ... } }, not with ${mode}.`
+        );
+      }
+    }
+    return { $link: [{ label: key, mode: "parent", where: toEngineWhere(target, value as Where, graph) }] };
+  }
+
+  if (!isFilterObject(value)) {
+    throw new Error(`"${model.key}.${key}" takes { some }, { every } or { none }.`);
+  }
+  const entries = Object.entries(value).filter(([, filter]) => filter !== undefined);
+  if (entries.length === 0) {
+    throw new Error(`"${model.key}.${key}" needs one of some, every or none.`);
+  }
+  return {
+    $link: entries.map(([mode, filter]) => {
+      if (mode !== "some" && mode !== "every" && mode !== "none") {
+        throw new Error(`"${model.key}.${key}" takes some, every or none, not "${mode}".`);
+      }
+      if (!isFilterObject(filter)) {
+        throw new Error(`"${model.key}.${key}.${mode}" takes a filter object.`);
+      }
+      return { label: key, mode, where: toEngineWhere(target, filter as Where, graph) };
+    }),
+  };
+}
+
 /** Translates a public filter into the engine's `where`. */
-export function toEngineWhere(model: ModelInfo, where: Where): QueryWhere {
+export function toEngineWhere(
+  model: ModelInfo,
+  where: Where,
+  graph: Record<string, ModelInfo> = {}
+): QueryWhere {
   const conditions: EngineWhere[] = [];
 
   for (const [key, value] of Object.entries(where as Record<string, unknown>)) {
     if (value === undefined) continue;
     if (key === "AND") {
       for (const branch of asList(value as Where | Where[])) {
-        conditions.push(toEngineWhere(model, branch) as EngineWhere);
+        conditions.push(toEngineWhere(model, branch, graph) as EngineWhere);
       }
     } else if (key === "OR") {
       const branches = value as Where[];
       if (!Array.isArray(branches) || branches.length === 0) {
         throw new Error(`"OR" on "${model.key}" needs a non-empty array.`);
       }
-      conditions.push({ $or: branches.map((branch) => toEngineWhere(model, branch)) });
+      conditions.push({ $or: branches.map((branch) => toEngineWhere(model, branch, graph)) });
     } else if (key === "NOT") {
       for (const branch of asList(value as Where | Where[])) {
-        conditions.push({ $not: toEngineWhere(model, branch) });
+        conditions.push({ $not: toEngineWhere(model, branch, graph) });
       }
     } else if (model.filterable.has(key)) {
       conditions.push(...fieldConditions(key, value));
     } else if (key in model.relations) {
-      throw new Error(
-        `Filtering "${model.key}" on its relation "${key}" is not supported yet; filter on "${key}Id" or query "${model.relations[key].target}" instead.`
-      );
+      conditions.push(relationCondition(graph, model, key, value));
     } else {
       throw new Error(`"${model.key}" has no filterable field "${key}".`);
     }
@@ -126,7 +223,18 @@ export function toEngineWhere(model: ModelInfo, where: Where): QueryWhere {
   const rest: EngineWhere[] = [];
   for (const condition of conditions) {
     const [entry] = Object.entries(condition);
-    if (Object.keys(condition).length === 1 && !(entry[0] in merged) && entry[0] !== "$and") {
+    if (entry[0] === "$link" && Object.keys(condition).length === 1) {
+      // Several relation filters are just more entries in the one list; they
+      // are ANDed by the compiler like any other condition.
+      merged.$link = [
+        ...((merged.$link as unknown[] | undefined) ?? []),
+        ...(entry[1] as unknown[]),
+      ];
+    } else if (
+      Object.keys(condition).length === 1 &&
+      !(entry[0] in merged) &&
+      entry[0] !== "$and"
+    ) {
       merged[entry[0]] = entry[1];
     } else {
       rest.push(condition);
@@ -172,7 +280,7 @@ export function toEngineNode(
   extra: Record<string, unknown> = {}
 ): Record<string, unknown> {
   const options: Record<string, unknown> = { ...extra };
-  if (args.where !== undefined) options.where = toEngineWhere(model, args.where as Where);
+  if (args.where !== undefined) options.where = toEngineWhere(model, args.where as Where, graph);
   const order = toEngineOrder(model, args.orderBy);
   if (order !== undefined) options.order = order;
   if (args.take !== undefined) options.limit = args.take;
