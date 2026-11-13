@@ -7,10 +7,10 @@
   "sideEffects": false,
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/brxndxndiaz/tapedb.git"
+    "url": "git+https://github.com/tapedb/tapedb.git"
   },
   "bugs": {
-    "url": "https://github.com/brxndxndiaz/tapedb/issues"
+    "url": "https://github.com/tapedb/tapedb/issues"
   },
   "keywords": [
     "cloudflare",
