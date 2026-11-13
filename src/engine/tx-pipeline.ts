@@ -77,57 +77,78 @@ export function runTransaction(
     // and before the sequence is allocated (a denial burns nothing).
     assertRowPermissions(sql, claim, tx.ops);
 
-    const state = sql.one<TxStateRow>(
-      `SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`
-    );
-    const logMax = sql.one<TxLogMaxRow>(
-      `SELECT MAX(seq) AS max_seq FROM "_tx_log"`
-    );
-
-    // Never hand out a sequence that already exists in the log. Recovery or a
-    // partial restore can leave `_tx_state` behind `_tx_log`; repairing here
-    // keeps the invariant even if that state was written by an older build.
-    const previousSeq = Math.max(
-      state?.high_water_seq ?? 0,
-      logMax?.max_seq ?? 0
-    );
-
-    if (state === undefined) {
-      sql.exec(
-        `INSERT INTO "_tx_state" ("id", high_water_seq) VALUES (1, ?)`,
-        previousSeq
-      );
-    } else if (previousSeq > state.high_water_seq) {
-      sql.exec(
-        `UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`,
-        previousSeq
-      );
-    }
-
-    const seq = previousSeq + 1;
     const now = Date.now();
-    const schemaVersion = readSchemaVersion(sql);
-
-    sql.exec(
-      `INSERT INTO "_tx_log"
-        (seq, client_tx_id, ops, ops_hash, user_id, role, at, schema_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      seq,
-      tx.clientTxId ?? null,
-      serialisedOps,
-      hash,
-      claim.sub,
-      claim.role,
-      now,
-      schemaVersion
-    );
-
-    sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
+    const seq = appendLogEntry(sql, {
+      clientTxId: tx.clientTxId ?? null,
+      ops: serialisedOps,
+      opsHash: hash,
+      userId: claim.sub,
+      role: claim.role,
+      at: now,
+    });
 
     const applied = applyOps({ sql, seq, now, txId: tx.txId }, tx.ops);
 
     return { txId: tx.txId, seq, applied };
   });
+}
+
+export interface LogEntry {
+  clientTxId: string | null;
+  /** Canonical JSON of the ops, exactly as replay will read them. */
+  ops: string;
+  opsHash: string;
+  userId: string | null;
+  role: number | null;
+  at: number;
+}
+
+/**
+ * Allocates the next sequence and appends one `_tx_log` row. Must run inside
+ * the caller's transaction, so the row, the high-water mark and whatever the
+ * caller applies commit or roll back together.
+ */
+export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
+  const state = sql.one<TxStateRow>(
+    `SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`
+  );
+  const logMax = sql.one<TxLogMaxRow>(
+    `SELECT MAX(seq) AS max_seq FROM "_tx_log"`
+  );
+
+  // Never hand out a sequence that already exists in the log. Recovery or a
+  // partial restore can leave `_tx_state` behind `_tx_log`; repairing here
+  // keeps the invariant even if that state was written by an older build.
+  const previousSeq = Math.max(
+    state?.high_water_seq ?? 0,
+    logMax?.max_seq ?? 0
+  );
+
+  if (state === undefined) {
+    sql.exec(
+      `INSERT INTO "_tx_state" ("id", high_water_seq) VALUES (1, ?)`,
+      previousSeq
+    );
+  }
+
+  const seq = previousSeq + 1;
+
+  sql.exec(
+    `INSERT INTO "_tx_log"
+      (seq, client_tx_id, ops, ops_hash, user_id, role, at, schema_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    seq,
+    entry.clientTxId,
+    entry.ops,
+    entry.opsHash,
+    entry.userId,
+    entry.role,
+    entry.at,
+    readSchemaVersion(sql)
+  );
+
+  sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
+  return seq;
 }
 
 function readSchemaVersion(sql: SqlExecutor): string {
