@@ -5,7 +5,8 @@
  * filter re-run during a recovery months later would match a different set,
  * and a replay that changes different rows than the original is not a replay.
  * These tests pin that, the access rules that bound which rows a caller can
- * reach, and the cap that keeps one transaction from becoming unbounded.
+ * reach, and the batching that keeps one transaction bounded however many
+ * rows match.
  */
 
 import { Database } from "bun:sqlite";
@@ -13,7 +14,8 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { MemoryOutbox } from "../src/client/outbox";
-import { MAX_BULK_ROWS } from "../src/engine/tx-bulk";
+import { BulkWriteError } from "../src/client/data-client";
+import { BULK_BATCH_ROWS } from "../src/engine/tx-bulk";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { executeQueryWithPageInfo } from "../src/engine/query-execute";
 import { configureRegistry } from "../src/engine/registry";
@@ -224,17 +226,78 @@ describe("filters through a relation", () => {
   });
 });
 
-describe("the cap", () => {
-  test("refuses a filter matching more rows than one transaction may hold", async () => {
-    seed(MAX_BULK_ROWS + 1, () => "alice");
-    await expect(client().task.updateMany({ where: {}, data: { done: true } })).rejects.toThrow(
-      new RegExp(`more than ${MAX_BULK_ROWS} rows`)
-    );
-    expect(db.query(`SELECT COUNT(*) AS n FROM "task" WHERE "done" = 1`).get()).toEqual({ n: 0 });
+describe("batching", () => {
+  const count = (where = "1 = 1") =>
+    (db.query(`SELECT COUNT(*) AS n FROM "task" WHERE ${where}`).get() as { n: number }).n;
+  const batches = () =>
+    (db.query(`SELECT COUNT(*) AS n FROM "_tx_log" WHERE ops LIKE '%"patch"%' OR ops LIKE '%"delete"%'`).get() as { n: number }).n;
 
-    // Exactly at the cap is allowed.
-    expect(
-      await client().task.updateMany({ where: { title: { not: `task ${MAX_BULK_ROWS}` } }, data: { done: true } })
-    ).toEqual({ count: MAX_BULK_ROWS });
+  test("up to one batch is one transaction", async () => {
+    seed(BULK_BATCH_ROWS, () => "alice");
+    expect(await client().task.updateMany({ where: {}, data: { done: true } })).toEqual({ count: BULK_BATCH_ROWS });
+    expect(batches()).toBe(1);
+  });
+
+  test("more rows are written in batches, every row exactly once", async () => {
+    const total = BULK_BATCH_ROWS * 2 + 500;
+    seed(total, () => "alice");
+
+    // The patch leaves every row matching the filter: resuming by id is what
+    // stops the second batch from writing the first one's rows again.
+    expect(await client().task.updateMany({ where: { ownerId: "alice" }, data: { weight: 7 } })).toEqual({ count: total });
+    expect(count(`"weight" = 7`)).toBe(total);
+    expect(batches()).toBe(3);
+    const writes = db.query(`SELECT ops FROM "_tx_log" WHERE ops LIKE '%"patch"%'`).all() as Array<{ ops: string }>;
+    const ids = writes.flatMap((row) => (JSON.parse(row.ops) as Array<{ id: string }>).map((op) => op.id));
+    expect(new Set(ids).size).toBe(total);
+
+    // The patch takes rows out of the filter.
+    expect(await client().task.updateMany({ where: { done: false }, data: { done: true } })).toEqual({ count: total });
+    expect(count(`"done" = 1`)).toBe(total);
+
+    expect(await client().task.deleteMany({ where: { done: true } })).toEqual({ count: total });
+    expect(count()).toBe(0);
+  });
+
+  test("a function read rule is applied across batches", async () => {
+    build({ task: { view: ({ auth, data }) => data?.ownerId === auth.sub } });
+    seed(BULK_BATCH_ROWS * 3, (index) => (index % 3 === 0 ? "bob" : "alice"));
+    expect(await client("alice").task.updateMany({ where: {}, data: { done: true } })).toEqual({ count: BULK_BATCH_ROWS * 2 });
+    expect(count(`"done" = 1 AND "owner_id" = 'bob'`)).toBe(0);
+  });
+
+  test("a failed batch stops the write and reports what committed", async () => {
+    // The row rule refuses one row in the second batch.
+    build({ task: { update: ({ data }) => data?.title !== "task 1500" } });
+    seed(BULK_BATCH_ROWS * 2, () => "alice");
+
+    const error = await client().task.updateMany({ where: {}, data: { done: true } }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(BulkWriteError);
+    expect(error).toMatchObject({ written: BULK_BATCH_ROWS, code: "permission_denied" });
+    expect(count(`"done" = 1`)).toBe(BULK_BATCH_ROWS);
+  });
+
+  test("the engine returns a cursor instead of refusing", () => {
+    seed(BULK_BATCH_ROWS + 1, () => "alice");
+    const claim = claimFor("alice", WORKSPACE_ROLE_LEVELS.MODERATOR);
+    const first = runTransaction(sql, WORKSPACE, claim, {
+      txId: "b1",
+      ops: [{ op: "patchMany", namespace: "task", where: {}, values: { done: true } }],
+    });
+    expect(first.matched).toEqual({ 0: BULK_BATCH_ROWS });
+    expect(first.more).toEqual({ 0: `t${String(BULK_BATCH_ROWS - 1).padStart(4, "0")}` });
+
+    const second = runTransaction(sql, WORKSPACE, claim, {
+      txId: "b2",
+      ops: [{ op: "patchMany", namespace: "task", where: {}, values: { done: true }, after: first.more![0] }],
+    });
+    expect(second.matched).toEqual({ 0: 1 });
+    expect(second.more).toBeUndefined();
+    expect(() =>
+      runTransaction(sql, WORKSPACE, claim, {
+        txId: "b3",
+        ops: [{ op: "deleteMany", namespace: "task", where: {}, after: "not an id!" }],
+      })
+    ).toThrow(/"after" must be a row id/);
   });
 });

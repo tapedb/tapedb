@@ -239,8 +239,14 @@ await db.task.deleteMany({ where: { columnId: null } });
 The engine resolves which rows match, inside the transaction, and logs the
 rows rather than the filter — a replay has to change what the original
 changed, and re-running a filter later cannot promise that. A bulk write
-touches at most 1000 rows, reaches only rows the caller may read, and still
-runs the row rules for `update` and `delete` on each one. Unlike single-row
+reaches only rows the caller may read, and still runs the row rules for
+`update` and `delete` on each one.
+
+Up to 1000 matching rows commit as one transaction. Beyond that the client
+writes batches of 1000 in id order, each its own transaction, until the filter
+is exhausted; `count` is the total. If a batch fails, `BulkWriteError.written`
+says how many rows the earlier batches changed, and running the same call
+again carries on with what still matches. Unlike single-row
 writes it is not applied optimistically and not queued offline: which rows
 match is the engine's answer, not the cache's.
 
