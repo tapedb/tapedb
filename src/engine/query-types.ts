@@ -242,7 +242,8 @@ function parseCursor(value: unknown): string {
   return value;
 }
 
-function parseWhere(value: unknown): QueryWhere {
+/** Validates a `where` object. Exported for view rules, which share the shape. */
+export function parseWhere(value: unknown): QueryWhere {
   if (!isPlainObject(value)) {
     throw invalidOp('"where" must be an object.');
   }
