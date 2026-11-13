@@ -3,14 +3,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "wrangler dev",
-    "deploy": "wrangler deploy"
+    "dev": "tapedb dev",
+    "migrate": "tapedb migrate dev",
+    "check": "tapedb migrate check",
+    "deploy": "tapedb deploy"
   },
   "dependencies": {
     "tapedb": "file:../.."
   },
   "devDependencies": {
-    "@cloudflare/workers-types": "^4.20250109.0",
+    "@cloudflare/workers-types": "^5.20261110.1",
     "wrangler": "^4"
   }
 }
