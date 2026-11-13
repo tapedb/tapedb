@@ -43,6 +43,10 @@ class FakeWebSocket {
   }
 
   close(code = 1000, reason = ""): void {
+    // As the runtime does (measured in workerd): reserved codes throw.
+    if ([1004, 1005, 1006, 1015].includes(code) || code < 1000 || code > 4999) {
+      throw new DOMException(`Invalid close code ${code}.`, "InvalidAccessError");
+    }
     this.closeInfo = { code, reason };
   }
 
@@ -745,6 +749,16 @@ describe("WorkspaceRoom live queries", () => {
 
     const unverified = await room.fetch(new Request("http://test/export"));
     expect(unverified.status).toBe(403);
+  });
+
+  test("answers every client close with a close frame it may send", async () => {
+    // A browser or Node client closing without a status arrives as 1005,
+    // and an abnormal drop as 1006: neither may be sent back.
+    for (const code of [1005, 1006, 1001, 1000, 4000]) {
+      const socket = await connect();
+      room.webSocketClose(socket as unknown as WebSocket, code, "bye");
+      expect(socket.closeInfo?.code).toBe(code === 1005 || code === 1006 ? 1000 : code);
+    }
   });
 
   test("leaves page metadata off a diff when it did not change", async () => {
