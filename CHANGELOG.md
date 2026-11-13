@@ -8,6 +8,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `upsert` transaction op with separate `values` and `create`: the engine
+  creates the row from `create` when it is missing and writes `values` when it
+  exists, deciding inside the transaction. Row rules judge whichever set will
+  be written. The optimistic cache makes the same choice from what it holds.
+
 - Query filters gain `$nin` and the logical keys `$or`, `$and` (non-empty
   arrays of filters) and `$not`, nesting up to four levels. Null handling
   matches `$ne`: a row whose field is null is "not in" a list and matches the

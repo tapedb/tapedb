@@ -70,6 +70,7 @@ function applyOp(context: ApplyContext, op: ValidatedOp): number {
   switch (op.kind) {
     case "insert":
     case "patch":
+    case "upsert":
     case "update":
     case "merge":
       return applyValues(context, op, namespace);
@@ -103,7 +104,14 @@ function applyValues(
         `No "${namespace.apiName}" row with id "${op.id}" to update.`
       );
     }
-    return insertRow(context, op, namespace, table);
+    return insertRow(
+      context,
+      op.kind === "upsert" && op.createValues !== undefined
+        ? { ...op, values: op.createValues }
+        : op,
+      namespace,
+      table
+    );
   }
 
   if (op.kind === "insert" && !context.replay) {
