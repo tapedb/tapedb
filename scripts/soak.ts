@@ -299,7 +299,6 @@ for (let generation = 1; generation <= GENERATIONS; generation += 1) {
     const retry = runTransaction(target.tx, TEST_WORKSPACE, claim, {
       txId: "retry",
       clientTxId: lastWrite.clientTxId,
-      basisSeq: Number(highWater) - 1,
       ops: lastWrite.ops,
     });
     assert(retry.applied === 0, `generation ${generation}: a retry inside the horizon was applied again`);

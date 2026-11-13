@@ -12,7 +12,6 @@
  * therefore safe.
  */
 
-import { DEDUPE_FLOOR_META_KEY } from "../tx-pipeline";
 import { applyFileOps, isFileOpList } from "../file-index";
 import {
   changesAfter,
@@ -76,6 +75,8 @@ export type RecoveryResult =
       rows: number;
       /** Log transactions with at least one op applied. */
       replayed: number;
+      /** Set when the restore could not carry everything forward. */
+      warnings?: string[];
     };
 
 interface PragmaColumn extends Record<string, SqlValue> {
@@ -1013,30 +1014,6 @@ function writeFinalState(
 }
 
 /**
- * Records the highest sequence whose idempotency key did not survive.
- *
- * Every line above the snapshot base was replayed, so a missing key can only
- * sit at or below it, where pruned segments leave a gap. The pipeline refuses
- * a retry whose basis is below this floor instead of trusting an absent key.
- */
-function writeDedupeFloor(sql: RecoverySqlExecutor, baseSeq: number): void {
-  const present = sql
-    .exec<{ seq: number }>(
-      `SELECT seq FROM "_tx_log" WHERE seq <= ? ORDER BY seq DESC`,
-      baseSeq
-    )
-    .toArray();
-
-  let floor = baseSeq;
-  for (const row of present) {
-    if (Number(row.seq) !== floor) break;
-    floor -= 1;
-  }
-
-  setMeta(sql, DEDUPE_FLOOR_META_KEY, String(floor));
-}
-
-/**
  * Rebuilds `workspaceId` from its R2 manifest, snapshot chunks and log
  * segments.
  *
@@ -1130,10 +1107,20 @@ export async function recoverWorkspace(
     // never look caught up while its sequence state is only half written.
     sql.transactionSync(() => {
       writeFinalState(sql, manifest, replay.maxSeq, now);
-      if (manifest.dedupeFloorSeq === undefined) writeDedupeFloor(sql, manifest.baseSeq);
-      else setMeta(sql, DEDUPE_FLOOR_META_KEY, String(manifest.dedupeFloorSeq));
+      // Written by engines that tracked missing receipts; nothing reads it.
+      sql.exec(`DELETE FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`);
       markComplete(sql, manifest, now);
     });
+
+    // Snapshots from development builds before transaction receipts existed
+    // carry none, so retries of writes folded into them cannot be recognised.
+    // (A manifest with no snapshot yet replays every line, receipts included.)
+    const receiptless =
+      manifest.baseSeq > 0 &&
+      !manifest.tables.some((table) => table.name === ENGINE_TABLES.txReceipts);
+    if (receiptless) {
+      console.warn("workspace_recovered_without_receipts", { workspaceId, baseSeq: manifest.baseSeq });
+    }
 
     return {
       recovered: true,
@@ -1142,6 +1129,13 @@ export async function recoverWorkspace(
       tables: restored.tables,
       rows: restored.rows,
       replayed: replay.replayed,
+      ...(receiptless
+        ? {
+            warnings: [
+              `The snapshot predates transaction receipts: a retry of a write at or below seq ${manifest.baseSeq} is not recognised as a retry.`,
+            ],
+          }
+        : {}),
     };
   } catch (error) {
     try {

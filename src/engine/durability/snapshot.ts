@@ -461,7 +461,6 @@ export async function snapshotWorkspace(
         createdAt: current?.createdAt ?? manifestCreatedAt(now),
         engineVersion: readEngineVersion(sql),
         schemaVersion: readSchemaVersion(sql),
-        dedupeFloorSeq: Number(sql.exec<{value: string}>(`SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`).toArray()[0]?.value ?? 0),
         tables,
         totalRows,
         totalBytes,

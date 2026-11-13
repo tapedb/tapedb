@@ -88,8 +88,7 @@ export interface QueryOptions {
   count?: boolean;
   /**
    * Attributes to return, by API name. Omitted means every attribute. `id`
-   * and `updatedSeq` are always returned: live diffs key rows by id, and the
-   * client's retry basis reads the sequence.
+   * is always returned: live diffs key rows by it.
    */
   select?: string[];
   /**

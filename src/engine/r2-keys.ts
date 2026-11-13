@@ -44,8 +44,6 @@ export interface WorkspaceManifest {
   engineVersion: string;
   /** The app schema the snapshot was taken under; absent before it was recorded. */
   schemaVersion?: string;
-  /** Missing historical receipts only exist in snapshots from older engines. */
-  dedupeFloorSeq?: number;
   tables: ManifestTable[];
   totalRows: number;
   totalBytes: number;
@@ -219,8 +217,6 @@ export function isWorkspaceManifest(
     !Array.isArray(candidate.tables) ||
     !candidate.tables.every(isManifestTable) ||
     !isNonNegativeInteger(candidate.totalRows) ||
-    (candidate.dedupeFloorSeq !== undefined && (!isNonNegativeInteger(candidate.dedupeFloorSeq) || candidate.dedupeFloorSeq > candidate.baseSeq)) ||
-    (candidate.dedupeFloorSeq !== undefined && Array.isArray(candidate.tables) && !candidate.tables.some((table: { name?: string }) => table?.name === "_tx_receipts")) ||
     !isNonNegativeInteger(candidate.totalBytes)
   ) {
     return false;

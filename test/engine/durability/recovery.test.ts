@@ -1097,17 +1097,13 @@ describe("file index across a restore", () => {
   });
 });
 
-describe("legacy snapshots without transaction receipts", () => {
+describe("transaction receipts through a restore", () => {
   const ops = [
     { op: "update", namespace: "folders", id: "f-retry", values: { name: "Once" } },
   ];
 
-  /**
-   * Seq 1 seed, seq 2 the client's write, both folded into a snapshot at base
-   * 2. Optionally prunes the segment that held seq 2's key, which is what
-   * happens once it falls outside LOG_RETENTION_SEQ.
-   */
-  async function restored(pruneKeySegment: boolean): Promise<Source> {
+  /** Seq 1 seed, seq 2 the client's write, both folded into a snapshot at base 2. */
+  async function restored(): Promise<Source> {
     const source = createSource();
     seedWorkspace(source);
     const bucket = new FakeR2Bucket();
@@ -1116,18 +1112,6 @@ describe("legacy snapshots without transaction receipts", () => {
     run(source, { txId: "w1", clientTxId: "client-r", ops } as TxEnvelope);
     await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
     await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 20);
-
-    if (pruneKeySegment) {
-      // Simulate the old snapshot format, which never retained receipts.
-      const key = manifestKey(TEST_WORKSPACE);
-      const manifest = JSON.parse(new TextDecoder().decode(bucket.bodyOf(key)!));
-      delete manifest.dedupeFloorSeq;
-      manifest.tables = manifest.tables.filter((table: {name: string}) => table.name !== "_tx_receipts");
-      bucket.seed(key, JSON.stringify(manifest));
-      for (const key of [...bucket.objects.keys()]) {
-        if (key.includes("/log/")) bucket.objects.delete(key);
-      }
-    }
 
     const target = createSource();
     await recoverWorkspace(
@@ -1139,52 +1123,43 @@ describe("legacy snapshots without transaction receipts", () => {
     return target;
   }
 
-  test("a restore that kept every key records no floor and dedupes", async () => {
-    const target = await restored(false);
-    expect(scalar(target.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe("0");
-    const retry = run(target, { txId: "w2", clientTxId: "client-r", basisSeq: 1, ops } as TxEnvelope);
+  test("a restore keeps every receipt, so a retry of a write in the snapshot is answered, not applied", async () => {
+    const target = await restored();
+    const retry = run(target, { txId: "w2", clientTxId: "client-r", ops } as TxEnvelope);
     expect(retry).toMatchObject({ seq: 2, applied: 0 });
   });
 
-  test("a retry from below the floor is refused, not applied twice", async () => {
-    const target = await restored(true);
-    expect(scalar(target.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe("2");
-
-    // The client created the write after seeing seq 1. Its key is gone, so the
-    // server cannot tell whether seq 2 was this write.
-    expect(() =>
-      run(target, { txId: "w2", clientTxId: "client-r", basisSeq: 1, ops } as TxEnvelope)
-    ).toThrow(/may already be applied/);
-    expect(scalar(target.db, `SELECT high_water_seq FROM "_tx_state"`)).toBe(2);
-
-    // Negative control: without a basis the engine cannot know, and the retry
-    // is applied a second time. This is what basisSeq prevents.
-    const blind = run(target, { txId: "w3", clientTxId: "client-r", ops } as TxEnvelope);
-    expect(blind).toMatchObject({ seq: 3, applied: 1 });
-  });
-
-  test("a retry whose basis is at or above the floor is answered normally", async () => {
-    const target = await restored(true);
-
-    // Created after the client saw seq 2: any earlier attempt would sit above
-    // the floor, where every key is known, so an unknown key means unapplied.
-    const fresh = [
-      { op: "update", namespace: "folders", id: "f-new", values: { name: "New" } },
-    ];
-    const first = run(target, { txId: "n1", clientTxId: "client-new", basisSeq: 2, ops: fresh } as TxEnvelope);
-    expect(first).toMatchObject({ seq: 3, applied: 1 });
-    const again = run(target, { txId: "n2", clientTxId: "client-new", basisSeq: 2, ops: fresh } as TxEnvelope);
-    expect(again).toMatchObject({ seq: 3, applied: 0 });
-  });
-
-  test("basisSeq is validated", () => {
+  test("a snapshot from before receipts still restores, and says what it could not carry", async () => {
     const source = createSource();
-    expect(() =>
-      run(source, { txId: "v1", clientTxId: "c", basisSeq: -1, ops } as TxEnvelope)
-    ).toThrow(/basisSeq must be a non-negative integer/);
-    expect(() =>
-      run(source, { txId: "v2", basisSeq: 1, ops } as TxEnvelope)
-    ).toThrow(/only meaningful with a clientTxId/);
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+    run(source, { txId: "w1", clientTxId: "client-r", ops } as TxEnvelope);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+    await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 20);
+    const key = manifestKey(TEST_WORKSPACE);
+    const manifest = JSON.parse(new TextDecoder().decode(bucket.bodyOf(key)!));
+    manifest.dedupeFloorSeq = 0;
+    manifest.tables = manifest.tables.filter((table: { name: string }) => table.name !== "_tx_receipts");
+    bucket.seed(key, JSON.stringify(manifest));
+
+    const target = createSource();
+    // A floor an older engine wrote is cleared, not obeyed.
+    target.db.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('dedupe_floor_seq', '9')`);
+    const result = await recoverWorkspace(
+      bucket as unknown as R2Bucket,
+      recoveryExecutor(target.db, target.sql),
+      TEST_WORKSPACE,
+      { now: NOW + 30, force: true }
+    );
+    expect(result).toMatchObject({ recovered: true, baseSeq: 2 });
+    expect((result as { warnings?: string[] }).warnings?.[0]).toMatch(/predates transaction receipts/);
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe(0);
+
+    // New writes are deduped as always; nothing is refused.
+    const fresh = [{ op: "update", namespace: "folders", id: "f-new", values: { name: "New" } }];
+    expect(run(target, { txId: "n1", clientTxId: "client-new", ops: fresh } as TxEnvelope)).toMatchObject({ seq: 3, applied: 1 });
+    expect(run(target, { txId: "n2", clientTxId: "client-new", ops: fresh } as TxEnvelope)).toMatchObject({ seq: 3, applied: 0 });
   });
 });
 
@@ -1268,9 +1243,9 @@ describe("the local log is bounded", () => {
     // base 10, horizon 3: rows 1..7 go, 8..10 stay.
     expect(scalar(source.db, `SELECT GROUP_CONCAT(seq) FROM (SELECT seq FROM "_tx_log" ORDER BY seq)`)).toBe("8,9,10");
     expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_receipts"`)).toBe(9);
-    expect(run(source, { txId: "r", clientTxId: "c4", basisSeq: 3, ops: [{ op: "update", namespace: "folders", id: "f4", values: { name: "F4" } }] } as TxEnvelope)).toMatchObject({seq: 4, applied: 0});
+    expect(run(source, { txId: "r", clientTxId: "c4", ops: [{ op: "update", namespace: "folders", id: "f4", values: { name: "F4" } }] } as TxEnvelope)).toMatchObject({seq: 4, applied: 0});
     // ...one above it is still deduped, and new writes continue the sequence.
-    expect(run(source, { txId: "r2", clientTxId: "c9", basisSeq: 8, ops: [{ op: "update", namespace: "folders", id: "f9", values: { name: "F9" } }] } as TxEnvelope)).toMatchObject({ seq: 9, applied: 0 });
+    expect(run(source, { txId: "r2", clientTxId: "c9", ops: [{ op: "update", namespace: "folders", id: "f9", values: { name: "F9" } }] } as TxEnvelope)).toMatchObject({ seq: 9, applied: 0 });
     expect(write(source, 11).seq).toBe(11);
   });
 
@@ -1284,17 +1259,6 @@ describe("the local log is bounded", () => {
     trimLocalLog(source.sql, 10, { retainLogSequences: 3 });
     expect(scalar(source.db, `SELECT MIN(seq) FROM "_tx_log"`)).toBe(2);
     expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(9);
-  });
-
-  test("the floor never moves backwards", () => {
-    const source = createSource();
-    seedWorkspace(source);
-    for (let n = 2; n <= 10; n += 1) write(source, n);
-    source.db.exec(`UPDATE "_flush_state" SET last_seq = 10 WHERE id = 1`);
-    // A restore can leave a floor above what a trim would cut.
-    source.db.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('dedupe_floor_seq', '9')`);
-    expect(trimLocalLog(source.sql, 10, { retainLogSequences: 4 })).toBe(6); // rows 1..6
-    expect(scalar(source.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe("9");
   });
 });
 
@@ -1389,7 +1353,7 @@ describe("durable transaction receipts", () => {
     for(let generation=0;generation<2;generation++) {
       const target=createSource();
       await recoverWorkspace(bucket as unknown as R2Bucket,recoveryExecutor(target.db,target.sql),TEST_WORKSPACE,{now:NOW+generation+1});
-      expect(run(target,{...first,txId:"retry",basisSeq:0} as TxEnvelope)).toMatchObject({seq:1,applied:0});
+      expect(run(target,{...first,txId:"retry"} as TxEnvelope)).toMatchObject({seq:1,applied:0});
       expect(scalar(target.db,`SELECT name FROM folders WHERE id='receipt-folder'`)).toBe("Latest 29");
       expect(()=>run(target,{...first,ops:[{op:"update",namespace:"folders",id:"receipt-folder",values:{name:"Changed"}}]} as TxEnvelope)).toThrow(/different ops/);
       expect(scalar(target.db,`SELECT COUNT(*) FROM "_tx_receipts"`)).toBe(31);
