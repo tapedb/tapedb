@@ -114,10 +114,12 @@ await db.transact([db.tx.boards[id()].update({ name: "New" })]);
   cold-start replay. Verified against a real Worker: rows and the sequence
   survive deleting the Durable Object's entire SQLite (snapshot plus replayed
   segment), and the next transaction continues from the right sequence.
-  Recovery rebuilds `_tx_log` from the replayed segments, so a retried
-  `clientTxId` returns `applied: 0` after a cold start - measured live. The
-  ceiling is the snapshot: once a transaction is folded into a snapshot its key
-  is gone, and a retry crossing that boundary is re-applied.
+  Recovery rebuilds `_tx_log` from the log segments, so a retried `clientTxId`
+  returns `applied: 0` after a cold start - measured live, including for a
+  transaction that a snapshot had already folded in. A snapshot stores rows and
+  not keys, so covered segments are retained for `DEDUPE_HORIZON_SEQ` (2000
+  sequence numbers) past the snapshot base; beyond that the segment is pruned
+  and the key with it. That is the retry window, stated rather than implied.
 - **Presence** and **file uploads** on the same socket and the same bucket set.
   Uploads write bytes to R2 and a metadata row into the workspace, so
   `GET /engine/workspaces/:id/files` lists what the workspace contains.

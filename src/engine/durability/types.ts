@@ -54,6 +54,11 @@ export interface SnapshotOptions {
   chunkBytes?: number;
   /** Snapshot prefixes to keep, including the one just written. Defaults to 2. */
   retention?: number;
+  /**
+   * How far below the snapshot base a covered log segment is retained for
+   * idempotency keys. Defaults to `DEDUPE_HORIZON_SEQ`; 0 prunes immediately.
+   */
+  dedupeHorizonSeq?: number;
 }
 
 export interface SnapshotResult {

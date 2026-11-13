@@ -568,13 +568,13 @@ describe("recoverWorkspace", () => {
 
     expect(scalar(target.db, `SELECT high_water_seq FROM "_tx_state"`)).toBe(3);
 
-    // The replayed lines are written back into `_tx_log`, so the idempotency
-    // keys survive the cold start for as long as the segments are retained.
-    // Seq 1 is inside the snapshot base and is therefore not replayed.
-    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(2);
+    // The lines are written back into `_tx_log`, so idempotency keys survive
+    // the cold start for as long as the segments are retained. Seq 2 and 3 are
+    // replayed; seq 1 sits at the snapshot base and contributes only its key.
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(3);
     expect(
       scalar(target.db, `SELECT GROUP_CONCAT(seq) FROM (SELECT seq FROM "_tx_log" ORDER BY seq)`)
-    ).toBe("2,3");
+    ).toBe("1,2,3");
     expect(scalar(target.db, `SELECT last_seq FROM "_flush_state"`)).toBe(3);
     expect(scalar(target.db, `SELECT base_seq FROM "_snapshot_state"`)).toBe(1);
 
@@ -618,7 +618,9 @@ describe("recoverWorkspace", () => {
       TEST_WORKSPACE,
       { now: NOW + 20 }
     );
-    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(1);
+    // Two keys: the seed at the snapshot base, and the transaction replayed
+    // from the segment above it.
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(2);
 
     // The client never saw the acknowledgement and retries after the eviction.
     const retry = run(target, {
@@ -646,6 +648,52 @@ describe("recoverWorkspace", () => {
         ],
       } as TxEnvelope)
     ).toThrow(/already used with different ops/);
+  });
+
+  test("keeps a key folded into a snapshot, using the retained segment", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW); // baseline snapshot at seq 1
+
+    const ops = [
+      {
+        op: "update",
+        namespace: "folders",
+        id: "f-folded",
+        values: { name: "Folded" },
+      },
+    ];
+    run(source, { txId: "s1", clientTxId: "client-snap", ops } as TxEnvelope);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10); // segment 2-2
+
+    // A second snapshot folds seq 2 into the snapshot itself.
+    await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 20);
+
+    // The segment stays inside the idempotency horizon instead of being pruned.
+    expect(
+      [...bucket.objects.keys()].some((key) => key.endsWith("/log/2-2.ndjson"))
+    ).toBe(true);
+
+    const target = createSource();
+    const result = (await recoverWorkspace(
+      bucket as unknown as R2Bucket,
+      recoveryExecutor(target.db, target.sql),
+      TEST_WORKSPACE,
+      { now: NOW + 30 }
+    )) as Extract<RecoveryResult, { recovered: true }>;
+
+    // Snapshot base moved past the transaction, so its rows came from the
+    // snapshot and only its key came from the segment.
+    expect(result.baseSeq).toBe(2);
+
+    const retry = run(target, {
+      txId: "s2",
+      clientTxId: "client-snap",
+      ops,
+    } as TxEnvelope);
+    expect(retry).toMatchObject({ applied: 0 });
   });
 
   test("is idempotent when recovery is repeated", async () => {
