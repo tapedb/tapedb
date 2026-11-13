@@ -97,4 +97,29 @@ export async function assertions(): Promise<void> {
   });
   // @ts-expect-error not a field of column
   await db.column.findMany({ select: { nope: true } });
+
+  // Aggregates: only the measures asked for, typed per field.
+  const stats = await db.column.aggregate({
+    _count: true,
+    _sum: { position: true },
+    _min: { name: true, createdAt: true },
+  });
+  expectType<Equal<typeof stats._count, number>>();
+  expectType<Equal<typeof stats._sum.position, number | null>>();
+  expectType<Equal<typeof stats._min.name, string | null>>();
+  expectType<Equal<typeof stats._min.createdAt, number | null>>();
+  // @ts-expect-error no average was asked for
+  stats._avg;
+  const counted = await db.column.aggregate({ _count: { _all: true, note: true } });
+  expectType<Equal<keyof typeof counted._count, "_all" | "note">>();
+  const groups = await db.column.groupBy({ by: ["boardId", "archived"], _avg: { position: true }, orderBy: { boardId: "desc" } });
+  expectType<Equal<(typeof groups)[0]["boardId"], string>>();
+  expectType<Equal<(typeof groups)[0]["archived"], boolean>>();
+  expectType<Equal<(typeof groups)[0]["_avg"]["position"], number | null>>();
+  // @ts-expect-error a string cannot be summed
+  await db.column.aggregate({ _sum: { name: true } });
+  // @ts-expect-error a boolean has no minimum
+  await db.column.aggregate({ _min: { archived: true } });
+  // @ts-expect-error json cannot key a group
+  await db.board.groupBy({ by: ["columns"], _count: true });
 }

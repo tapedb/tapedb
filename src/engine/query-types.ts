@@ -11,6 +11,7 @@
  * attributes are JSON values. Storage conversion happens in `query-execute.ts`.
  */
 
+import { parseAggregate, type AggregateGroup, type QueryAggregate } from "./query-aggregate";
 import { TxError } from "./tx-types";
 
 export const DEFAULT_QUERY_LIMIT = 100;
@@ -93,6 +94,12 @@ export interface QueryOptions {
    * client's retry basis reads the sequence.
    */
   select?: string[];
+  /**
+   * Top level only: count, sum, avg, min and max over the matching rows,
+   * optionally grouped. Reads no rows; the result is
+   * `pageInfo[namespace].aggregate`.
+   */
+  aggregate?: QueryAggregate;
 }
 
 /**
@@ -134,6 +141,8 @@ export interface PageInfo {
   nextCursor?: string;
   /** Total matching rows, when the query asked for `count`. */
   count?: number;
+  /** The groups, when the query asked for `aggregate`. */
+  aggregate?: AggregateGroup[];
 }
 
 export type QueryPageInfo = Record<string, PageInfo>;
@@ -151,7 +160,7 @@ export interface QueryErrorResponse {
   };
 }
 
-const OPTION_KEYS = new Set(["where", "order", "limit", "after", "count", "select"]);
+const OPTION_KEYS = new Set(["where", "order", "limit", "after", "count", "select", "aggregate"]);
 const LOGICAL_KEYS = new Set(["$or", "$and", "$not", "$link"]);
 const RELATION_MODES = new Set(["parent", "some", "every", "none"]);
 const COMPARISON_OPERATORS = new Set([
@@ -223,10 +232,15 @@ export function parseQueryOptions(value: unknown): QueryOptions {
     }
     options.count = value.count;
   }
+  if ("aggregate" in value) {
+    options.aggregate = parseAggregate(value.aggregate);
+  }
   if ("limit" in value) {
-    // limit 0 only makes sense as "count, read no rows".
+    // limit 0 only makes sense as "count or aggregate, read no rows".
     options.limit =
-      value.limit === 0 && options.count === true ? 0 : parseLimit(value.limit);
+      value.limit === 0 && (options.count === true || options.aggregate !== undefined)
+        ? 0
+        : parseLimit(value.limit);
   }
   if ("after" in value) {
     options.after = parseCursor(value.after);

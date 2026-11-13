@@ -22,6 +22,13 @@ import {
   type CompiledQuery,
 } from "./query-compile";
 import {
+  AggregateFold,
+  aggregateColumns,
+  buildAggregateSql,
+  groupsFromSql,
+} from "./query-aggregate";
+import type { AggregateGroup } from "./query-aggregate";
+import {
   encodeQueryCursor,
   parseQueryEnvelope,
   type QueryPageInfo,
@@ -188,8 +195,11 @@ export function executeCompiledQueryWithPageInfo(
     }
 
     const count = node.count ? countRows(sql, node, claim) : undefined;
+    const aggregate =
+      node.aggregate === null ? undefined : aggregateRows(sql, node, claim);
 
-    // limit 0 is a count with no rows: nothing to fill, nothing to resume.
+    // limit 0 is a count or aggregate with no rows: nothing to fill, nothing
+    // to resume.
     const { page, hasMore } =
       limit === 0
         ? { page: [] as HydratedEntity[], hasMore: (count ?? 0) > 0 }
@@ -204,10 +214,57 @@ export function executeCompiledQueryWithPageInfo(
       hasMore,
       ...(nextCursor === undefined ? {} : { nextCursor }),
       ...(count === undefined ? {} : { count }),
+      ...(aggregate === undefined ? {} : { aggregate }),
     };
   }
 
   return { data, pageInfo };
+}
+
+/**
+ * Aggregates the rows matching the node's conditions, `where` read rules
+ * included. A function read rule cannot run in SQL, so for one the matching
+ * rows are walked in bounded chunks in id order, the rule applied to each,
+ * and the visible ones folded; no limit on how far the walk goes.
+ */
+function aggregateRows(
+  sql: SqlExecutor,
+  node: CompiledNode,
+  claim: RoleClaim | undefined
+): AggregateGroup[] {
+  const aggregate = node.aggregate!;
+  const conditions = node.conditions.filter((condition) => !condition.cursor);
+
+  if (claim === undefined || !hasFunctionViewRule(node.namespace)) {
+    const statement = buildAggregateSql(node.table, aggregate, conditions);
+    return groupsFromSql(aggregate, sql.all<PhysicalRow>(statement.sql, ...statement.params), fromStoredValue);
+  }
+
+  const namespace = findNamespace(node.namespace);
+  const fold = new AggregateFold(aggregate);
+  const chunk = 200;
+  const base: CompiledNode = {
+    ...node,
+    columns: [
+      ...new Set([
+        ...(namespace === undefined ? node.columns : selectColumns(namespace)),
+        ...aggregateColumns(aggregate),
+      ]),
+    ],
+    conditions,
+    order: [{ column: "id", direction: "asc" }],
+    children: [],
+    limit: chunk,
+  };
+  let cursor: CompiledCondition | null = null;
+  for (;;) {
+    const rows = hydrateNode(sql, cursor === null ? base : { ...base, conditions: [...conditions, cursor] });
+    for (const entity of rows) {
+      if (allowRowView(claim, entity.namespace, rowToApi(entity))) fold.add(entity.row);
+    }
+    if (rows.length < chunk) return fold.groups(fromStoredValue);
+    cursor = conditionAfter(base.order, rows[rows.length - 1].row)!;
+  }
 }
 
 /**
