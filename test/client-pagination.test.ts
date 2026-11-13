@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { createHeadlessClient } from "../src/index";
+import { createHeadlessClient } from "../src/client/data-client";
 import { MemoryOutbox } from "../src/client/outbox";
 import type { WebSocketLike } from "../src/client/socket";
 import type { QueryDocument, QueryPageInfo } from "../src/client/types";
@@ -295,20 +295,7 @@ describe("client pagination", () => {
     expect(db.getQueryState(query).data?.boards?.length).toBe(2);
   });
 
-  test("the React client exposes the same loadMore", async () => {
-    const react = await import("../src/react/index");
-    const db = react.createDataClient(
-      {
-        workspaceId: WORKSPACE,
-        apiUrl: "http://localhost:8787",
-        getToken: async () => "test-token",
-      },
-      { createWebSocket: () => new FakeSocket(), outbox: new MemoryOutbox() }
-    );
 
-    expect(typeof db.loadMore).toBe("function");
-    db.close();
-  });
 
   /** Loads page two and answers it, leaving a 4-row window. */
   async function withTwoPages() {

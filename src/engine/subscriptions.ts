@@ -1,5 +1,5 @@
 /**
- * Live-query invalidation and diffing (KAN-393).
+ * Live-query invalidation and diffing.
  *
  * The workspace DO keeps one subscription per client query. After a commit we
  * derive the namespaces a transaction touched, re-run only the subscriptions

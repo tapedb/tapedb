@@ -1,5 +1,5 @@
 /**
- * The `$files` index, written through the transaction log.
+ * The `_files` index, written through the transaction log.
  *
  * Bytes live in R2 and never enter the log. Their metadata rows do: a row that
  * changes outside the log exists only in the Durable Object's SQLite and in

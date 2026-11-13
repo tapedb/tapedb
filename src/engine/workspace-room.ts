@@ -333,7 +333,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   /**
-   * Runs an InstaQL query against this workspace. The claim is read from the
+   * Runs a query document against this workspace. The claim is read from the
    * Worker-forwarded header; `executeQuery` requires `view` on every requested
    * and traversed namespace before touching SQL.
    */

@@ -9,7 +9,7 @@
 
 import { describe, expect, test } from "bun:test";
 
-import { createHeadlessClient } from "../src/index";
+import { createHeadlessClient } from "../src/client/data-client";
 import { MemoryOutbox } from "../src/client/outbox";
 import type { WebSocketLike } from "../src/client/socket";
 import type { OutboxEntry, WriteRejection } from "../src/client/types";

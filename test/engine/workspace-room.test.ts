@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../fixtures/registry";
+useLegacyFixture();
 
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, mock, test } from "bun:test";

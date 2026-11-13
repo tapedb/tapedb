@@ -1,5 +1,5 @@
 /**
- * InstaQL-to-SQLite compiler for the workspace engine (KAN-392).
+ * Query-document-to-SQLite compiler for the workspace engine.
  *
  * The compiler resolves every namespace, table, column and link from the
  * registry; client input never names a SQL identifier. Each requested level

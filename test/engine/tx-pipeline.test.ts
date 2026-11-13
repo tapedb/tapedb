@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../fixtures/registry";
+useLegacyFixture();
 
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";

@@ -1,5 +1,5 @@
 /**
- * Registry mapping InstantDB-style API names to workspace SQLite tables.
+ * Registry mapping the original-style API names to workspace SQLite tables.
  *
  * DDL is owned by Atlas (`migrations/workspace`). This registry is the runtime
  * contract used by query compilation, validation and permissions. Registry
