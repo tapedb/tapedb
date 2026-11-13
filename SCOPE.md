@@ -61,8 +61,7 @@ text documents (CRDTs/Yjs), theming, i18n, auth providers, billing, teams,
 emails, webhooks — these belong to the host app.
 
 Out of v1, could earn their way in later: `select` projections, aggregates
-beyond `count`, nested `create`, broadcast topics, a user-facing export API,
-a hosted devtool.
+beyond `count`, broadcast topics, a user-facing export API, a hosted devtool.
 
 ## Known trade-offs
 
@@ -86,6 +85,8 @@ a hosted devtool.
 - **Bulk writes cap at 1000 rows** and are neither optimistic nor queued
   offline: the engine resolves which rows match, so the cache cannot show the
   result before the write lands.
+- **Nested `create` goes three levels deep**, and the types follow one, for
+  the same reason relation filters do.
 - **Relation filters go two links deep**, and the types follow one. A second
   hop is accepted and checked by the engine, not by the editor: typing both
   hops means resolving the model graph into itself for every key, which runs
