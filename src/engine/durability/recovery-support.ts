@@ -6,6 +6,7 @@
  * recovery needs both on one object.
  */
 
+import { fitBindings } from "../sql-binding";
 import type { RecoverySqlExecutor } from "./recovery";
 import type { SqlValue } from "./sql";
 
@@ -17,7 +18,8 @@ export function durableObjectRecoverySqlExecutor(
       query: string,
       ...bindings: SqlValue[]
     ) {
-      return storage.sql.exec<T>(query, ...bindings);
+      const fitted = fitBindings(query, bindings);
+      return storage.sql.exec<T>(fitted.sql, ...fitted.params);
     },
     transactionSync<T>(fn: () => T): T {
       return storage.transactionSync(fn);
