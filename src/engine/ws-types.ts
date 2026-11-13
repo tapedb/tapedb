@@ -14,7 +14,7 @@ import {
   type RoleClaim,
   type WorkspaceRole,
 } from "../claims";
-import type { QueryDocument, QueryResult } from "./query-types";
+import type { QueryDocument, QueryPageInfo, QueryResult } from "./query-types";
 
 export interface StoredSubscription {
   id: string;
@@ -133,6 +133,7 @@ export interface QueryDataMessage {
   id: string;
   seq: number;
   data: QueryResult;
+  pageInfo?: QueryPageInfo;
 }
 
 export interface QueryDiffMessage {
@@ -144,6 +145,8 @@ export interface QueryDiffMessage {
   added: unknown[];
   updated: unknown[];
   removed: string[];
+  /** Present when the subscription's page metadata changed. */
+  pageInfo?: QueryPageInfo;
 }
 
 export interface QueryUnsubscribedMessage {

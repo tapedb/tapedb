@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { stableStringify } from "./tx-hash";
 import type { RoleClaim } from "../claims";
 import { apiError, discardBody, json } from "../http";
 import type { Env } from "../types";
@@ -82,7 +83,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    */
   private readonly subscriptionResults = new Map<
     string,
-    Map<string, QueryResult>
+    Map<string, CachedResult>
   >();
 
   /** Namespaces touched since the current debounce window opened. */
@@ -742,7 +743,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       query as QueryDocument
     );
     ws.serializeAttachment(attachment);
-    this.resultsFor(attachment.clientId).set(id, data);
+    this.resultsFor(attachment.clientId).set(id, { data, pageInfo });
     this.send(ws, {
       type: "query:data",
       id,
@@ -795,10 +796,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
   }
 
-  private resultsFor(clientId: string): Map<string, QueryResult> {
+  private resultsFor(clientId: string): Map<string, CachedResult> {
     let results = this.subscriptionResults.get(clientId);
     if (!results) {
-      results = new Map<string, QueryResult>();
+      results = new Map<string, CachedResult>();
       this.subscriptionResults.set(clientId, results);
     }
     return results;
@@ -888,7 +889,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         }
 
         const previous = results.get(subscription.id);
-        results.set(subscription.id, data);
+        results.set(subscription.id, { data, pageInfo });
 
         if (previous === undefined) {
           subscription.seq += 1;
@@ -903,7 +904,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
           continue;
         }
 
-        const diffs = diffQueryResults(previous, data);
+        const diffs = diffQueryResults(previous.data, data);
         if (diffs === null) {
           subscription.seq += 1;
           this.send(ws, {
@@ -911,15 +912,29 @@ export class WorkspaceRoom extends DurableObject<Env> {
             id: subscription.id,
             seq: subscription.seq,
             data,
+            pageInfo,
           });
           attachmentChanged = true;
           continue;
         }
 
-        if (diffs.length === 0) continue;
+        // Page metadata moves without row changes too: a row inserted past
+        // the window flips hasMore and moves nextCursor. It rides the first
+        // diff, or an empty one when no row in the window changed.
+        const pageInfoChanged =
+          stableStringify(previous.pageInfo) !== stableStringify(pageInfo);
+        if (diffs.length === 0 && !pageInfoChanged) continue;
+        if (diffs.length === 0) {
+          diffs.push({
+            namespace: Object.keys(data)[0] ?? "",
+            added: [],
+            updated: [],
+            removed: [],
+          });
+        }
 
         subscription.seq += 1;
-        for (const diff of diffs) {
+        for (const [index, diff] of diffs.entries()) {
           const message: QueryDiffMessage = {
             type: "query:diff",
             id: subscription.id,
@@ -928,6 +943,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
             added: diff.added,
             updated: diff.updated,
             removed: diff.removed,
+            ...(index === 0 && pageInfoChanged ? { pageInfo } : {}),
           };
           this.send(ws, message);
         }
@@ -1175,6 +1191,12 @@ function upsertSubscription(
   const created: StoredSubscription = { id, seq: 1, query };
   attachment.subscriptions.push(created);
   return created;
+}
+
+/** A subscription's last result, kept to diff the next one against. */
+interface CachedResult {
+  data: QueryResult;
+  pageInfo: QueryPageInfo;
 }
 
 function errorMessage(error: unknown): string {
