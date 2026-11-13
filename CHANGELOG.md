@@ -17,6 +17,13 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- `$files` rows are written through the transaction log as engine-only
+  `file:put` / `file:forget` entries and replayed on recovery. They were written
+  in place before, so only snapshots carried them: a restore from R2 lost every
+  upload since the last snapshot and brought back every file deleted since.
+  Clients cannot submit these ops; `/transact` refuses them. Segments written
+  by this version contain file entries that older builds cannot replay.
+
 - Recovery rebuilds `_tx_log` from the replayed log segments instead of
   discarding it, so a `clientTxId` retry that crosses a cold start returns
   `applied: 0` rather than applying twice. Segment lines already carried the

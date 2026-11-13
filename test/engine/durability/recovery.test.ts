@@ -19,6 +19,7 @@ import {
   type RecoverySqlExecutor,
 } from "../../../src/engine/durability/recovery";
 import { snapshotWorkspace } from "../../../src/engine/durability/snapshot";
+import { forgetFileEntry, recordFileEntry } from "../../../src/engine/file-index";
 import type { SqlExecutor as DurabilitySql, SqlValue } from "../../../src/engine/durability/sql";
 import { FakeR2Bucket, openTestDb, TEST_WORKSPACE } from "../../fixtures/test-support";
 
@@ -1026,5 +1027,71 @@ describe("recoverWorkspace", () => {
     );
 
     expect(meta(target.db, "recovery_status")).toBe("failed");
+  });
+});
+
+describe("file index across a restore", () => {
+  function files(db: Database): Array<{ path: string; r2_key: string; size: number }> {
+    return db
+      .query(`SELECT "path", "r2_key", "size" FROM "$files" ORDER BY "path"`)
+      .all() as Array<{ path: string; r2_key: string; size: number }>;
+  }
+
+  test("uploads and deletes after the snapshot survive a cold start", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const sql = txExecutor(source.db);
+
+    recordFileEntry(sql, { path: "kept.png", key: "k/kept", size: 10, contentType: "image/png" });
+    recordFileEntry(sql, { path: "doomed.png", key: "k/doomed", size: 20, contentType: null });
+
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW); // snapshot holds kept + doomed
+
+    // After the snapshot: one new upload, one overwrite, one delete.
+    recordFileEntry(sql, { path: "late.pdf", key: "k/late", size: 30, contentType: "application/pdf" });
+    recordFileEntry(sql, { path: "kept.png", key: "k/kept-v2", size: 11, contentType: "image/png" });
+    expect(forgetFileEntry(sql, "doomed.png")).toBe(1);
+
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+
+    const target = createSource();
+    await recoverWorkspace(
+      bucket as unknown as R2Bucket,
+      recoveryExecutor(target.db, target.sql),
+      TEST_WORKSPACE,
+      { now: NOW + 20 }
+    );
+
+    expect(files(target.db)).toEqual([
+      { path: "kept.png", r2_key: "k/kept-v2", size: 11 },
+      { path: "late.pdf", r2_key: "k/late", size: 30 },
+    ]);
+    expect(files(target.db)).toEqual(files(source.db));
+
+    // File entries take sequences, so a write after recovery cannot reuse one.
+    const next = run(target, {
+      txId: "after",
+      ops: [{ op: "update", namespace: "folders", id: "f-after", values: { name: "After" } }],
+    });
+    expect(next.seq).toBe(Number(scalar(source.db, `SELECT MAX(seq) FROM "_tx_log"`)) + 1);
+  });
+
+  test("forgetting a path that is not indexed burns no sequence", () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const before = scalar(source.db, `SELECT high_water_seq FROM "_tx_state"`);
+    expect(forgetFileEntry(txExecutor(source.db), "never.png")).toBe(0);
+    expect(scalar(source.db, `SELECT high_water_seq FROM "_tx_state"`)).toBe(before);
+  });
+
+  test("a client cannot forge a file op through a transaction", () => {
+    const source = createSource();
+    expect(() =>
+      run(source, {
+        txId: "forged",
+        ops: [{ op: "file:put", id: "x", path: "evil", key: "k", size: 1, contentType: null }],
+      } as unknown as TxEnvelope)
+    ).toThrow(/Op kind is not recognised/);
   });
 });

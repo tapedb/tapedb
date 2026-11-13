@@ -19,6 +19,7 @@ import {
   migrationChecksum,
   MIGRATIONS_TABLE_SQL,
 } from "./migrations";
+import { forgetFileEntry, recordFileEntry } from "./file-index";
 import { compileQuery, type CompiledQuery } from "./query-compile";
 import {
   authorizeQuery,
@@ -1041,25 +1042,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return apiError(400, "invalid_size", "size must be a non-negative number.");
     }
 
-    const now = Date.now();
-    const sql = durableObjectSqlExecutor(this.ctx.storage);
-    sql.exec(
-      `INSERT INTO "${ENGINE_TABLES.files}"
-         ("id", "path", "r2_key", "size", "content_type", "created_at", "updated_at")
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT("path") DO UPDATE SET
-         "r2_key" = excluded."r2_key",
-         "size" = excluded."size",
-         "content_type" = excluded."content_type",
-         "updated_at" = excluded."updated_at"`,
-      crypto.randomUUID(),
+    // Logged, not written in place: a row outside the log is lost by a restore
+    // from R2 (see file-index.ts).
+    recordFileEntry(durableObjectSqlExecutor(this.ctx.storage), {
       path,
       key,
       size,
-      typeof contentType === "string" ? contentType : null,
-      now,
-      now
-    );
+      contentType: typeof contentType === "string" ? contentType : null,
+    });
+    await this.scheduleFileFlush();
 
     return json({ ok: true, data: { path, size } }, 201);
   }
@@ -1077,12 +1068,25 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return apiError(400, "invalid_path", "path is required.");
     }
 
-    const sql = durableObjectSqlExecutor(this.ctx.storage);
-    const removed = sql.exec(
-      `DELETE FROM "${ENGINE_TABLES.files}" WHERE "path" = ?`,
+    const removed = forgetFileEntry(
+      durableObjectSqlExecutor(this.ctx.storage),
       path
     );
+    if (removed > 0) await this.scheduleFileFlush();
     return json({ ok: true, removed });
+  }
+
+  /** File-index entries are log rows, so they ship to R2 like any write. */
+  private async scheduleFileFlush(): Promise<void> {
+    try {
+      await this.scheduleNextDurabilityAlarm(Date.now());
+    } catch (error) {
+      // The entry is committed locally; the next write or boot reschedules.
+      console.error("workspace_durability_schedule_failed", {
+        workspaceId: this.workspaceId,
+        error: errorMessage(error),
+      });
+    }
   }
 
   /** Registry snapshot for tooling: API names, attribute types and links. */
