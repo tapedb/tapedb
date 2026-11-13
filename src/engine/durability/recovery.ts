@@ -148,7 +148,7 @@ export function restoreOrder(): string[] {
     remaining = remaining.filter((namespace) => !done.has(namespace.table));
   }
 
-  emitted.push(ENGINE_TABLES.files);
+  emitted.push(ENGINE_TABLES.files, ENGINE_TABLES.txReceipts);
   return emitted;
 }
 
@@ -181,7 +181,7 @@ export function allowedTables(): Set<string> {
   if (allowedTableCache === null || allowedTableCache.generation !== generation) {
     allowedTableCache = {
       generation,
-      tables: new Set<string>([...namespaceTables(), ENGINE_TABLES.files]),
+      tables: new Set<string>([...namespaceTables(), ENGINE_TABLES.files, ENGINE_TABLES.txReceipts]),
     };
   }
   return allowedTableCache.tables;
@@ -710,7 +710,7 @@ function parseLogLines(text: string, source: string): LogLine[] {
         `Log line in ${source} at line ${index + 1} has an invalid timestamp.`
       );
     }
-    if (!Array.isArray(ops) || ops.length === 0) {
+    if (!Array.isArray(ops) || (ops.length === 0 && !(typeof parsed.clientTxId === "string" && parsed.clientTxId.length > 0 && typeof parsed.opsHash === "string" && parsed.opsHash.length > 0))) {
       throw new Error(`Log line in ${source} at line ${index + 1} has no ops.`);
     }
 
@@ -825,8 +825,11 @@ function replayLine(
   }
 
   const ops = evolveOps(line.ops, changesAfter(line.schemaVersion));
-  // Every op in the line belonged to something a migration later dropped.
-  if (ops.length === 0) return false;
+  // Receipts survive even when a migration removed every referenced model.
+  if (ops.length === 0) {
+    recordReplayedLine(sql, line);
+    return false;
+  }
   const tx = validateEnvelope({ txId: "recovery", ops });
   const touched = new Set<string>();
   let applied = false;
@@ -873,6 +876,10 @@ function replayLine(
  */
 function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
   const ops = line.ops as readonly unknown[];
+  if (line.clientTxId) {
+    sql.exec(`INSERT OR IGNORE INTO "_tx_receipts" (id, seq, ops_hash) VALUES (?, ?, ?)`,
+      line.clientTxId, line.seq, line.opsHash ?? opsHash(ops));
+  }
 
   sql.exec(
     `INSERT OR IGNORE INTO "_tx_log"
@@ -947,7 +954,8 @@ async function replayLogs(
         }
 
         maxSeq = Math.max(maxSeq, line.seq);
-        if (replayLine(sql, txSql, line)) replayed += 1;
+        if (line.ops.length === 0) recordReplayedLine(sql, line);
+        else if (replayLine(sql, txSql, line)) replayed += 1;
       }
     });
   }
@@ -1083,6 +1091,7 @@ export async function recoverWorkspace(
     // `_tx_log` from the durable segments, so a row here belongs to a database
     // that is about to be replaced.
     sql.exec(`DELETE FROM "_tx_log"`);
+    sql.exec(`DELETE FROM "_tx_receipts"`);
 
     // Foreign keys are disabled for the restore so chunk order cannot break
     // self-references; `PRAGMA foreign_key_check` below is the safety net.
@@ -1121,7 +1130,8 @@ export async function recoverWorkspace(
     // never look caught up while its sequence state is only half written.
     sql.transactionSync(() => {
       writeFinalState(sql, manifest, replay.maxSeq, now);
-      writeDedupeFloor(sql, manifest.baseSeq);
+      if (manifest.dedupeFloorSeq === undefined) writeDedupeFloor(sql, manifest.baseSeq);
+      else setMeta(sql, DEDUPE_FLOOR_META_KEY, String(manifest.dedupeFloorSeq));
       markComplete(sql, manifest, now);
     });
 
