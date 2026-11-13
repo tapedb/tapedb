@@ -13,7 +13,7 @@
  * to each, and folds the visible ones here, in the same shape.
  */
 
-import { invalidOp, invalidValue, isPlainObject, MAX_QUERY_LIMIT } from "./query-types";
+import { invalidOp, invalidValue, isPlainObject } from "./query-types";
 import { toSnakeCase, type AttributeType, type NamespaceDefinition } from "./registry";
 import { balancedJoin } from "./sql-binding";
 import { quoteIdentifier } from "./tx-apply";
@@ -127,8 +127,8 @@ export function parseAggregate(value: unknown): QueryAggregate {
   }
   if ("limit" in value) {
     const limit = value.limit;
-    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > MAX_QUERY_LIMIT) {
-      throw invalidValue(`"aggregate.limit" must be an integer from 1 to ${MAX_QUERY_LIMIT}.`);
+    if (typeof limit !== "number" || !Number.isSafeInteger(limit) || limit < 1) {
+      throw invalidValue('"aggregate.limit" must be a positive integer.');
     }
     aggregate.limit = limit;
   }

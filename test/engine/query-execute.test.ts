@@ -356,7 +356,7 @@ describe("executeQuery", () => {
     expect((linked?.block as Record<string, unknown>).id).toBe("b1");
   });
 
-  test("reports truncation per namespace instead of capping silently", () => {
+  test("reads every row without a limit, and reports truncation with one", () => {
     for (let index = 0; index < 150; index += 1) {
       insert(store.db, "kanban_tasks", {
         id: `bulk-${index}`,
@@ -369,25 +369,22 @@ describe("executeQuery", () => {
       });
     }
 
-    const capped = executeQueryWithPageInfo(store.sql, MEMBER(), {
+    const all = executeQueryWithPageInfo(store.sql, MEMBER(), {
       query: { kanbanTasks: {} },
     });
-    expect(capped.data.kanbanTasks).toHaveLength(100);
-    expect(capped.pageInfo.kanbanTasks).toEqual({
-      limit: 100,
-      returned: 100,
-      hasMore: true,
-    });
+    expect(all.data.kanbanTasks).toHaveLength(154);
+    expect(all.pageInfo.kanbanTasks).toEqual({ limit: null, returned: 154, hasMore: false });
 
-    const uncapped = executeQueryWithPageInfo(store.sql, MEMBER(), {
-      query: { kanbanTasks: { $: { limit: 1000 } } },
+    const page = executeQueryWithPageInfo(store.sql, MEMBER(), {
+      query: { kanbanTasks: { $: { limit: 100 } } },
     });
-    expect(uncapped.data.kanbanTasks).toHaveLength(154);
-    expect(uncapped.pageInfo.kanbanTasks).toEqual({
-      limit: 1000,
-      returned: 154,
-      hasMore: false,
+    expect(page.data.kanbanTasks).toHaveLength(100);
+    expect(page.pageInfo.kanbanTasks).toEqual({ limit: 100, returned: 100, hasMore: true });
+
+    const counted = executeQueryWithPageInfo(store.sql, MEMBER(), {
+      query: { kanbanTasks: { $: { count: true } } },
     });
+    expect(counted.pageInfo.kanbanTasks).toMatchObject({ count: 154, returned: 154 });
   });
 
   test("resolves a one-to-one reverse link for every parent, not just the first 100", () => {

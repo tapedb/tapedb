@@ -345,7 +345,7 @@ describe("client pagination", () => {
     expect(state.pageInfo?.boards.nextCursor).toBe("cursor-2");
   });
 
-  test("the live window is clamped to the engine's limit", async () => {
+  test("the live window covers every loaded row, past 1000", async () => {
     const { db, socket } = await withFirstPage(firstPageInfo);
     const pending = db.loadMore(query);
     await flush();
@@ -359,7 +359,8 @@ describe("client pagination", () => {
       pageInfo: { boards: { limit: 2, returned: 1200, hasMore: false } },
     });
     expect(await pending).toBe(true);
-    expect(lastQueryOf(socket, "query:subscribe").query.boards.$?.limit).toBe(1000);
+    // The first page's two rows plus the 1200 just loaded.
+    expect(lastQueryOf(socket, "query:subscribe").query.boards.$?.limit).toBe(1202);
   });
 
   test("a live diff keeps pageInfo, so loadMore still works after a change", async () => {

@@ -19,7 +19,6 @@
 import { compileAggregate, type CompiledAggregate } from "./query-aggregate";
 import { balancedJoin } from "./sql-binding";
 import {
-  DEFAULT_QUERY_LIMIT,
   invalidOp,
   invalidValue,
   isIsoDate,
@@ -367,12 +366,9 @@ function compileNode(
     conditions,
     references: [...references],
     order,
-    // Only the top level gets the implicit result cap. A nested level is
-    // bounded per parent (see `hydrateChild`), never by one shared LIMIT.
-    limit:
-      options.aggregate !== undefined
-        ? 0
-        : (options.limit ?? (depth === 0 ? DEFAULT_QUERY_LIMIT : null)),
+    // No limit reads every matching row. A nested level's limit is applied
+    // per parent (see `hydrateChild`), never as one shared LIMIT.
+    limit: options.aggregate !== undefined ? 0 : (options.limit ?? null),
     explicitLimit: options.limit !== undefined,
     count: options.count === true,
     aggregate:

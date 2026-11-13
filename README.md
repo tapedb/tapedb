@@ -84,6 +84,11 @@ const page = await db.task.findPage({ orderBy: { due: "asc" }, take: 50 });
 // { rows, hasMore, cursor } — pass cursor back as `after`
 ```
 
+`findMany` returns every matching row unless you pass `take`; `take` and
+`findPage` sizes have no ceiling. Wide reads run as bounded statements under
+the hood (keyset chunks of 1000 rows, includes hydrated 1000 parents at a
+time), so nothing grows into one oversized query.
+
 `select` returns only the fields you name, and relations named in it are
 included with their own `select`:
 
@@ -174,7 +179,8 @@ const { data, isLoading } = useLive(
 );
 
 const feed = useLivePage(db.task.findPage({ orderBy: { id: "desc" }, take: 50 }));
-// feed.rows, feed.hasMore, feed.loadMore() — loaded pages survive reconnects
+// feed.rows, feed.hasMore, feed.loadMore() — every loaded page stays live and
+// survives reconnects, however many are loaded
 
 const peers = usePresence(db, "board:" + boardId, { name, color });
 ```

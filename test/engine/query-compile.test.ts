@@ -8,7 +8,6 @@ import {
   compileQuery,
   type CompiledNode,
 } from "../../src/engine/query-compile";
-import { MAX_QUERY_LIMIT } from "../../src/engine/query-types";
 import { TxError } from "../../src/engine/tx-types";
 
 function expectCode(fn: () => unknown, code: string): void {
@@ -174,7 +173,8 @@ describe("compileQuery", () => {
     const boolean = compileQuery({
       blocks: { $: { where: { checked: true } } },
     });
-    expect(buildSelectSql(node(boolean)).params).toEqual([1, 100]);
+    // No implicit LIMIT: a read without one returns every match.
+    expect(buildSelectSql(node(boolean)).params).toEqual([1]);
 
     const date = compileQuery({
       kanbanTasks: {
@@ -203,7 +203,7 @@ describe("compileQuery", () => {
     expect(sql).toContain('("status" IN (SELECT value FROM json_each(?)))');
     expect(sql).toContain('("order" > ?)');
     expect(sql).toContain('("order" <= ?)');
-    expect(params).toEqual(["done", '["todo","done"]', 1, 4, 100]);
+    expect(params).toEqual(["done", '["todo","done"]', 1, 4]);
   });
 
   test("compiles an empty $in to a false predicate", () => {
@@ -258,10 +258,8 @@ describe("compileQuery", () => {
       () => compileQuery({ folders: { $: { limit: 0 } } }),
       "invalid_value"
     );
-    expectCode(
-      () => compileQuery({ folders: { $: { limit: MAX_QUERY_LIMIT + 1 } } }),
-      "invalid_value"
-    );
+    expect(compileQuery({ folders: { $: { limit: 50_000 } } }).nodes[0]?.limit).toBe(50_000);
+    expectCode(() => compileQuery({ folders: { $: { limit: 1.5 } } }), "invalid_value");
     expectCode(() => compileQuery({ folders: { children: [] } }), "invalid_op");
   });
 
