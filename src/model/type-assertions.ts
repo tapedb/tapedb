@@ -1,0 +1,67 @@
+/**
+ * Compile-time checks for the model API's inferred types.
+ *
+ * Nothing imports this file, so it never reaches a bundle; `tsc` checks it
+ * with the rest of `src`. Each `@ts-expect-error` is a promise that the line
+ * below it does not type-check: if one starts compiling, tsc fails.
+ */
+
+import { createClient } from "./client";
+import { t } from "./fields";
+import { model, schema } from "./schema";
+
+type Equal<A, B> = (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2 ? true : false;
+function expectType<T extends true>(_value?: T): void {}
+
+const s = schema({
+  board: model({ name: t.string(), columns: t.hasMany("column") }),
+  column: model({
+    name: t.string(),
+    position: t.number(),
+    note: t.string().optional(),
+    archived: t.boolean().default(false),
+    board: t.belongsTo("board"),
+    parent: t.belongsTo("column").optional(),
+  }),
+});
+
+declare const db: ReturnType<typeof createClient<typeof s.models>>;
+
+export async function assertions(): Promise<void> {
+  const columns = await db.column.findMany();
+  const column = columns[0];
+  expectType<Equal<typeof column.name, string>>();
+  expectType<Equal<typeof column.note, string | null>>();
+  expectType<Equal<typeof column.archived, boolean>>();
+  expectType<Equal<typeof column.boardId, string>>();
+  expectType<Equal<typeof column.parentId, string | null>>();
+  expectType<Equal<typeof column.createdAt, number>>();
+
+  const withBoard = await db.column.findMany({ include: { board: true } });
+  expectType<Equal<typeof withBoard[0]["board"]["name"], string>>();
+
+  const withParent = await db.column.findFirst({ include: { parent: true } });
+  expectType<Equal<NonNullable<typeof withParent>["parent"], (typeof column & {}) | null>>();
+
+  const boards = await db.board.findMany({ include: { columns: { include: { board: true } } } });
+  expectType<Equal<typeof boards[0]["columns"][0]["board"]["name"], string>>();
+
+  const count = await db.column.count();
+  expectType<Equal<typeof count, number>>();
+
+  // Required fields must be given; defaults and optionals may be left out.
+  await db.column.create({ data: { name: "a", position: 1, board: { connect: "b" } } });
+  // @ts-expect-error position is required
+  await db.column.create({ data: { name: "a", board: { connect: "b" } } });
+  // @ts-expect-error the board is required
+  await db.column.create({ data: { name: "a", position: 1 } });
+  await db.column.create({ data: { name: "a", position: 1, boardId: "b" } });
+  // @ts-expect-error name is a string
+  await db.column.update({ where: { id: "x" }, data: { name: 3 } });
+  // @ts-expect-error no such field to filter on
+  await db.column.findMany({ where: { nope: 1 } });
+  // @ts-expect-error not a relation of column
+  await db.column.findMany({ include: { tasks: true } });
+  // @ts-expect-error findUnique needs an id
+  await db.column.findUnique({ where: {} });
+}
