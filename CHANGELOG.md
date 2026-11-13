@@ -16,6 +16,13 @@ All notable changes to this project are documented here. The format follows
 - The starter example is on the model API, with its migrations committed, and
   is installable and runnable from the repo.
 
+- `updateMany` and `deleteMany`. The engine resolves the matching rows inside
+  the transaction and logs those rows, not the filter, so a replay changes
+  what the original changed. They are bounded at 1000 rows, reach only rows
+  the caller may read, and still run row rules per row. They are not
+  optimistic and not queued offline. Log segments now carry the client's ops
+  hash, so a retry of a bulk write is still deduped after a restore; older
+  segments without it fall back to recomputing.
 - Filters on linked models: a to-one link takes a filter on the row it points
   at (`where: { board: { archived: false } }`, or `null` for no parent), and a
   to-many link takes `some`, `every` or `none`. They compile to correlated

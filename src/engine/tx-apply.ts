@@ -74,6 +74,13 @@ function applyOp(context: ApplyContext, op: ValidatedOp): number {
     case "update":
     case "merge":
       return applyValues(context, op, namespace);
+    case "patchMany":
+    case "deleteMany":
+      // expandBulkOps replaces these before anything is applied.
+      throw new TxError(
+        "invalid_op",
+        `"${op.kind}" reached the apply step; it should have been resolved to rows first.`
+      );
     case "delete": {
       const table = quoteIdentifier(namespace.table);
       const changes = context.sql.exec(

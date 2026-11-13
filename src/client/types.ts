@@ -146,6 +146,8 @@ export type TxOpKind =
   | "insert"
   | "patch"
   | "upsert"
+  | "patchMany"
+  | "deleteMany"
   | "update"
   | "merge"
   | "link"
@@ -204,7 +206,22 @@ export interface TxDeleteOp extends TxOpBase {
   op: "delete";
 }
 
+export interface TxPatchManyOp {
+  op: "patchMany";
+  namespace: string;
+  where: Record<string, unknown>;
+  values: Record<string, unknown>;
+}
+
+export interface TxDeleteManyOp {
+  op: "deleteMany";
+  namespace: string;
+  where: Record<string, unknown>;
+}
+
 export type TxOp =
+  | TxPatchManyOp
+  | TxDeleteManyOp
   | TxInsertOp
   | TxPatchOp
   | TxUpsertOp

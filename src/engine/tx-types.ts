@@ -14,6 +14,8 @@ export type TxOpKind =
   | "insert"
   | "patch"
   | "upsert"
+  | "patchMany"
+  | "deleteMany"
   | "update"
   | "merge"
   | "link"
@@ -82,7 +84,28 @@ export interface TxDeleteOp extends TxOpBase {
   op: "delete";
 }
 
+/**
+ * Writes every row matching `where`. The engine resolves the rows inside the
+ * transaction and logs what it resolved, so a replay changes the same rows as
+ * the original — re-running the filter later could not promise that.
+ */
+export interface TxPatchManyOp {
+  op: "patchMany";
+  namespace: string;
+  where: Record<string, unknown>;
+  values: Record<string, unknown>;
+}
+
+/** Deletes every row matching `where`. Resolved and logged like `patchMany`. */
+export interface TxDeleteManyOp {
+  op: "deleteMany";
+  namespace: string;
+  where: Record<string, unknown>;
+}
+
 export type TxOp =
+  | TxPatchManyOp
+  | TxDeleteManyOp
   | TxInsertOp
   | TxPatchOp
   | TxUpsertOp
@@ -110,6 +133,8 @@ export interface TxEnvelope {
 
 export interface TxResult {
   txId: string;
+  /** Rows a bulk op matched, keyed by its index in the envelope. */
+  matched?: Record<number, number>;
   /** `_tx_log.seq` assigned to this transaction. */
   seq: number;
   /** Number of ops that changed a row. */

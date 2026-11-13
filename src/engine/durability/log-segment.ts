@@ -6,6 +6,7 @@ import type { LogSegment } from "./types";
  * string in SQLite and is parsed back into the wire shape for the segment.
  */
 interface TxLogRow extends Record<string, SqlValue> {
+  ops_hash: string;
   seq: number;
   client_tx_id: string | null;
   ops: string;
@@ -59,7 +60,7 @@ export function buildLogSegment(
 
   const rows = sql
     .exec<TxLogRow>(
-      `SELECT seq, client_tx_id, ops, user_id, role, at, schema_version
+      `SELECT seq, client_tx_id, ops, ops_hash, user_id, role, at, schema_version
          FROM "_tx_log"
         WHERE seq > ?
         ORDER BY seq
@@ -79,6 +80,10 @@ export function buildLogSegment(
       seq: row.seq,
       ...(row.client_tx_id === null ? {} : { clientTxId: row.client_tx_id }),
       ops: parseOps(row.ops),
+      // The hash of what the client sent, which is not always the hash of the
+      // ops stored beside it: a bulk write logs the rows it resolved. Carried
+      // so a retry after a restore is still recognised.
+      opsHash: row.ops_hash,
       userId: row.user_id,
       role: row.role,
       at: row.at,
