@@ -1,199 +1,91 @@
-# TapeDB — scope contract
+# tapedb — scope contract
 
-The equivalent of InstantDB's developer surface, built only from Cloudflare
-primitives, shipped as a library that provisions itself into the consumer's own
-account.
+A typed database for Cloudflare, shipped as a library that provisions itself
+into the consumer's own account. Prisma's job, on Cloudflare's primitives,
+with live queries and offline writes because the engine is built for them.
 
-**Definition.** TapeDB is a log-structured database for Cloudflare Durable
-Objects. One SQLite database per workspace lives inside a single Durable
-Object, every transaction is appended to a log, the log is shipped to R2 and
-replayed on cold start, and clients subscribe to live queries over one
-WebSocket with an optimistic cache and a durable outbox.
+**Definition.** One SQLite database per workspace lives inside a single
+Durable Object. Every write is appended to a transaction log, the log ships
+to R2 and is replayed on cold start. Clients read through typed model
+queries, awaited once over HTTP or subscribed live over one WebSocket, with
+an optimistic cache and a durable outbox.
 
-**Lineage.** The developer surface is inspired by InstantDB and keeps its
-ergonomics: InstaQL-shaped queries in the shape of the data you want,
-InstaML-shaped transactions (`db.tx.<ns>[id].update/link`), multiplayer
-queries, presence, and `db.storage` for files. The implementation shares no code
-with InstantDB and depends on none of its packages.
+**Not a BaaS.** tapedb owns no identity, no billing, no hosted control plane.
+It consumes a verified claim and never issues one. Owning passwords is the
+line it never crosses.
 
-## Parity map
+## The surface
 
-Status is measured against InstantDB's published docs surface.
-
-| InstantDB surface | TapeDB | Status |
-| --- | --- | --- |
-| `modeling-data` — namespaces, links, attributes | `engine/registry.ts` + workspace migrations | HAVE |
-| `instaql` — relational queries in result shape | `query-compile.ts`, `query-execute.ts`; `where`, `order`, `limit`, nested link traversal | HAVE |
-| `instaml` — transactions | `tx-pipeline.ts`; update, merge, delete, link, unlink; idempotent by `clientTxId` + `opsHash` | HAVE |
-| multiplayer live queries by default | `subscriptions.ts`; namespace touch, 50 ms batching, entity diffs | HAVE |
-| offline cache and optimistic updates | `query-cache.ts` + `outbox.ts`; IndexedDB outbox keyed by `clientTxId` | HAVE |
-| `presence-and-topics` — presence, cursors | `presence:set/clear`, `cursor:set`, `drag:set/clear` on the workspace socket | HAVE presence, no topics abstraction |
-| `storage` — file uploads | `/storage/:appId/:objectKey`, `FILES` bucket, 25 MB cap, MEMBER read / EDITOR write | HAVE |
-| `infinite-queries` — cursor pagination | keyset `after`, `pageInfo.nextCursor`, and `db.loadMore()` on the client | HAVE |
-| `permissions` — row and attribute rules | role levels plus row rules over `{ auth, data, next, changed }` for create, update and delete; `view` as a SQL `where` rule or a post-fetch function | HAVE |
-| `http-api` — server-side access | `POST /query`, `POST /transact`, `GET /status` | HAVE |
-| `cli` — schema push | `tapedb init`, `dev`, `studio`; migrations are generated from the schema by `defineSchema` | HAVE |
-| `self-hosting` | inherent, the consumer's account | HAVE by construction |
-| `devtool` / `explorer-component` | kitchen-sink app, not shipped | OUT of v1 |
-| `auth` — magic code, OAuth, guest | none; the engine consumes a trusted claim header | GAP by design, see below |
-| `backups` — user-facing export | the log and snapshots are internal durability, not an export API | OUT of v1 |
-| `streams` | none | OUT |
-| `teams`, `users`, `emails`, `stripe-payments`, `webhooks`, `platform-api` | none | OUT, these belong to the host app |
+| Area | What ships |
+| --- | --- |
+| Schema | `schema()` / `model()` / `t` builders; relations via `belongsTo` / `hasMany`; defaults, indexes, unique; types inferred, no codegen |
+| Reads | `findMany`, `findFirst`, `findUnique`, `findPage` (keyset), `count`; `where` with `not/in/notIn/gt/gte/lt/lte/AND/OR/NOT`; `include` to depth 2 |
+| Live | `.subscribe()` on any query; `useLive`, `useLivePage`, `usePresence`; per-model invalidation, 50 ms batching, row diffs; counts live via page metadata |
+| Writes | `create` (strict), `update` (strict), `upsert`, `delete`, `connect`/`disconnect`, `$transaction`; optimistic, offline outbox, exactly-once within the dedupe window |
+| Access | `role()` levels, `filter()` read rules compiled into SQL, `check()` row rules inside the transaction |
+| Migrations | committed SQL diffed from the schema; change declarations for replay; applied per Durable Object on wake; engine track separate from the app's |
+| Durability | NDJSON log segments + chunked snapshots to R2; idempotent cold-start replay, across schema changes; local log trimmed to R2's window |
+| Files | `db.$files` upload/list/download/delete; bytes in R2, index through the log; 25 MB cap |
+| Presence | `db.$presence(room)`: presence, cursors, drag; ephemeral, same socket |
+| Identity seam | `defineTapeDB({ identity })` serves `POST /_tapedb/claim`; dev claims refused in production |
+| CLI | `init`, `migrate dev/status/check`, `dev`, `studio`, `deploy` (guarded) |
 
 ## Infrastructure footprint
 
-Exactly three resources. `tapedb init` creates all of them, unconditionally,
-because there are no capabilities to choose between.
-
-| resource | purpose |
-| --- | --- |
-| 1 Durable Object class | the workspace database, which also carries presence on its socket |
-| R2 bucket `DATA` | transaction log segments and snapshots |
-| R2 bucket `FILES` | image and file uploads |
-
-No D1. Memberships and sessions belong to the consumer's identity system, and
-the engine never reads them. It reads one header.
-
-## Package layout
-
-One package, one install. Subpaths exist to keep React out of the server
-bundle, not to make features optional.
-
-```
-tapedb            client, schema, query and tx types, zero runtime deps
-tapedb/react      hooks; React is a peer dependency
-tapedb/worker     the Worker entry and the Durable Object class, ready to export
-tapedb/cli        init, migrate, dev, deploy
-```
-
-Consumer surface, all of it:
-
-```ts
-import { init, i, id } from "tapedb";
-
-const db = init({ workspaceId, schema, getToken });
-
-db.useQuery({ boards: { $: { where: { id } }, columns: { tasks: {} } } });
-await db.transact([db.tx.tasks[t].update({ done: true })]);
-await db.storage.upload(file);
-db.usePresence({ cursor, typing: true });
-```
+Exactly three resources, created by `tapedb init`, unconditionally: one
+Durable Object class, R2 bucket `DATA` (log and snapshots), R2 bucket `FILES`
+(uploads). No D1. Memberships and sessions belong to the consumer's identity
+system; the engine reads one header.
 
 ## Non-negotiables
 
-1. **Out of the box.** One install, one command, three resources. No capability
-   flags, no optional packages, no hand-wired routes. The library ships its own
-   Worker entry.
-2. **The core has zero runtime dependencies.** No React, no Radix, no dnd-kit,
-   no xyflow, no dagre, no lucide in `tapedb`. React appears only in
-   `tapedb/react`.
-3. **One Durable Object class.** Presence rides the database socket. A second
-   class is a second deploy-order commitment the consumer pays for.
-4. **No UI ships.** No kanban, whiteboard, diagram, canvas, theme or i18n.
-5. **The write path is HTTP, the read path is the socket.** Transactions post to
-   `/transact`; the socket carries subscriptions, presence, cursors and drag.
-   Documentation must say this, never "realtime transactions over WebSocket".
+1. **Out of the box.** One install, one command, three resources. No
+   capability flags, no optional packages. The library ships its own Worker
+   entry.
+2. **The core has zero runtime dependencies.** React appears only in
+   `tapedb/react`. `dist/index.js` contains no engine code.
+3. **One Durable Object class.** Presence rides the database socket.
+4. **No UI ships.** `tapedb studio` is a local dev tool, not a component.
+5. **The write path is HTTP, the read path is the socket.** Documentation
+   never says "realtime transactions over WebSocket".
+6. **Fail closed.** A broken access rule hides or denies; an unsupported
+   filter operator is an error, not a match-all; undeclared schema drift
+   stops recovery rather than guessing.
+7. **Exactly-once is a stated window, not a vibe.** Retries the engine cannot
+   vouch for are refused (`dedupe_expired`), never silently re-applied.
 
-## Out of scope, permanently
+## Out of scope
 
-ndex product surface that must never enter this repo: kanban, whiteboard,
-diagram, canvas, theme, i18n, the Yjs document room, the per-app realtime room,
-the app registry, and the `/apps/:appId/*` routes.
+Permanently: application UI (kanban, whiteboards, canvases), collaborative
+text documents (CRDTs/Yjs), theming, i18n, auth providers, billing, teams,
+emails, webhooks — these belong to the host app.
 
-## Three decisions
+Out of v1, could earn their way in later: `select` projections, aggregates
+beyond `count`, `updateMany`/`deleteMany`, nested `create`, broadcast topics,
+a user-facing export API, a hosted devtool.
 
-**1. Auth is a seam, not a feature.** DONE. The engine consumes a verified claim
-and never issues one. `defineTapeDB({ identity })` takes two methods,
-`getSubject(headers)` and `getRole(workspaceId, sub)`, and the library serves
-`POST /_tapedb/claim` for any identity provider. BetterAuth is the reference
-integration, not a dependency. `devClaims` mints an OWNER claim in development
-and is refused whenever `ENVIRONMENT` is `production`. Owning passwords would
-make this a BaaS.
+## Known trade-offs
 
-Development loop, verified end to end under `wrangler dev`: `tapedb init` then
-`tapedb dev` gives a local database with a working claim route, so the client
-runs with no session and no configuration.
-
-**2. Permissions grew from role levels to rules without a wire change.** DONE.
-The claim already carried `sub` and `role`, so row rules landed on top of role
-levels: write rules see `{ auth, data, next, changed }` inside the
-transaction, and `view` is either a `where` filter compiled into SQL (indexed,
-the default to reach for) or a function evaluated after fetch (anything, but
-scan-capped). Unlike InstantDB there is no CEL: rules are TypeScript in the
-schema.
-
-**3. Cursor pagination is in v1.** `pageInfo` is already reserved in the query
-response and `limit`/`order` already compile. Infinite queries are a
-first-class InstantDB feature and the gap is small.
-
-## Extraction tasks implied by this contract
-
-DONE:
-
-- Permissions overrides and the namespace registry are consumer configuration.
-- Every `ndex-*` literal is gone: header, bucket, error codes, IndexedDB name.
-- `defineSchema()` emits the registry, the migrations and the client schema from
-  one object.
-- `dist` builds, `.d.ts` per subpath, real `exports`, `files`,
-  `sideEffects: false`, LICENSE.
-- `tapedb init` and `tapedb dev` replace the monorepo scripts.
-- Recovery restore order, self-referential tables and the allowed-table set are
-  derived from the registry instead of hardcoded ndex tables.
-
-DONE since first draft:
-
-- The upstream engine suite runs again against an ndex-shaped fixture that configures the registry, permissions and migration
-  bundle before each file.
-- Uploads write a `$files` metadata row into the workspace and expose
-  `GET /files`; delete removes it. Bytes stay in R2 and never enter the log.
-- Cursor pagination: `after` compiles to a lexicographic WHERE clause, and
-  `pageInfo.nextCursor` is emitted when a page has more rows.
-- Headless `init` in `tapedb`; the React entry wraps the same instance.
-- Dev claims require the code flag and `TAPEDB_DEV_CLAIMS=true`, which
-  `tapedb dev` passes and `wrangler deploy` never does.
-
-DONE: row rules for create, update and delete (`write` decisions can be a
-predicate over `{ auth, data, next }`), evaluated inside the transaction so a
-replay is not re-judged and a throwing rule denies.
-
-DONE: row-level **view** rules filter rows (and nested children) after fetch;
-`changed` gives rules the attribute names an op writes, so one field can be
-gated; `tapedb studio` is a local table browser over `/schema`, `/query` and
-`/transact`, and `GET /engine/workspaces/:id/schema` exposes the registry for
-tooling.
-
-DONE: the four gaps left after the first extract.
-
-- `view: { where: (auth) => filter }` compiles into the query's SQL, so a
-  visibility rule uses an index and fills every page. Function view rules stay
-  for predicates SQL cannot express, with the scan cap below.
-- `$files` changes are logged as engine-only `file:put` / `file:forget` entries
-  and replayed, so a restore keeps uploads and deletes made since the last
-  snapshot. Before this, only snapshots carried the index.
-- A retry the engine cannot dedupe is refused, not applied twice. Clients send
-  `basisSeq` on retries; recovery records `dedupe_floor_seq`; an unknown key
-  below the floor gets `dedupe_expired` and the client reports it through
-  `onWriteRejected`.
-- `db.loadMore()` widens the live subscription to the loaded rows, so a
-  reconnect restores every page and later pages are diffed live.
-
-REMAINING, as trade-offs rather than bugs:
-
-- Function `view` rules filter after fetch and scan at most
-  `max(limit * 10, 200)` rows per page, so a function rule that hides almost
-  everything can return a short page. The `where` form has no such limit.
-- After a restore, exactly-once covers retries whose basis is at or above the
-  dedupe floor (`DEDUPE_HORIZON_SEQ`, 2000 seq past the snapshot base). Older
-  retries are refused with `dedupe_expired`, which is safe but needs the app
-  to check and rewrite. Carrying keys in snapshots would remove the floor at
-  the cost of a format change and a snapshot that grows with history.
-- The local `_tx_log` is never trimmed, so a Durable Object's SQLite grows by
-  one row per write for its whole life. Trimming rows that are flushed and
-  below the snapshot horizon would bound it; the dedupe floor that recovery
-  writes is already the mechanism a trim would need to stay safe.
-- The live `loadMore()` window is clamped to 1000 rows per namespace, the
-  engine's limit ceiling. Past that a reconnect returns 1000 rows and paging
-  resumes from the cursor.
-- A crash between the R2 put of an upload and its `file:put` entry leaves an
-  unindexed object in `FILES`. The Worker returns 502, so it is visible, but
-  nothing sweeps it.
+- **Function `read` rules are scan-capped.** They run after fetch, reading at
+  most `max(limit * 10, 200)` rows per page, so a rule that hides almost
+  everything can return a short page, and `count` is refused under one.
+  `filter()` rules have none of these limits; prefer them.
+- **The dedupe window is finite.** After a restore, idempotency keys reach
+  back `DEDUPE_HORIZON_SEQ` (2000 seq) past the snapshot base; the local log
+  is trimmed to the same window. Older retries get `dedupe_expired` and the
+  app decides. Carrying keys inside snapshots would remove the window at the
+  cost of a format that grows with history.
+- **The live `loadMore` window caps at 1000 rows per model** (the engine's
+  limit ceiling). Past that, a reconnect restores 1000 rows and paging
+  resumes by cursor.
+- **Rebuilding a referenced table is refused.** SQLite cannot disable foreign
+  keys inside the migration's transaction, so a type change on a table other
+  tables reference must be done as add-copy-drop in the app.
+- **`include` depth is 2**, and nested levels are not paginated; a cursor is
+  only defined for the top level's order.
+- **Relation filters go two links deep**, and the types follow one. A second
+  hop is accepted and checked by the engine, not by the editor: typing both
+  hops means resolving the model graph into itself for every key, which runs
+  the type checker out of memory on models that point at each other.
+- **Log segments written by current builds are not replayable by pre-0.1
+  builds** (file-index entries, strict ops). Pre-1.0, noted in release notes.

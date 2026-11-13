@@ -70,7 +70,7 @@ export interface WriteResult {
 }
 
 export interface FindArgs<M extends Models, F extends Fields> {
-  where?: Where<F>;
+  where?: Where<F, M>;
   orderBy?: OrderBy<F>;
   take?: number;
   include?: Include<M, F>;
@@ -92,7 +92,7 @@ export interface ModelClient<M extends Models, F extends Fields> {
   ): Query<Result<M, F, A> | null>;
   /** One page in a stable order. Defaults to `orderBy: { id: "asc" }` (ids are time-ordered). */
   findPage<A extends PageArgs<M, F> = PageArgs<M, F>>(args?: A): PageQuery<Result<M, F, A>>;
-  count(args?: { where?: Where<F> }): Query<number>;
+  count(args?: { where?: Where<F, M> }): Query<number>;
 
   create(args: { data: CreateData<F> }): Write;
   update(args: { where: { id: string }; data: UpdateData<F> }): Write;

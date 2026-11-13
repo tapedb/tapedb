@@ -40,12 +40,34 @@ export type QueryWhereValue = QueryScalar | QueryComparison;
  * Attribute conditions, ANDed. Three reserved keys combine whole filters:
  * `$or` and `$and` take non-empty arrays of filters, `$not` takes one.
  */
+/** How a relation filter matches: the parent row, or some/every/no children. */
+export type RelationMode = "parent" | "some" | "every" | "none";
+
+/**
+ * A filter on a linked namespace, by the same label `include` uses. Compiled
+ * into a correlated subquery, so the rows are never fetched.
+ */
+export interface QueryRelationFilter {
+  label: string;
+  mode: RelationMode;
+  where: QueryWhere;
+}
+
 export interface QueryWhere {
-  [attribute: string]: QueryWhereValue | QueryWhere | QueryWhere[] | undefined;
+  [attribute: string]:
+    | QueryWhereValue
+    | QueryWhere
+    | QueryWhere[]
+    | QueryRelationFilter[]
+    | undefined;
   $or?: QueryWhere[];
   $and?: QueryWhere[];
   $not?: QueryWhere;
+  $link?: QueryRelationFilter[];
 }
+
+/** How deep relation filters may nest, matching `include`. */
+export const MAX_RELATION_DEPTH = 2;
 
 /** How deep `$or` / `$and` / `$not` may nest inside one filter. */
 export const MAX_WHERE_DEPTH = 4;
@@ -124,7 +146,8 @@ export interface QueryErrorResponse {
 }
 
 const OPTION_KEYS = new Set(["where", "order", "limit", "after", "count"]);
-const LOGICAL_KEYS = new Set(["$or", "$and", "$not"]);
+const LOGICAL_KEYS = new Set(["$or", "$and", "$not", "$link"]);
+const RELATION_MODES = new Set(["parent", "some", "every", "none"]);
 const COMPARISON_OPERATORS = new Set([
   "$ne",
   "$in",
@@ -292,6 +315,13 @@ export function parseWhere(value: unknown, depth = 0): QueryWhere {
         where.$not = parseWhere(raw, depth + 1);
         continue;
       }
+      if (attribute === "$link") {
+        if (!Array.isArray(raw) || raw.length === 0) {
+          throw invalidOp('"$link" needs a non-empty array of relation filters.');
+        }
+        where.$link = raw.map((entry) => parseRelationFilter(entry, depth));
+        continue;
+      }
       if (!Array.isArray(raw) || raw.length === 0) {
         // An empty $or would match nothing and an empty $and everything; both
         // are more likely a bug in the caller than a request.
@@ -309,6 +339,24 @@ export function parseWhere(value: unknown, depth = 0): QueryWhere {
     }
   }
   return where;
+}
+
+function parseRelationFilter(value: unknown, depth: number): QueryRelationFilter {
+  if (!isPlainObject(value)) {
+    throw invalidOp('Each "$link" entry must be an object.');
+  }
+  const { label, mode, where } = value;
+  if (typeof label !== "string" || label.length === 0) {
+    throw invalidOp('A "$link" entry needs a link label.');
+  }
+  if (typeof mode !== "string" || !RELATION_MODES.has(mode)) {
+    throw invalidOp(
+      `"$link" mode for "${label}" must be one of parent, some, every, none.`
+    );
+  }
+  // The inner filter starts its own logical nesting; the relation depth is
+  // bounded separately, by the compiler, which knows the link it resolved.
+  return { label, mode: mode as RelationMode, where: parseWhere(where, depth) };
 }
 
 function parseComparison(

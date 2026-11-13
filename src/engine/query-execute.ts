@@ -12,6 +12,7 @@ import {
   buildSelectSql,
   compileQuery,
   compileViewCondition,
+  type ViewAccess,
   type CompiledChild,
   type CompiledCondition,
   type CompiledNode,
@@ -31,6 +32,7 @@ import {
   hasFunctionViewRule,
   viewWhereBranches,
 } from "./tx-permissions";
+import { TxError as PermissionError } from "./tx-types";
 import { quoteIdentifier } from "./tx-apply";
 import type { SqlExecutor, SqlValue } from "./tx-sql";
 import { TxError } from "./tx-types";
@@ -48,13 +50,36 @@ interface HydratedEntity {
  * executes it. Invalid queries and permission failures surface as `TxError`;
  * driver failures become `storage_error` so the route maps them to 500.
  */
+/**
+ * What a relation filter's subquery may see, for this caller. A namespace the
+ * caller cannot read at all, or whose read rule is a function that only runs
+ * after fetch, cannot be filtered on in SQL without leaking the rows it hides.
+ */
+export function viewAccess(claim: RoleClaim): ViewAccess {
+  return {
+    branches: (namespace) => viewWhereBranches(claim, namespace),
+    refusal: (namespace) => {
+      try {
+        assertPermission(claim, namespace, "view");
+      } catch (error) {
+        return error instanceof PermissionError
+          ? error.message
+          : `Cannot filter on "${namespace}".`;
+      }
+      return hasFunctionViewRule(namespace)
+        ? `Cannot filter on "${namespace}" through a link: its read rule is a function, which runs after fetch, so the filter would match rows the rule hides. Use a { where } read rule.`
+        : null;
+    },
+  };
+}
+
 export function executeQuery(
   sql: SqlExecutor,
   claim: RoleClaim,
   envelope: unknown
 ): QueryResult {
   const document = parseQueryEnvelope(envelope);
-  const compiled = compileQuery(document);
+  const compiled = compileQuery(document, viewAccess(claim));
 
   authorizeQuery(claim, compiled);
 
@@ -73,7 +98,7 @@ export function executeQueryWithPageInfo(
   envelope: unknown
 ): { data: QueryResult; pageInfo: QueryPageInfo } {
   const document = parseQueryEnvelope(envelope);
-  const compiled = compileQuery(document);
+  const compiled = compileQuery(document, viewAccess(claim));
 
   authorizeQuery(claim, compiled);
 
