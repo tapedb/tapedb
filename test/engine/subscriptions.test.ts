@@ -224,3 +224,26 @@ describe("diffQueryResults", () => {
     expect(diffQueryResults({ folders: [] }, { folders: "nope" })).toBeNull();
   });
 });
+
+describe("relation filters in live queries", () => {
+  const link = (label: string, where: object) => ({ $link: [{ label, mode: "parent", where }] });
+
+  test("a filter through a link matches writes to the linked namespace", () => {
+    const compiled = compileQuery({ kanbanTasks: { $: { where: link("column", link("board", { name: "B" })) } } });
+    expect(queryMatchesTouched(compiled, new Set(["kanbanColumns"]))).toBe(true);
+    expect(queryMatchesTouched(compiled, new Set(["kanbanBoards"]))).toBe(true);
+    expect(queryMatchesTouched(compiled, new Set(["folders"]))).toBe(false);
+    expect(queryReferencesNamespace(compiled, "kanbanBoards")).toBe(true);
+  });
+
+  test("so does a read rule that filters through a link", () => {
+    const view = {
+      branches: (namespace: string) =>
+        namespace === "kanbanTasks" ? [link("column", { name: "Visible" })] : null,
+      refusal: () => null,
+    };
+    const compiled = compileQuery({ kanbanTasks: {} }, view as never);
+    expect(queryMatchesTouched(compiled, new Set(["kanbanColumns"]))).toBe(true);
+    expect(queryMatchesTouched(compileQuery({ kanbanTasks: {} }), new Set(["kanbanColumns"]))).toBe(false);
+  });
+});

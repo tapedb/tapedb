@@ -137,7 +137,7 @@ export function touchedNamespacesFromEnvelope(envelope: unknown): Set<string> {
 
 /**
  * True when any node of the compiled query — top-level or nested traversal —
- * requests one of the touched namespaces.
+ * reads one of the touched namespaces, as rows or through a relation filter.
  */
 export function queryMatchesTouched(
   compiled: CompiledQuery,
@@ -147,6 +147,7 @@ export function queryMatchesTouched(
 
   const visit = (node: CompiledNode): boolean =>
     touched.has(node.namespace) ||
+    (node.references ?? []).some((namespace) => touched.has(namespace)) ||
     node.children.some((child) => visit(child.node));
 
   return compiled.nodes.some(visit);
@@ -159,6 +160,7 @@ export function queryReferencesNamespace(
 ): boolean {
   const visit = (node: CompiledNode): boolean =>
     node.namespace === namespace ||
+    (node.references ?? []).includes(namespace) ||
     node.children.some((child) => visit(child.node));
 
   return compiled.nodes.some(visit);
