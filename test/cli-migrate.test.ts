@@ -180,6 +180,23 @@ describe("migrate check", () => {
 });
 
 describe("CLI", () => {
+  test("recognises its entry point through a symlink, as npx runs it via node_modules/.bin", async () => {
+    const { symlinkSync } = await import("node:fs");
+    const { pathToFileURL } = await import("node:url");
+    const { isEntryPoint } = await import("../src/cli/index");
+    const root = project();
+    const real = join(root, "cli.js");
+    writeFileSync(real, "");
+    const link = join(root, "tapedb");
+    symlinkSync(real, link);
+
+    // Node gives argv[1] as typed (the link) and import.meta.url resolved.
+    expect(isEntryPoint(link, pathToFileURL(real).href)).toBe(true);
+    // The old check compared them unresolved and so never ran under npx.
+    expect(pathToFileURL(link).href === pathToFileURL(real).href).toBe(false);
+    expect(isEntryPoint(join(root, "other.js"), pathToFileURL(real).href)).toBe(false);
+  });
+
   const src = resolve(import.meta.dir, "../src/schema");
 
   function withSchema(root: string, body: string) {
