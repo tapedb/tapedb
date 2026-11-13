@@ -204,6 +204,21 @@ export interface OutboxEntry {
   workspaceId: string;
   ops: TxOp[];
   createdAt: number;
+  /**
+   * Highest workspace sequence the client had observed when it created this
+   * write. Sent on retries so the server can refuse one it cannot dedupe.
+   */
+  basisSeq?: number;
+  /** Sends started so far, persisted before each send. Absent means unknown. */
+  attempts?: number;
+}
+
+/** A queued write the server refused for good and the outbox dropped. */
+export interface WriteRejection {
+  clientTxId: string;
+  ops: TxOp[];
+  code: string;
+  message: string;
 }
 
 // ---- Config and public client ---------------------------------------------
@@ -218,6 +233,13 @@ export interface InitConfig {
   /** Returns a short-lived role-claim JWT for every HTTP/WS request. */
   getToken?: () => Promise<string>;
   schema?: SchemaDefinition;
+  /**
+   * Called when a queued write is refused permanently during a background
+   * flush, after the outbox has dropped it. `code` "dedupe_expired" means the
+   * server could not tell whether an earlier attempt landed, so it applied
+   * nothing: check the data before writing again.
+   */
+  onWriteRejected?: (rejection: WriteRejection) => void;
 
   /** @deprecated InstantDB compatibility; accepted but ignored. */
   appId?: string;

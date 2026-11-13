@@ -37,6 +37,7 @@ import type {
   TxProxy,
   TxStep,
   TxUnlinkOp,
+  WriteRejection,
 } from "./types";
 
 const DEFAULT_API_URL = "http://localhost:8787";
@@ -94,6 +95,7 @@ interface ResolvedConfig {
   websocketUrl: string;
   getToken: (() => Promise<string>) | null;
   schema?: SchemaDefinition;
+  onWriteRejected?: (rejection: WriteRejection) => void;
 }
 
 interface CacheEntry {
@@ -281,6 +283,7 @@ function resolveConfig(config: InitConfig): ResolvedConfig {
     websocketUrl,
     getToken: config.getToken ?? createDevTokenProvider(apiUrl, workspaceId),
     schema: config.schema,
+    onWriteRejected: config.onWriteRejected,
   };
 }
 
@@ -392,6 +395,12 @@ class DataClientImpl {
   >();
   private onlineHandler: (() => void) | null = null;
   private closed = false;
+  /**
+   * Highest workspace sequence seen in row `updatedSeq` values and write
+   * acknowledgements. A lower bound on the server's high-water mark, which is
+   * all a retry's `basisSeq` needs to be.
+   */
+  private observedSeq = 0;
 
   constructor(config: InitConfig, deps: ClientDeps = {}) {
     this.config = resolveConfig(config);
@@ -439,6 +448,10 @@ class DataClientImpl {
       workspaceId: this.config.workspaceId,
       ops: ops.map((op) => cloneJson(op)),
       createdAt: this.now(),
+      basisSeq: this.observedSeq,
+      // Persisted with the entry before the first send, so a crash mid-send
+      // still leaves the next flush knowing this is a retry.
+      attempts: 1,
     };
 
     const snapshot = this.snapshot();
@@ -457,7 +470,7 @@ class DataClientImpl {
     this.ensureSocket();
 
     try {
-      await this.sendTransaction(outboxEntry);
+      await this.sendTransaction(outboxEntry, false);
       await this.outbox.remove(clientTxId);
       this.pendingOps.delete(clientTxId);
       this.retryAttempt = 0;
@@ -927,6 +940,7 @@ class DataClientImpl {
       case "query:data": {
         // A pending loadMore() first: its id is ephemeral and never cached.
         if (this.resolvePage(message.id, message)) return;
+        this.noteRows(message.data);
         const entry = this.entryBySubId(message.id);
         if (!entry) return;
         entry.seq = message.seq;
@@ -944,6 +958,8 @@ class DataClientImpl {
         return;
       }
       case "query:diff": {
+        this.noteRows(message.added);
+        this.noteRows(message.updated);
         const entry = this.entryBySubId(message.id);
         if (!entry || entry.state.data === null) return;
         entry.seq = message.seq;
@@ -1057,7 +1073,44 @@ class DataClientImpl {
     }
   }
 
-  private async sendTransaction(entry: OutboxEntry): Promise<void> {
+  private reportRejection(entry: OutboxEntry, error: ServerError): void {
+    const listener = this.config.onWriteRejected;
+    if (!listener) return;
+    try {
+      listener({
+        clientTxId: entry.clientTxId,
+        ops: entry.ops,
+        code: error.code,
+        message: error.message,
+      });
+    } catch {
+      // A throwing listener must not stall the rest of the queue.
+    }
+  }
+
+  private noteSeq(value: unknown): void {
+    if (typeof value === "number" && Number.isSafeInteger(value) && value > this.observedSeq) {
+      this.observedSeq = value;
+    }
+  }
+
+  /** Raises `observedSeq` from every `updatedSeq` in a result, at any depth. */
+  private noteRows(value: unknown): void {
+    if (Array.isArray(value)) {
+      for (const item of value) this.noteRows(item);
+      return;
+    }
+    if (!isRecord(value)) return;
+    this.noteSeq(value.updatedSeq);
+    for (const nested of Object.values(value)) {
+      if (typeof nested === "object" && nested !== null) this.noteRows(nested);
+    }
+  }
+
+  private async sendTransaction(
+    entry: OutboxEntry,
+    retry: boolean
+  ): Promise<void> {
     const token = await this.requireToken();
     const response = await this.fetchImpl(
       `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/transact`,
@@ -1070,6 +1123,7 @@ class DataClientImpl {
         body: JSON.stringify({
           txId: entry.txId,
           clientTxId: entry.clientTxId,
+          ...(retry ? { basisSeq: entry.basisSeq ?? 0 } : {}),
           ops: entry.ops,
         }),
       }
@@ -1097,6 +1151,9 @@ class DataClientImpl {
         response.status
       );
     }
+
+    const result = (payload as { result?: unknown }).result;
+    if (isRecord(result)) this.noteSeq(result.seq);
   }
 
   private async requireToken(): Promise<string> {
@@ -1115,8 +1172,17 @@ class DataClientImpl {
 
       this.pendingOps.set(entry.clientTxId, entry.ops);
 
+      // Anything already in the outbox may have reached the server. Count the
+      // attempt before sending, so the retry is marked even across a crash.
+      // An entry from an older client has no count and is treated as a retry.
+      const attempt: OutboxEntry = {
+        ...entry,
+        attempts: (entry.attempts ?? 1) + 1,
+      };
+
       try {
-        await this.sendTransaction(entry);
+        await this.outbox.add(attempt).catch(() => undefined);
+        await this.sendTransaction(attempt, true);
         await this.outbox.remove(entry.clientTxId);
         this.pendingOps.delete(entry.clientTxId);
         this.retryAttempt = 0;
@@ -1126,6 +1192,7 @@ class DataClientImpl {
           this.pendingOps.delete(entry.clientTxId);
           // The optimistic row will not be reconciled by a push; refetch.
           this.resubscribeAll();
+          this.reportRejection(entry, error);
           continue;
         }
         // Transient (network, 5xx, 408, 429): keep the entry and back off.

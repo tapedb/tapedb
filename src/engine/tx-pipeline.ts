@@ -70,6 +70,21 @@ export function runTransaction(
           { txId: tx.txId }
         );
       }
+
+      // An unknown key is only proof the retry was never applied when this
+      // database holds every key above the client's basis. After a restore
+      // whose older segments were pruned, it may not: refuse rather than risk
+      // applying the same write twice.
+      if (tx.basisSeq !== undefined) {
+        const floor = readDedupeFloor(sql);
+        if (floor > tx.basisSeq) {
+          throw new TxError(
+            "dedupe_expired",
+            `clientTxId "${tx.clientTxId}" may already be applied: this workspace no longer holds idempotency keys at or below seq ${floor}, and the retry's basis is ${tx.basisSeq}.`,
+            { txId: tx.txId }
+          );
+        }
+      }
     }
 
     // Row rules read the stored row, so they belong inside the transaction,
@@ -149,6 +164,23 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
 
   sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
   return seq;
+}
+
+/** `_engine_meta` key for the dedupe floor; written by recovery. */
+export const DEDUPE_FLOOR_META_KEY = "dedupe_floor_seq";
+
+/**
+ * Highest sequence whose idempotency key may be missing locally. Every key
+ * above it is in `_tx_log`. Zero for a database that was never restored, since
+ * its log holds every key it ever wrote.
+ */
+export function readDedupeFloor(sql: SqlExecutor): number {
+  const row = sql.one<EngineMetaRow>(
+    `SELECT value FROM "_engine_meta" WHERE "key" = ?`,
+    DEDUPE_FLOOR_META_KEY
+  );
+  const floor = Number(row?.value ?? 0);
+  return Number.isSafeInteger(floor) && floor > 0 ? floor : 0;
 }
 
 function readSchemaVersion(sql: SqlExecutor): string {

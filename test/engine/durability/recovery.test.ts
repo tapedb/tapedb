@@ -1095,3 +1095,88 @@ describe("file index across a restore", () => {
     ).toThrow(/Op kind is not recognised/);
   });
 });
+
+describe("retries the restore cannot vouch for", () => {
+  const ops = [
+    { op: "update", namespace: "folders", id: "f-retry", values: { name: "Once" } },
+  ];
+
+  /**
+   * Seq 1 seed, seq 2 the client's write, both folded into a snapshot at base
+   * 2. Optionally prunes the segment that held seq 2's key, which is what
+   * happens once it falls outside DEDUPE_HORIZON_SEQ.
+   */
+  async function restored(pruneKeySegment: boolean): Promise<Source> {
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+
+    run(source, { txId: "w1", clientTxId: "client-r", ops } as TxEnvelope);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+    await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 20);
+
+    if (pruneKeySegment) {
+      for (const key of [...bucket.objects.keys()]) {
+        if (key.includes("/log/")) bucket.objects.delete(key);
+      }
+    }
+
+    const target = createSource();
+    await recoverWorkspace(
+      bucket as unknown as R2Bucket,
+      recoveryExecutor(target.db, target.sql),
+      TEST_WORKSPACE,
+      { now: NOW + 30 }
+    );
+    return target;
+  }
+
+  test("a restore that kept every key records no floor and dedupes", async () => {
+    const target = await restored(false);
+    expect(scalar(target.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe("0");
+    const retry = run(target, { txId: "w2", clientTxId: "client-r", basisSeq: 1, ops } as TxEnvelope);
+    expect(retry).toMatchObject({ seq: 2, applied: 0 });
+  });
+
+  test("a retry from below the floor is refused, not applied twice", async () => {
+    const target = await restored(true);
+    expect(scalar(target.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe("2");
+
+    // The client created the write after seeing seq 1. Its key is gone, so the
+    // server cannot tell whether seq 2 was this write.
+    expect(() =>
+      run(target, { txId: "w2", clientTxId: "client-r", basisSeq: 1, ops } as TxEnvelope)
+    ).toThrow(/may already be applied/);
+    expect(scalar(target.db, `SELECT high_water_seq FROM "_tx_state"`)).toBe(2);
+
+    // Negative control: without a basis the engine cannot know, and the retry
+    // is applied a second time. This is what basisSeq prevents.
+    const blind = run(target, { txId: "w3", clientTxId: "client-r", ops } as TxEnvelope);
+    expect(blind).toMatchObject({ seq: 3, applied: 1 });
+  });
+
+  test("a retry whose basis is at or above the floor is answered normally", async () => {
+    const target = await restored(true);
+
+    // Created after the client saw seq 2: any earlier attempt would sit above
+    // the floor, where every key is known, so an unknown key means unapplied.
+    const fresh = [
+      { op: "update", namespace: "folders", id: "f-new", values: { name: "New" } },
+    ];
+    const first = run(target, { txId: "n1", clientTxId: "client-new", basisSeq: 2, ops: fresh } as TxEnvelope);
+    expect(first).toMatchObject({ seq: 3, applied: 1 });
+    const again = run(target, { txId: "n2", clientTxId: "client-new", basisSeq: 2, ops: fresh } as TxEnvelope);
+    expect(again).toMatchObject({ seq: 3, applied: 0 });
+  });
+
+  test("basisSeq is validated", () => {
+    const source = createSource();
+    expect(() =>
+      run(source, { txId: "v1", clientTxId: "c", basisSeq: -1, ops } as TxEnvelope)
+    ).toThrow(/basisSeq must be a non-negative integer/);
+    expect(() =>
+      run(source, { txId: "v2", basisSeq: 1, ops } as TxEnvelope)
+    ).toThrow(/only meaningful with a clientTxId/);
+  });
+});

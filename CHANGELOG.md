@@ -15,6 +15,15 @@ All notable changes to this project are documented here. The format follows
   error, a throwing rule hides every row, and a `where` rule on a write action
   is refused at `defineSchema` and `configurePermissions`.
 
+- Retries are refused rather than re-applied when the engine cannot vouch for
+  them. The client records `basisSeq` (the highest sequence it had observed)
+  and an attempt count on each outbox entry, and sends `basisSeq` on every
+  send after the first. Recovery records `dedupe_floor_seq`, the highest
+  sequence whose key a pruned segment took with it; a retry whose basis sits
+  below that floor and whose key is unknown gets `dedupe_expired` (409). The
+  client drops it and calls the new `onWriteRejected` config callback, which
+  also fires for any other permanent refusal during a background flush.
+
 ### Fixed
 
 - `$files` rows are written through the transaction log as engine-only
