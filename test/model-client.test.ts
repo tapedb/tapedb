@@ -45,6 +45,10 @@ const appSchema = schema({
     meta: t.json().optional(),
     column: t.belongsTo("column").optional(),
   }).access({ delete: role("moderator") }),
+  note: model({
+    body: t.string(),
+    author: t.string(),
+  }).access({ read: check(({ auth, row }) => row?.author === auth.sub) }),
 });
 
 let sql: SqlExecutor;
@@ -218,6 +222,97 @@ describe("reads", () => {
   });
 });
 
+describe("select", () => {
+  const claimFor = (sub: string): RoleClaim => {
+    const now = Math.floor(Date.now() / 1000);
+    return { sub, workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.EDITOR, exp: now + 600, iat: now };
+  };
+
+  test("the engine sends only the selected fields, plus id and sequence", async () => {
+    await seed();
+    const { data } = executeQueryWithPageInfo(sql, claimFor("alice"), {
+      query: { task: { $: { select: ["title"], where: { id: "t1" } } } },
+    });
+    expect(data.task).toEqual([{ id: "t1", title: "Write spec", updatedSeq: expect.any(Number) }]);
+
+    expect(() =>
+      executeQueryWithPageInfo(sql, claimFor("alice"), { query: { task: { $: { select: ["nope"] } } } })
+    ).toThrow(/Unknown attribute "nope"/);
+  });
+
+  test("the client returns exactly the selected fields, at every level", async () => {
+    const db = client();
+    const ids = await seed(db);
+
+    expect(await db.task.findUnique({ where: { id: "t2" }, select: { title: true, due: true } })).toEqual({
+      title: "Build it",
+      due: Date.parse("2026-12-01T00:00:00Z"),
+    });
+
+    // Forward link: the child's key is read to group it, never returned.
+    const columns = await db.column.findMany({
+      where: { boardId: ids.board },
+      orderBy: { position: "asc" },
+      select: { name: true, tasks: { select: { title: true } } },
+    });
+    expect(columns).toEqual([
+      { name: "Todo", tasks: [{ title: "Write spec" }] },
+      { name: "Doing", tasks: [{ title: "Build it" }] },
+    ]);
+
+    // Reverse link: this row's key is read to find the parent, never returned.
+    const tasks = await db.task.findMany({
+      where: { id: "t1" },
+      select: { title: true, column: { select: { name: true, board: { select: { name: true } } } } },
+    });
+    expect(tasks).toEqual([{ title: "Write spec", column: { name: "Todo", board: { name: "Roadmap" } } }]);
+
+    // A relation can carry a select inside a plain include, too.
+    const withColumn = await db.task.findMany({ where: { id: "t2" }, include: { column: { select: { name: true } } } });
+    expect(withColumn[0].column).toEqual({ name: "Doing" });
+    expect(withColumn[0].title).toBe("Build it");
+  });
+
+  test("findPage pages by a field it does not select", async () => {
+    const db = client();
+    for (let n = 0; n < 5; n += 1) await db.task.create({ data: { title: `task ${n}`, done: n % 2 === 0 } });
+
+    const seen: unknown[] = [];
+    let cursor: string | null = null;
+    do {
+      const page = await db.task.findPage({
+        take: 2,
+        after: cursor,
+        orderBy: [{ title: "desc" }],
+        select: { done: true },
+      });
+      seen.push(...page.rows);
+      cursor = page.cursor;
+    } while (cursor !== null);
+    expect(seen).toEqual([{ done: true }, { done: false }, { done: true }, { done: false }, { done: true }]);
+  });
+
+  test("a function read rule still sees the whole row", async () => {
+    await client("alice").note.create({ data: { body: "mine", author: "alice" } });
+    await client("bob").note.create({ data: { body: "theirs", author: "bob" } });
+
+    // The rule reads `author`, which the select leaves out.
+    expect(await client("alice").note.findMany({ select: { body: true } })).toEqual([{ body: "mine" }]);
+    expect(await client("alice").note.count()).toBe(1);
+  });
+
+  test("select and include together, or an unknown field, fail before the request", () => {
+    const db = client();
+    expect(() => db.task.findMany({ select: { title: true }, include: { column: true } } as never)).toThrow(
+      /select or include, not both/
+    );
+    expect(() => db.task.findMany({ select: { nope: true } } as never)).toThrow(/no field "nope" to select/);
+    expect(db.task.findMany({ select: { title: true, column: true } }).document).toEqual({
+      task: { $: { select: ["title"] }, column: { $: {} } },
+    });
+  });
+});
+
 describe("ids", () => {
   test("sort in the order they were made, within one millisecond too", async () => {
     const { id } = await import("../src/client/id");
@@ -335,6 +430,30 @@ describe("live reads", () => {
     // Stable while nothing changes, which is what useSyncExternalStore needs.
     const again = db.task.findMany({ where: { done: false }, orderBy: { title: "asc" }, take: 10 });
     expect(again.snapshot()).toBe(query.snapshot());
+  });
+
+  test("a live select stays narrow through optimistic writes", async () => {
+    const { db, socket } = await live();
+    await db.task.create({ data: { id: "a", title: "A" } });
+    const states: Array<{ data: unknown }> = [];
+    db.task.findMany({ select: { title: true } }).subscribe((state) => states.push(state));
+    await tick();
+    socket.onopen?.({});
+    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    await tick();
+    const subscribe = socket.sent.find((message) => message.type === "query:subscribe")!;
+    expect(subscribe.query).toEqual({ task: { $: { select: ["title"] } } });
+
+    socket.push({ type: "query:data", id: subscribe.id, seq: 1, data: { task: [{ id: "a", title: "A", updatedSeq: 1 }] }, pageInfo: {} });
+    expect(states.at(-1)?.data).toEqual([{ title: "A" }]);
+
+    // The optimistic patch writes `done` into the cached row; the result
+    // keeps the shape the select promised.
+    void db.task.update({ where: { id: "a" }, data: { title: "B", done: true } }).catch(() => {});
+    for (let n = 0; n < 20 && JSON.stringify(states.at(-1)?.data) !== '[{"title":"B"}]'; n += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(states.at(-1)?.data).toEqual([{ title: "B" }]);
   });
 
   test("a live count reads pageInfo", async () => {

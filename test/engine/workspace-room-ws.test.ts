@@ -556,6 +556,29 @@ describe("WorkspaceRoom live queries", () => {
     ]);
   });
 
+  test("a live select pushes only the selected fields", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "picked",
+      query: { kanbanTasks: { $: { select: ["title"] } } },
+    });
+    expect(socket.messages()[1]?.data).toEqual({
+      kanbanTasks: [{ id: "task1", title: "First", updatedSeq: 0 }],
+    });
+    socket.clear();
+
+    await transact(
+      [{ op: "update", namespace: "kanbanTasks", id: "task1", values: { title: "Renamed", progress: 3 } }],
+      "t1"
+    );
+    await delay(100);
+
+    const [diff] = queryMessages(socket);
+    expect(diff).toMatchObject({ type: "query:diff", namespace: "kanbanTasks" });
+    expect(diff?.updated).toEqual([{ id: "task1", title: "Renamed", updatedSeq: 1 }]);
+  });
+
   test("leaves page metadata off a diff when it did not change", async () => {
     const socket = await connect();
     await send(socket, {

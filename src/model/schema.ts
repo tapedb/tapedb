@@ -269,25 +269,51 @@ export interface IncludeArgs<M extends Models, F extends Fields> {
   orderBy?: OrderBy<F>;
   take?: number;
   include?: Include<M, F>;
+  select?: Select<M, F>;
 }
 
 export type Include<M extends Models, F extends Fields> = {
   [K in RelationKeys<F>]?: true | IncludeArgs<M, TargetFields<F[K], M>>;
 };
 
-type Included<M extends Models, S, A> = Row<TargetFields<S, M>> &
-  (A extends { include: infer I } ? WithInclude<M, TargetFields<S, M>, I> : unknown);
+/**
+ * Fields to return instead of the whole row. Relations listed here are
+ * included, and may carry their own `select`.
+ */
+export type Select<M extends Models, F extends Fields> = {
+  [K in keyof Row<F>]?: boolean;
+} & {
+  [K in RelationKeys<F>]?: boolean | IncludeArgs<M, TargetFields<F[K], M>>;
+};
+
+type Included<M extends Models, S, A> = A extends { select: infer Sel }
+  ? Selected<M, TargetFields<S, M>, Sel>
+  : Row<TargetFields<S, M>> &
+      (A extends { include: infer I } ? WithInclude<M, TargetFields<S, M>, I> : unknown);
+
+type RelationOutput<M extends Models, S, A> = S extends HasMany
+  ? Included<M, S, A>[]
+  : S extends BelongsTo<string, infer O>
+    ? Included<M, S, A> | (O extends true ? null : never)
+    : never;
 
 /** A row plus whatever `include` asked for, at every level. */
 export type WithInclude<M extends Models, F extends Fields, I> = I extends object
   ? {
-      [K in keyof I & RelationKeys<F>]: F[K] extends HasMany
-        ? Included<M, F[K], I[K]>[]
-        : F[K] extends BelongsTo<string, infer O>
-          ? Included<M, F[K], I[K]> | (O extends true ? null : never)
-          : never;
+      [K in keyof I & RelationKeys<F>]: RelationOutput<M, F[K], I[K]>;
     }
   : unknown;
+
+/** Exactly the fields a `select` named, and the relations it included. */
+export type Selected<M extends Models, F extends Fields, S> = {
+  [K in keyof S & keyof Row<F> as S[K] extends false | undefined ? never : K]: Row<F>[K];
+} & {
+  [K in keyof S & RelationKeys<F> as S[K] extends false | undefined ? never : K]: RelationOutput<
+    M,
+    F[K],
+    S[K]
+  >;
+};
 
 // ---- The schema ------------------------------------------------------------
 
