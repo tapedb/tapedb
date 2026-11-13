@@ -971,6 +971,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
             added: diff.added,
             updated: diff.updated,
             removed: diff.removed,
+            ...(diff.order ? { order: diff.order } : {}),
             ...(index === 0 && pageInfoChanged ? { pageInfo } : {}),
           };
           this.send(ws, message);

@@ -46,6 +46,12 @@ export interface EntityDiff {
   updated: unknown[];
   /** Ids that disappeared from the result. */
   removed: string[];
+  /**
+   * Every id of the new result in order, when applying the diff the simple
+   * way — survivors keep their places, `added` is appended — would not
+   * reproduce it.
+   */
+  order?: string[];
 }
 
 export interface NamespaceDiff extends EntityDiff {
@@ -199,7 +205,14 @@ export function diffEntityList(
     if (!nextById.has(id)) removed.push(id);
   }
 
-  return { added, updated, removed };
+  const nextIds = [...nextById.keys()];
+  const merged = [
+    ...[...previousById.keys()].filter((id) => nextById.has(id)),
+    ...added.map((entity) => (entity as { id: string }).id),
+  ];
+  const inPlace = merged.every((id, index) => id === nextIds[index]);
+
+  return inPlace ? { added, updated, removed } : { added, updated, removed, order: nextIds };
 }
 
 /**
@@ -227,7 +240,7 @@ export function diffQueryResults(
     const diff = diffEntityList(before, after);
     if (diff === null) return null;
 
-    if (diff.added.length + diff.updated.length + diff.removed.length > 0) {
+    if (diff.added.length + diff.updated.length + diff.removed.length > 0 || diff.order) {
       diffs.push({ namespace, ...diff });
     }
   }
