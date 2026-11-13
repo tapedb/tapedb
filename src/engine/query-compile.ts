@@ -50,6 +50,8 @@ export type LinkMultiplicity = "one" | "many";
 export interface CompiledCondition {
   sql: string;
   params: SqlValue[];
+  /** The `after` keyset predicate: a count ignores it. */
+  cursor?: true;
 }
 
 export interface CompiledOrder {
@@ -72,6 +74,8 @@ export interface CompiledNode {
   limit: number | null;
   /** True when the caller asked for `limit`; false for the implicit default. */
   explicitLimit: boolean;
+  /** Top level only: also count every matching row. */
+  count: boolean;
   children: CompiledChild[];
 }
 
@@ -250,10 +254,17 @@ function compileNode(
     });
   }
 
+  if (options.count === true && depth > 0) {
+    throw invalidOp('"count" is only available on a top-level namespace.');
+  }
+  if (options.limit === 0 && children.length > 0) {
+    throw invalidOp('"limit: 0" reads no rows, so it cannot traverse links.');
+  }
+
   const order = compileOrder(namespace, options.order);
   const conditions = compileWhere(namespace, options.where);
   if (options.after !== undefined) {
-    conditions.push(cursorCondition(options.after, order));
+    conditions.push({ ...cursorCondition(options.after, order), cursor: true });
   }
 
   return {
@@ -267,6 +278,7 @@ function compileNode(
     // bounded per parent (see `hydrateChild`), never by one shared LIMIT.
     limit: options.limit ?? (depth === 0 ? DEFAULT_QUERY_LIMIT : null),
     explicitLimit: options.limit !== undefined,
+    count: options.count === true,
     children,
   };
 }
@@ -385,6 +397,27 @@ function compileWhere(
 
   const conditions: CompiledCondition[] = [];
   for (const [attribute, value] of Object.entries(where)) {
+    if (attribute === "$or" || attribute === "$and") {
+      const branches = (value as QueryWhere[]).map((branch) =>
+        conjunction(compileWhere(namespace, branch))
+      );
+      conditions.push(
+        joinConditions(branches, attribute === "$or" ? " OR " : " AND ")
+      );
+      continue;
+    }
+    if (attribute === "$not") {
+      const inner = conjunction(compileWhere(namespace, value as QueryWhere));
+      // SQL's NOT of an unknown is unknown, which drops the row. A row whose
+      // field is null does not match `{ status: "done" }`, so it should match
+      // its negation: COALESCE treats unknown as false before negating.
+      conditions.push({
+        sql: `NOT COALESCE((${inner.sql}), 0)`,
+        params: inner.params,
+      });
+      continue;
+    }
+
     const resolved = resolveAttribute(namespace, attribute);
     if (!resolved) {
       throw new TxError(
@@ -411,6 +444,22 @@ function compileWhere(
     );
   }
   return conditions;
+}
+
+/** AND of a branch's conditions; an empty branch matches everything. */
+function conjunction(conditions: CompiledCondition[]): CompiledCondition {
+  if (conditions.length === 0) return { sql: "1 = 1", params: [] };
+  return joinConditions(conditions, " AND ");
+}
+
+function joinConditions(
+  conditions: CompiledCondition[],
+  joiner: " AND " | " OR "
+): CompiledCondition {
+  return {
+    sql: conditions.map((condition) => `(${condition.sql})`).join(joiner),
+    params: conditions.flatMap((condition) => condition.params),
+  };
 }
 
 function compileOrder(
@@ -517,6 +566,33 @@ function compileComparison(
           }
           if (hasNull) parts.push(`${column} IS NULL`);
           clauses.push(parts.join(" OR "));
+        }
+        break;
+      }
+      case "$nin": {
+        if (!Array.isArray(operand)) {
+          throw invalidValue(`"$nin" on "${name}" requires an array.`);
+        }
+        const values = operand.map((item, index) =>
+          normaliseFilterValue(type, item, `${name}.$nin[${index}]`)
+        );
+        const nonNull = values.filter(
+          (item): item is Exclude<SqlValue, null> => item !== null
+        );
+        const excludesNull = values.length !== nonNull.length;
+        const parts: string[] = [];
+        if (nonNull.length > 0) {
+          parts.push(`${column} NOT IN (${nonNull.map(() => "?").join(", ")})`);
+          params.push(...nonNull);
+        }
+        if (excludesNull) {
+          parts.unshift(`${column} IS NOT NULL`);
+          clauses.push(parts.join(" AND "));
+        } else if (parts.length > 0) {
+          // As with $ne, a row whose field is null is not in the list.
+          clauses.push(`${column} IS NULL OR ${parts[0]}`);
+        } else {
+          clauses.push("1 = 1");
         }
         break;
       }

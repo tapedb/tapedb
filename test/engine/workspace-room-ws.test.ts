@@ -533,6 +533,29 @@ describe("WorkspaceRoom live queries", () => {
     ).toBeString();
   });
 
+  test("a live count updates when a matching row is added", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "count",
+      query: { kanbanTasks: { $: { count: true, limit: 0 } } },
+    });
+    expect(socket.messages()[1]).toMatchObject({
+      pageInfo: { kanbanTasks: { count: 1, returned: 0 } },
+    });
+    socket.clear();
+
+    await transact(
+      [{ op: "insert", namespace: "kanbanTasks", id: "task2", values: { columnId: "col1", title: "Two", order: 1 } }],
+      "t1"
+    );
+    await delay(100);
+
+    expect(queryMessages(socket)).toEqual([
+      expect.objectContaining({ type: "query:diff", pageInfo: { kanbanTasks: expect.objectContaining({ count: 2 }) } }),
+    ]);
+  });
+
   test("leaves page metadata off a diff when it did not change", async () => {
     const socket = await connect();
     await send(socket, {

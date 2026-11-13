@@ -141,6 +141,15 @@ function decisionFor(
 }
 
 /**
+ * True when the namespace's `view` decision is a function rule, which runs
+ * after fetch. A count over such a namespace would include rows the rule
+ * hides, so the executor refuses one.
+ */
+export function hasFunctionViewRule(namespace: string): boolean {
+  return typeof decisionFor(namespace, "view") === "function";
+}
+
+/**
  * Evaluates a `view` rule against one row.
  *
  * Read rules cannot be pushed into SQL: they are arbitrary predicates. The
