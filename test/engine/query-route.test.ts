@@ -240,9 +240,16 @@ describe("WorkspaceRoom query route", () => {
     expect(response.status).toBe(405);
 
     const status = await room.fetch(
-      new Request("http://test/status", { method: "GET" })
+      new Request("http://test/status", {
+        method: "GET",
+        headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim(WORKSPACE_ROLE_LEVELS.MEMBER)) },
+      })
     );
     expect(status.status).toBe(200);
     expect(((await status.json()) as { ok: boolean }).ok).toBe(true);
+
+    // Without a verified claim the room does not describe itself either.
+    const anonymous = await room.fetch(new Request("http://test/status", { method: "GET" }));
+    expect(anonymous.status).toBe(403);
   });
 });

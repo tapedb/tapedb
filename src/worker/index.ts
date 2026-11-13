@@ -279,12 +279,14 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
         return apiError(400, "invalid_workspace_id", "Workspace id must be a UUID.");
       }
 
-      const isStatusProbe = request.method === "GET" && roomPath === "/status";
-
+      // Every engine route needs a verified claim before a Durable Object is
+      // touched: addressing one by name creates it, runs its migrations and
+      // checks R2 for a recovery, so an open route would let anyone create
+      // objects for any UUID. The Worker's own /status answers health checks.
       let trustedClaim: string | null = null;
       let role: number = WORKSPACE_ROLE_LEVELS.GUEST;
 
-      if (!isStatusProbe) {
+      {
         try {
           const claim = await authenticateEngineRequest(request, env, workspaceId);
           role = claim.role;
