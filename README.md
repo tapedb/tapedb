@@ -195,7 +195,24 @@ replayed `clientTxId` is not re-judged. A rule that throws denies: a broken
 rule can never widen access. `update` is an upsert, so an insert must satisfy
 the **create** rule, not the update one.
 
-`view` can be a row rule too, and then it filters what comes back:
+`view` takes two rule forms. Prefer `where`: it returns a filter for the
+caller, which is compiled into the query's SQL at every level that reads the
+namespace, so it uses indexes and always fills the page.
+
+```ts
+permissions: {
+  documents: { view: { where: (auth) => ({ ownerId: auth.sub }) } },
+  // An array is OR: mine, or anything public.
+  notes: { view: { where: (auth) => [{ ownerId: auth.sub }, { isPublic: true }] } },
+}
+```
+
+The filter uses the same operators as a query's `where`, and it ANDs with the
+caller's own filter, so a client cannot widen it. An unsupported operator is an
+error rather than ignored, and a rule that throws hides every row. Give the
+attribute you filter on `indexed: true`.
+
+When visibility cannot be written as a filter, `view` can be a function:
 
 ```ts
 permissions: {
@@ -203,11 +220,11 @@ permissions: {
 }
 ```
 
-Read rules are arbitrary TypeScript, so they run after the SQL page. The engine
-then keeps scanning (by keyset when the query has an `order`) until the page is
-full, the rows run out, or a cap of `max(limit * 10, 200)` scanned rows is
-reached, so a rule that hides everything terminates instead of walking the
-namespace. A rule that throws hides the row.
+Function rules are arbitrary TypeScript, so they run after the SQL page. The
+engine then keeps scanning (by keyset when the query has an `order`) until the
+page is full, the rows run out, or a cap of `max(limit * 10, 200)` scanned rows
+is reached, so a rule that hides almost everything can return a short page.
+A rule that throws hides the row.
 
 Rules also receive `changed`, the attribute names an op writes, which is how
 one field is gated:
@@ -247,8 +264,7 @@ and a headless client run against a live Worker. Live `wrangler dev` runs cover
 init, mint, transact, idempotent replay, nested query, cursor pagination,
 upload and listing, and every auth refusal.
 
-Remaining gaps are tracked in [SCOPE.md](./SCOPE.md): row-level permissions
-(role levels only today) and the absent devtool.
+Remaining gaps and their trade-offs are tracked in [SCOPE.md](./SCOPE.md).
 
 ## License
 

@@ -6,6 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `view` rules can be `{ where: (auth) => filter }`. The filter is compiled
+  into the SQL of every query level that reads the namespace, ANDed with the
+  caller's own `where`, so it uses indexes and fills every page instead of
+  scanning to a cap. An array of filters is OR. Unsupported operators are an
+  error, a throwing rule hides every row, and a `where` rule on a write action
+  is refused at `defineSchema` and `configurePermissions`.
+
 ### Fixed
 
 - Recovery rebuilds `_tx_log` from the replayed log segments instead of

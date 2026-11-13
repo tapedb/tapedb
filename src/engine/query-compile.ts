@@ -22,6 +22,7 @@ import {
   isPlainObject,
   MAX_LINK_DEPTH,
   parseQueryOptions,
+  parseWhere,
   decodeQueryCursor,
   type QueryComparison,
   type QueryOptions,
@@ -318,6 +319,51 @@ function cursorCondition(
   }
 
   return { sql: clauses.join(" OR "), params };
+}
+
+/**
+ * Compiles a `where` view rule's branches into one condition: AND inside a
+ * branch, OR across branches. No branches compiles to "no rows".
+ *
+ * Branches are validated with the same parser as client filters, so an
+ * unsupported operator is refused instead of being ignored. Ignoring one would
+ * compile to `1 = 1` and widen access.
+ */
+export function compileViewCondition(
+  namespaceName: string,
+  branches: readonly unknown[]
+): CompiledCondition {
+  const namespace = findNamespace(namespaceName);
+  if (!namespace) {
+    throw new TxError(
+      "unknown_namespace",
+      `Unknown namespace "${namespaceName}".`
+    );
+  }
+  if (branches.length === 0) return { sql: "0 = 1", params: [] };
+
+  const parts: string[] = [];
+  const params: SqlValue[] = [];
+  for (const branch of branches) {
+    let conditions: CompiledCondition[];
+    try {
+      conditions = compileWhere(namespace, parseWhere(branch));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new TxError(
+        "permission_denied",
+        `View rule for "${namespaceName}" returned an invalid filter: ${reason}`
+      );
+    }
+    if (conditions.length === 0) {
+      parts.push("1 = 1");
+      continue;
+    }
+    parts.push(conditions.map((condition) => `(${condition.sql})`).join(" AND "));
+    for (const condition of conditions) params.push(...condition.params);
+  }
+
+  return { sql: parts.map((part) => `(${part})`).join(" OR "), params };
 }
 
 function selectColumns(namespace: NamespaceDefinition): string[] {
