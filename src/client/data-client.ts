@@ -64,6 +64,7 @@ const TERMINAL_AUTH_CODES = new Set([
 ]);
 
 export interface FetchResponseLike {
+  body?: ReadableStream<Uint8Array> | null;
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
@@ -501,6 +502,52 @@ class DataClientImpl {
         throw new BulkWriteError(count, new Error(`The engine returned a cursor (${next}) that does not advance.`));
       }
       after = next;
+    }
+  }
+
+  /**
+   * The workspace export, one parsed NDJSON record at a time, read from the
+   * response stream as it arrives rather than buffered.
+   */
+  async *exportRecords(): AsyncGenerator<Record<string, unknown>> {
+    const problem = this.configProblem();
+    if (problem) throw new Error(problem);
+
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/export`,
+      { method: "GET", headers: { authorization: `Bearer ${token}` } }
+    );
+    const body = (response as { body?: ReadableStream<Uint8Array> | null }).body;
+    if (!response.ok || !body) {
+      const payload = await response.json().catch(() => null);
+      const error = readServerError(payload);
+      throw new ServerError(
+        error?.code ?? "http_error",
+        error?.message ?? `Export failed with HTTP ${response.status}.`,
+        response.status
+      );
+    }
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        buffered += done ? decoder.decode() : decoder.decode(value, { stream: true });
+        let newline = buffered.indexOf("\n");
+        while (newline !== -1) {
+          const line = buffered.slice(0, newline);
+          buffered = buffered.slice(newline + 1);
+          if (line.trim()) yield JSON.parse(line) as Record<string, unknown>;
+          newline = buffered.indexOf("\n");
+        }
+        if (done) break;
+      }
+      if (buffered.trim()) yield JSON.parse(buffered) as Record<string, unknown>;
+    } finally {
+      reader.releaseLock();
     }
   }
 

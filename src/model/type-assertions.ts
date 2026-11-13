@@ -122,4 +122,16 @@ export async function assertions(): Promise<void> {
   await db.column.aggregate({ _min: { archived: true } });
   // @ts-expect-error json cannot key a group
   await db.board.groupBy({ by: ["columns"], _count: true });
+
+  // Export records narrow to the model's row.
+  for await (const record of db.$export()) {
+    if (record.type === "row" && record.model === "column") {
+      expectType<Equal<typeof record.data.position, number>>();
+    }
+    if (record.type === "row") {
+      // @ts-expect-error until the model is known, a row may be a board, which has no position
+      void record.data.position;
+    }
+    if (record.type === "end") expectType<Equal<typeof record.consistent, boolean>>();
+  }
 }

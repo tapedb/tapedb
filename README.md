@@ -352,6 +352,27 @@ defineTapeDB({
 });
 ```
 
+## Export
+
+```ts
+for await (const record of db.$export()) {
+  if (record.type === "row") save(record.model, record.data);   // typed per model
+}
+```
+
+```bash
+npx tapedb export --workspace <uuid> --out workspace.ndjson   # TAPEDB_TOKEN, or a dev claim
+```
+
+The engine streams NDJSON: a `header` line (the models exported, and any the
+caller may not read), one `row` line per row — model by model, in id order,
+through the same read rules as any query — one `file` line per file in the
+index (bytes stay in R2), and an `end` line with counts. Rows are read 1000 at
+a time as the stream is consumed, so a large workspace never sits in memory.
+Writes keep landing during an export; `end.consistent` is true when none did,
+and the export is then the workspace exactly at `end.seq`. An export that
+stops early ends with an `error` line instead of `end` (the CLI exits 1).
+
 ## Claims and identity
 
 The engine verifies a short-lived signed claim and never issues one. Identity

@@ -730,6 +730,23 @@ describe("WorkspaceRoom live queries", () => {
     });
   });
 
+  test("GET /export streams NDJSON for the verified claim", async () => {
+    const response = await room.fetch(
+      new Request("http://test/export", {
+        headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim(WORKSPACE_ROLE_LEVELS.MEMBER)) },
+      })
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+    const lines = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(lines[0]).toMatchObject({ type: "header", workspaceId: WORKSPACE });
+    expect(lines).toContainEqual(expect.objectContaining({ type: "row", model: "kanbanTasks", data: expect.objectContaining({ id: "task1" }) }));
+    expect(lines.at(-1)).toMatchObject({ type: "end", consistent: true });
+
+    const unverified = await room.fetch(new Request("http://test/export"));
+    expect(unverified.status).toBe(403);
+  });
+
   test("leaves page metadata off a diff when it did not change", async () => {
     const socket = await connect();
     await send(socket, {

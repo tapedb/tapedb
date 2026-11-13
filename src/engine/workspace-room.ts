@@ -45,6 +45,7 @@ import {
   queryMatchesTouched,
   touchedNamespacesFromEnvelope,
 } from "./subscriptions";
+import { exportStream } from "./export";
 import { isTopic, topicAllowed } from "./topics";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { runTransaction } from "./tx-pipeline";
@@ -274,6 +275,26 @@ export class WorkspaceRoom extends DurableObject<Env> {
         );
       }
       return this.query(request);
+    }
+
+    // Every row the caller may read, as NDJSON, streamed a chunk at a time.
+    if (url.pathname === "/export") {
+      if (request.method !== "GET") {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) {
+          return apiError(statusForQueryError(error.code), error.code, error.message);
+        }
+        throw error;
+      }
+      return new Response(
+        exportStream(durableObjectSqlExecutor(this.ctx.storage), claim, this.workspaceId),
+        { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } }
+      );
     }
 
     // File metadata. Bytes live in R2 and are handled by the Worker; this is
