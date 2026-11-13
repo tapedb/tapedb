@@ -102,6 +102,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- The local transaction log is bounded. Each snapshot trims `_tx_log` rows that
+  are flushed to R2 and at least `DEDUPE_HORIZON_SEQ` below the snapshot, the
+  same window R2 keeps, and raises `dedupe_floor_seq` to the cut so a retry
+  from below it is refused rather than applied twice. A Durable Object's
+  SQLite no longer grows by one row per write forever.
+
 - `npx tapedb` did nothing. The CLI runs only when it is the entry point, and
   compared `process.argv[1]` with `import.meta.url` without resolving
   symlinks; npx runs it through the `node_modules/.bin` link, so the two never
