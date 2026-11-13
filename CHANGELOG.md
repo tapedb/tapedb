@@ -32,6 +32,14 @@ All notable changes to this project are documented here. The format follows
 
 ### Fixed
 
+- Live queries keep their page metadata. The client rebuilt its state on every
+  `query:diff` without `pageInfo`, so after one live change `loadMore()`
+  returned false and paging stopped. The engine also never re-sent `pageInfo`
+  after the first result, so `hasMore` and `nextCursor` went stale when rows
+  landed past the window. Diffs now carry `pageInfo` when it changes (an empty
+  diff if no row in the window moved), and the client keeps the previous value
+  otherwise.
+
 - `db.loadMore()` no longer resets to page one on reconnect. After each page
   the client widens the live subscription's `limit` to the rows it has loaded
   (clamped to 1000, the engine's ceiling), so the reconnect re-subscribes the
