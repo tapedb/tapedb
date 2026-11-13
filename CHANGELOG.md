@@ -6,7 +6,15 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- `@cloudflare/workers-types` moved to v5, the major current wrangler asks
+  for. Installing the starter example failed outright on the conflict.
+
 ### Added
+
+- The starter example is on the model API, with its migrations committed, and
+  is installable and runnable from the repo.
 
 - Filters on linked models: a to-one link takes a filter on the row it points
   at (`where: { board: { archived: false } }`, or `null` for no parent), and a

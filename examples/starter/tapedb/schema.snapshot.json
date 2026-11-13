@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "models": {
+    "board": {
+      "table": "board",
+      "attributes": {
+        "name": {
+          "type": "string",
+          "optional": false,
+          "indexed": false,
+          "unique": false
+        },
+        "ownerId": {
+          "type": "string",
+          "optional": false,
+          "indexed": true,
+          "unique": false
+        },
+        "archived": {
+          "type": "boolean",
+          "optional": false,
+          "indexed": false,
+          "unique": false,
+          "default": 0
+        }
+      }
+    },
+    "column": {
+      "table": "column",
+      "attributes": {
+        "name": {
+          "type": "string",
+          "optional": false,
+          "indexed": false,
+          "unique": false
+        },
+        "position": {
+          "type": "number",
+          "optional": false,
+          "indexed": true,
+          "unique": false,
+          "default": 0
+        },
+        "boardId": {
+          "type": "string",
+          "optional": false,
+          "indexed": true,
+          "unique": false,
+          "references": {
+            "table": "board",
+            "column": "id",
+            "onDelete": "CASCADE"
+          }
+        }
+      }
+    },
+    "task": {
+      "table": "task",
+      "attributes": {
+        "title": {
+          "type": "string",
+          "optional": false,
+          "indexed": false,
+          "unique": false
+        },
+        "done": {
+          "type": "boolean",
+          "optional": false,
+          "indexed": false,
+          "unique": false,
+          "default": 0
+        },
+        "due": {
+          "type": "date",
+          "optional": true,
+          "indexed": false,
+          "unique": false
+        },
+        "columnId": {
+          "type": "string",
+          "optional": true,
+          "indexed": true,
+          "unique": false,
+          "references": {
+            "table": "column",
+            "column": "id",
+            "onDelete": "SET NULL"
+          }
+        }
+      }
+    }
+  }
+}
