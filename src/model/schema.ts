@@ -7,6 +7,7 @@
  * friends into engine queries and ops.
  */
 
+import type { FileRules } from "../engine/file-access";
 import { WORKSPACE_ROLE_LEVELS, type WorkspaceRole } from "../claims";
 import type { AttributeDefinition, DeleteRule, LinkDefinition } from "../engine/registry";
 import type { PermissionDecision, PermissionOverrides } from "../engine/tx-permissions";
@@ -96,6 +97,70 @@ export function check<F extends Fields = Fields>(
   test: (context: CheckContext<F>) => boolean
 ): CheckDecision<F> {
   return { decision: "check", test };
+}
+
+// ---- File rules ------------------------------------------------------------
+
+/** A file as file rules see it. */
+export interface FileInfo {
+  path: string;
+  /** Bytes; null for a write whose size is not known yet (a multipart start). */
+  size: number | null;
+  contentType: string | null;
+  /** The uploader's subject; null for files indexed before uploaders were recorded. */
+  uploadedBy: string | null;
+}
+
+export interface FileCheckContext {
+  auth: AccessAuth;
+  /** For read and delete, the stored file; for write, the incoming one. */
+  file: FileInfo;
+  /** For write, the stored file it would replace, if any. */
+  existing?: FileInfo;
+}
+
+export interface FileCheckDecision {
+  readonly decision: "check";
+  readonly test: (context: FileCheckContext) => boolean;
+}
+
+export interface AttachedToDecision<K extends string = string> {
+  readonly decision: "attachedTo";
+  readonly model: K;
+  readonly locate: (path: string) => string | null | undefined;
+}
+
+/** A file rule: a predicate over the caller and the file. Throwing denies. */
+export function fileCheck(test: (context: FileCheckContext) => boolean): FileCheckDecision {
+  return { decision: "check", test };
+}
+
+/**
+ * A file rule: the file belongs to a row and follows its rules. `locate`
+ * maps a path to the row's id (null when the path names none, which denies).
+ * Reading the file needs the row to be readable by the caller; writing or
+ * deleting it needs the caller to be allowed to update the row.
+ *
+ *   files: { read: attachedTo("task", (path) => path.split("/")[1]) }
+ */
+export function attachedTo<K extends string>(
+  model: K,
+  locate: (path: string) => string | null | undefined
+): AttachedToDecision<K> {
+  return { decision: "attachedTo", model, locate };
+}
+
+export type FileRuleDecision<K extends string = string> = RoleDecision | FileCheckDecision | AttachedToDecision<K>;
+
+/** Who may read, write and delete each file. Defaults: read member, write and delete editor. */
+export interface FileAccess<K extends string = string> {
+  read?: FileRuleDecision<K>;
+  write?: FileRuleDecision<K>;
+  delete?: FileRuleDecision<K>;
+}
+
+export interface SchemaOptions<K extends string = string> {
+  files?: FileAccess<K>;
 }
 
 export interface Access<F extends Fields = Fields> {
@@ -394,7 +459,10 @@ const DELETE_RULES: Record<string, DeleteRule> = {
  * Throws on anything the engine would only discover later: a relation to a
  * model that does not exist, an ambiguous inverse, a reserved name.
  */
-export function schema<M extends Models>(models: M): Schema<M> {
+export function schema<M extends Models>(
+  models: M,
+  options: SchemaOptions<Extract<keyof M, string>> = {}
+): Schema<M> {
   const entities: Record<string, EntityConfig> = {};
   const links: LinkDefinition[] = [];
   const graph: Record<string, ModelInfo> = {};
@@ -524,8 +592,21 @@ export function schema<M extends Models>(models: M): Schema<M> {
     if (definition.options.table !== undefined) tables[key] = definition.options.table;
   }
 
+  const files = options.files;
+  for (const [action, rule] of Object.entries(files ?? {})) {
+    if (!["read", "write", "delete"].includes(action)) {
+      throw new Error(`files.${action} is not a file action; use read, write or delete.`);
+    }
+    if (rule?.decision === "attachedTo" && !(rule.model in models)) {
+      throw new Error(`files.${action} is attached to "${rule.model}", which is not a model.`);
+    }
+    if ((rule as { decision?: string } | undefined)?.decision === "filter") {
+      throw new Error(`files.${action}: filter() is for model reads; use fileCheck() or attachedTo().`);
+    }
+  }
+
   const compiled = defineSchema({ entities, links, permissions, tables });
-  return { ...compiled, models, graph };
+  return { ...compiled, ...(files && Object.keys(files).length > 0 ? { files: files as unknown as FileRules } : {}), models, graph };
 }
 
 /** A default in the form the column stores it. */

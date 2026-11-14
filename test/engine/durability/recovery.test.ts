@@ -1114,10 +1114,10 @@ describe("recoverWorkspace", () => {
 });
 
 describe("file index across a restore", () => {
-  function files(db: Database): Array<{ path: string; r2_key: string; size: number }> {
+  function files(db: Database): Array<{ path: string; r2_key: string; size: number; uploaded_by?: string | null }> {
     return db
-      .query(`SELECT "path", "r2_key", "size" FROM "_files" ORDER BY "path"`)
-      .all() as Array<{ path: string; r2_key: string; size: number }>;
+      .query(`SELECT "path", "r2_key", "size", "uploaded_by" FROM "_files" ORDER BY "path"`)
+      .all() as Array<{ path: string; r2_key: string; size: number; uploaded_by?: string | null }>;
   }
 
   test("uploads and deletes after the snapshot survive a cold start", async () => {
@@ -1125,15 +1125,15 @@ describe("file index across a restore", () => {
     seedWorkspace(source);
     const sql = txExecutor(source.db);
 
-    recordFileEntry(sql, { path: "kept.png", key: "k/kept", size: 10, contentType: "image/png" });
+    recordFileEntry(sql, { path: "kept.png", key: "k/kept", size: 10, contentType: "image/png", uploadedBy: "alice" });
     recordFileEntry(sql, { path: "doomed.png", key: "k/doomed", size: 20, contentType: null });
 
     const bucket = new FakeR2Bucket();
     await publish(source, bucket, NOW); // snapshot holds kept + doomed
 
     // After the snapshot: one new upload, one overwrite, one delete.
-    recordFileEntry(sql, { path: "late.pdf", key: "k/late", size: 30, contentType: "application/pdf" });
-    recordFileEntry(sql, { path: "kept.png", key: "k/kept-v2", size: 11, contentType: "image/png" });
+    recordFileEntry(sql, { path: "late.pdf", key: "k/late", size: 30, contentType: "application/pdf", uploadedBy: "bob" });
+    recordFileEntry(sql, { path: "kept.png", key: "k/kept-v2", size: 11, contentType: "image/png", uploadedBy: "carol" });
     expect(forgetFileEntry(sql, "doomed.png")).toBe(1);
 
     await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
@@ -1147,8 +1147,8 @@ describe("file index across a restore", () => {
     );
 
     expect(files(target.db)).toEqual([
-      { path: "kept.png", r2_key: "k/kept-v2", size: 11 },
-      { path: "late.pdf", r2_key: "k/late", size: 30 },
+      { path: "kept.png", r2_key: "k/kept-v2", size: 11, uploaded_by: "carol" },
+      { path: "late.pdf", r2_key: "k/late", size: 30, uploaded_by: "bob" },
     ]);
     expect(files(target.db)).toEqual(files(source.db));
 

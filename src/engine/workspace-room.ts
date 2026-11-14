@@ -52,6 +52,7 @@ import {
 import { exportStream } from "./export";
 import { viewDependsOnSubject } from "./tx-permissions";
 import { isTopic, topicAllowed } from "./topics";
+import { authorizeFile, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { runTransaction } from "./tx-pipeline";
 import { durableObjectSqlExecutor, type SqlValue } from "./tx-sql";
@@ -342,9 +343,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     // File metadata. Bytes live in R2 and are handled by the Worker; this is
     // the queryable index so a workspace can be asked what it contains.
-    if (url.pathname === "/files") {
-      // The same roles as the byte routes the Worker serves: reading files
-      // needs a member, changing them an editor.
+    if (url.pathname === "/files" || url.pathname === "/files/authorize") {
+      // Without file rules, the same roles as the byte routes the Worker
+      // serves: reading files needs a member, changing them an editor. With
+      // rules, the Worker asks /files/authorize before touching bytes, and
+      // the list shows only the files the caller may read.
       let claim: RoleClaim;
       try {
         claim = readTrustedRoleClaim(request, this.workspaceId);
@@ -352,10 +355,17 @@ export class WorkspaceRoom extends DurableObject<Env> {
         if (error instanceof TxError) return apiError(403, error.code, error.message);
         throw error;
       }
-      const needed = request.method === "GET" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR;
-      if (claim.role < needed) return apiError(403, "insufficient_role", "Insufficient role for this file operation.");
-      if (request.method === "GET") return this.listFiles();
-      if (request.method === "POST") return this.recordFile(request);
+      if (url.pathname === "/files/authorize") {
+        return request.method === "POST"
+          ? this.authorizeFileRequest(request, claim)
+          : apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      if (!fileRulesConfigured()) {
+        const needed = request.method === "GET" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR;
+        if (claim.role < needed) return apiError(403, "insufficient_role", "Insufficient role for this file operation.");
+      }
+      if (request.method === "GET") return this.listFiles(claim);
+      if (request.method === "POST") return this.recordFile(request, claim);
       if (request.method === "DELETE") return this.forgetFile(request);
       return apiError(
         405,
@@ -1302,19 +1312,63 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * File metadata rows. Bytes live in R2 and never enter the transaction log;
    * this table is the queryable index over them.
    */
-  private listFiles(): Response {
+  private listFiles(claim: RoleClaim): Response {
     const sql = durableObjectSqlExecutor(this.ctx.storage);
     const rows = sql.all<Record<string, SqlValue>>(
       `SELECT "id", "path", "r2_key" AS "r2Key", "size",
-              "content_type" AS "contentType",
+              "content_type" AS "contentType", "uploaded_by" AS "uploadedBy",
               "created_at" AS "createdAt", "updated_at" AS "updatedAt"
          FROM "${ENGINE_TABLES.files}"
         ORDER BY "path"`
-    );
-    return json({ ok: true, data: rows });
+    ) as unknown as Array<FileInfo & Record<string, SqlValue>>;
+    return json({ ok: true, data: fileRulesConfigured() ? readableFiles(sql, claim, rows) : rows });
   }
 
-  private async recordFile(request: Request): Promise<Response> {
+  /** The stored file at `path`, as file rules see it. */
+  private storedFile(sql: ReturnType<typeof durableObjectSqlExecutor>, path: string): FileInfo | undefined {
+    return sql.one<FileInfo & Record<string, SqlValue>>(
+      `SELECT "path", "size", "content_type" AS "contentType", "uploaded_by" AS "uploadedBy"
+         FROM "${ENGINE_TABLES.files}" WHERE "path" = ?`,
+      path
+    );
+  }
+
+  /**
+   * Decides one file operation for the Worker, before it touches bytes:
+   * `{ path, action, size?, contentType? }`. A read of a file the caller may
+   * not see answers 404, like a file that does not exist, so a rule does not
+   * reveal what it hides.
+   */
+  private async authorizeFileRequest(request: Request, claim: RoleClaim): Promise<Response> {
+    const body = (await request.json().catch(() => null)) as Record<string, unknown> | null;
+    const path = body?.path;
+    const action = body?.action;
+    if (typeof path !== "string" || path.length === 0) return apiError(400, "invalid_path", "path is required.");
+    if (action !== "read" && action !== "write" && action !== "delete") {
+      return apiError(400, "invalid_action", "action must be read, write or delete.");
+    }
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const stored = this.storedFile(sql, path);
+    if (action === "write") {
+      const incoming: FileInfo = {
+        path,
+        size: typeof body?.size === "number" ? body.size : null,
+        contentType: typeof body?.contentType === "string" ? body.contentType : null,
+        uploadedBy: claim.sub,
+      };
+      return authorizeFile(sql, claim, "write", incoming, stored)
+        ? json({ ok: true })
+        : apiError(403, "file_access_denied", "The file rules do not allow this write.");
+    }
+    if (stored === undefined || !authorizeFile(sql, claim, action, stored)) {
+      return stored === undefined || action === "read" || !authorizeFile(sql, claim, "read", stored)
+        ? apiError(404, "not_found", "No such file.")
+        : apiError(403, "file_access_denied", "The file rules do not allow this delete.");
+    }
+    return json({ ok: true });
+  }
+
+  private async recordFile(request: Request, claim: RoleClaim): Promise<Response> {
     let body: unknown;
     try {
       body = await request.json();
@@ -1345,6 +1399,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       key,
       size,
       contentType: typeof contentType === "string" ? contentType : null,
+      uploadedBy: claim.sub,
     });
     await this.scheduleFileFlush();
 

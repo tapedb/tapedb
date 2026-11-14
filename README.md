@@ -339,8 +339,30 @@ const stop = room.subscribe((peers) => render(peers));
 ```
 
 File bytes live in the `FILES` bucket (any size, uploaded in parts past
-16 MiB; member read / editor write); their index is written through the transaction log, so a restore
-keeps it. Presence is ephemeral and rides the workspace socket.
+16 MiB); their index, with who uploaded each file, is written through the
+transaction log, so a restore keeps it. Presence is ephemeral and rides the
+workspace socket.
+
+Who may read, write and delete each file is set in the schema. Without
+rules: read `member`, write and delete `editor`. Each rule is a `role()`, a
+`fileCheck()` over the caller and the file, or `attachedTo(model, path => id)`,
+which makes a file follow its row: readable by whoever can read the row,
+writable and deletable by whoever may update it.
+
+```ts
+export default schema({ task, project }, {
+  files: {
+    read: attachedTo("task", (path) => path.split("/")[1]), // tasks/<id>/...
+    write: attachedTo("task", (path) => path.split("/")[1]),
+    delete: fileCheck(({ auth, file }) => file.uploadedBy === auth.sub),
+  },
+});
+```
+
+The workspace decides each operation before any byte moves, and `list()`
+returns only the files the caller may read. A file the caller may not read
+answers 404, like one that does not exist. A rule that throws denies, and an
+editor's role does not override a rule.
 
 ### Broadcast
 

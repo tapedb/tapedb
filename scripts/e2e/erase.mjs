@@ -23,8 +23,10 @@ execFileSync(process.execPath, ["node_modules/tapedb/dist/cli.js", "erase", "--w
 
 for (const [path, init] of [["/status", {}], ["/export", {}], ["/files/people/alice.txt", {}], ["/transact", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ txId: "x", ops: [{ op: "insert", namespace: "task", id: "t", values: { title: "back", done: false } }] }) }]]) {
   const response = await call(path, init);
-  // Files are served by the Worker straight from R2: gone, not 410.
-  assert.equal(response.status, path.startsWith("/files/") ? 404 : 410, `${path} after erase`);
+  // The e2e schema has file rules, so the workspace decides file reads too
+  // and answers 410 like every route. (Without rules the Worker serves bytes
+  // straight from R2, where they are gone: 404.)
+  assert.equal(response.status, 410, `${path} after erase`);
 }
 // Erasing again is a no-op the CLI reports as done.
 execFileSync(process.execPath, ["node_modules/tapedb/dist/cli.js", "erase", "--workspace", workspace, "--confirm", workspace, "--url", BASE], { stdio: "inherit" });

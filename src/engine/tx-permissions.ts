@@ -320,6 +320,30 @@ function targetOf(op: ValidatedOp, rowExists: boolean): RowTarget {
   };
 }
 
+/**
+ * Whether the caller may update or delete the stored row `id`: the
+ * namespace's role level, or its row rule against the row as stored. A row
+ * that does not exist, or a rule that throws, denies.
+ */
+export function allowStoredRow(
+  sql: SqlExecutor,
+  claim: RoleClaim,
+  namespace: string,
+  id: string,
+  action: "update" | "delete"
+): boolean {
+  if (!findNamespace(namespace)) return false;
+  const data = readRow(sql, namespace, id);
+  if (data === undefined) return false;
+  const decision = decisionFor(namespace, action);
+  if (typeof decision !== "function") return hasRole(claim, decision as WorkspaceRole);
+  try {
+    return decision({ auth: authOf(claim), data }) === true;
+  } catch {
+    return false;
+  }
+}
+
 /** Stored row with API attribute names, or undefined when it does not exist. */
 function readRow(
   sql: SqlExecutor,
