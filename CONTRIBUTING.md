@@ -109,14 +109,19 @@ flusher, snapshots or recovery.
 
 ## Releasing
 
+Do not publish from a feature branch, and do not create a release tag while the
+private-preview gates are open. The gates, checks and publish steps are in
+[RELEASING.md](RELEASING.md). `package.json` stays `"private": true` until the
+release pull request removes it.
+
 The package smoke check in `verify` uses Node 22.18 or newer and npm. It
 installs the built tarball into default npm, CommonJS and ESM projects, then
 checks initialization, migration generation and failure handling. It never
 publishes to npm or changes the consumer package type.
 
-Before publishing, run the package the way a consumer gets it, not the way
-the repo has it. Every bug found late in 0.1.0 — the CLI exiting silently
-under `npx`, uploads refusing to run under `tapedb dev` — was invisible to
+Before publishing, run the package the way a consumer gets it, not the way the
+repo has it. Every bug found late in 0.1.0, including the CLI exiting silently
+under `npx` and uploads refusing to run under `tapedb dev`, was invisible to
 `bun test` and obvious within a minute of this:
 
 ```bash
@@ -129,17 +134,9 @@ npx tapedb init && npx tapedb dev            # then drive it with a script:
 ```
 
 `tapedb` is unscoped and the name was free on npm as of 0.1.0, so no org is
-needed:
-
-```bash
-npm login
-npm publish --access public
-```
+needed. `repository`, `bugs` and `homepage` already point at the GitHub repo
+and `https://tapedb.dev`.
 
 Only a scoped release (`@tapedb/*`) needs an org, and orgs are created in the
 web UI at `https://www.npmjs.com/org/create`. There is no `npm org create`
 command.
-
-`repository` and `bugs` already point at the GitHub repo. `homepage` stays out
-until `tapedb.dev` actually serves something: a dead URL on the package page is
-worse than no link.

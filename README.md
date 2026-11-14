@@ -14,6 +14,14 @@ service: there is no hosted control plane, and your data never leaves your
 account. [PRIVACY.md](PRIVACY.md) covers what is stored where, for how long,
 and how to answer GDPR access and erasure requests.
 
+## Project status
+
+TapeDB is a **private preview**. It has no public npm release and is not ready
+for production use. The repository and package stay private until every gate in
+[RELEASING.md](RELEASING.md) is satisfied. The design boundaries and known
+limitations are listed in [LIMITATIONS.md](LIMITATIONS.md). The packaged CLI
+requires Node 22.18 or newer; the library itself runs in Cloudflare Workers.
+
 ```bash
 npx tapedb init     # schema, worker, wrangler config, first migration
 npx tapedb dev      # local database with a dev claim route
@@ -502,7 +510,13 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 ## Development
 
 TapeDB is under active development and has no public release. The package is
-not ready for production use.
+not ready for production use; see [LIMITATIONS.md](LIMITATIONS.md) and the
+release gates in [RELEASING.md](RELEASING.md).
+
+## Security
+
+Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
+Do not open a public issue for a security report.
 
 ## License
 

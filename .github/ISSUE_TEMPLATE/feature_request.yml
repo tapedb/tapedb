@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a change to TapeDB
+title: "[feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        TapeDB is a private preview. Explain the problem before the shape of the solution, and note which documented limitation it touches.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can you not do today, and who is affected?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+      description: The API or behaviour you want, with a small example if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Existing workarounds, or why this belongs in the engine rather than the host application.
+  - type: textarea
+    id: scope
+    attributes:
+      label: Compatibility and security
+      description: Does this change claims, permissions, retention, migrations, offline writes or the package surface?

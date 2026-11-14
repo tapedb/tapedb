@@ -1,0 +1,63 @@
+# Known limitations
+
+TapeDB is a private preview. This page records the boundaries that are
+intentional and the gates that still stand between the current checkout and a
+public release. None of these are claims that the implementation is bug-free.
+
+## Product boundaries
+
+- **Cloudflare only.** TapeDB is a library for Workers, Durable Objects and R2.
+  It has no hosted control plane; you deploy and operate it in your own account.
+- **One writer per workspace.** Each workspace is one Durable Object. There is
+  no cross-workspace query, join or transaction, and no active-active setup.
+- **Identity is yours.** The engine verifies short-lived claims but does not
+  manage users, sessions, passwords or memberships, and it does not record who
+  made each write.
+- **Retention has a floor outside TapeDB.** Deleted and overwritten values leave
+  TapeDB's copies within the configured retention, but Cloudflare keeps 30 days
+  of Durable Object point-in-time recovery. Erasure cannot shorten that window.
+- **Jurisdiction is chosen before the first deploy.** Changing it later means
+  exporting and moving existing workspaces. Local workerd has no jurisdictions.
+- **Query boundaries.** Relation filters nest to SQLite's expression depth in a
+  Durable Object, about eight hops. A function-based read rule cannot be a
+  relation-filter target. `select` and `include` cannot be combined at one
+  level, and deep `create` types follow one level while the engine checks the
+  rest at runtime.
+- **Bulk writes.** Up to 1000 matching rows commit in one transaction; larger
+  calls continue in 1000-row transactions. They are neither atomic across
+  batches nor queued offline.
+- **Files and ephemeral channels.** Uploads are capped at 25 MB each. File
+  access is workspace-role based, not per-file. Broadcast messages and presence
+  are ephemeral; messages sent while the socket is down are dropped.
+- **Migrations are forward operations.** Destructive changes need
+  `--accept-data-loss`; renames need an explicit rename; new required fields
+  need a default or must be optional. Review generated SQL before deploying.
+- **Offline writes expire.** Transaction receipts live for half the history
+  retention, 15 days by default. A retry older than that is refused rather than
+  risking a duplicate application.
+- **Claim rate limiting is optional.** A public claim route should supply
+  `allowRequest`; the library does not impose a global limit.
+
+## Release gates
+
+The repository and npm package remain private until all of these are true:
+
+- CI runs the frozen install, typecheck, test suite, build, package smoke and
+  secret scan on Node 22.18 or newer on every pull request and on `main`.
+- Branch protection or rulesets are enabled. GitHub requires a paid plan for
+  those on a private repository; on the free plan they must be enabled when the
+  repository becomes public.
+- A secret and history scan is clean, and dependency and GitHub Actions
+  updates are reviewed.
+- The security model in [SECURITY.md](SECURITY.md) has been reviewed against
+  the claim, workspace, file and erase paths.
+- A consumer can install the packed artifact in a clean project and exercise
+  writes, live queries, uploads, migrations and erasure from the packaged CLI.
+- An independent review has been completed, or the remaining risk has been
+  accepted in writing by the maintainer.
+- The project has been dogfooded beyond the test suite and staging drills, and
+  the release notes state the known limitations above.
+
+Independent audit and sustained production dogfooding cannot be resolved by a
+code change in this repository. They remain release gates rather than items
+that CI can prove.
