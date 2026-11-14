@@ -95,8 +95,6 @@ interface LogLine {
   ops: unknown[];
   /** The idempotency key. Present when the client supplied one. */
   clientTxId?: string;
-  userId?: string | null;
-  role?: number | null;
   schemaVersion?: string;
 }
 
@@ -715,13 +713,11 @@ function parseLogLines(text: string, source: string): LogLine[] {
       throw new Error(`Log line in ${source} at line ${index + 1} has no ops.`);
     }
 
-    // The segment carries the idempotency key and attribution too. Keeping
-    // them is what lets recovery rebuild `_tx_log` faithfully instead of
-    // forgetting every transaction it just restored.
+    // The segment carries the idempotency key too, so recovery rebuilds
+    // `_tx_log` instead of forgetting every transaction it restored. The
+    // writer's identity, which older segments carry, is not restored.
     const clientTxId = parsed.clientTxId;
     const opsHashValue = parsed.opsHash;
-    const userId = parsed.userId;
-    const role = parsed.role;
     const schemaVersion = parsed.schemaVersion;
 
     lines.push({
@@ -734,8 +730,6 @@ function parseLogLines(text: string, source: string): LogLine[] {
       ...(typeof opsHashValue === "string" && opsHashValue.length > 0
         ? { opsHash: opsHashValue }
         : {}),
-      userId: typeof userId === "string" ? userId : null,
-      role: typeof role === "number" ? role : null,
       schemaVersion:
         typeof schemaVersion === "string" ? schemaVersion : "unknown",
     });
@@ -893,8 +887,8 @@ function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
     // write's stored ops are the rows it resolved, whose hash is not the
     // client's, which is why newer segments carry the original.
     line.opsHash ?? opsHash(ops),
-    line.userId ?? null,
-    line.role ?? null,
+    null,
+    null,
     line.at,
     line.schemaVersion ?? "unknown"
   );

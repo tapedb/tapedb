@@ -1408,3 +1408,35 @@ describe("durable transaction receipts", () => {
     expect(source.db.query(`SELECT name FROM sqlite_master WHERE name LIKE '_tapedb_snapshot_%'`).all()).toEqual([]);
   });
 });
+
+describe("the writer's identity", () => {
+  test("is not written to R2 log lines, and not restored from older ones", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    // A row from before the writer's identity stopped being recorded.
+    source.db.exec(`UPDATE "_tx_log" SET user_id = 'alice@example.com', role = 3`);
+    run(source, { txId: "next", ops: [{ op: "update", namespace: "folders", id: "f9", values: { name: "F9" } }] } as TxEnvelope);
+    const bucket = new FakeR2Bucket();
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
+    const segments = [...bucket.objects.entries()].filter(([key]) => key.includes("/log/"));
+    expect(segments.length).toBeGreaterThan(0);
+    for (const [, stored] of segments) {
+      const lines = new TextDecoder().decode(stored.body).trim().split("\n").map((line) => JSON.parse(line));
+      for (const line of lines) {
+        expect(line).not.toHaveProperty("userId");
+        expect(line).not.toHaveProperty("role");
+      }
+    }
+
+    // A segment written by an older engine still carries it.
+    const [key, stored] = segments[0];
+    const old = new TextDecoder().decode(stored.body).trim().split("\n")
+      .map((line) => JSON.stringify({ ...JSON.parse(line), userId: "alice@example.com", role: 3 })).join("\n") + "\n";
+    bucket.seed(key, old);
+    const target = createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now: NOW + 1 });
+    const restored = target.db.query(`SELECT user_id, role FROM "_tx_log"`).all() as Array<{ user_id: string | null; role: number | null }>;
+    expect(restored.length).toBeGreaterThan(0);
+    expect(restored.every((row) => row.user_id === null && row.role === null)).toBe(true);
+  });
+});
