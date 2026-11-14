@@ -24,6 +24,7 @@ import {
   STAGE_DEPTH,
   stageInsert,
   stageKey,
+  stageScan,
   stagesOf,
   type Stage,
 } from "./query-stages";
@@ -53,7 +54,7 @@ import {
   type NamespaceDefinition,
 } from "./registry";
 import { quoteIdentifier } from "./tx-apply";
-import type { SqlValue } from "./tx-sql";
+import type { SqlRow, SqlValue } from "./tx-sql";
 import { TxError } from "./tx-types";
 
 export type LinkDirection = "forward" | "reverse";
@@ -546,6 +547,11 @@ export interface ViewAccess {
   branches(namespace: string): readonly QueryWhere[] | null;
   /** A reason the namespace cannot be filtered on in SQL, or null. */
   refusal(namespace: string): string | null;
+  /**
+   * The namespace's read rule as a predicate on a stored row, when it is a
+   * function and so cannot run in SQL; null otherwise.
+   */
+  rowRule?(namespace: string): ((row: SqlRow) => boolean) | null;
 }
 
 interface WhereContext {
@@ -754,6 +760,33 @@ function compileRelationFilter(
     inner.length === 0 ? "1 = 1" : balancedJoin(inner.map((condition) => condition.sql), " AND ");
   const from = `${quoteIdentifier(target.table)} AS ${quoteIdentifier(alias)}`;
   const outer = context.alias ?? namespace.table;
+
+  const rowRule = context.view?.rowRule?.(target.apiName) ?? null;
+  if (rowRule !== null) {
+    // The target's read rule is a function: it runs on fetched rows, so SQL
+    // cannot apply it inside a subquery. Read the candidates, keep the rows
+    // the rule shows the caller, and test membership in those.
+    const key = stageKey();
+    const fk = qualify(foreignKey, alias);
+    const quoted = quoteIdentifier(alias);
+    const staged =
+      relation.mode === "parent"
+        ? stageScan(key, quoted, qualify("id", alias), from, `(${innerSql})`, params, rowRule)
+        : stageScan(
+            key,
+            quoted,
+            fk,
+            from,
+            `(${fk} IS NOT NULL AND ${relation.mode === "every" ? `NOT COALESCE((${innerSql}), 0)` : `(${innerSql})`})`,
+            params,
+            rowRule
+          );
+    const test =
+      relation.mode === "parent"
+        ? membership(qualify(foreignKey, outer), key)
+        : membership(qualify("id", outer), key, relation.mode !== "some");
+    return { ...test, stages: [...innerStages, staged] };
+  }
 
   if (depth > 0 && depth % STAGE_DEPTH === 0) {
     // Deep enough that nesting further would exhaust SQLite's expression

@@ -111,8 +111,9 @@ const titles = await db.task.findMany({
 The engine reads and sends only those columns (plus the row's id, which live
 updates key on), and the result type narrows to match. A live select is only
 pushed a change when a selected field changed.
-It works the same for `findPage` and live subscriptions; `select` and
-`include` are not combined at one level.
+It works the same for `findPage` and live subscriptions. `select` and
+`include` combine: the selected fields plus the included relations, and a
+relation named in both gets the arguments of both.
 
 Aggregates take the same `where` and return only the measures asked for:
 
@@ -159,8 +160,9 @@ await db.task.findMany({ where: { column: null } });          // no parent
 These compile to correlated subqueries, so the linked rows are never fetched.
 The linked model's own read rule is compiled into the subquery, so a filter
 cannot answer a question about rows the caller may not see; a model whose read
-rule is a function (which only runs after fetch) is refused as a filter
-target. The types follow one link; further hops are checked by the engine.
+rule is a function (which only runs after fetch) is applied to the linked
+rows before they count, so a filter never matches through a row the rule
+hides. The types follow every hop.
 Includes and relation filters nest without limit, and filters can be as wide
 as you like. A Durable Object's SQLite refuses expressions deeper than 100 and
 very long statements, so past a few hops, or past that length, the engine runs
@@ -251,8 +253,7 @@ await db.column.create({ data: { name: "Solo", board: { create: { name: "New boa
 ```
 
 It is one transaction, ordered so each row exists before anything points at
-it, and one failure rolls the whole tree back. The types follow one level;
-deeper nesting is checked by the engine.
+it, and one failure rolls the whole tree back. The types follow every level.
 
 ### Writing many rows
 

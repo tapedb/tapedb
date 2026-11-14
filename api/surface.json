@@ -252,7 +252,7 @@
       },
       "Result": {
         "kind": "type",
-        "shape": "<M extends Models, F extends Fields, A> A extends { select: infer S } ? Selected<M, F, S> : Row<F> & (A extends { include: infer I } ? WithInclude<M, F, I> : unknown)"
+        "shape": "<M extends Models, F extends Fields, A> (A extends { select: infer S } ? Selected<M, F, S> : Row<F>) & (A extends { include: infer I } ? WithInclude<M, F, I> : unknown)"
       },
       "role": {
         "kind": "function",
@@ -334,7 +334,7 @@
       },
       "Where": {
         "kind": "type",
-        "shape": "<F extends Fields = Fields, M extends Models = Models> Scalars<F> & { [K in RelationKeys<F>]?: F[K] extends HasMany ? ManyFilter<WhereLeaf<TargetFieldsOf<F[K], M>>> : WhereLeaf<TargetFieldsOf<F[K], M>> | null; } & { AND?: Where<F, M> | Where<F, M>[]; OR?: Where<F, M>[]; NOT?: Where<F, M> | Where<F, M>[]; }"
+        "shape": "<F extends Fields = Fields, M extends Models = Models> Scalars<F> & { [K in RelationKeys<F>]?: F[K] extends HasMany ? ManyFilter<Where<TargetFieldsOf<F[K], M>, M>> : Where<TargetFieldsOf<F[K], M>, M> | null; } & { AND?: Where<F, M> | Where<F, M>[]; OR?: Where<F, M>[]; NOT?: Where<F, M> | Where<F, M>[]; }"
       },
       "WORKSPACE_ROLE_LEVELS": {
         "kind": "value",
@@ -481,7 +481,7 @@
       },
       "Where": {
         "kind": "type",
-        "shape": "<F extends Fields = Fields, M extends Models = Models> Scalars<F> & { [K in RelationKeys<F>]?: F[K] extends HasMany ? ManyFilter<WhereLeaf<TargetFieldsOf<F[K], M>>> : WhereLeaf<TargetFieldsOf<F[K], M>> | null; } & { AND?: Where<F, M> | Where<F, M>[]; OR?: Where<F, M>[]; NOT?: Where<F, M> | Where<F, M>[]; }"
+        "shape": "<F extends Fields = Fields, M extends Models = Models> Scalars<F> & { [K in RelationKeys<F>]?: F[K] extends HasMany ? ManyFilter<Where<TargetFieldsOf<F[K], M>, M>> : Where<TargetFieldsOf<F[K], M>, M> | null; } & { AND?: Where<F, M> | Where<F, M>[]; OR?: Where<F, M>[]; NOT?: Where<F, M> | Where<F, M>[]; }"
       }
     },
     "tapedb/react": {
@@ -687,7 +687,7 @@
       },
       "BelongsToInput (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<F, M extends Models> | { connect: string } | { create: NestedCreate<TargetFieldsOf<F, M>> } | { disconnect: true } | null"
+        "shape": "<F, M extends Models> | { connect: string } | { create: NestedCreate<TargetFieldsOf<F, M>, M> } | { disconnect: true } | null"
       },
       "BelongsToKeys (src/model/schema.ts)": {
         "kind": "type",
@@ -852,7 +852,7 @@
       },
       "HasManyInput (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<F, M extends Models> { connect?: string[]; disconnect?: string[]; create?: NestedCreate<TargetFieldsOf<F, M>> | NestedCreate<TargetFieldsOf<F, M>>[]; }"
+        "shape": "<F, M extends Models> { connect?: string[]; disconnect?: string[]; create?: NestedCreate<TargetFieldsOf<F, M>, M> | NestedCreate<TargetFieldsOf<F, M>, M>[]; }"
       },
       "HasManyKeys (src/model/schema.ts)": {
         "kind": "type",
@@ -871,7 +871,7 @@
       },
       "Included (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<M extends Models, S, A> A extends { select: infer Sel } ? Selected<M, TargetFields<S, M>, Sel> : Row<TargetFields<S, M>> & (A extends { include: infer I } ? WithInclude<M, TargetFields<S, M>, I> : unknown)"
+        "shape": "<M extends Models, S, A> (A extends { select: infer Sel } ? Selected<M, TargetFields<S, M>, Sel> : Row<TargetFields<S, M>>) & (A extends { include: infer I } ? WithInclude<M, TargetFields<S, M>, I> : unknown)"
       },
       "InputOf (src/model/schema.ts)": {
         "kind": "type",
@@ -991,7 +991,7 @@
       },
       "NestedCreate (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<F> { id?: string } & { [K in RequiredScalarKeys<F>]: InputOf<F[K]>; } & { [K in OptionalScalarKeys<F>]?: InputOf<F[K]>; } & { [K in RelationKeys<F>]?: unknown; } & { [K in BelongsToKeys<F> as `${K}Id`]?: string | null; }"
+        "shape": "<F, M extends Models> { id?: string } & { [K in RequiredScalarKeys<F>]: InputOf<F[K]>; } & { [K in OptionalScalarKeys<F>]?: InputOf<F[K]>; } & { [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>; } & { [K in HasManyKeys<F>]?: HasManyInput<F[K], M>; } & { [K in BelongsToKeys<F> as `${K}Id`]?: string | null; }"
       },
       "NumberKeys (src/model/schema.ts)": {
         "kind": "type",
@@ -1388,10 +1388,6 @@
           "onerror": "((event: unknown) => void) | null",
           "onclose": "((event: unknown) => void) | null"
         }
-      },
-      "WhereLeaf (src/model/where.ts)": {
-        "kind": "type",
-        "shape": "<F extends Fields> Scalars<F> & { [K in RelationKeys<F>]?: unknown; } & { AND?: WhereLeaf<F> | WhereLeaf<F>[]; OR?: WhereLeaf<F>[]; NOT?: WhereLeaf<F> | WhereLeaf<F>[]; }"
       },
       "WithInclude (src/model/schema.ts)": {
         "kind": "type",

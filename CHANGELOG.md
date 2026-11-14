@@ -16,6 +16,14 @@ published.
 
 ### Changed
 
+- A model whose read rule is a function can be the target of a relation
+  filter: the linked rows are read, the rule applied, and only the rows it
+  shows count. Before, such a filter was refused.
+- `select` and `include` combine at one level: the selected fields plus the
+  included relations.
+- Relation filters and nested creates are typed at every depth, not one
+  level; a wrong field four hops down is a type error. `bun run typecheck`
+  now also compiles type tests in `test/types`.
 - Relation filters nest without limit and filters can be any length. A Durable
   Object's SQLite refuses expressions deeper than 100 and very long statements,
   which capped relation filters at about eight hops and failed `OR`s of a few
