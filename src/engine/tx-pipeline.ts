@@ -9,7 +9,8 @@
 
 import type { RoleClaim } from "../claims";
 import { applyOps } from "./tx-apply";
-import { expandBulkOps } from "./tx-bulk";
+import { bulkChunk, isBulk, releaseStaged, stageBulkOps, stagedIds } from "./tx-bulk";
+import { LogWriter, writeLogOps } from "./tx-log";
 import { opsHash, stableStringify } from "./tx-hash";
 import { assertRowPermissions, authorizeOps } from "./tx-permissions";
 import type { SqlExecutor } from "./tx-sql";
@@ -87,41 +88,73 @@ export function runTransaction(
       }
     }
 
-    // Bulk writes become one op per matching row, here, so everything below
-    // this point sees ordinary ops: the row rules judge each row, the log
-    // records which rows were written, and a replay writes those same rows.
-    const expanded = expandBulkOps(sql, claim, tx.txId, tx.rawOps, tx.ops);
-    const matched = {
-      ...(Object.keys(expanded.matched).length > 0 ? { matched: expanded.matched } : {}),
-      ...(Object.keys(expanded.more).length > 0 ? { more: expanded.more } : {}),
-    };
-
-    if (expanded.ops.length === 0) {
-      // A no-op is still a completed request: preserve its idempotency key so
-      // retrying later cannot suddenly match newly-created rows.
-      const state = sql.one<TxStateRow>(`SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`);
-      const seq = tx.clientTxId === undefined ? (state?.high_water_seq ?? 0) : appendLogEntry(sql, {
-        clientTxId: tx.clientTxId, ops: "[]", opsHash: hash, at: Date.now(),
-      });
-      return { txId: tx.txId, seq, applied: 0, ...matched };
+    if (!tx.ops.some(isBulk)) {
+      // Row rules read the stored row, so they belong inside the transaction,
+      // after the idempotency check (a replay of an applied tx must not
+      // re-judge) and before the sequence is allocated (a denial burns nothing).
+      assertRowPermissions(sql, claim, tx.ops);
+      const now = Date.now();
+      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now });
+      // In parts when it is larger than a row holds (see tx-log.ts).
+      writeLogOps(sql, seq, tx.rawOps);
+      const applied = applyOps({ sql, seq, now, txId: tx.txId }, tx.ops);
+      return { txId: tx.txId, seq, applied };
     }
 
-    // Row rules read the stored row, so they belong inside the transaction,
-    // after the idempotency check (a replay of an applied tx must not re-judge)
-    // and before the sequence is allocated (a denial burns nothing).
-    assertRowPermissions(sql, claim, expanded.ops);
+    // A bulk write: its filter is resolved once, against the database before
+    // any op here applies, and the rows are staged. Then every row's rules
+    // run, then the ops apply in order, a chunk of rows at a time, so the
+    // whole write is one atomic transaction however many rows it touches and
+    // no step holds more than a chunk in memory.
+    const staged = stageBulkOps(sql, claim, tx.ops);
+    try {
+      const matched = { matched: staged.matched };
+      const chunks = (index: number) => {
+        const op = tx.ops[index];
+        const key = staged.keys.get(index)!;
+        return (function* () {
+          for (const ids of stagedIds(sql, key)) yield bulkChunk(tx.txId, op as never, tx.rawOps[index], ids);
+        })();
+      };
 
-    const now = Date.now();
-    const seq = appendLogEntry(sql, {
-      clientTxId: tx.clientTxId ?? null,
-      ops: stableStringify(expanded.rawOps),
-      opsHash: hash,
-      at: now,
-    });
+      const nothing = tx.ops.every((op, index) => isBulk(op) && staged.matched[index] === 0);
+      if (nothing) {
+        // A no-op is still a completed request: preserve its idempotency key so
+        // retrying later cannot suddenly match newly-created rows.
+        const state = sql.one<TxStateRow>(`SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`);
+        const seq = tx.clientTxId === undefined ? (state?.high_water_seq ?? 0) : appendLogEntry(sql, {
+          clientTxId: tx.clientTxId, ops: "[]", opsHash: hash, at: Date.now(),
+        });
+        return { txId: tx.txId, seq, applied: 0, ...matched };
+      }
 
-    const applied = applyOps({ sql, seq, now, txId: tx.txId }, expanded.ops);
+      // Every row is judged before anything is written, as for a plain write.
+      for (const [index, op] of tx.ops.entries()) {
+        if (!isBulk(op)) assertRowPermissions(sql, claim, [op]);
+        else for (const chunk of chunks(index)) assertRowPermissions(sql, claim, chunk.ops);
+      }
 
-    return { txId: tx.txId, seq, applied, ...matched };
+      const now = Date.now();
+      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now });
+      const log = new LogWriter(sql, seq);
+      const context = { sql, seq, now, txId: tx.txId };
+      let applied = 0;
+      for (const [index, op] of tx.ops.entries()) {
+        if (!isBulk(op)) {
+          log.push(tx.rawOps[index]);
+          applied += applyOps(context, [op]);
+          continue;
+        }
+        for (const chunk of chunks(index)) {
+          log.push(chunk.logged);
+          applied += applyOps(context, chunk.ops);
+        }
+      }
+      log.close();
+      return { txId: tx.txId, seq, applied, ...matched };
+    } finally {
+      releaseStaged(sql, staged);
+    }
   });
 }
 

@@ -78,14 +78,15 @@ export function stageInsert(key: string, select: string, from: string, where: st
   };
 }
 
-const ensured = new WeakSet<SqlExecutor>();
-
-function ensureScratch(sql: SqlExecutor): void {
-  if (ensured.has(sql)) return;
+/**
+ * Creates the scratch table if it is missing. Not remembered per executor:
+ * erasing a workspace (`deleteAll`) or resetting it for recovery drops every
+ * table while the room keeps the same executor.
+ */
+export function ensureScratch(sql: SqlExecutor): void {
   sql.exec(
     `CREATE TABLE IF NOT EXISTS "${SCRATCH_TABLE}" ("k" TEXT NOT NULL, "id" TEXT NOT NULL, PRIMARY KEY ("k", "id")) WITHOUT ROWID`
   );
-  ensured.add(sql);
 }
 
 function freshKey(): string {

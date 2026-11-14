@@ -20,7 +20,7 @@
 // consumer installs it; it throws (exits non-zero) on failure.
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -356,8 +356,14 @@ async function startDev() {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
   });
-  dev.stdout.on("data", (chunk) => log.push(String(chunk)));
-  dev.stderr.on("data", (chunk) => log.push(String(chunk)));
+  // TAPEDB_E2E_DEV_LOG=<file> keeps the dev server's output, for debugging a run.
+  const keep = process.env.TAPEDB_E2E_DEV_LOG;
+  const record = (chunk) => {
+    log.push(String(chunk));
+    if (keep) appendFileSync(keep, String(chunk));
+  };
+  dev.stdout.on("data", record);
+  dev.stderr.on("data", record);
   for (let waited = 0; !log.join("").includes("Ready on"); waited += 250) {
     if (waited > 90_000 || dev.exitCode !== null) throw new Error(`tapedb dev did not start:\n${log.join("")}`);
     await sleep(250);
@@ -448,6 +454,10 @@ async function drills() {
   for (let start = 0; start < 1100; start += 50) {
     await Promise.all(Array.from({ length: 50 }, (_, n) => db.task.create({ data: { title: `t${start + n}`, column: { connect: "drill-col" } } })));
   }
+  // Enough rows that one bulk write over them is a log entry in parts.
+  for (let start = 0; start < 30_000; start += 1000) {
+    await db.$transaction(Array.from({ length: 1000 }, (_, n) => db.task.create({ data: { title: `bulk${start + n}` } })));
+  }
   const receipt = await transact({ txId: "drill-tx", clientTxId: "drill-receipt", ops: [{ op: "insert", namespace: "task", id: "drill-once", values: { title: "once", done: false } }] });
   assert.equal(receipt.ok, true, JSON.stringify(receipt));
   await db.$files.upload(new Blob(["drill"], { type: "text/plain" }), { path: "drill/file.txt" });
@@ -459,10 +469,13 @@ async function drills() {
   for (let n = 0; n < 20; n += 1) await doomed.task.create({ data: { title: `erase-me-${n}` } });
   await doomed.$files.upload(new Blob(["erase me"], { type: "text/plain" }), { path: "erase/me.txt" });
   doomed.$close();
-  console.log("  drill: seeded 1,103 rows (and a workspace to erase); waiting for the durability alarm to flush and snapshot");
+  console.log("  drill: seeded 31,103 rows (and a workspace to erase); waiting for the durability alarm to flush and snapshot");
   await sleep(40_000);
   // Writes after the snapshot, replayed from log segments on recovery.
   for (let n = 0; n < 5; n += 1) await db.task.create({ data: { title: `late${n}` } });
+  // One transaction over every task: its log entry is larger than a row, so it
+  // is stored in parts and flushed as its own object, then replayed part by part.
+  assert.deepEqual(await db.task.updateMany({ where: {}, data: { done: true } }), { count: 31_106 });
   await sleep(40_000);
   db.$close();
 
@@ -501,9 +514,9 @@ async function drills() {
 
   const restored = await client();
   const after = await exported(restored);
-  assert.equal(after.end.seq, before.end.seq, "sequence after recovery");
+  assert.equal(after.end.seq, before.end.seq, `sequence after recovery: ${after.end.seq}, before the wipe: ${before.end.seq}`);
   assert.deepEqual(after.files, before.files, "file index after recovery");
-  assert.equal(after.rows.length, before.rows.length, "row count after recovery");
+  assert.equal(after.rows.length, before.rows.length, `row count after recovery: ${after.rows.length}, before the wipe: ${before.rows.length}`);
   assert.deepEqual(after.rows, before.rows, "rows after recovery");
   const retry = await transact({ txId: "drill-tx-2", clientTxId: "drill-receipt", ops: [{ op: "insert", namespace: "task", id: "drill-once", values: { title: "once", done: false } }] });
   assert.deepEqual([retry.result?.seq, retry.result?.applied], [receipt.result.seq, 0], "receipt after recovery");

@@ -150,13 +150,11 @@ export interface ModelClient<M extends Models, F extends Fields> {
    * optimistically and not queued offline, because which rows match is the
    * engine's answer, not the cache's.
    *
-   * Up to 1000 rows commit as one transaction. Past that the rows are written
-   * in batches of 1000, in id order, each its own transaction; if one fails,
-   * a `BulkWriteError` reports how many rows the earlier batches wrote, and
-   * running the same call again continues with the rows still matching.
+   * Every matching row is written in one transaction, however many match:
+   * it commits whole or not at all.
    */
   updateMany(args: { where: Where<F, M>; data: UpdateData<F, M> }): Promise<BulkResult>;
-  /** Deletes every row matching `where`. Batched like `updateMany`. */
+  /** Deletes every row matching `where`, in one transaction like `updateMany`. */
   deleteMany(args: { where: Where<F, M> }): Promise<BulkResult>;
   update(args: { where: { id: string }; data: UpdateData<F, M> }): Write;
   upsert(args: { where: { id: string }; create: CreateData<F, M>; update: UpdateData<F, M> }): Write;

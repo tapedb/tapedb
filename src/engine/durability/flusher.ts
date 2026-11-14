@@ -1,5 +1,5 @@
-import { logSegmentKey, MANIFEST_VERSION } from "../r2-keys";
-import { buildLogSegment } from "./log-segment";
+import { logOpsKey, logSegmentKey, MANIFEST_VERSION } from "../r2-keys";
+import { buildLogSegment, storedParts } from "./log-segment";
 import {
   commitManifest,
   manifestCreatedAt,
@@ -117,6 +117,52 @@ function recordFlushFailure(
  * or the manifest write fails, `last_seq` is untouched so the next attempt
  * re-uploads the same (idempotent) segment.
  */
+/** R2's smallest multipart part (except the last). */
+const MIN_UPLOAD_PART = 5 * 1024 * 1024;
+
+/**
+ * Uploads a log entry's parts as one NDJSON object, a JSON array per line,
+ * through a multipart upload, so no more than about one upload part is in
+ * memory however large the entry is.
+ */
+async function uploadParts(
+  bucket: R2Bucket,
+  workspaceId: string,
+  sql: SqlExecutor,
+  seq: number,
+  first: string
+): Promise<void> {
+  const key = logOpsKey(workspaceId, seq);
+  const upload = await bucket.createMultipartUpload(key, {
+    httpMetadata: { contentType: "application/x-ndjson; charset=utf-8" },
+  });
+  const uploaded: R2UploadedPart[] = [];
+  let buffer: string[] = [];
+  let size = 0;
+  const send = async () => {
+    uploaded.push(await upload.uploadPart(uploaded.length + 1, buffer.join("")));
+    buffer = [];
+    size = 0;
+  };
+  try {
+    const parts = (function* () {
+      yield first;
+      yield* storedParts(sql, seq);
+    })();
+    for (const part of parts) {
+      const line = `${part}\n`;
+      buffer.push(line);
+      size += line.length;
+      if (size >= MIN_UPLOAD_PART) await send();
+    }
+    if (buffer.length > 0 || uploaded.length === 0) await send();
+    await upload.complete(uploaded);
+  } catch (error) {
+    await upload.abort().catch(() => undefined);
+    throw error;
+  }
+}
+
 export async function flushPending(
   bucket: R2Bucket,
   sql: SqlExecutor,
@@ -144,6 +190,10 @@ export async function flushPending(
   const key = logSegmentKey(workspaceId, segment.fromSeq, segment.toSeq);
 
   try {
+    // Entries in parts first: a segment line that refers to ops not yet in
+    // R2 would be a replay that cannot finish.
+    for (const ref of segment.refs) await uploadParts(bucket, workspaceId, sql, ref.seq, ref.first);
+
     const written = await bucket.put(key, segment.ndjson, {
       httpMetadata: { contentType: "application/x-ndjson; charset=utf-8" },
     });
