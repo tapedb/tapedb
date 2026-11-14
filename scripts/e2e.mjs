@@ -7,7 +7,8 @@
 //   node scripts/e2e.mjs --deploy <name>    deploy a staging Worker <name> with your wrangler login
 //                                           (buckets <name>-data / <name>-files, ENVIRONMENT=staging,
 //                                           dev claims on), then run the scenarios and the load
-//                                           test against it
+//                                           test against it; --domain <host> serves it on a
+//                                           custom domain (e.g. staging.tapedb.dev) instead of workers.dev
 //   node scripts/e2e.mjs --only select,bulk only these scenarios; --no-drills skips the drills
 //
 // Scenarios live in scripts/e2e/*.mjs. Each is a plain Node script against `tapedb` as a
@@ -30,6 +31,10 @@ const flag = (name) => {
 const deployName = flag("deploy");
 if (deployName !== undefined && !/^[a-z0-9-]{1,54}$/.test(deployName)) {
   throw new Error(`--deploy takes a Worker name (a-z 0-9 -), not ${JSON.stringify(deployName)}`);
+}
+const domain = flag("domain");
+if (domain !== undefined && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
+  throw new Error(`--domain takes a host name, not ${JSON.stringify(domain)}`);
 }
 let remote = flag("url");
 const only = flag("only")?.split(",");
@@ -106,6 +111,11 @@ async function deployStaging(name) {
   const config = JSON.parse(readFileSync(join(project, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
   config.name = name;
   config.vars = { ENVIRONMENT: "staging", TAPEDB_DEV_CLAIMS: "true" };
+  if (domain) {
+    // A Workers custom domain: Cloudflare creates the DNS record and certificate.
+    config.routes = [{ pattern: domain, custom_domain: true }];
+    config.workers_dev = false;
+  }
   config.r2_buckets = [
     { binding: "DATA", bucket_name: `${name}-data` },
     { binding: "FILES", bucket_name: `${name}-files` },
@@ -122,7 +132,7 @@ async function deployStaging(name) {
 
   const deployed = wrangler(["deploy"]);
   if (!deployed.ok) throw new Error(`wrangler deploy failed:\n${deployed.output}`);
-  const url = /https:\/\/[\w.-]+\.workers\.dev/.exec(deployed.output)?.[0];
+  const url = domain ? `https://${domain}` : /https:\/\/[\w.-]+\.workers\.dev/.exec(deployed.output)?.[0];
   if (!url) throw new Error(`deployed, but found no workers.dev URL in:\n${deployed.output}`);
 
   // The claim secret init generated for this project, shared with the load test.
@@ -135,7 +145,8 @@ async function deployStaging(name) {
   for (let waited = 0; ; waited += 2000) {
     const response = await fetch(`${url}/status`).catch(() => null);
     if (response?.ok) break;
-    if (waited > 60_000) throw new Error(`${url}/status did not answer after deploy`);
+    // A new custom domain also waits on its certificate.
+    if (waited > (domain ? 300_000 : 60_000)) throw new Error(`${url}/status did not answer after deploy`);
     await sleep(2000);
   }
   console.log(`  deployed ${name} at ${url}`);
