@@ -27,6 +27,11 @@ export interface LogSegment {
   toSeq: number;
   rows: number;
   ndjson: string;
+  /**
+   * Entries whose ops are in parts: their line says `opsParts` and carries no
+   * ops, and the flusher uploads the parts to `logOpsKey(seq)` first.
+   */
+  refs: Array<{ seq: number; first: string }>;
 }
 
 export interface FlushOptions {
@@ -93,6 +98,8 @@ export interface HistoryPruneResult {
 
 export interface DurabilityTickResult {
   flushed: boolean;
+  /** Why a due flush failed; it is retried with backoff. */
+  flushError?: string;
   snapshot: SnapshotResult | null;
   /** Set when history was pruned by age on this pass. */
   history: HistoryPruneResult | null;

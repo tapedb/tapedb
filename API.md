@@ -67,7 +67,7 @@ Per model, `db.<model>` is a `ModelClient`:
 | `update({ where: { id }, data })` | `Write` | |
 | `upsert({ where: { id }, create, update })` | `Write` | |
 | `delete({ where: { id } })` | `Write` | |
-| `updateMany({ where, data })` | `Promise<{ count }>` | up to 1000 rows in one transaction, then batches of 1000 in id order; a failed batch rejects with `BulkWriteError { written, cause }` |
+| `updateMany({ where, data })` | `Promise<{ count }>` | every matching row in one transaction, however many; commits whole or not at all |
 | `deleteMany({ where })` | `Promise<{ count }>` | as above |
 
 A `Query` is awaitable, and live through `subscribe(listener)`, which receives
@@ -90,7 +90,7 @@ On the client itself:
 | `$close()` | closes the socket |
 
 Also exported: `id()` (time-ordered ids), `Query`, `PageQuery`, `Write`,
-`BulkWriteError`, `WORKSPACE_ROLE_LEVELS`, `hasRole`, `hasRoleLevel`, and the
+`WORKSPACE_ROLE_LEVELS`, `hasRole`, `hasRoleLevel`, and the
 types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 `Page`, `Result`, `LiveState`, `WriteResult`, `QueryError`,
 `WriteRejection`, `PresenceRoom`, `PresencePeer`, `RoleClaim`,

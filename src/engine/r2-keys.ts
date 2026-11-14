@@ -94,6 +94,16 @@ export function manifestKey(workspaceId: string): string {
   return `${workspacePrefix(workspaceId)}/manifest.json`;
 }
 
+/**
+ * The ops of one log entry too large for a segment line: one JSON array per
+ * line, in part order. Sorts before the segments in `log/`, which a segment
+ * name (digits-digits.ndjson) never matches.
+ */
+export function logOpsKey(workspaceId: string, seq: number): string {
+  if (!Number.isSafeInteger(seq) || seq < 1) throw new Error("seq must be a positive integer.");
+  return `${workspacePrefix(workspaceId)}/log/ops/${String(seq).padStart(20, "0")}.ndjson`;
+}
+
 export function logSegmentKey(
   workspaceId: string,
   fromSeq: number,

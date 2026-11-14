@@ -1234,12 +1234,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const workspaceId = this.workspaceId;
 
     try {
-      await durabilityTick(
+      const tick = await durabilityTick(
         this.env.DATA,
         this.ctx.storage.sql,
         workspaceId,
         Date.now()
       );
+      // A failed flush is retried with backoff; say so, or nobody knows the
+      // log is not reaching R2.
+      if (tick.flushError) console.error("workspace_flush_failed", { workspaceId, error: tick.flushError });
     } catch (error) {
       console.error("workspace_durability_tick_failed", {
         workspaceId,

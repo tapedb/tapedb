@@ -7,7 +7,8 @@ import { Database } from "bun:sqlite";
 import { describe, expect, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../../../src/claims";
-import { manifestKey, readManifest } from "../../../src/engine/r2-keys";
+import { logOpsKey, manifestKey, readManifest } from "../../../src/engine/r2-keys";
+import { setLogPartBytesForTests } from "../../../src/engine/tx-log";
 import { namespaceTables } from "../../fixtures/registry";
 import { runTransaction } from "../../../src/engine/tx-pipeline";
 import type { SqlRow as TxRow, SqlExecutor as TxSql } from "../../../src/engine/tx-sql";
@@ -18,7 +19,7 @@ import {
   type RecoveryResult,
   type RecoverySqlExecutor,
 } from "../../../src/engine/durability/recovery";
-import { snapshotWorkspace, trimLocalLog } from "../../../src/engine/durability/snapshot";
+import { pruneCoveredLogSegments, snapshotWorkspace, trimLocalLog } from "../../../src/engine/durability/snapshot";
 import { forgetFileEntry, recordFileEntry } from "../../../src/engine/file-index";
 import type { SqlExecutor as DurabilitySql, SqlValue } from "../../../src/engine/durability/sql";
 import { FakeR2Bucket, openTestDb, TEST_WORKSPACE } from "../../fixtures/test-support";
@@ -589,6 +590,58 @@ describe("recoverWorkspace", () => {
       { force: true, now: NOW + 30 }
     );
     expect(entityRows(target.db)).toEqual(entityRows(source.db));
+  });
+
+  test("replays a bulk write stored in parts, a part at a time", async () => {
+    setLogPartBytesForTests(20_000);
+    try {
+      const source = createSource();
+      seedWorkspace(source);
+      const bucket = new FakeR2Bucket();
+      await publish(source, bucket, NOW);
+
+      run(source, {
+        txId: "many",
+        ops: Array.from({ length: 3000 }, (_, index) => ({
+          op: "update",
+          namespace: "folders",
+          id: `bulk-${String(index).padStart(5, "0")}`,
+          values: { name: `F${index}` },
+        })),
+      });
+      const bulk = run(
+        source,
+        { txId: "bulk", clientTxId: "bulk-1", ops: [{ op: "patchMany", namespace: "folders", where: { name: { $ne: "keep" } }, values: { color: "green" } }] } as TxEnvelope,
+        WORKSPACE_ROLE_LEVELS.MODERATOR
+      );
+      expect(Number(scalar(source.db, `SELECT COUNT(*) FROM "folders" WHERE "color" = 'green'`))).toBeGreaterThanOrEqual(3000);
+      expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log_parts" WHERE seq = ${bulk.seq}`)).toBeGreaterThan(0);
+
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+      const opsKey = logOpsKey(TEST_WORKSPACE, bulk.seq);
+      expect(bucket.objects.has(opsKey)).toBe(true);
+      expect(bucket.multipartUploads).toBeGreaterThan(0);
+
+      const target = createSource();
+      await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now: NOW + 20 });
+      expect(entityRows(target.db)).toEqual(entityRows(source.db));
+      expect(scalar(target.db, `SELECT COUNT(*) FROM "folders" WHERE "color" = 'green'`)).toBe(
+        scalar(source.db, `SELECT COUNT(*) FROM "folders" WHERE "color" = 'green'`)
+      );
+      // The local log holds the same parts, so a re-flush from here is faithful.
+      for (const query of [`SELECT ops FROM "_tx_log" WHERE seq = ${bulk.seq}`, `SELECT GROUP_CONCAT(ops, '|') FROM (SELECT ops FROM "_tx_log_parts" WHERE seq = ${bulk.seq} ORDER BY part)`]) {
+        expect(scalar(target.db, query)).toBe(scalar(source.db, query));
+      }
+      // The retry is still recognised.
+      expect(run(target, { txId: "again", clientTxId: "bulk-1", ops: [{ op: "patchMany", namespace: "folders", where: { name: { $ne: "keep" } }, values: { color: "green" } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.MODERATOR)).toMatchObject({ applied: 0 });
+
+      // A snapshot past it lets pruning remove the ops object with its segment.
+      await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 30);
+      await pruneCoveredLogSegments(bucket as unknown as R2Bucket, TEST_WORKSPACE, bulk.seq + 10, { retainLogSequences: 0 });
+      expect(bucket.objects.has(opsKey)).toBe(false);
+    } finally {
+      setLogPartBytesForTests(null);
+    }
   });
 
   test("keeps clientTxId dedupe across a cold start", async () => {

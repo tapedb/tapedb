@@ -52,6 +52,17 @@ export const ENGINE_MIGRATIONS: readonly BundledWorkspaceMigration[] = [
       CAST(strftime('%s', 'now') AS INTEGER) * 1000
     );`,
   },
+  {
+    // A log entry larger than a row holds keeps its ops in parts: part 0 in
+    // _tx_log.ops, the rest here (see tx-log.ts).
+    id: "tapedb_0005_log_parts",
+    sql: `CREATE TABLE "_tx_log_parts" (
+      seq INTEGER NOT NULL,
+      part INTEGER NOT NULL,
+      ops TEXT NOT NULL,
+      PRIMARY KEY (seq, part)
+    ) WITHOUT ROWID;`,
+  },
 ];
 
 /** Configured migrations, applied in order on Durable Object boot. */

@@ -438,4 +438,14 @@ describe("depth", () => {
       expect((statement.stages ?? []).length).toBeGreaterThan(0);
     }
   });
+
+  test("a staged query still runs after the scratch table is dropped, as erasing a workspace does", async () => {
+    await seed();
+    let where: Record<string, unknown> = { title: "one" };
+    for (let hop = 0; hop < 9; hop += 1) where = hop % 2 === 0 ? { tasks: { some: where } } : { column: where };
+    const run = async () => (await client().column.findMany({ where: where as never })).map((row) => row.id);
+    expect(await run()).toEqual(["c-todo"]);
+    sql.exec(`DROP TABLE "_tapedb_scratch"`);
+    expect(await run()).toEqual(["c-todo"]);
+  });
 });

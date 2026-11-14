@@ -28,18 +28,6 @@
           "(declaration)": "<T = unknown>"
         }
       },
-      "BulkWriteError": {
-        "kind": "class",
-        "shape": {
-          "code": "string",
-          "written": "number",
-          "cause": "unknown",
-          "name": "string",
-          "message": "string",
-          "stack": "string | undefined",
-          "(declaration)": "extends Error"
-        }
-      },
       "check": {
         "kind": "function",
         "shape": "<F extends Fields = Fields>(test: (context: CheckContext<F>) => boolean) => CheckDecision<F>"
