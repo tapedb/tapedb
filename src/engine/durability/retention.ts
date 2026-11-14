@@ -37,6 +37,14 @@ export function historyRetentionMs(): number {
   return configured;
 }
 
+/**
+ * How long a transaction receipt is kept, so how long a client may retry an
+ * unacknowledged write: half the retention, like the rest of the history.
+ */
+export function retryWindowMs(retentionMs: number = configured): number {
+  return historyAgeLimit(retentionMs);
+}
+
 /** History older than this (relative to now) is due for deletion. */
 export function historyAgeLimit(retentionMs: number): number {
   return retentionMs / 2;

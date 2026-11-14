@@ -563,7 +563,7 @@ export async function pruneHistory(
 ): Promise<HistoryPruneResult> {
   const state = readSnapshotState(sql);
   if (state.status !== "completed" || state.completedAt === null) {
-    return { objects: 0, localRows: 0, nextAt: null };
+    return { objects: 0, localRows: 0, receipts: 0, nextAt: null };
   }
   const age = historyAgeLimit(retentionMs);
   const graceEnds = state.completedAt + SUPERSEDED_GRACE_MS;
@@ -617,6 +617,16 @@ export async function pruneHistory(
     .toArray()[0]?.at;
   if (oldest !== null && oldest !== undefined) later(oldest + age);
 
+  // Receipts past the retry window (the same age); a retry issued before it
+  // is refused as retry_expired instead of being looked up.
+  const receipts =
+    sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_receipts" WHERE at <= ?`, now - age)
+      .toArray()[0]?.n ?? 0;
+  if (receipts > 0) sql.exec(`DELETE FROM "_tx_receipts" WHERE at <= ?`, now - age);
+  const oldestReceipt = sql.exec<{ at: number | null }>(`SELECT MIN(at) AS at FROM "_tx_receipts"`).toArray()[0]?.at;
+  if (oldestReceipt !== null && oldestReceipt !== undefined) later(oldestReceipt + age);
+
   setHistoryPruneAt(sql, nextAt);
-  return { objects: keys.length, localRows: Number(localRows), nextAt };
+  return { objects: keys.length, localRows: Number(localRows), receipts: Number(receipts), nextAt };
 }
