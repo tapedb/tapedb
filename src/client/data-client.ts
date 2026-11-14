@@ -12,7 +12,7 @@
 import { id } from "./id";
 import { createStorageClient, type StorageFetch } from "./storage-client";
 import { createOutbox, type Outbox } from "./outbox";
-import { applyOptimisticOps, applyQueryDiff } from "./query-cache";
+import { applyOptimisticOps, applyQueryDiff, certainMatches } from "./query-cache";
 import { QuerySocket, type WebSocketFactory } from "./socket";
 import { cloneJson, stableStringify } from "./stable";
 import type {
@@ -378,6 +378,17 @@ class DataClientImpl {
   async transact(input: TransactInput): Promise<"applied" | "queued"> {
     const ops = normalizeOps(input);
     if (ops.length === 0) return "applied";
+    return (await this.submit(ops)).status;
+  }
+
+  /**
+   * The write path every write takes: optimistic apply, outbox, send. Returns
+   * the engine's result when it answered, so a bulk write can report the rows
+   * it matched.
+   */
+  private async submit(
+    ops: TxOp[]
+  ): Promise<{ status: "applied" | "queued"; result?: Awaited<ReturnType<DataClientImpl["sendTransaction"]>> }> {
 
     const problem = this.configProblem();
     if (problem) {
@@ -416,12 +427,12 @@ class DataClientImpl {
     this.ensureSocket();
 
     try {
-      await this.sendTransaction(outboxEntry);
+      const result = await this.sendTransaction(outboxEntry);
       await this.outbox.remove(clientTxId);
       this.pendingOps.delete(clientTxId);
       this.retryAttempt = 0;
       this.clearRetryTimer();
-      return "applied";
+      return { status: "applied", result };
     } catch (error) {
       if (isServerError(error) && !isRetryableServerError(error)) {
         try {
@@ -435,27 +446,31 @@ class DataClientImpl {
       // Transient (network, 5xx, 408, 429) or a rejected-after-retry write:
       // keep the optimistic state and the outbox entry so a later flush lands it.
       this.scheduleRetry();
-      return "queued";
+      return { status: "queued" };
     } finally {
       this.inFlight.delete(clientTxId);
     }
   }
 
   /**
-   * A bulk write: sent straight to the engine, which resolves the rows it
-   * matches and writes them all in one transaction, however many there are.
-   * It either commits whole or not at all.
+   * A bulk write, on the same path as every write: applied to the cached rows
+   * it certainly matches, kept in the outbox, sent. The engine resolves the
+   * rows when the write reaches it and writes them all in one transaction.
+   * Online, `count` is the engine's; queued offline, it is the cached rows
+   * changed so far, and `queued` is true.
    */
-  async bulk(op: TxOp): Promise<{ count: number }> {
+  async bulk(op: TxOp): Promise<{ count: number; queued?: true }> {
     const problem = this.configProblem();
     if (problem) throw new Error(problem);
-    const result = await this.sendTransaction({
-      clientTxId: id(),
-      txId: id(),
-      workspaceId: this.config.workspaceId,
-      ops: [op],
-      createdAt: this.now(),
-    });
+    const local = new Set<string>();
+    if (op.op === "patchMany" || op.op === "deleteMany") {
+      for (const entry of this.cache.values()) {
+        if (entry.state.data === null) continue;
+        for (const match of certainMatches(entry.state.data, op.namespace, op.where)) local.add(match);
+      }
+    }
+    const { status, result } = await this.submit([op]);
+    if (status === "queued") return { count: local.size, queued: true };
     // Live queries refresh through the engine's invalidation; a one-shot read
     // after this call sees the new rows because it goes to the engine.
     return { count: result?.matched?.[0] ?? 0 };

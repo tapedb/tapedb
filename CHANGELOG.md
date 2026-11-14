@@ -7,6 +7,8 @@ published.
 
 ### Added
 
+- A workspace's status reports `durability`: its last sequence, how far the
+  log has reached R2, the snapshot base and the last flush error.
 - Real CI for the frozen install, typecheck, tests, build, package smoke and a
   full-history secret scan on Node 22.18 or newer.
 - Security policy, code of conduct, issue and pull-request templates, and
@@ -26,6 +28,11 @@ published.
 
 ### Changed
 
+- `updateMany` and `deleteMany` are queued offline and applied optimistically,
+  like single-row writes: the cache changes the rows it holds that certainly
+  match (a three-valued local evaluation of the filter, checked against the
+  engine on random rows and filters), and the engine settles the rest. While
+  queued the result is `{ count, queued: true }`.
 - **Breaking:** `updateMany` and `deleteMany` write every matching row in one
   transaction, however many match: they commit whole or not at all. Before,
   past 1000 rows they committed in separate 1000-row transactions and a

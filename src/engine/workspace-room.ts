@@ -8,6 +8,7 @@ import {
   durabilityTick,
   durableObjectRecoverySqlExecutor,
   readFlushState,
+  readSnapshotState,
   recoverWorkspace,
   historyPruneAt,
   snapshotDueAt,
@@ -1437,6 +1438,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
       .exec<CountRow>(`SELECT COUNT(*) AS total FROM "${ENGINE_TABLES.files}"`)
       .one().total;
 
+    // How far the log has reached R2: everything at or below `flushedSeq`
+    // survives losing this object's storage.
+    const flush = readFlushState(sql);
+    const seq = sql.exec<{ seq: number | null }>(`SELECT high_water_seq AS seq FROM "_tx_state" WHERE "id" = 1`).toArray()[0]?.seq ?? 0;
+
     return json({
       ok: true,
       workspaceId: this.workspaceId,
@@ -1444,6 +1450,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
       migrations,
       tables,
       counts: { txLog, files },
+      durability: {
+        seq,
+        flushedSeq: flush.lastSeq,
+        snapshotSeq: readSnapshotState(sql).baseSeq,
+        lastFlushError: flush.lastError,
+      },
     });
   }
 }

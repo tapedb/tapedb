@@ -16,6 +16,8 @@ import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../sr
 import { MemoryOutbox } from "../src/client/outbox";
 import { BULK_BATCH_ROWS } from "../src/engine/tx-bulk";
 import { setLogPartBytesForTests } from "../src/engine/tx-log";
+import { matchesWhere } from "../src/client/local-where";
+import { applyOptimisticOps } from "../src/client/query-cache";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { executeQueryWithPageInfo } from "../src/engine/query-execute";
 import { configureRegistry } from "../src/engine/registry";
@@ -66,16 +68,20 @@ function claimFor(sub: string, role: WorkspaceRole): RoleClaim {
   return { sub, workspaceId: WORKSPACE, role, exp: now + 600, iat: now };
 }
 
+let offline = false;
+let sharedOutbox: MemoryOutbox | null = null;
+
 function client(sub = "alice", role: WorkspaceRole = WORKSPACE_ROLE_LEVELS.MODERATOR) {
   const claim = claimFor(sub, role);
   return createClient(
     { schema: appSchema, url: "http://engine.test", workspace: WORKSPACE, getToken: async () => "t" },
     {
-      outbox: new MemoryOutbox(),
+      outbox: sharedOutbox ?? new MemoryOutbox(),
       createWebSocket: () => {
         throw new Error("no socket here");
       },
       fetch: async (url: string, init?: { body?: string }) => {
+        if (offline) throw new TypeError("network down");
         const body = init?.body === undefined ? undefined : JSON.parse(init.body);
         try {
           if (url.endsWith("/transact")) {
@@ -114,7 +120,11 @@ function logged(seq: number): Array<Record<string, unknown>> {
   return [row.ops, ...parts.map((part) => part.ops)].flatMap((text) => JSON.parse(text) as Array<Record<string, unknown>>);
 }
 
-beforeEach(() => build());
+beforeEach(() => {
+  build();
+  offline = false;
+  sharedOutbox = null;
+});
 
 describe("updateMany", () => {
   test("writes every matching row and reports the count", async () => {
@@ -323,6 +333,107 @@ describe("any size, one transaction", () => {
     expect(result.matched).toEqual({ 1: 3 });
     expect(count(`"weight" = 3`)).toBe(3);
     expect(count(`"id" = 't9999' AND "weight" = 3`)).toBe(0);
+  });
+});
+
+describe("offline and optimistic", () => {
+  test("queued offline, it changes the cache now and the engine when it reconnects", async () => {
+    seed(4);
+    sharedOutbox = new MemoryOutbox();
+    offline = true;
+    const db = client();
+    const queued = await db.task.updateMany({ where: { ownerId: "alice" }, data: { done: true } });
+    expect(queued.queued).toBe(true);
+    expect(await sharedOutbox.list(WORKSPACE)).toHaveLength(1);
+    // Nothing reached the engine yet.
+    expect((sql.one(`SELECT COUNT(*) AS n FROM "task" WHERE "done" = 1`) as { n: number }).n).toBe(0);
+
+    offline = false;
+    await db.$flush();
+    expect(await sharedOutbox.list(WORKSPACE)).toHaveLength(0);
+    expect((sql.one(`SELECT COUNT(*) AS n FROM "task" WHERE "done" = 1`) as { n: number }).n).toBe(2);
+  });
+
+  test("the cache changes the rows it can judge, and only those", () => {
+    const data = {
+      task: [
+        { id: "a", title: "x", done: false, ownerId: "alice" },
+        { id: "b", title: "y", done: false, ownerId: "bob" },
+        { id: "c", title: "z", done: false },
+      ],
+    };
+    const patched = applyOptimisticOps(data, [{ op: "patchMany", namespace: "task", where: { ownerId: "alice" }, values: { done: true } }], undefined);
+    expect((patched.task as Array<Record<string, unknown>>).map((row) => row.done)).toEqual([true, false, false]);
+    // `c` holds no ownerId in the cache: cannot tell, left for the engine.
+    const unsure = applyOptimisticOps(data, [{ op: "deleteMany", namespace: "task", where: { ownerId: { $ne: "bob" } } }], undefined);
+    expect((unsure.task as Array<{ id: string }>).map((row) => row.id)).toEqual(["b", "c"]);
+    const relation = applyOptimisticOps(data, [{ op: "deleteMany", namespace: "task", where: { $link: [] } }], undefined);
+    expect((relation.task as unknown[]).length).toBe(3);
+  });
+
+  test("whenever the cache can judge a row, it agrees with the engine", () => {
+    let state = 11;
+    // The high bits: a power-of-two LCG's low bits cycle quickly.
+    const random = (n: number) => {
+      state = (state * 1103515245 + 12345) % 2147483648;
+      return Math.floor((state / 2147483648) * n);
+    };
+    const owners = ["alice", "bob", "Zed", "ålice", null];
+    const titles = ["a", "B", "b", "ä", "", "a b"];
+    const claim = claimFor("seed", WORKSPACE_ROLE_LEVELS.OWNER);
+    runTransaction(sql, WORKSPACE, claim, {
+      txId: "rows",
+      ops: Array.from({ length: 60 }, (_, index) => ({
+        op: "insert",
+        namespace: "task",
+        id: `r${String(index).padStart(3, "0")}`,
+        values: {
+          title: titles[random(titles.length)],
+          done: random(2) === 0,
+          ownerId: owners[random(owners.length - 1)],
+          ...(random(3) === 0 ? {} : { weight: random(5) - 2 }),
+        },
+      })),
+    });
+    const reader = claimFor("alice", WORKSPACE_ROLE_LEVELS.OWNER);
+    const rows = executeQueryWithPageInfo(sql, reader, { query: { task: { $: {} } } }).data.task as Array<Record<string, unknown>>;
+
+    const leaf = (): Record<string, unknown> => {
+      const field = ["title", "done", "ownerId", "weight"][random(4)];
+      const values: Record<string, unknown[]> = { title: titles, done: [true, false], ownerId: owners, weight: [-2, -1, 0, 1, 2, null] };
+      const pick = () => values[field][random(values[field].length)];
+      const operator = random(8);
+      if (operator === 0) return { [field]: pick() };
+      if (operator === 1) return { [field]: { $ne: pick() } };
+      if (operator === 2) return { [field]: { $in: [pick(), pick()] } };
+      if (operator === 3) return { [field]: { $nin: [pick(), pick()] } };
+      const value = pick();
+      if (value === null || field === "done") return { [field]: value };
+      return { [field]: { [["$gt", "$gte", "$lt", "$lte"][operator - 4]]: value } };
+    };
+    const filter = (depth: number): Record<string, unknown> => {
+      const kind = depth <= 0 ? 0 : random(4);
+      if (kind === 0) return leaf();
+      if (kind === 1) return { $or: [filter(depth - 1), filter(depth - 1)] };
+      if (kind === 2) return { $and: [filter(depth - 1), filter(depth - 1)] };
+      return { $not: filter(depth - 1) };
+    };
+
+    let judged = 0;
+    for (let round = 0; round < 300; round += 1) {
+      const where = filter(3);
+      const engine = new Set(
+        (executeQueryWithPageInfo(sql, reader, { query: { task: { $: { where } } } }).data.task as Array<{ id: string }>).map((row) => row.id)
+      );
+      for (const row of rows) {
+        const local = matchesWhere(row, where);
+        if (local === undefined) continue;
+        judged += 1;
+        expect({ where, id: row.id, local }).toEqual({ where, id: row.id, local: engine.has(row.id as string) });
+      }
+    }
+    // Most rows are judged, so this is a real comparison, not a vacuous one.
+    expect(judged).toBeGreaterThan(300 * 60 * 0.5);
   });
 });
 

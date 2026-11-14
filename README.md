@@ -273,9 +273,14 @@ write commits whole or not at all, and one row refused by a rule rolls it all
 back. The engine resolves the filter once, against the database before the
 write, then checks, applies and logs the rows a chunk at a time, so memory
 stays flat however large the write is; a log entry larger than a Durable
-Object row holds is stored in parts. Unlike single-row writes it is not applied
-optimistically and not queued offline: which rows match is the engine's answer,
-not the cache's.
+Object row holds is stored in parts.
+
+Like single-row writes, a bulk write is applied to the cache at once and
+queued offline. The cache changes the rows it holds that certainly match; a
+row whose match depends on a relation, or on a field the cache does not hold,
+waits for the engine. The engine resolves the filter when the write reaches
+it, so a write queued offline applies to the rows matching then. Queued, the
+result is `{ count, queued: true }`, `count` being the cached rows changed.
 
 ## Access rules
 
