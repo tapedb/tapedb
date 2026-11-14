@@ -13,12 +13,14 @@
 import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
+import { configureTopics, type TopicAuthorizer } from "../engine/topics";
 import { isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
 import { apiError, discardBody, json } from "../http";
 import { handleClaimRequest } from "../claim-route";
 import { mintClaim, mintDevClaim, type ClaimIdentity } from "../mint";
 import type { TapeDBSchema } from "../schema";
+import type { BundledWorkspaceMigration } from "../engine/migrations-bundle";
 import type { Env } from "../types";
 import {
   authenticateEngineRequest,
@@ -34,8 +36,17 @@ export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 const ENGINE_PREFIX = "/engine/workspaces";
 
+/** One app migration, as `tapedb migrate` bundles it. */
+export type AppMigration = BundledWorkspaceMigration;
+
 export interface DefineTapeDBOptions {
   schema: TapeDBSchema;
+  /**
+   * The app's committed migrations, from `tapedb/migrations.gen.ts`. Omit
+   * only before the first `tapedb migrate dev`: the schema's generated SQL
+   * is used, which cannot evolve.
+   */
+  migrations?: readonly AppMigration[];
   /**
    * Identity adapter. Implement `getSubject` and `getRole` to serve
    * `POST /_tapedb/claim`. Without it that route returns 501 and the consumer
@@ -47,6 +58,12 @@ export interface DefineTapeDBOptions {
    * session. Always refused when `ENVIRONMENT` is `production`.
    */
   devClaims?: boolean;
+  /**
+   * Broadcast topics. `authorize` decides whether a caller may join a topic
+   * or send to it; without it any member of the workspace may, as with
+   * presence.
+   */
+  topics?: { authorize?: TopicAuthorizer };
 }
 
 export interface TapeDBWorker {
@@ -156,10 +173,18 @@ async function handleStorage(
       trustedClaim
     );
     if (!recorded.ok) {
+      // Take the bytes back out: an object nobody can list is an orphan that
+      // costs storage forever. If the delete fails too, the 502 still tells
+      // the caller to retry, and a retried upload overwrites the same key.
+      try {
+        await bucket.delete(key);
+      } catch {
+        // Best effort.
+      }
       return apiError(
         502,
         "file_index_failed",
-        "Stored the object but could not record it in the workspace index."
+        "Could not record the upload in the workspace index; nothing was stored."
       );
     }
 
@@ -208,13 +233,16 @@ async function handleStorage(
 }
 
 export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
-  const { schema, identity, devClaims = false } = options;
+  const { schema, identity, devClaims = false, migrations } = options;
 
   // One schema per Worker instance. Installed at module evaluation, before any
   // request or Durable Object is constructed.
   configureRegistry(schema.registry);
-  configureMigrations(schema.migrations);
+  configureMigrations(
+    migrations === undefined ? schema.migrations : [schema.migrations[0], ...migrations]
+  );
   configurePermissions(schema.permissions);
+  configureTopics(options.topics);
 
   const worker = {
     async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -251,12 +279,14 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
         return apiError(400, "invalid_workspace_id", "Workspace id must be a UUID.");
       }
 
-      const isStatusProbe = request.method === "GET" && roomPath === "/status";
-
+      // Every engine route needs a verified claim before a Durable Object is
+      // touched: addressing one by name creates it, runs its migrations and
+      // checks R2 for a recovery, so an open route would let anyone create
+      // objects for any UUID. The Worker's own /status answers health checks.
       let trustedClaim: string | null = null;
       let role: number = WORKSPACE_ROLE_LEVELS.GUEST;
 
-      if (!isStatusProbe) {
+      {
         try {
           const claim = await authenticateEngineRequest(request, env, workspaceId);
           role = claim.role;
@@ -302,6 +332,7 @@ export {
 };
 export { mintClaim, mintDevClaim, signRoleClaim } from "../mint";
 export type { ClaimIdentity, MintClaimDependencies } from "../mint";
+export type { TopicAction, TopicAuthorizer } from "../engine/topics";
 export { WorkspaceRoom };
 export { WORKSPACE_ROLE_LEVELS };
 export type { Env };

@@ -1,8 +1,8 @@
-import { useNdexFixture } from "../../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../../fixtures/registry";
+useLegacyFixture();
 
 /**
- * Recovery property test (KAN-401).
+ * Recovery property test.
  *
  * Each seed generates a deterministic, pseudo-random transaction stream across
  * several namespaces, applies it through the real transaction pipeline, then
@@ -11,7 +11,7 @@ useNdexFixture();
  * row-for-row, including `updated_seq` and every foreign-key column.
  *
  * This is the fast "wipe a DO, rebuild from R2" drill that runs in CI. The
- * slower miniflare drill lives in `apps/ndex-sync/scripts/recovery-drill.mjs`.
+ * slower drill runs against a real Worker under `wrangler dev`.
  */
 
 import { Database } from "bun:sqlite";
@@ -516,7 +516,7 @@ function generateStream(seed: number): GeneratedStream {
 function entityRows(db: Database): Record<string, Record<string, unknown>[]> {
   const result: Record<string, Record<string, unknown>[]> = {};
 
-  for (const table of [...namespaceTables(), "$files"]) {
+  for (const table of [...namespaceTables(), "_files"]) {
     result[table] = db
       .query(`SELECT * FROM "${table}" ORDER BY "id"`)
       .all() as Record<string, unknown>[];

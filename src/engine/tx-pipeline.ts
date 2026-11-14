@@ -9,6 +9,7 @@
 
 import type { RoleClaim } from "../claims";
 import { applyOps } from "./tx-apply";
+import { expandBulkOps } from "./tx-bulk";
 import { opsHash, stableStringify } from "./tx-hash";
 import { assertRowPermissions, authorizeOps } from "./tx-permissions";
 import type { SqlExecutor } from "./tx-sql";
@@ -50,13 +51,15 @@ export function runTransaction(
   const tx = validateEnvelope(envelope);
   authorizeOps(claim, tx.ops);
 
-  const serialisedOps = stableStringify(tx.rawOps);
+  // The hash is of what the client sent, so a retry of the same request is
+  // recognised. What gets logged may differ: a bulk write logs the rows it
+  // resolved.
   const hash = opsHash(tx.rawOps);
 
   return sql.transactionSync(() => {
     if (tx.clientTxId !== undefined) {
       const prior = sql.one<TxLogRow>(
-        `SELECT seq, ops_hash FROM "_tx_log" WHERE client_tx_id = ?`,
+        `SELECT seq, ops_hash FROM "_tx_receipts" WHERE id = ?`,
         tx.clientTxId
       );
 
@@ -70,64 +73,110 @@ export function runTransaction(
           { txId: tx.txId }
         );
       }
+      // Every receipt is kept, through log pruning, snapshots and recovery,
+      // so an unknown key is a write that was never applied.
+    }
+
+    // Bulk writes become one op per matching row, here, so everything below
+    // this point sees ordinary ops: the row rules judge each row, the log
+    // records which rows were written, and a replay writes those same rows.
+    const expanded = expandBulkOps(sql, claim, tx.txId, tx.rawOps, tx.ops);
+    const matched = {
+      ...(Object.keys(expanded.matched).length > 0 ? { matched: expanded.matched } : {}),
+      ...(Object.keys(expanded.more).length > 0 ? { more: expanded.more } : {}),
+    };
+
+    if (expanded.ops.length === 0) {
+      // A no-op is still a completed request: preserve its idempotency key so
+      // retrying later cannot suddenly match newly-created rows.
+      const state = sql.one<TxStateRow>(`SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`);
+      const seq = tx.clientTxId === undefined ? (state?.high_water_seq ?? 0) : appendLogEntry(sql, {
+        clientTxId: tx.clientTxId, ops: "[]", opsHash: hash,
+        userId: claim.sub, role: claim.role, at: Date.now(),
+      });
+      return { txId: tx.txId, seq, applied: 0, ...matched };
     }
 
     // Row rules read the stored row, so they belong inside the transaction,
     // after the idempotency check (a replay of an applied tx must not re-judge)
     // and before the sequence is allocated (a denial burns nothing).
-    assertRowPermissions(sql, claim, tx.ops);
+    assertRowPermissions(sql, claim, expanded.ops);
 
-    const state = sql.one<TxStateRow>(
-      `SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`
-    );
-    const logMax = sql.one<TxLogMaxRow>(
-      `SELECT MAX(seq) AS max_seq FROM "_tx_log"`
-    );
-
-    // Never hand out a sequence that already exists in the log. Recovery or a
-    // partial restore can leave `_tx_state` behind `_tx_log`; repairing here
-    // keeps the invariant even if that state was written by an older build.
-    const previousSeq = Math.max(
-      state?.high_water_seq ?? 0,
-      logMax?.max_seq ?? 0
-    );
-
-    if (state === undefined) {
-      sql.exec(
-        `INSERT INTO "_tx_state" ("id", high_water_seq) VALUES (1, ?)`,
-        previousSeq
-      );
-    } else if (previousSeq > state.high_water_seq) {
-      sql.exec(
-        `UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`,
-        previousSeq
-      );
-    }
-
-    const seq = previousSeq + 1;
     const now = Date.now();
-    const schemaVersion = readSchemaVersion(sql);
+    const seq = appendLogEntry(sql, {
+      clientTxId: tx.clientTxId ?? null,
+      ops: stableStringify(expanded.rawOps),
+      opsHash: hash,
+      userId: claim.sub,
+      role: claim.role,
+      at: now,
+    });
 
-    sql.exec(
-      `INSERT INTO "_tx_log"
-        (seq, client_tx_id, ops, ops_hash, user_id, role, at, schema_version)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      seq,
-      tx.clientTxId ?? null,
-      serialisedOps,
-      hash,
-      claim.sub,
-      claim.role,
-      now,
-      schemaVersion
-    );
+    const applied = applyOps({ sql, seq, now, txId: tx.txId }, expanded.ops);
 
-    sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
-
-    const applied = applyOps({ sql, seq, now, txId: tx.txId }, tx.ops);
-
-    return { txId: tx.txId, seq, applied };
+    return { txId: tx.txId, seq, applied, ...matched };
   });
+}
+
+export interface LogEntry {
+  clientTxId: string | null;
+  /** Canonical JSON of the ops, exactly as replay will read them. */
+  ops: string;
+  opsHash: string;
+  userId: string | null;
+  role: number | null;
+  at: number;
+}
+
+/**
+ * Allocates the next sequence and appends one `_tx_log` row. Must run inside
+ * the caller's transaction, so the row, the high-water mark and whatever the
+ * caller applies commit or roll back together.
+ */
+export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
+  const state = sql.one<TxStateRow>(
+    `SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`
+  );
+  const logMax = sql.one<TxLogMaxRow>(
+    `SELECT MAX(seq) AS max_seq FROM "_tx_log"`
+  );
+
+  // Never hand out a sequence that already exists in the log. Recovery or a
+  // partial restore can leave `_tx_state` behind `_tx_log`; repairing here
+  // keeps the invariant even if that state was written by an older build.
+  const previousSeq = Math.max(
+    state?.high_water_seq ?? 0,
+    logMax?.max_seq ?? 0
+  );
+
+  if (state === undefined) {
+    sql.exec(
+      `INSERT INTO "_tx_state" ("id", high_water_seq) VALUES (1, ?)`,
+      previousSeq
+    );
+  }
+
+  const seq = previousSeq + 1;
+
+  sql.exec(
+    `INSERT INTO "_tx_log"
+      (seq, client_tx_id, ops, ops_hash, user_id, role, at, schema_version)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    seq,
+    entry.clientTxId,
+    entry.ops,
+    entry.opsHash,
+    entry.userId,
+    entry.role,
+    entry.at,
+    readSchemaVersion(sql)
+  );
+
+  if (entry.clientTxId !== null) {
+    sql.exec(`INSERT INTO "_tx_receipts" (id, seq, ops_hash) VALUES (?, ?, ?)`, entry.clientTxId, seq, entry.opsHash);
+  }
+  sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
+  return seq;
 }
 
 function readSchemaVersion(sql: SqlExecutor): string {

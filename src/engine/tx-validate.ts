@@ -29,6 +29,11 @@ const ISO_DATE_PATTERN =
 const RESERVED_ATTRIBUTES = new Set(["id", "updatedSeq", "updated_seq"]);
 const ENGINE_MANAGED_ATTRIBUTES = new Set(["createdAt", "updatedAt"]);
 const OP_KINDS = new Set<TxOpKind>([
+  "insert",
+  "patch",
+  "upsert",
+  "patchMany",
+  "deleteMany",
   "update",
   "merge",
   "link",
@@ -37,11 +42,25 @@ const OP_KINDS = new Set<TxOpKind>([
 ]);
 
 export interface ValidatedValuesOp {
-  kind: "update" | "merge";
+  kind: "insert" | "patch" | "upsert" | "update" | "merge";
   namespace: string;
   id: string;
   /** Values keyed by SQLite column name. */
   values: Record<string, SqlValue>;
+  /** `upsert` only: the values for the row when it does not exist yet. */
+  createValues?: Record<string, SqlValue>;
+}
+
+/** A bulk write, before the engine resolves which rows it touches. */
+export interface ValidatedBulkOp {
+  kind: "patchMany" | "deleteMany";
+  namespace: string;
+  /** Client-shaped query filter; compiled when the rows are resolved. */
+  where: Record<string, unknown>;
+  /** `patchMany` only: values keyed by SQLite column name. */
+  values?: Record<string, SqlValue>;
+  /** Resume after this id. */
+  after?: string;
 }
 
 export interface ValidatedDeleteOp {
@@ -67,6 +86,7 @@ export interface ValidatedLinkOp {
 }
 
 export type ValidatedOp =
+  | ValidatedBulkOp
   | ValidatedValuesOp
   | ValidatedDeleteOp
   | ValidatedLinkOp;
@@ -144,6 +164,32 @@ function validateOp(value: unknown, context: ValidationContext): ValidatedOp {
     throw invalidOp("Op namespace is required.", context);
   }
 
+  if (opKind === "patchMany" || opKind === "deleteMany") {
+    const namespace = findNamespace(namespaceName);
+    if (!namespace) {
+      throw new TxError(
+        "unknown_namespace",
+        `Unknown namespace "${namespaceName}".`,
+        { txId: context.txId, opIndex: context.opIndex }
+      );
+    }
+    if (!isPlainObject(value.where)) {
+      throw invalidOp(`"${opKind}" needs a "where" object.`, context);
+    }
+    if (value.after !== undefined && (typeof value.after !== "string" || !ID_PATTERN.test(value.after))) {
+      throw invalidOp(`"${opKind}" "after" must be a row id.`, context);
+    }
+    return {
+      kind: opKind,
+      namespace: namespaceName,
+      where: value.where,
+      ...(value.after !== undefined ? { after: value.after } : {}),
+      ...(opKind === "patchMany"
+        ? { values: validateValues(namespace, value.values, context) }
+        : {}),
+    } as ValidatedOp;
+  }
+
   const namespace = findNamespace(namespaceName);
   if (!namespace) {
     throw new TxError(
@@ -159,6 +205,8 @@ function validateOp(value: unknown, context: ValidationContext): ValidatedOp {
   }
 
   switch (opKind) {
+    case "insert":
+    case "patch":
     case "update":
     case "merge":
       return {
@@ -166,6 +214,14 @@ function validateOp(value: unknown, context: ValidationContext): ValidatedOp {
         namespace: namespaceName,
         id,
         values: validateValues(namespace, value.values, context),
+      };
+    case "upsert":
+      return {
+        kind: "upsert",
+        namespace: namespaceName,
+        id,
+        values: validateValues(namespace, value.values, context),
+        createValues: validateValues(namespace, value.create, context),
       };
     case "delete":
       return { kind: "delete", namespace: namespaceName, id };
@@ -295,6 +351,21 @@ function validateLinkOp(
     foreignKeyAttribute,
     foreignKeyColumn: toSnakeCase(foreignKeyAttribute),
   };
+}
+
+/**
+ * True when `value` is acceptable for the attribute under today's registry.
+ * Recovery uses it to drop an old value a later type change no longer fits.
+ */
+export function acceptsValue(namespaceName: string, attribute: string, value: unknown): boolean {
+  const definition = findNamespace(namespaceName)?.attributes[attribute];
+  if (!definition) return false;
+  try {
+    normaliseValue(attribute, definition, value, { txId: "recovery", opIndex: 0 });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function normaliseValue(
@@ -453,6 +524,11 @@ export function requiredColumns(namespace: NamespaceDefinition): string[] {
         !definition.optional && !ENGINE_MANAGED_ATTRIBUTES.has(attribute)
     )
     .map(([attribute]) => toSnakeCase(attribute));
+}
+
+/** True for an unresolved bulk write. `expandBulkOps` replaces these. */
+export function isBulkOp(op: ValidatedOp): op is ValidatedBulkOp {
+  return op.kind === "patchMany" || op.kind === "deleteMany";
 }
 
 export function isLinkOp(op: ValidatedOp): op is ValidatedLinkOp {

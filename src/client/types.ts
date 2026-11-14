@@ -1,12 +1,10 @@
 import type { StorageClient } from "./storage-client";
 
 /**
- * Public and wire types for the ndex data client (KAN-394).
- *
- * The client keeps InstantDB's surface (`i.schema`, `id`, `init`, `useQuery`,
- * `transact`, `tx`) with native room/storage adapters while the engine is the
- * workspace Durable Object. These types intentionally mirror the engine wire
- * contracts in `apps/tapedb-sync/src/engine` without importing across apps.
+ * Types for the client runtime: engine query documents, wire ops, outbox
+ * entries and the runtime facade the model client drives. They mirror the
+ * engine's wire contracts without importing the engine, so the client bundle
+ * stays free of server code.
  */
 
 // ---- Schema builders -------------------------------------------------------
@@ -50,13 +48,14 @@ export interface SchemaDefinition {
   links: Record<string, LinkDefinition>;
 }
 
-// ---- InstaQL query documents ----------------------------------------------
+// ---- Engine query documents ------------------------------------------------
 
 export type QueryScalar = string | number | boolean | null;
 
 export interface QueryComparison {
   $ne?: QueryScalar;
   $in?: QueryScalar[];
+  $nin?: QueryScalar[];
   $gt?: QueryScalar;
   $gte?: QueryScalar;
   $lt?: QueryScalar;
@@ -66,7 +65,10 @@ export interface QueryComparison {
 export type QueryWhereValue = QueryScalar | QueryComparison;
 
 export interface QueryWhere {
-  [attribute: string]: QueryWhereValue;
+  [attribute: string]: QueryWhereValue | QueryWhere | QueryWhere[] | undefined;
+  $or?: QueryWhere[];
+  $and?: QueryWhere[];
+  $not?: QueryWhere;
 }
 
 export interface QueryOptions {
@@ -79,6 +81,8 @@ export interface QueryOptions {
    * meaningful against a total order. `db.loadMore()` sends this for you.
    */
   after?: string;
+  /** Top level only: report the total matching rows as `pageInfo[ns].count`. */
+  count?: boolean;
 }
 
 export interface QueryNode {
@@ -112,6 +116,22 @@ export interface PageInfo {
    * as `$: { after }`.
    */
   nextCursor?: string;
+  /** Total matching rows, when the query asked for `count`. */
+  count?: number;
+  /** The groups, when the query asked for `aggregate`. */
+  aggregate?: AggregateGroup[];
+}
+
+/** One group of an aggregate, as the engine reports it. */
+export interface AggregateGroup {
+  /** The group's key values; empty without a groupBy. */
+  key: Record<string, unknown>;
+  count?: number;
+  countOf?: Record<string, number>;
+  sum?: Record<string, number | null>;
+  avg?: Record<string, number | null>;
+  min?: Record<string, unknown>;
+  max?: Record<string, unknown>;
 }
 
 export type QueryPageInfo = Record<string, PageInfo>;
@@ -136,7 +156,17 @@ export interface PresencePeer {
 
 // ---- Transactions ----------------------------------------------------------
 
-export type TxOpKind = "update" | "merge" | "link" | "unlink" | "delete";
+export type TxOpKind =
+  | "insert"
+  | "patch"
+  | "upsert"
+  | "patchMany"
+  | "deleteMany"
+  | "update"
+  | "merge"
+  | "link"
+  | "unlink"
+  | "delete";
 
 interface TxOpBase {
   op: TxOpKind;
@@ -147,6 +177,26 @@ interface TxOpBase {
 export interface TxUpdateOp extends TxOpBase {
   op: "update";
   values: Record<string, unknown>;
+}
+
+export interface TxInsertOp extends TxOpBase {
+  op: "insert";
+  values: Record<string, unknown>;
+}
+
+export interface TxPatchOp extends TxOpBase {
+  op: "patch";
+  values: Record<string, unknown>;
+}
+
+/**
+ * Creates the row from `create` when it is missing, otherwise writes `values`.
+ * The engine decides inside the transaction, so the choice cannot race.
+ */
+export interface TxUpsertOp extends TxOpBase {
+  op: "upsert";
+  values: Record<string, unknown>;
+  create: Record<string, unknown>;
 }
 
 export interface TxMergeOp extends TxOpBase {
@@ -170,12 +220,35 @@ export interface TxDeleteOp extends TxOpBase {
   op: "delete";
 }
 
-export type TxOp = TxUpdateOp | TxMergeOp | TxLinkOp | TxUnlinkOp | TxDeleteOp;
+export interface TxPatchManyOp {
+  op: "patchMany";
+  namespace: string;
+  where: Record<string, unknown>;
+  values: Record<string, unknown>;
+  /** Resume after this id: the engine's `more` cursor from the previous batch. */
+  after?: string;
+}
 
-/**
- * One chainable `tx` step. `op` is provided for the common single-op case;
- * `ops` lets a multi-label `link({...})` call expand into several wire ops.
- */
+export interface TxDeleteManyOp {
+  op: "deleteMany";
+  namespace: string;
+  where: Record<string, unknown>;
+  after?: string;
+}
+
+export type TxOp =
+  | TxPatchManyOp
+  | TxDeleteManyOp
+  | TxInsertOp
+  | TxPatchOp
+  | TxUpsertOp
+  | TxUpdateOp
+  | TxMergeOp
+  | TxLinkOp
+  | TxUnlinkOp
+  | TxDeleteOp;
+
+/** A group of ops that travels together. */
 export interface TxStep {
   readonly ops: readonly TxOp[];
   readonly op: TxOp;
@@ -185,16 +258,6 @@ export type TransactInput = ReadonlyArray<
   TxStep | TxOp | ReadonlyArray<TxStep | TxOp>
 >;
 
-export interface TxEntity {
-  update(values: Record<string, unknown>): TxStep;
-  merge(values: Record<string, unknown>): TxStep;
-  delete(): TxStep;
-  link(links: Record<string, string>): TxStep;
-  unlink(links: Record<string, string>): TxStep;
-}
-
-/** `db.tx.columns[id].update({...})` */
-export type TxProxy = Record<string, Record<string, TxEntity>>;
 
 // ---- Outbox ----------------------------------------------------------------
 
@@ -204,12 +267,22 @@ export interface OutboxEntry {
   workspaceId: string;
   ops: TxOp[];
   createdAt: number;
+  /** Sends started so far, persisted before each send. Absent means unknown. */
+  attempts?: number;
+}
+
+/** A queued write the server refused for good and the outbox dropped. */
+export interface WriteRejection {
+  clientTxId: string;
+  ops: TxOp[];
+  code: string;
+  message: string;
 }
 
 // ---- Config and public client ---------------------------------------------
 
 export interface InitConfig {
-  /** Workspace UUID. Falls back to NEXT_PUBLIC_NDEX_WORKSPACE_ID. */
+  /** Workspace UUID. */
   workspaceId?: string;
   /** Engine origin, e.g. http://localhost:8787. */
   apiUrl?: string;
@@ -218,16 +291,14 @@ export interface InitConfig {
   /** Returns a short-lived role-claim JWT for every HTTP/WS request. */
   getToken?: () => Promise<string>;
   schema?: SchemaDefinition;
-
-  /** @deprecated InstantDB compatibility; accepted but ignored. */
-  appId?: string;
-  /** @deprecated InstantDB compatibility; accepted but ignored. */
-  apiURI?: string;
-  /** @deprecated InstantDB compatibility; accepted but ignored. */
-  websocketURI?: string;
+  /**
+   * Called when a queued write is refused permanently during a background
+   * flush, after the outbox has dropped it.
+   */
+  onWriteRejected?: (rejection: WriteRejection) => void;
 }
 
-/** Ephemeral presence channel within this client's workspace socket. Not a Yjs document room. */
+/** Ephemeral presence channel on this client's workspace socket. */
 export interface DataRoom {
   publishPresence(presence: unknown): void;
   publishCursor(cursor: unknown): void;
@@ -239,11 +310,7 @@ export interface DataRoom {
 }
 
 export interface DataClient {
-  useQuery(query: QueryDocument): QueryState;
-  transact(input: TransactInput): Promise<void>;
-  tx: TxProxy;
-  /** R2 files for an explicitly registered app id; never derives tenant identity from a path. */
-  storage(appId: string): StorageClient;
+  transact(input: TransactInput): Promise<"applied" | "queued">;
   /** Files scoped to the configured workspace and authenticated by its claim. */
   files: StorageClient;
   /** Reuses the workspace socket and its reconnect/replay behavior. */
@@ -254,10 +321,7 @@ export interface DataClient {
   /** Retries pending writes now (also runs on reconnect and `online`). */
   flushOutbox(): Promise<void>;
 
-  /**
-   * Non-React subscription helper. `useQuery` is built on this, and tests use
-   * it without a DOM environment.
-   */
+  /** Subscribes to a query document; the model client's live reads use it. */
   subscribeQuery(query: QueryDocument, listener: () => void): () => void;
 
   /** Current cached state for a query, without subscribing to it. */
@@ -274,9 +338,8 @@ export interface DataClient {
    * Nested link results arrive with the page and are not paginated: a cursor is
    * only defined for the top-level namespace's order.
    *
-   * The result lives in the cache until the next full `query:data` (a reconnect
-   * re-subscribes the original query, which resets the cached list to page one);
-   * call `loadMore()` again to rebuild it.
+   * After a page lands the live subscription widens to every loaded row, so a
+   * reconnect restores the whole window.
    */
   loadMore(query: QueryDocument): Promise<boolean>;
 
@@ -318,6 +381,9 @@ export type ClientMessage =
   | { type: "cursor:set"; target: string; cursor: unknown }
   | { type: "drag:set"; target: string; drag: unknown }
   | { type: "drag:clear"; target: string }
+  | { type: "topic:join"; topic: string }
+  | { type: "topic:leave"; topic: string }
+  | { type: "topic:send"; topic: string; message: unknown }
   | { type: "ping"; at?: unknown };
 
 export type ServerMessage =
@@ -339,6 +405,9 @@ export type ServerMessage =
       added: unknown[];
       updated: unknown[];
       removed: string[];
+      /** Every id in the result, in order, when the diff alone would misplace rows. */
+      order?: string[];
+      pageInfo?: QueryPageInfo;
     }
   | { type: "query:unsubscribed"; id: string }
   | { type: "query:error"; id: string | null; code: string; message: string }
@@ -350,4 +419,19 @@ export type ServerMessage =
       cursor: unknown;
     }
   | { type: "drag:update"; target: string; clientId: string; drag: unknown }
+  | { type: "topic:message"; topic: string; message: unknown; from: { clientId: string; sub: string } }
+  | { type: "topic:error"; topic: string | null; code: string; message: string }
   | { type: "error"; code: string; message?: string };
+
+/** Who sent a broadcast message. */
+export interface TopicSender {
+  /** The sending socket's client id: one per open client. */
+  clientId: string;
+  /** The claim subject (user id) the sender connected with. */
+  userId: string;
+}
+
+export interface TopicListener {
+  message: (message: unknown, from: TopicSender) => void;
+  error?: (error: QueryError) => void;
+}

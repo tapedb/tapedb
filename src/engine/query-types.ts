@@ -1,8 +1,8 @@
 /**
- * InstaQL query wire contract for the workspace engine (KAN-392).
+ * Query document wire contract for the workspace engine.
  *
- * Only the subset the plan promises is supported: `where`, `order`, `limit`
- * and nested link traversal up to two levels. This module owns the typed
+ * `where`, `order`, `limit`, `after`, `count`, `select`, `aggregate` and
+ * nested link traversal at any depth. This module owns the typed
  * shapes and the registry-independent validation. Registry-specific checks
  * (namespace, attribute and link existence) live in `query-compile.ts`.
  *
@@ -11,11 +11,15 @@
  * attributes are JSON values. Storage conversion happens in `query-execute.ts`.
  */
 
+import { parseAggregate, type AggregateGroup, type QueryAggregate } from "./query-aggregate";
 import { TxError } from "./tx-types";
 
-export const DEFAULT_QUERY_LIMIT = 100;
-export const MAX_QUERY_LIMIT = 1000;
-export const MAX_LINK_DEPTH = 2;
+/**
+ * Rows one statement reads. A read with a larger `limit`, or none, is served
+ * in keyset chunks of this size, and includes hydrate this many parents per
+ * statement, so no single statement grows with the result.
+ */
+export const QUERY_CHUNK_ROWS = 1000;
 
 export type SortDirection = "asc" | "desc";
 
@@ -26,6 +30,8 @@ export type QueryScalar = string | number | boolean | null;
 export interface QueryComparison {
   $ne?: QueryScalar;
   $in?: QueryScalar[];
+  /** Not in the list. Like `$ne`, also matches rows where the value is null. */
+  $nin?: QueryScalar[];
   $gt?: QueryScalar;
   $gte?: QueryScalar;
   $lt?: QueryScalar;
@@ -34,9 +40,36 @@ export interface QueryComparison {
 
 export type QueryWhereValue = QueryScalar | QueryComparison;
 
-export interface QueryWhere {
-  [attribute: string]: QueryWhereValue;
+/**
+ * Attribute conditions, ANDed. Three reserved keys combine whole filters:
+ * `$or` and `$and` take non-empty arrays of filters, `$not` takes one.
+ */
+/** How a relation filter matches: the parent row, or some/every/no children. */
+export type RelationMode = "parent" | "some" | "every" | "none";
+
+/**
+ * A filter on a linked namespace, by the same label `include` uses. Compiled
+ * into a correlated subquery, so the rows are never fetched.
+ */
+export interface QueryRelationFilter {
+  label: string;
+  mode: RelationMode;
+  where: QueryWhere;
 }
+
+export interface QueryWhere {
+  [attribute: string]:
+    | QueryWhereValue
+    | QueryWhere
+    | QueryWhere[]
+    | QueryRelationFilter[]
+    | undefined;
+  $or?: QueryWhere[];
+  $and?: QueryWhere[];
+  $not?: QueryWhere;
+  $link?: QueryRelationFilter[];
+}
+
 
 export interface QueryOptions {
   where?: QueryWhere;
@@ -48,6 +81,22 @@ export interface QueryOptions {
    * order.
    */
   after?: string;
+  /**
+   * Top level only: also report how many rows match, ignoring `after` and
+   * `limit`, as `pageInfo[namespace].count`. With `limit: 0` no rows are read.
+   */
+  count?: boolean;
+  /**
+   * Attributes to return, by API name. Omitted means every attribute. `id`
+   * is always returned: live diffs key rows by it.
+   */
+  select?: string[];
+  /**
+   * Top level only: count, sum, avg, min and max over the matching rows,
+   * optionally grouped. Reads no rows; the result is
+   * `pageInfo[namespace].aggregate`.
+   */
+  aggregate?: QueryAggregate;
 }
 
 /**
@@ -87,6 +136,10 @@ export interface PageInfo {
    * the query has an explicit `order`. Pass it back as `$: { after }`.
    */
   nextCursor?: string;
+  /** Total matching rows, when the query asked for `count`. */
+  count?: number;
+  /** The groups, when the query asked for `aggregate`. */
+  aggregate?: AggregateGroup[];
 }
 
 export type QueryPageInfo = Record<string, PageInfo>;
@@ -104,10 +157,13 @@ export interface QueryErrorResponse {
   };
 }
 
-const OPTION_KEYS = new Set(["where", "order", "limit", "after"]);
+const OPTION_KEYS = new Set(["where", "order", "limit", "after", "count", "select", "aggregate"]);
+const LOGICAL_KEYS = new Set(["$or", "$and", "$not", "$link"]);
+const RELATION_MODES = new Set(["parent", "some", "every", "none"]);
 const COMPARISON_OPERATORS = new Set([
   "$ne",
   "$in",
+  "$nin",
   "$gt",
   "$gte",
   "$lt",
@@ -167,11 +223,27 @@ export function parseQueryOptions(value: unknown): QueryOptions {
   if ("order" in value) {
     options.order = parseOrder(value.order);
   }
+  if ("count" in value) {
+    if (typeof value.count !== "boolean") {
+      throw invalidValue('"count" must be true or false.');
+    }
+    options.count = value.count;
+  }
+  if ("aggregate" in value) {
+    options.aggregate = parseAggregate(value.aggregate);
+  }
   if ("limit" in value) {
-    options.limit = parseLimit(value.limit);
+    // limit 0 only makes sense as "count or aggregate, read no rows".
+    options.limit =
+      value.limit === 0 && (options.count === true || options.aggregate !== undefined)
+        ? 0
+        : parseLimit(value.limit);
   }
   if ("after" in value) {
     options.after = parseCursor(value.after);
+  }
+  if ("select" in value) {
+    options.select = parseSelect(value.select);
   }
 
   return options;
@@ -235,6 +307,20 @@ export function decodeQueryCursor(value: string): QueryCursor {
   return { v: 1, cols: cols as string[], vals: vals as (string | number | null)[] };
 }
 
+function parseSelect(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw invalidOp('"select" must be a non-empty array of attribute names.');
+  }
+  const names = new Set<string>();
+  for (const name of value) {
+    if (typeof name !== "string" || name.length === 0) {
+      throw invalidOp('"select" must be a non-empty array of attribute names.');
+    }
+    names.add(name);
+  }
+  return [...names];
+}
+
 function parseCursor(value: unknown): string {
   if (typeof value !== "string" || value.length === 0) {
     throw invalidOp('"after" must be a non-empty cursor string.');
@@ -242,13 +328,39 @@ function parseCursor(value: unknown): string {
   return value;
 }
 
-function parseWhere(value: unknown): QueryWhere {
+/** Validates a `where` object. Exported for view rules, which share the shape. */
+export function parseWhere(value: unknown): QueryWhere {
   if (!isPlainObject(value)) {
     throw invalidOp('"where" must be an object.');
   }
 
   const where: QueryWhere = {};
   for (const [attribute, raw] of Object.entries(value)) {
+    if (attribute.startsWith("$")) {
+      if (!LOGICAL_KEYS.has(attribute)) {
+        throw invalidOp(`Unknown where key "${attribute}".`);
+      }
+      if (attribute === "$not") {
+        where.$not = parseWhere(raw);
+        continue;
+      }
+      if (attribute === "$link") {
+        if (!Array.isArray(raw) || raw.length === 0) {
+          throw invalidOp('"$link" needs a non-empty array of relation filters.');
+        }
+        where.$link = raw.map((entry) => parseRelationFilter(entry));
+        continue;
+      }
+      if (!Array.isArray(raw) || raw.length === 0) {
+        // An empty $or would match nothing and an empty $and everything; both
+        // are more likely a bug in the caller than a request.
+        throw invalidOp(`"${attribute}" needs a non-empty array of filters.`);
+      }
+      where[attribute as "$or" | "$and"] = raw.map((branch) =>
+        parseWhere(branch)
+      );
+      continue;
+    }
     if (isPlainObject(raw)) {
       where[attribute] = parseComparison(attribute, raw);
     } else {
@@ -256,6 +368,22 @@ function parseWhere(value: unknown): QueryWhere {
     }
   }
   return where;
+}
+
+function parseRelationFilter(value: unknown): QueryRelationFilter {
+  if (!isPlainObject(value)) {
+    throw invalidOp('Each "$link" entry must be an object.');
+  }
+  const { label, mode, where } = value;
+  if (typeof label !== "string" || label.length === 0) {
+    throw invalidOp('A "$link" entry needs a link label.');
+  }
+  if (typeof mode !== "string" || !RELATION_MODES.has(mode)) {
+    throw invalidOp(
+      `"$link" mode for "${label}" must be one of parent, some, every, none.`
+    );
+  }
+  return { label, mode: mode as RelationMode, where: parseWhere(where) };
 }
 
 function parseComparison(
@@ -283,6 +411,14 @@ function parseComparison(
         }
         comparison.$in = operand.map((item, index) =>
           parseScalar(`${attribute}.$in[${index}]`, item)
+        );
+        break;
+      case "$nin":
+        if (!Array.isArray(operand)) {
+          throw invalidValue(`"$nin" on "${attribute}" requires an array.`);
+        }
+        comparison.$nin = operand.map((item, index) =>
+          parseScalar(`${attribute}.$nin[${index}]`, item)
         );
         break;
       case "$ne":
@@ -322,15 +458,8 @@ function parseOrder(value: unknown): Record<string, SortDirection> {
 }
 
 function parseLimit(value: unknown): number {
-  if (
-    typeof value !== "number" ||
-    !Number.isInteger(value) ||
-    value < 1 ||
-    value > MAX_QUERY_LIMIT
-  ) {
-    throw invalidValue(
-      `Limit must be an integer from 1 to ${MAX_QUERY_LIMIT}.`
-    );
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1) {
+    throw invalidValue("Limit must be a positive integer.");
   }
   return value;
 }

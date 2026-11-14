@@ -12,6 +12,15 @@
  * therefore safe.
  */
 
+import { applyFileOps, isFileOpList } from "../file-index";
+import {
+  changesAfter,
+  evolveColumn,
+  evolveField,
+  evolveModel,
+  evolveTable,
+  type SchemaChange,
+} from "../schema-evolution";
 import {
   manifestKey,
   readManifest,
@@ -23,6 +32,7 @@ import { listAllR2 } from "../r2-list";
 import {
   ENGINE_TABLES,
   findNamespace,
+  LINKS,
   NAMESPACES,
   namespaceTables,
   registryGeneration,
@@ -34,7 +44,7 @@ import type {
   SqlExecutor as TxSqlExecutor,
   SqlRow as TxSqlRow,
 } from "../tx-sql";
-import { isLinkOp, validateEnvelope, type ValidatedOp } from "../tx-validate";
+import { acceptsValue, isBulkOp, isLinkOp, validateEnvelope, type ValidatedOp } from "../tx-validate";
 import { sha256Hex } from "./snapshot";
 import type { SqlCursor, SqlExecutor, SqlValue } from "./sql";
 
@@ -65,6 +75,8 @@ export type RecoveryResult =
       rows: number;
       /** Log transactions with at least one op applied. */
       replayed: number;
+      /** Set when the restore could not carry everything forward. */
+      warnings?: string[];
     };
 
 interface PragmaColumn extends Record<string, SqlValue> {
@@ -76,6 +88,8 @@ interface UpdatedSeqRow extends Record<string, SqlValue> {
 }
 
 interface LogLine {
+  /** The client's ops hash, when the segment carries one. */
+  opsHash?: string;
   seq: number;
   at: number;
   ops: unknown[];
@@ -135,7 +149,7 @@ export function restoreOrder(): string[] {
     remaining = remaining.filter((namespace) => !done.has(namespace.table));
   }
 
-  emitted.push(ENGINE_TABLES.files);
+  emitted.push(ENGINE_TABLES.files, ENGINE_TABLES.txReceipts);
   return emitted;
 }
 
@@ -168,7 +182,7 @@ export function allowedTables(): Set<string> {
   if (allowedTableCache === null || allowedTableCache.generation !== generation) {
     allowedTableCache = {
       generation,
-      tables: new Set<string>([...namespaceTables(), ENGINE_TABLES.files]),
+      tables: new Set<string>([...namespaceTables(), ENGINE_TABLES.files, ENGINE_TABLES.txReceipts]),
     };
   }
   return allowedTableCache.tables;
@@ -323,8 +337,10 @@ function validateManifestTables(manifest: WorkspaceManifest): void {
     manifest.workspaceId
   )}/snapshots/${manifest.baseSeq}/`;
 
+  const changes = changesAfter(manifest.schemaVersion);
   for (const table of manifest.tables) {
-    if (!allowedTables().has(table.name)) {
+    const current = evolveTable(table.name, changes);
+    if (current !== null && !allowedTables().has(current)) {
       throw new Error(`Manifest contains unknown table "${table.name}".`);
     }
 
@@ -435,6 +451,70 @@ function orderParentsFirst(
   return ordered;
 }
 
+/** Snapshot rows from an older schema, with dropped columns removed and renamed ones moved. */
+function evolveRows(
+  rows: RestorableRow[],
+  table: string,
+  changes: SchemaChange[]
+): RestorableRow[] {
+  if (changes.length === 0) return rows;
+  return rows.map((row) => {
+    const out: RestorableRow = {};
+    for (const [column, value] of Object.entries(row)) {
+      const current = evolveColumn(table, column, changes);
+      if (current !== null) out[current] = value;
+    }
+    return out;
+  });
+}
+
+/**
+ * Log ops from an older schema, read through the changes made since. A model
+ * or link a migration dropped drops the op; a dropped field drops the value;
+ * renames are followed; a retyped value that no longer fits is dropped.
+ */
+function evolveOps(ops: unknown[], changes: SchemaChange[]): unknown[] {
+  if (changes.length === 0) return ops;
+  const out: unknown[] = [];
+  for (const raw of ops) {
+    if (!isPlainRecord(raw) || typeof raw.namespace !== "string") {
+      out.push(raw);
+      continue;
+    }
+    const namespace = evolveModel(raw.namespace, changes);
+    if (namespace === null) continue;
+    const op: Record<string, unknown> = { ...raw, namespace };
+
+    if (raw.op === "link" || raw.op === "unlink") {
+      if (typeof raw.link === "string" && !(raw.link in LINKS)) {
+        // Model-API link names are "<model>.<field>"; follow their renames.
+        const [model, field] = raw.link.split(".");
+        const evolved = field === undefined ? null : evolveField(model, field, changes);
+        const owner = evolveModel(model, changes);
+        if (evolved === null || owner === null) continue;
+        op.link = `${owner}.${evolved.field}`;
+      }
+      out.push(op);
+      continue;
+    }
+
+    for (const key of ["values", "create"] as const) {
+      const values = raw[key];
+      if (!isPlainRecord(values)) continue;
+      const projected: Record<string, unknown> = {};
+      for (const [attribute, value] of Object.entries(values)) {
+        const evolved = evolveField(raw.namespace, attribute, changes);
+        if (evolved === null) continue;
+        if (evolved.retyped && !acceptsValue(namespace, evolved.field, value)) continue;
+        projected[evolved.field] = value;
+      }
+      op[key] = projected;
+    }
+    out.push(op);
+  }
+  return out;
+}
+
 function insertChunk(
   sql: RecoverySqlExecutor,
   table: string,
@@ -481,8 +561,9 @@ function insertChunk(
 async function restoreTable(
   bucket: R2Bucket,
   sql: RecoverySqlExecutor,
-  table: ManifestTable,
-  allowedColumns: Set<string>
+  table: ManifestTable & { sourceName?: string },
+  allowedColumns: Set<string>,
+  changes: SchemaChange[]
 ): Promise<number> {
   let inserted = 0;
 
@@ -507,9 +588,10 @@ async function restoreTable(
       );
     }
 
-    const rows = parseNdjson(
-      textDecoder.decode(await gunzipBytes(compressed)),
-      chunk.key
+    const rows = evolveRows(
+      parseNdjson(textDecoder.decode(await gunzipBytes(compressed)), chunk.key),
+      table.sourceName ?? table.name,
+      changes
     );
 
     if (rows.length !== chunk.rows) {
@@ -535,12 +617,13 @@ async function restoreSnapshot(
   sql: RecoverySqlExecutor,
   manifest: WorkspaceManifest
 ): Promise<{ tables: number; rows: number }> {
+  const changes = changesAfter(manifest.schemaVersion);
   const tables = orderedTables(manifest);
   let rows = 0;
 
   for (const table of tables) {
     const columns = readColumns(sql, table.name);
-    rows += await restoreTable(bucket, sql, table, columns);
+    rows += await restoreTable(bucket, sql, table, columns, changes);
   }
 
   return { tables: tables.length, rows };
@@ -628,7 +711,7 @@ function parseLogLines(text: string, source: string): LogLine[] {
         `Log line in ${source} at line ${index + 1} has an invalid timestamp.`
       );
     }
-    if (!Array.isArray(ops) || ops.length === 0) {
+    if (!Array.isArray(ops) || (ops.length === 0 && !(typeof parsed.clientTxId === "string" && parsed.clientTxId.length > 0 && typeof parsed.opsHash === "string" && parsed.opsHash.length > 0))) {
       throw new Error(`Log line in ${source} at line ${index + 1} has no ops.`);
     }
 
@@ -636,6 +719,7 @@ function parseLogLines(text: string, source: string): LogLine[] {
     // them is what lets recovery rebuild `_tx_log` faithfully instead of
     // forgetting every transaction it just restored.
     const clientTxId = parsed.clientTxId;
+    const opsHashValue = parsed.opsHash;
     const userId = parsed.userId;
     const role = parsed.role;
     const schemaVersion = parsed.schemaVersion;
@@ -646,6 +730,9 @@ function parseLogLines(text: string, source: string): LogLine[] {
       ops,
       ...(typeof clientTxId === "string" && clientTxId.length > 0
         ? { clientTxId }
+        : {}),
+      ...(typeof opsHashValue === "string" && opsHashValue.length > 0
+        ? { opsHash: opsHashValue }
         : {}),
       userId: typeof userId === "string" ? userId : null,
       role: typeof role === "number" ? role : null,
@@ -658,6 +745,10 @@ function parseLogLines(text: string, source: string): LogLine[] {
 }
 
 function targetFor(op: ValidatedOp): TargetRow {
+  if (isBulkOp(op)) {
+    // The log holds the rows a bulk write resolved, never the filter.
+    throw new Error(`A log line holds an unresolved "${op.kind}".`);
+  }
   if (isLinkOp(op)) {
     const child = findNamespace(op.childNamespace);
     if (!child) {
@@ -726,7 +817,21 @@ function replayLine(
   txSql: TxSqlExecutor,
   line: LogLine
 ): boolean {
-  const tx = validateEnvelope({ txId: "recovery", ops: line.ops });
+  // File-index entries are engine ops, not client transactions: they are
+  // last-writer-wins on path, so applying them in order is the whole replay.
+  if (isFileOpList(line.ops)) {
+    recordReplayedLine(sql, line);
+    applyFileOps(txSql, line.ops, line.at);
+    return true;
+  }
+
+  const ops = evolveOps(line.ops, changesAfter(line.schemaVersion));
+  // Receipts survive even when a migration removed every referenced model.
+  if (ops.length === 0) {
+    recordReplayedLine(sql, line);
+    return false;
+  }
+  const tx = validateEnvelope({ txId: "recovery", ops });
   const touched = new Set<string>();
   let applied = false;
 
@@ -750,6 +855,7 @@ function replayLine(
         seq: line.seq,
         now: line.at,
         txId: "recovery",
+        replay: true,
       },
       [op]
     );
@@ -771,6 +877,10 @@ function replayLine(
  */
 function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
   const ops = line.ops as readonly unknown[];
+  if (line.clientTxId) {
+    sql.exec(`INSERT OR IGNORE INTO "_tx_receipts" (id, seq, ops_hash) VALUES (?, ?, ?)`,
+      line.clientTxId, line.seq, line.opsHash ?? opsHash(ops));
+  }
 
   sql.exec(
     `INSERT OR IGNORE INTO "_tx_log"
@@ -779,7 +889,10 @@ function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
     line.seq,
     line.clientTxId ?? null,
     stableStringify(ops),
-    opsHash(ops),
+    // Older segments carry no hash, so it is recomputed from the ops; a bulk
+    // write's stored ops are the rows it resolved, whose hash is not the
+    // client's, which is why newer segments carry the original.
+    line.opsHash ?? opsHash(ops),
     line.userId ?? null,
     line.role ?? null,
     line.at,
@@ -793,7 +906,8 @@ async function replayLogs(
   txSql: TxSqlExecutor,
   workspaceId: string,
   baseSeq: number,
-  logSeq: number
+  logSeq: number,
+  snapshotHasFiles: boolean
 ): Promise<{ replayed: number; maxSeq: number }> {
   const segments = await listLogSegments(bucket, workspaceId);
   let replayed = 0;
@@ -831,11 +945,18 @@ async function replayLogs(
         // them, so this line is the only copy left.
         if (line.seq <= baseSeq) {
           recordReplayedLine(sql, line);
+          // Snapshots taken before the file index was snapshotted do not
+          // hold it, so the segments are its only copy below the base. File
+          // ops are last-writer-wins on path, so applying them is safe.
+          if (!snapshotHasFiles && isFileOpList(line.ops)) {
+            applyFileOps(txSql, line.ops, line.at);
+          }
           continue;
         }
 
         maxSeq = Math.max(maxSeq, line.seq);
-        if (replayLine(sql, txSql, line)) replayed += 1;
+        if (line.ops.length === 0) recordReplayedLine(sql, line);
+        else if (replayLine(sql, txSql, line)) replayed += 1;
       }
     });
   }
@@ -922,13 +1043,23 @@ export async function recoverWorkspace(
     return { recovered: false, reason: "no_manifest" };
   }
 
-  const manifest = stored.manifest;
-  if (manifest.workspaceId !== workspaceId) {
+  if (stored.manifest.workspaceId !== workspaceId) {
     throw new Error(
-      `Manifest for workspace ${manifest.workspaceId} cannot restore ${workspaceId}.`
+      `Manifest for workspace ${stored.manifest.workspaceId} cannot restore ${workspaceId}.`
     );
   }
-  validateManifestTables(manifest);
+  // Chunk keys keep the table names of the schema the snapshot was taken
+  // under, so they are checked first; the rows then restore into today's
+  // tables. A table a later migration dropped is skipped.
+  validateManifestTables(stored.manifest);
+  const changes = changesAfter(stored.manifest.schemaVersion);
+  const manifest: WorkspaceManifest = {
+    ...stored.manifest,
+    tables: stored.manifest.tables.flatMap((table) => {
+      const current = evolveTable(table.name, changes);
+      return current === null ? [] : [{ ...table, name: current, sourceName: table.name }];
+    }),
+  };
 
   markRunning(sql, now);
 
@@ -937,6 +1068,7 @@ export async function recoverWorkspace(
     // `_tx_log` from the durable segments, so a row here belongs to a database
     // that is about to be replaced.
     sql.exec(`DELETE FROM "_tx_log"`);
+    sql.exec(`DELETE FROM "_tx_receipts"`);
 
     // Foreign keys are disabled for the restore so chunk order cannot break
     // self-references; `PRAGMA foreign_key_check` below is the safety net.
@@ -967,15 +1099,28 @@ export async function recoverWorkspace(
       txSql,
       workspaceId,
       manifest.baseSeq,
-      manifest.logSeq
+      manifest.logSeq,
+      manifest.tables.some((table) => table.name === ENGINE_TABLES.files)
     );
 
     // Bookkeeping and the success marker commit together so the workspace can
     // never look caught up while its sequence state is only half written.
     sql.transactionSync(() => {
       writeFinalState(sql, manifest, replay.maxSeq, now);
+      // Written by engines that tracked missing receipts; nothing reads it.
+      sql.exec(`DELETE FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`);
       markComplete(sql, manifest, now);
     });
+
+    // Snapshots from development builds before transaction receipts existed
+    // carry none, so retries of writes folded into them cannot be recognised.
+    // (A manifest with no snapshot yet replays every line, receipts included.)
+    const receiptless =
+      manifest.baseSeq > 0 &&
+      !manifest.tables.some((table) => table.name === ENGINE_TABLES.txReceipts);
+    if (receiptless) {
+      console.warn("workspace_recovered_without_receipts", { workspaceId, baseSeq: manifest.baseSeq });
+    }
 
     return {
       recovered: true,
@@ -984,6 +1129,13 @@ export async function recoverWorkspace(
       tables: restored.tables,
       rows: restored.rows,
       replayed: replay.replayed,
+      ...(receiptless
+        ? {
+            warnings: [
+              `The snapshot predates transaction receipts: a retry of a write at or below seq ${manifest.baseSeq} is not recognised as a retry.`,
+            ],
+          }
+        : {}),
     };
   } catch (error) {
     try {

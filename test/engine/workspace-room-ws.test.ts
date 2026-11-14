@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../fixtures/registry";
+useLegacyFixture();
 
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -43,6 +43,10 @@ class FakeWebSocket {
   }
 
   close(code = 1000, reason = ""): void {
+    // As the runtime does (measured in workerd): reserved codes throw.
+    if ([1004, 1005, 1006, 1015].includes(code) || code < 1000 || code > 4999) {
+      throw new DOMException(`Invalid close code ${code}.`, "InvalidAccessError");
+    }
     this.closeInfo = { code, reason };
   }
 
@@ -76,6 +80,7 @@ function clone<T>(value: T): T {
 (globalThis as { WebSocketPair?: unknown }).WebSocketPair = FakeWebSocketPair;
 
 const { WorkspaceRoom } = await import("../../src/engine/workspace-room");
+const { configureTopics } = await import("../../src/engine/topics");
 
 const WORKSPACE = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a6b";
 const MIGRATIONS_DIR = resolve(
@@ -95,12 +100,20 @@ interface SqlCursor<T> {
   rowsWritten: number;
 }
 
+/**
+ * Every statement the room ran, for tests that count work. On globalThis:
+ * the module's top-level awaits let the room run before a const here exists.
+ */
+const statementLog = (): string[] =>
+  ((globalThis as { __roomStatements?: string[] }).__roomStatements ??= []);
+
 function createSqlStorage(db: Database) {
   return {
     exec<T extends Record<string, unknown>>(
       query: string,
       ...params: unknown[]
     ): SqlCursor<T> {
+      statementLog().push(query);
       const trimmed = query.trim();
       const lower = trimmed.toLowerCase();
       const isRead =
@@ -177,10 +190,10 @@ class FakeContext {
   }
 }
 
-function claim(role: number): RoleClaim {
+function claim(role: number, sub = "user-1"): RoleClaim {
   const now = Math.floor(Date.now() / 1000);
   return {
-    sub: "user-1",
+    sub,
     workspaceId: WORKSPACE,
     role: role as RoleClaim["role"],
     exp: now + 60,
@@ -225,12 +238,13 @@ describe("WorkspaceRoom live queries", () => {
   });
 
   async function connect(
-    role: number | null = WORKSPACE_ROLE_LEVELS.MEMBER
+    role: number | null = WORKSPACE_ROLE_LEVELS.MEMBER,
+    sub = "user-1"
   ): Promise<FakeWebSocket> {
     const before = context.sockets.length;
     const headers: Record<string, string> = { upgrade: "websocket" };
     if (role !== null) {
-      headers["x-tapedb-claims"] = encodeTrustedRoleClaim(claim(role));
+      headers["x-tapedb-claims"] = encodeTrustedRoleClaim(claim(role, sub));
     }
 
     const response = await room.fetch(
@@ -489,6 +503,355 @@ describe("WorkspaceRoom live queries", () => {
     const columns = updated[0]?.columns as Array<Record<string, unknown>>;
     const tasks = columns[0]?.tasks as Array<Record<string, unknown>>;
     expect(tasks[0]).toMatchObject({ id: "task1", title: "Changed" });
+  });
+
+  test("sends page metadata when a row lands past the window", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "paged",
+      query: { kanbanTasks: { $: { order: { title: "asc" }, limit: 1 } } },
+    });
+    expect(socket.messages()[1]).toMatchObject({
+      type: "query:data",
+      pageInfo: { kanbanTasks: { returned: 1, hasMore: false } },
+    });
+    socket.clear();
+
+    // "Zed" sorts after "First": the one-row window is unchanged, but there is
+    // now a next page. Before, this produced no message at all.
+    await transact(
+      [
+        {
+          op: "update",
+          namespace: "kanbanTasks",
+          id: "task2",
+          values: { columnId: "col1", title: "Zed", order: 1 },
+        },
+      ],
+      "t1"
+    );
+    await delay(100);
+
+    const messages = queryMessages(socket);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      type: "query:diff",
+      added: [],
+      updated: [],
+      removed: [],
+      pageInfo: { kanbanTasks: { returned: 1, hasMore: true } },
+    });
+    expect(
+      (messages[0]?.pageInfo as Record<string, { nextCursor?: string }>).kanbanTasks.nextCursor
+    ).toBeString();
+  });
+
+  test("a live count updates when a matching row is added", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "count",
+      query: { kanbanTasks: { $: { count: true, limit: 0 } } },
+    });
+    expect(socket.messages()[1]).toMatchObject({
+      pageInfo: { kanbanTasks: { count: 1, returned: 0 } },
+    });
+    socket.clear();
+
+    await transact(
+      [{ op: "insert", namespace: "kanbanTasks", id: "task2", values: { columnId: "col1", title: "Two", order: 1 } }],
+      "t1"
+    );
+    await delay(100);
+
+    expect(queryMessages(socket)).toEqual([
+      expect.objectContaining({ type: "query:diff", pageInfo: { kanbanTasks: expect.objectContaining({ count: 2 }) } }),
+    ]);
+  });
+
+  test("a live select pushes only the selected fields", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "picked",
+      query: { kanbanTasks: { $: { select: ["title"] } } },
+    });
+    expect(socket.messages()[1]?.data).toEqual({
+      kanbanTasks: [{ id: "task1", title: "First" }],
+    });
+    socket.clear();
+
+    await transact(
+      [{ op: "update", namespace: "kanbanTasks", id: "task1", values: { title: "Renamed", progress: 3 } }],
+      "t1"
+    );
+    await delay(100);
+
+    const [diff] = queryMessages(socket);
+    expect(diff).toMatchObject({ type: "query:diff", namespace: "kanbanTasks" });
+    expect(diff?.updated).toEqual([{ id: "task1", title: "Renamed" }]);
+    socket.clear();
+
+    // A change to a field the select leaves out changes nothing it sends.
+    await transact([{ op: "update", namespace: "kanbanTasks", id: "task1", values: { progress: 7 } }], "t2");
+    await delay(100);
+    expect(queryMessages(socket)).toEqual([]);
+  });
+
+  test("a live aggregate updates when a matching row is written", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "agg",
+      query: { kanbanTasks: { $: { aggregate: { groupBy: ["columnId"], count: true, sum: ["progress"] } } } },
+    });
+    expect(socket.messages()[1]).toMatchObject({
+      pageInfo: { kanbanTasks: { aggregate: [{ key: { columnId: "col1" }, count: 1, sum: { progress: null } }] } },
+    });
+    socket.clear();
+
+    await transact(
+      [
+        { op: "insert", namespace: "kanbanTasks", id: "task2", values: { columnId: "col1", title: "Two", order: 1, progress: 4 } },
+        { op: "insert", namespace: "kanbanTasks", id: "task3", values: { title: "Loose", order: 2, progress: 2 } },
+      ],
+      "t1"
+    );
+    await delay(100);
+
+    expect(queryMessages(socket)).toEqual([
+      expect.objectContaining({
+        type: "query:diff",
+        pageInfo: {
+          kanbanTasks: expect.objectContaining({
+            aggregate: [
+              { key: { columnId: null }, count: 1, sum: { progress: 2 } },
+              { key: { columnId: "col1" }, count: 2, sum: { progress: 4 } },
+            ],
+          }),
+        },
+      }),
+    ]);
+  });
+
+  test("re-runs a subscription whose relation filter reads a changed namespace", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "filtered",
+      query: { kanbanTasks: { $: { where: { $link: [{ label: "column", mode: "parent", where: { name: "Todo" } }] } } } },
+    });
+    expect((socket.messages()[1]?.data as { kanbanTasks: unknown[] }).kanbanTasks).toHaveLength(1);
+    socket.clear();
+
+    // No task changed; the column the filter reads did.
+    await transact([{ op: "update", namespace: "kanbanColumns", id: "col1", values: { name: "Doing" } }], "t1");
+    await delay(100);
+
+    expect(queryMessages(socket)).toEqual([
+      expect.objectContaining({ type: "query:diff", id: "filtered", removed: ["task1"] }),
+    ]);
+  });
+
+  test("a diff carries the order when rows moved or arrived out of place", async () => {
+    await transact([{ op: "insert", namespace: "kanbanTasks", id: "task2", values: { columnId: "col1", title: "Second", order: 2 } }], "t0");
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "ordered",
+      query: { kanbanTasks: { $: { order: { order: "asc" }, select: ["title"] } } },
+    });
+    socket.clear();
+
+    // Sorts between the two existing rows.
+    await transact([{ op: "insert", namespace: "kanbanTasks", id: "task3", values: { columnId: "col1", title: "Between", order: 1 } }], "t1");
+    await delay(100);
+    expect(queryMessages(socket)).toEqual([
+      expect.objectContaining({ type: "query:diff", added: [expect.objectContaining({ id: "task3" })], order: ["task1", "task3", "task2"] }),
+    ]);
+    socket.clear();
+
+    // An edit that keeps the order sends none.
+    await transact([{ op: "update", namespace: "kanbanTasks", id: "task3", values: { title: "Renamed" } }], "t2");
+    await delay(100);
+    const [unchanged] = queryMessages(socket);
+    expect(unchanged).toMatchObject({ type: "query:diff", updated: [expect.objectContaining({ id: "task3" })] });
+    expect(unchanged?.order).toBeUndefined();
+  });
+
+  describe("broadcast topics", () => {
+    const topicMessages = (ws: FakeWebSocket) =>
+      ws.messages().filter((message) => String(message.type).startsWith("topic:"));
+
+    test("a message reaches every other joined socket, not the sender or the unjoined", async () => {
+      const sender = await connect();
+      const joined = await connect();
+      const elsewhere = await connect();
+      await send(sender, { type: "topic:join", topic: "board:1" });
+      await send(joined, { type: "topic:join", topic: "board:1" });
+      await send(elsewhere, { type: "topic:join", topic: "board:2" });
+      // Joined topics are on the attachment, so they survive hibernation.
+      expect(joined.attachment).toMatchObject({ topics: ["board:1"] });
+
+      await send(sender, { type: "topic:send", topic: "board:1", message: { ping: 1 } });
+      expect(topicMessages(joined)).toEqual([
+        {
+          type: "topic:message",
+          topic: "board:1",
+          message: { ping: 1 },
+          from: { clientId: (sender.attachment as { clientId: string }).clientId, sub: "user-1" },
+        },
+      ]);
+      expect(topicMessages(sender)).toEqual([]);
+      expect(topicMessages(elsewhere)).toEqual([]);
+
+      // Sending does not need a join; leaving stops delivery.
+      await send(elsewhere, { type: "topic:send", topic: "board:1", message: "hi" });
+      expect(topicMessages(sender).map((message) => message.message)).toEqual(["hi"]);
+      await send(joined, { type: "topic:leave", topic: "board:1" });
+      joined.clear();
+      await send(sender, { type: "topic:send", topic: "board:1", message: "gone" });
+      expect(topicMessages(joined)).toEqual([]);
+    });
+
+    test("an authorize hook decides who may join and send", async () => {
+      configureTopics({
+        authorize: ({ auth, topic, action }) =>
+          !topic.startsWith("admin:") || (action === "join" ? auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN : false),
+      });
+      try {
+        const member = await connect(WORKSPACE_ROLE_LEVELS.MEMBER);
+        const admin = await connect(WORKSPACE_ROLE_LEVELS.ADMIN);
+        await send(member, { type: "topic:join", topic: "admin:alerts" });
+        expect(topicMessages(member)).toEqual([expect.objectContaining({ type: "topic:error", code: "permission_denied", topic: "admin:alerts" })]);
+        expect(member.attachment).not.toHaveProperty("topics");
+
+        await send(admin, { type: "topic:join", topic: "admin:alerts" });
+        await send(member, { type: "topic:send", topic: "admin:alerts", message: "spoof" });
+        expect(topicMessages(admin)).toEqual([]);
+      } finally {
+        configureTopics(undefined);
+      }
+    });
+
+    test("refuses a malformed topic", async () => {
+      const socket = await connect();
+      await send(socket, { type: "topic:join", topic: "has spaces" });
+      await send(socket, { type: "topic:send", topic: "ok" });
+      expect(topicMessages(socket).map((message) => message.code)).toEqual(["invalid_topic", "invalid_topic_message"]);
+    });
+  });
+
+  test("GET /export streams NDJSON for the verified claim", async () => {
+    const response = await room.fetch(
+      new Request("http://test/export", {
+        headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim(WORKSPACE_ROLE_LEVELS.MEMBER)) },
+      })
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("content-type")).toContain("application/x-ndjson");
+    const lines = (await response.text()).trim().split("\n").map((line) => JSON.parse(line));
+    expect(lines[0]).toMatchObject({ type: "header", workspaceId: WORKSPACE });
+    expect(lines).toContainEqual(expect.objectContaining({ type: "row", model: "kanbanTasks", data: expect.objectContaining({ id: "task1" }) }));
+    expect(lines.at(-1)).toMatchObject({ type: "end", consistent: true });
+
+    const unverified = await room.fetch(new Request("http://test/export"));
+    expect(unverified.status).toBe(403);
+  });
+
+  test("answers every client close with a close frame it may send", async () => {
+    // A browser or Node client closing without a status arrives as 1005,
+    // and an abnormal drop as 1006: neither may be sent back.
+    for (const code of [1005, 1006, 1001, 1000, 4000]) {
+      const socket = await connect();
+      room.webSocketClose(socket as unknown as WebSocket, code, "bye");
+      expect(socket.closeInfo?.code).toBe(code === 1005 || code === 1006 ? 1000 : code);
+    }
+  });
+
+  test("runs identical subscriptions once per flush, and separately per claim", async () => {
+    const query = { kanbanBoards: { $: { order: { name: "asc" } } } };
+    const first = await connect(WORKSPACE_ROLE_LEVELS.MEMBER);
+    const second = await connect(WORKSPACE_ROLE_LEVELS.MEMBER);
+    const admin = await connect(WORKSPACE_ROLE_LEVELS.ADMIN);
+    for (const socket of [first, second, admin]) {
+      await send(socket, { type: "query:subscribe", id: "boards", query });
+      socket.clear();
+    }
+
+    await transact([{ op: "update", namespace: "kanbanBoards", id: "board1", values: { name: "Renamed" } }], "t1");
+    statementLog().length = 0;
+    await delay(100);
+
+    const reads = statementLog().filter((statement) => /SELECT .* FROM "kanban_boards"/s.test(statement));
+    // The two members share one run; the admin's claim gets its own.
+    expect(reads).toHaveLength(2);
+    for (const socket of [first, second, admin]) {
+      expect(queryMessages(socket)).toEqual([
+        expect.objectContaining({ type: "query:diff", updated: [expect.objectContaining({ name: "Renamed" })] }),
+      ]);
+    }
+  });
+
+  test("shares a run across users unless a row rule reads who they are", async () => {
+    const query = { kanbanBoards: { $: { order: { name: "asc" } } } };
+    const run = async (users: string[]) => {
+      const sockets = [];
+      for (const sub of users) {
+        const socket = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, sub);
+        await send(socket, { type: "query:subscribe", id: "boards", query });
+        socket.clear();
+        sockets.push(socket);
+      }
+      await transact([{ op: "update", namespace: "kanbanBoards", id: "board1", values: { name: `n${Math.random()}` } }], `t${Math.random()}`);
+      statementLog().length = 0;
+      await delay(100);
+      const reads = statementLog().filter((statement) => /SELECT .* FROM "kanban_boards"/s.test(statement)).length;
+      const pushed = sockets.map((socket) => queryMessages(socket));
+      for (const socket of sockets) socket.close();
+      context.sockets.length = 0;
+      return { reads, pushed };
+    };
+
+    // Role rules only: three users, one run, everyone told.
+    const open = await run(["ann", "bob", "cy"]);
+    expect(open.reads).toBe(1);
+    for (const messages of open.pushed) expect(messages).toEqual([expect.objectContaining({ type: "query:diff" })]);
+
+    // A where rule sees the subject: only ann may read the board. One run
+    // each, and nobody else is sent ann's row.
+    const { configurePermissions } = await import("../../src/engine/tx-permissions");
+    configurePermissions({ overrides: { kanbanBoards: { view: { where: ({ sub }) => ({ id: sub === "ann" ? "board1" : "none" }) } } } });
+    try {
+      const ruled = await run(["ann", "bob", "cy"]);
+      expect(ruled.reads).toBe(3);
+      expect(ruled.pushed[0]).toEqual([expect.objectContaining({ type: "query:diff", updated: [expect.objectContaining({ id: "board1" })] })]);
+      expect(ruled.pushed[1]).toEqual([]);
+      expect(ruled.pushed[2]).toEqual([]);
+    } finally {
+      useLegacyFixture();
+    }
+  });
+
+  test("leaves page metadata off a diff when it did not change", async () => {
+    const socket = await connect();
+    await send(socket, {
+      type: "query:subscribe",
+      id: "paged",
+      query: { kanbanTasks: { $: { order: { title: "asc" }, limit: 5 } } },
+    });
+    socket.clear();
+
+    await transact(
+      [{ op: "update", namespace: "kanbanTasks", id: "task1", values: { title: "Renamed" } }],
+      "t1"
+    );
+    await delay(100);
+
+    const [diff] = queryMessages(socket);
+    expect(diff?.type).toBe("query:diff");
+    expect(diff).not.toHaveProperty("pageInfo");
   });
 
   test("rejects subscriptions the role cannot view", async () => {

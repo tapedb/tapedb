@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../fixtures/registry";
+useLegacyFixture();
 
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -356,7 +356,7 @@ describe("executeQuery", () => {
     expect((linked?.block as Record<string, unknown>).id).toBe("b1");
   });
 
-  test("reports truncation per namespace instead of capping silently", () => {
+  test("reads every row without a limit, and reports truncation with one", () => {
     for (let index = 0; index < 150; index += 1) {
       insert(store.db, "kanban_tasks", {
         id: `bulk-${index}`,
@@ -369,25 +369,22 @@ describe("executeQuery", () => {
       });
     }
 
-    const capped = executeQueryWithPageInfo(store.sql, MEMBER(), {
+    const all = executeQueryWithPageInfo(store.sql, MEMBER(), {
       query: { kanbanTasks: {} },
     });
-    expect(capped.data.kanbanTasks).toHaveLength(100);
-    expect(capped.pageInfo.kanbanTasks).toEqual({
-      limit: 100,
-      returned: 100,
-      hasMore: true,
-    });
+    expect(all.data.kanbanTasks).toHaveLength(154);
+    expect(all.pageInfo.kanbanTasks).toEqual({ limit: null, returned: 154, hasMore: false });
 
-    const uncapped = executeQueryWithPageInfo(store.sql, MEMBER(), {
-      query: { kanbanTasks: { $: { limit: 1000 } } },
+    const page = executeQueryWithPageInfo(store.sql, MEMBER(), {
+      query: { kanbanTasks: { $: { limit: 100 } } },
     });
-    expect(uncapped.data.kanbanTasks).toHaveLength(154);
-    expect(uncapped.pageInfo.kanbanTasks).toEqual({
-      limit: 1000,
-      returned: 154,
-      hasMore: false,
+    expect(page.data.kanbanTasks).toHaveLength(100);
+    expect(page.pageInfo.kanbanTasks).toEqual({ limit: 100, returned: 100, hasMore: true });
+
+    const counted = executeQueryWithPageInfo(store.sql, MEMBER(), {
+      query: { kanbanTasks: { $: { count: true } } },
     });
+    expect(counted.pageInfo.kanbanTasks).toMatchObject({ count: 154, returned: 154 });
   });
 
   test("resolves a one-to-one reverse link for every parent, not just the first 100", () => {
@@ -477,7 +474,7 @@ describe("executeQuery", () => {
   });
 
   test("$ne also matches rows where the attribute is null or absent", () => {
-    // InstantDB documents $ne as returning entities that do not match the
+    // the original documents $ne as returning entities that do not match the
     // value, "including entities where the field is null or undefined".
     insert(store.db, "kanban_tasks", {
       id: "t5",
@@ -610,13 +607,8 @@ describe("executeQuery", () => {
       "unknown_attribute"
     );
     expectCode(() => read(store, { folders: { nope: {} } }), "unknown_link");
-    expectCode(
-      () =>
-        read(store, {
-          folders: { children: { children: { children: {} } } },
-        }),
-      "invalid_op"
-    );
+    // Three link levels are a valid query, not a refusal.
+    expect(() => read(store, { folders: { children: { children: { children: {} } } } })).not.toThrow();
     expectCode(
       () => read(store, { kanbanTasks: { $: { where: { tags: "x" } } } }),
       "invalid_value"

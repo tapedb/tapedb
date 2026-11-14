@@ -10,7 +10,17 @@
  * names. All ids are client-generated strings (UUIDv7).
  */
 
-export type TxOpKind = "update" | "merge" | "link" | "unlink" | "delete";
+export type TxOpKind =
+  | "insert"
+  | "patch"
+  | "upsert"
+  | "patchMany"
+  | "deleteMany"
+  | "update"
+  | "merge"
+  | "link"
+  | "unlink"
+  | "delete";
 
 export interface TxOpBase {
   op: TxOpKind;
@@ -20,13 +30,35 @@ export interface TxOpBase {
   id: string;
 }
 
-/** Replaces the supplied attributes; omitted attributes keep their value. */
+/** Creates the row. Fails with `unique_violation` when the id already exists. */
+export interface TxInsertOp extends TxOpBase {
+  op: "insert";
+  values: Record<string, unknown>;
+}
+
+/** Writes the supplied attributes. Fails with `not_found` when the row is missing. */
+export interface TxPatchOp extends TxOpBase {
+  op: "patch";
+  values: Record<string, unknown>;
+}
+
+/** Upsert: creates the row if missing, otherwise writes the supplied attributes. */
 export interface TxUpdateOp extends TxOpBase {
   op: "update";
   values: Record<string, unknown>;
 }
 
-/** Creates the row if missing, otherwise applies a shallow merge. */
+/** Same as `update`: an upsert of the supplied attributes. Kept for old clients. */
+/**
+ * Creates the row from `create` when it is missing, otherwise writes `values`.
+ * The engine decides inside the transaction, so the choice cannot race.
+ */
+export interface TxUpsertOp extends TxOpBase {
+  op: "upsert";
+  values: Record<string, unknown>;
+  create: Record<string, unknown>;
+}
+
 export interface TxMergeOp extends TxOpBase {
   op: "merge";
   values: Record<string, unknown>;
@@ -52,7 +84,39 @@ export interface TxDeleteOp extends TxOpBase {
   op: "delete";
 }
 
-export type TxOp = TxUpdateOp | TxMergeOp | TxLinkOp | TxUnlinkOp | TxDeleteOp;
+/**
+ * Writes every row matching `where`. The engine resolves the rows inside the
+ * transaction and logs what it resolved, so a replay changes the same rows as
+ * the original — re-running the filter later could not promise that.
+ */
+export interface TxPatchManyOp {
+  op: "patchMany";
+  namespace: string;
+  where: Record<string, unknown>;
+  values: Record<string, unknown>;
+  /** Resume after this id: the `more` cursor of the previous batch. */
+  after?: string;
+}
+
+/** Deletes every row matching `where`. Resolved and logged like `patchMany`. */
+export interface TxDeleteManyOp {
+  op: "deleteMany";
+  namespace: string;
+  where: Record<string, unknown>;
+  after?: string;
+}
+
+export type TxOp =
+  | TxPatchManyOp
+  | TxDeleteManyOp
+  | TxInsertOp
+  | TxPatchOp
+  | TxUpsertOp
+  | TxUpdateOp
+  | TxMergeOp
+  | TxLinkOp
+  | TxUnlinkOp
+  | TxDeleteOp;
 
 export interface TxEnvelope {
   /** Server-visible transaction id. */
@@ -64,6 +128,13 @@ export interface TxEnvelope {
 
 export interface TxResult {
   txId: string;
+  /** Rows a bulk op matched, keyed by its index in the envelope. */
+  matched?: Record<number, number>;
+  /**
+   * For a bulk op that matched more rows than one batch holds: the cursor to
+   * send back as its `after`, keyed by its index in the envelope.
+   */
+  more?: Record<number, string>;
   /** `_tx_log.seq` assigned to this transaction. */
   seq: number;
   /** Number of ops that changed a row. */

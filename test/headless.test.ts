@@ -79,10 +79,17 @@ describe("headless client", () => {
     expect(typeof db.transact).toBe("function");
   });
 
-  test("the React entry is a superset of the headless one", async () => {
+  test("the public entries expose the model API and nothing from the old surface", async () => {
+    const root = await import("../src/index");
+    for (const name of ["createClient", "schema", "model", "t", "role", "filter", "check", "id"]) {
+      expect(name in root).toBe(true);
+    }
+    for (const name of ["init", "i", "defineSchema", "createHeadlessClient", "createTxProxy", "useQuery"]) {
+      expect(name in root).toBe(false);
+    }
+
     const react = await import("../src/react/index");
-    const db = react.init({ workspaceId: WORKSPACE, apiUrl: "http://localhost:8787", schema });
-    expect(typeof db.useQuery).toBe("function");
-    expect(typeof db.subscribeQuery).toBe("function");
+    expect(Object.keys(react).sort()).toEqual(["useBroadcast", "useLive", "useLivePage", "usePresence"]);
   });
+
 });
