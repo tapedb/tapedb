@@ -9,7 +9,8 @@ import {
   durableObjectRecoverySqlExecutor,
   readFlushState,
   recoverWorkspace,
-  shouldSnapshot,
+  historyPruneAt,
+  snapshotDueAt,
 } from "./durability";
 import {
   isEngineMigration,
@@ -1173,10 +1174,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       );
     }
 
-    if (shouldSnapshot(sql, now)) {
-      const snapshotAt = now + DURABILITY_ALARM_DELAY_MS;
-      nextAt = nextAt === null ? snapshotAt : Math.min(nextAt, snapshotAt);
-    }
+    const later = (at: number) => {
+      nextAt = nextAt === null ? at : Math.min(nextAt, at);
+    };
+    // Snapshots and age-based pruning keep history inside the retention,
+    // so they are scheduled even when nothing else is pending.
+    const snapshotAt = snapshotDueAt(sql);
+    if (snapshotAt !== null) later(Math.max(snapshotAt, now + DURABILITY_ALARM_DELAY_MS));
+    const pruneAt = historyPruneAt(sql);
+    if (pruneAt !== null) later(Math.max(pruneAt, now + DURABILITY_ALARM_DELAY_MS));
 
     if (nextAt !== null) {
       await this.scheduleDurabilityAlarm(nextAt);

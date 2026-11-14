@@ -1,11 +1,11 @@
 import { flushPending, readFlushState, shouldFlush } from "./flusher";
-import { shouldSnapshot, snapshotWorkspace } from "./snapshot";
+import { historyPruneAt, pruneHistory, shouldSnapshot, snapshotWorkspace } from "./snapshot";
 import type { SqlExecutor } from "./sql";
 import type { DurabilityOptions, DurabilityTickResult } from "./types";
 
 /**
- * One durability pass: flush pending log rows first, then take a snapshot when
- * the sequence lag (or a missing baseline) makes one due.
+ * One durability pass: flush pending log rows first, take a snapshot when one
+ * is due, then delete history past the retention.
  *
  * This module deliberately does not schedule alarms; the caller owns the
  * Durable Object alarm lifecycle.
@@ -26,5 +26,9 @@ export async function durabilityTick(
     ? await snapshotWorkspace(bucket, sql, workspaceId, now, options.snapshot)
     : null;
 
-  return { flushed: flushResult.flushed, snapshot };
+  // History older than the retention allows, whether or not anything changed.
+  const pruneAt = historyPruneAt(sql);
+  const history = pruneAt !== null && pruneAt <= now ? await pruneHistory(bucket, sql, workspaceId, now) : null;
+
+  return { flushed: flushResult.flushed, snapshot, history };
 }

@@ -118,6 +118,7 @@ interface StoredObject {
   body: Uint8Array;
   etag: string;
   contentType?: string;
+  uploaded: number;
 }
 
 type PutOutcome = void | "conflict";
@@ -136,12 +137,16 @@ export class FakeR2Bucket {
     current: StoredObject | undefined
   ) => PutOutcome;
 
+  /** The time new objects record as `uploaded`. */
+  clock = 0;
+
   private etagCounter = 0;
 
-  seed(key: string, body: string): void {
+  seed(key: string, body: string, uploaded = this.clock): void {
     this.objects.set(key, {
       body: new TextEncoder().encode(body),
       etag: this.nextEtag(),
+      uploaded,
     });
   }
 
@@ -183,6 +188,7 @@ export class FakeR2Bucket {
       body,
       etag: this.nextEtag(),
       contentType: options?.httpMetadata?.contentType,
+      uploaded: this.clock,
     };
     this.objects.set(key, stored);
     this.puts.push({ key, options });
@@ -252,6 +258,7 @@ export class FakeR2Bucket {
     key: string;
     etag: string;
     size: number;
+    uploaded: Date;
     httpMetadata: { contentType?: string };
   } {
     const stored = this.objects.get(key);
@@ -260,6 +267,7 @@ export class FakeR2Bucket {
       key,
       etag: stored.etag,
       size: stored.body.byteLength,
+      uploaded: new Date(stored.uploaded),
       httpMetadata: { contentType: stored.contentType },
     };
   }

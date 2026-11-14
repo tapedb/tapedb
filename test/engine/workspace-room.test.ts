@@ -7,7 +7,8 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../../src/claims";
 import { encodeTrustedRoleClaim } from "../../src/verify";
 import type { Env } from "../../src/types";
-import { readFlushState, readSnapshotState } from "../../src/engine/durability";
+import { DEFAULT_HISTORY_RETENTION_MS, readFlushState, readSnapshotState, snapshotDueAt } from "../../src/engine/durability";
+import { SUPERSEDED_GRACE_MS } from "../../src/engine/durability/retention";
 import { FakeR2Bucket, TEST_WORKSPACE } from "../fixtures/test-support";
 import { logSegmentKey, readManifest, type WorkspaceManifest } from "../../src/engine/r2-keys";
 
@@ -215,7 +216,10 @@ describe("WorkspaceRoom durability wiring", () => {
       )
     ).toBe(true);
     expect(bucket.objects.has(logSegmentKey(TEST_WORKSPACE, 1, 1))).toBe(true);
-    expect(context.alarm).toBeNull();
+    // Nothing pending, but history ages out: the room wakes once the
+    // superseded-snapshot grace has passed.
+    const snapshottedAt = readSnapshotState(context.storage.sql).completedAt!;
+    expect(context.alarm).toBe(snapshottedAt + SUPERSEDED_GRACE_MS);
 
     const first = await readManifest(
       bucket as unknown as R2Bucket,
@@ -238,7 +242,10 @@ describe("WorkspaceRoom durability wiring", () => {
     expect(readFlushState(context.storage.sql).lastSeq).toBe(2);
     expect(readSnapshotState(context.storage.sql).baseSeq).toBe(1);
     expect(bucket.objects.has(logSegmentKey(TEST_WORKSPACE, 2, 2))).toBe(true);
-    expect(context.alarm).toBeNull();
+    // A change since the snapshot: still the earlier prune, then a snapshot
+    // at half the retention.
+    expect(context.alarm).toBe(snapshottedAt + SUPERSEDED_GRACE_MS);
+    expect(snapshotDueAt(context.storage.sql)).toBe(snapshottedAt + DEFAULT_HISTORY_RETENTION_MS / 2);
 
     const second = await readManifest(
       bucket as unknown as R2Bucket,
