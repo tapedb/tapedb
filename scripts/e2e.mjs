@@ -9,6 +9,10 @@
 //                                           dev claims on), then run the scenarios and the load
 //                                           test against it; --domain <host> serves it on a
 //                                           custom domain (e.g. staging.tapedb.dev) instead of workers.dev
+//   node scripts/e2e.mjs --deploy <name> --drill   also run the drills against it: a migration
+//                                           that rebuilds a referenced table, then a real wipe
+//                                           (the Durable Object class deleted and recreated)
+//                                           and recovery from R2 (needs CLOUDFLARE_API_TOKEN)
 //   node scripts/e2e.mjs --only select,bulk only these scenarios; --no-drills skips the drills
 //
 // Scenarios live in scripts/e2e/*.mjs. Each is a plain Node script against `tapedb` as a
@@ -16,6 +20,7 @@
 import assert from "node:assert/strict";
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync, copyFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -38,7 +43,9 @@ if (domain !== undefined && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
 }
 let remote = flag("url");
 const only = flag("only")?.split(",");
-const runDrills = !remote && !deployName && !args.includes("--no-drills") && only === undefined;
+const runDrills = deployName
+  ? args.includes("--drill")
+  : !remote && !args.includes("--no-drills") && only === undefined;
 
 function run(command, commandArgs, options = {}) {
   const result = spawnSync(command, commandArgs, { encoding: "utf8", timeout: 600_000, ...options });
@@ -107,8 +114,105 @@ function wrangler(commandArgs, input) {
   return { ok: result.status === 0, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
 }
 
+/** The Cloudflare API, with the token Workers Builds (or the caller) provides. */
+async function cloudflareApi(path, init = {}) {
+  const token = process.env.CLOUDFLARE_API_TOKEN;
+  if (!token) return null;
+  let account = process.env.CLOUDFLARE_ACCOUNT_ID;
+  const call = async (target) => {
+    const response = await fetch(`https://api.cloudflare.com/client/v4${target}`, {
+      ...init,
+      headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+    });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || body?.success === false) throw new Error(`${target}: HTTP ${response.status} ${JSON.stringify(body?.errors ?? body)}`);
+    return body.result;
+  };
+  if (!account) account = (await call("/accounts"))[0]?.id;
+  return call(path.replace(":account", account));
+}
+
+/**
+ * The Durable Object migration the Worker is at, so the deploy declares a
+ * history that ends there (a drill deletes and recreates the class under new
+ * tags). Without API access, the tag `init` writes.
+ */
+async function currentMigrationTag(name) {
+  const scripts = await cloudflareApi("/accounts/:account/workers/scripts").catch(() => null);
+  return scripts?.find((script) => script.id === name)?.migration_tag ?? "v1";
+}
+
+/**
+ * The history to declare when the Worker is at `tag`, ending with the class
+ * present. Wrangler checks a history is consistent from its first step (a
+ * delete needs a create before it), and applies the steps after `tag`.
+ */
+function migrationsFrom(tag) {
+  const created = { tag: "v1", new_sqlite_classes: ["WorkspaceRoom"] };
+  const drill = /^(drill-\d+)-(delete|recreate)$/.exec(tag);
+  if (!drill) return [{ ...created, tag }];
+  // The last drill's pair; a drill that stopped after deleting recreates the class.
+  return [
+    created,
+    { tag: `${drill[1]}-delete`, deleted_classes: ["WorkspaceRoom"] },
+    { tag: `${drill[1]}-recreate`, new_sqlite_classes: ["WorkspaceRoom"] },
+  ];
+}
+
+/** Wrangler reads the tag back to pick which steps to apply; wait until it reads this one. */
+async function waitForMigrationTag(name, tag) {
+  for (let waited = 0; (await currentMigrationTag(name)) !== tag; waited += 2000) {
+    if (waited > 120_000) throw new Error(`${name} did not report migration tag ${tag}`);
+    await sleep(2000);
+  }
+}
+
+/**
+ * A signed request through the Worker, until the claim secret just set
+ * answers everywhere (a secret change is a new version, which takes a
+ * moment to replace the old one).
+ */
+async function waitForClaimSecret(url) {
+  const probe = randomUUID();
+  let streak = 0;
+  for (let waited = 0; streak < 5; waited += 1000) {
+    if (waited > 120_000) throw new Error(`${url} kept rejecting claims signed with the new secret`);
+    const claim = await fetch(`${url}/_tapedb/claim`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId: probe }) })
+      .then((response) => (response.ok ? response.json() : null))
+      .catch(() => null);
+    const status = claim?.token
+      ? await fetch(`${url}/engine/workspaces/${probe}/status`, { headers: { authorization: `Bearer ${claim.token}` } })
+          .then((response) => response.status)
+          .catch(() => 0)
+      : 0;
+    streak = status === 200 ? streak + 1 : 0;
+    await sleep(1000);
+  }
+}
+
+let stagingConfig = null;
+let stagingUrl = null;
+
+/** Deploys the project as it stands with `config`, and waits for it to answer. */
+async function deployConfig(config, file = "wrangler.jsonc") {
+  writeFileSync(join(project, file), JSON.stringify(config, null, 2));
+  const deployed = wrangler(["deploy", "--config", file]);
+  if (!deployed.ok) throw new Error(`wrangler deploy (${file}) failed:\n${deployed.output}`);
+  return deployed.output;
+}
+
+async function waitForStatus(url, ms) {
+  for (let waited = 0; ; waited += 2000) {
+    const response = await fetch(`${url}/status`).catch(() => null);
+    if (response?.ok) return;
+    if (waited > ms) throw new Error(`${url}/status did not answer after deploy`);
+    await sleep(2000);
+  }
+}
+
 async function deployStaging(name) {
   const config = JSON.parse(readFileSync(join(project, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+  config.migrations = migrationsFrom(await currentMigrationTag(name));
   config.name = name;
   config.vars = { ENVIRONMENT: "staging", TAPEDB_DEV_CLAIMS: "true" };
   if (domain) {
@@ -120,8 +224,6 @@ async function deployStaging(name) {
     { binding: "DATA", bucket_name: `${name}-data` },
     { binding: "FILES", bucket_name: `${name}-files` },
   ];
-  writeFileSync(join(project, "wrangler.jsonc"), JSON.stringify(config, null, 2));
-
   for (const bucket of [`${name}-data`, `${name}-files`]) {
     const created = wrangler(["r2", "bucket", "create", bucket]);
     if (!created.ok && !/already exists|already own/i.test(created.output)) {
@@ -130,10 +232,9 @@ async function deployStaging(name) {
     console.log(`  bucket ${bucket}: ${created.ok ? "created" : "exists"}`);
   }
 
-  const deployed = wrangler(["deploy"]);
-  if (!deployed.ok) throw new Error(`wrangler deploy failed:\n${deployed.output}`);
+  const output = await deployConfig(config);
   const url = domain ? `https://${domain}` : /https:\/\/[\w.-]+\.workers\.dev/.exec(deployed.output)?.[0];
-  if (!url) throw new Error(`deployed, but found no workers.dev URL in:\n${deployed.output}`);
+  if (!url) throw new Error(`deployed, but found no workers.dev URL in:\n${output}`);
 
   // The claim secret init generated for this project, shared with the load test.
   const secret = /^TAPEDB_CLAIM_SECRET=(.*)$/m.exec(readFileSync(join(project, ".dev.vars"), "utf8"))?.[1];
@@ -141,16 +242,43 @@ async function deployStaging(name) {
   if (!put.ok) throw new Error(`setting TAPEDB_CLAIM_SECRET failed:\n${put.output}`);
   process.env.TAPEDB_CLAIM_SECRET = secret;
 
-  // A new version takes a few seconds to answer everywhere.
-  for (let waited = 0; ; waited += 2000) {
-    const response = await fetch(`${url}/status`).catch(() => null);
-    if (response?.ok) break;
-    // A new custom domain also waits on its certificate.
-    if (waited > (domain ? 300_000 : 60_000)) throw new Error(`${url}/status did not answer after deploy`);
-    await sleep(2000);
-  }
+  // A new version takes a few seconds to answer everywhere; a new custom
+  // domain also waits on its certificate.
+  await waitForStatus(url, domain ? 300_000 : 60_000);
+  await waitForClaimSecret(url);
   console.log(`  deployed ${name} at ${url}`);
+  stagingConfig = config;
+  stagingUrl = url;
   return url;
+}
+
+/** Redeploys staging as the project now stands (after a migration). */
+async function redeployStaging() {
+  await deployConfig(stagingConfig);
+  await waitForStatus(stagingUrl, 120_000);
+}
+
+/**
+ * The real disaster: every Durable Object's storage gone, R2 intact. Deletes
+ * the class with a migration (deployed with a Worker that does not export
+ * it), then recreates it; the workspace must recover from R2.
+ */
+async function wipeStagingObjects() {
+  if (!process.env.CLOUDFLARE_API_TOKEN) throw new Error("the remote drill needs CLOUDFLARE_API_TOKEN to track migration tags");
+  const run = Date.now();
+  const deleted = { tag: `drill-${run}-delete`, deleted_classes: ["WorkspaceRoom"] };
+  writeFileSync(join(project, "wipe-worker.js"), 'export default { fetch: () => new Response("wiping", { status: 503 }) };\n');
+  const wipe = { ...stagingConfig, main: "wipe-worker.js", migrations: [...stagingConfig.migrations, deleted] };
+  delete wipe.durable_objects;
+  await deployConfig(wipe, "wrangler.wipe.jsonc");
+  await waitForMigrationTag(stagingConfig.name, deleted.tag);
+  console.log("  drill: Durable Object class deleted (every object's storage)");
+  stagingConfig = {
+    ...stagingConfig,
+    migrations: [...wipe.migrations, { tag: `drill-${run}-recreate`, new_sqlite_classes: ["WorkspaceRoom"] }],
+  };
+  await redeployStaging();
+  console.log("  drill: class recreated, empty");
 }
 
 // ---- Worker -----------------------------------------------------------------
@@ -212,7 +340,8 @@ function scenario(file) {
 
 // ---- Drills (local only) -------------------------------------------------------
 
-const WORKSPACE = "7a1d2b3c-4e5f-4a6b-8c7d-9e0f1a2b3c4d";
+// Fresh per run: a deployed staging Worker keeps earlier runs' workspaces.
+const WORKSPACE = randomUUID();
 
 async function client() {
   const { createClient } = await import(join(project, "node_modules/tapedb/dist/index.js"));
@@ -268,10 +397,16 @@ async function drills() {
   db.$close();
 
   // Rebuild of a referenced table (board <- column, cascade) with data in it.
-  await stopDev();
-  writeFileSync(join(project, "tapedb.schema.ts"), schemaSource.replace("name: t.string(),\n    columns", 'name: t.string().default("untitled"),\n    columns'));
-  run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "dev", "--name", "board_default"], { cwd: project });
-  await startDev();
+  if (deployName) {
+    writeFileSync(join(project, "tapedb.schema.ts"), schemaSource.replace("name: t.string(),\n    columns", 'name: t.string().default("untitled"),\n    columns'));
+    run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "dev", "--name", "board_default"], { cwd: project });
+    await redeployStaging();
+  } else {
+    await stopDev();
+    writeFileSync(join(project, "tapedb.schema.ts"), schemaSource.replace("name: t.string(),\n    columns", 'name: t.string().default("untitled"),\n    columns'));
+    run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "dev", "--name", "board_default"], { cwd: project });
+    await startDev();
+  }
   const migrated = await client();
   assert.deepEqual(await migrated.column.findMany({ select: { id: true, boardId: true } }), [{ id: "drill-col", boardId: "drill-board" }]);
   assert.equal(await migrated.task.count({ where: { columnId: "drill-col" } }), 1100);
@@ -280,11 +415,15 @@ async function drills() {
   console.log(`  drill: referenced table rebuilt, children intact; export at seq ${before.end.seq}`);
 
   // Wipe every Durable Object's storage; R2 stays.
-  await stopDev();
-  const objects = join(project, ".wrangler/state/v3/do");
-  assert.ok(existsSync(objects), "no local Durable Object state to wipe");
-  for (const dir of readdirSync(objects)) rmSync(join(objects, dir), { recursive: true, force: true });
-  await startDev();
+  if (deployName) {
+    await wipeStagingObjects();
+  } else {
+    await stopDev();
+    const objects = join(project, ".wrangler/state/v3/do");
+    assert.ok(existsSync(objects), "no local Durable Object state to wipe");
+    for (const dir of readdirSync(objects)) rmSync(join(objects, dir), { recursive: true, force: true });
+    await startDev();
+  }
 
   const restored = await client();
   const after = await exported(restored);
