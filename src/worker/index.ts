@@ -33,6 +33,12 @@ import {
 } from "../verify";
 import { WORKSPACE_ROLE_LEVELS } from "../claims";
 
+/**
+ * The most one upload request carries: a whole small file in one PUT, or one
+ * part of a multipart upload. A file of any size goes up as parts (R2 keeps
+ * objects up to 5 TB), so this bounds a request, not a file; it stays well
+ * inside the request body size every Workers plan accepts.
+ */
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 
 const ENGINE_PREFIX = "/engine/workspaces";
@@ -178,6 +184,133 @@ async function readBodyWithinLimit(
   return bytes;
 }
 
+/**
+ * Records stored bytes in the workspace's file index. A failure is reported
+ * rather than swallowed, and the bytes are taken back out: an object nobody
+ * can list is an orphan that costs storage forever. If that delete fails too,
+ * the 502 still tells the caller to retry, and a retry overwrites the key.
+ */
+async function recordUpload(
+  env: Env,
+  bucket: R2Bucket,
+  workspaceId: string,
+  objectKey: string,
+  key: string,
+  size: number,
+  contentType: string,
+  trustedClaim: string
+): Promise<Response> {
+  const recorded = await callRoom(
+    env,
+    workspaceId,
+    "/files",
+    {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ path: objectKey, key, size, contentType }),
+    },
+    trustedClaim
+  );
+  if (!recorded.ok) {
+    try {
+      await bucket.delete(key);
+    } catch {
+      // Best effort.
+    }
+    return apiError(502, "file_index_failed", "Could not record the upload in the workspace index; nothing was stored.");
+  }
+  return json({ key, size }, 201);
+}
+
+/**
+ * Uploads of any size, as R2 multipart uploads on the file's own URL:
+ *
+ * - `POST ?uploads` starts one (the request's content type is the file's)
+ *   and answers `{ uploadId }`.
+ * - `PUT ?uploadId=…&partNumber=n` stores part n (1-10000), at most
+ *   `MAX_UPLOAD_BYTES`; every part but the last must be at least 5 MiB, and
+ *   all but the last the same size. Answers `{ partNumber, etag }`.
+ * - `POST ?uploadId=…` with `{ parts: [{ partNumber, etag }] }` completes it
+ *   and records the file in the index, like a single PUT.
+ * - `DELETE ?uploadId=…` abandons it; R2 also drops unfinished ones itself.
+ *
+ * Nothing is listed until the upload completes.
+ */
+async function handleMultipart(
+  request: Request,
+  env: Env,
+  bucket: R2Bucket,
+  workspaceId: string,
+  objectKey: string,
+  key: string,
+  query: URLSearchParams,
+  trustedClaim: string
+): Promise<Response> {
+  if (request.method === "POST" && query.has("uploads")) {
+    await discardBody(request);
+    const contentType = request.headers.get("content-type") ?? "application/octet-stream";
+    const upload = await bucket.createMultipartUpload(key, { httpMetadata: { contentType } });
+    return json({ uploadId: upload.uploadId }, 201);
+  }
+
+  const uploadId = query.get("uploadId");
+  if (!uploadId) {
+    await discardBody(request);
+    return apiError(400, "invalid_upload", "A multipart request needs ?uploads or ?uploadId=.");
+  }
+  const upload = bucket.resumeMultipartUpload(key, uploadId);
+
+  try {
+    if (request.method === "PUT") {
+      const partNumber = Number(query.get("partNumber"));
+      if (!Number.isInteger(partNumber) || partNumber < 1 || partNumber > 10_000) {
+        await discardBody(request);
+        return apiError(400, "invalid_upload", "partNumber must be an integer from 1 to 10000.");
+      }
+      const body = await readBodyWithinLimit(request, MAX_UPLOAD_BYTES);
+      if (body === null) {
+        return apiError(413, "upload_too_large", `A part is at most ${MAX_UPLOAD_BYTES} bytes; send the file in more parts.`);
+      }
+      const part = await upload.uploadPart(partNumber, body);
+      return json({ partNumber: part.partNumber, etag: part.etag });
+    }
+
+    if (request.method === "POST") {
+      const input = (await request.json().catch(() => null)) as { parts?: unknown } | null;
+      const parts = Array.isArray(input?.parts) ? input.parts : null;
+      if (
+        parts === null ||
+        parts.length === 0 ||
+        !parts.every(
+          (part) =>
+            typeof part === "object" &&
+            part !== null &&
+            Number.isInteger((part as { partNumber?: unknown }).partNumber) &&
+            typeof (part as { etag?: unknown }).etag === "string"
+        )
+      ) {
+        return apiError(400, "invalid_upload", "Completing an upload needs { parts: [{ partNumber, etag }] }.");
+      }
+      const object = await upload.complete(parts as R2UploadedPart[]);
+      const contentType = object.httpMetadata?.contentType ?? "application/octet-stream";
+      return recordUpload(env, bucket, workspaceId, objectKey, key, object.size, contentType, trustedClaim);
+    }
+
+    if (request.method === "DELETE") {
+      await discardBody(request);
+      await upload.abort();
+      return new Response(null, { status: 204 });
+    }
+  } catch (error) {
+    // R2 refuses an unknown upload id, a part out of shape, or a part list
+    // that does not match what was uploaded: the caller's mistake.
+    return apiError(400, "invalid_upload", `R2 refused the upload: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  await discardBody(request);
+  return apiError(405, "method_not_allowed", `${request.method} is not part of a multipart upload.`);
+}
+
 async function handleStorage(
   request: Request,
   env: Env,
@@ -202,16 +335,21 @@ async function handleStorage(
   }
 
   const key = storageKey(workspaceId, objectKey);
+  const query = new URL(request.url).searchParams;
+
+  if (query.has("uploads") || query.has("uploadId")) {
+    return handleMultipart(request, env, bucket, workspaceId, objectKey, key, query, trustedClaim);
+  }
 
   if (request.method === "PUT") {
     const declared = Number(request.headers.get("content-length") ?? "");
     if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) {
       await discardBody(request);
-      return apiError(413, "file_too_large", `Files are capped at ${MAX_UPLOAD_BYTES} bytes.`);
+      return apiError(413, "upload_too_large", `One request carries at most ${MAX_UPLOAD_BYTES} bytes; send a larger file as a multipart upload (?uploads), as the client does.`);
     }
     const body = await readBodyWithinLimit(request, MAX_UPLOAD_BYTES);
     if (body === null) {
-      return apiError(413, "file_too_large", `Files are capped at ${MAX_UPLOAD_BYTES} bytes.`);
+      return apiError(413, "upload_too_large", `One request carries at most ${MAX_UPLOAD_BYTES} bytes; send a larger file as a multipart upload (?uploads), as the client does.`);
     }
     const contentType =
       request.headers.get("content-type") ?? "application/octet-stream";
@@ -221,39 +359,7 @@ async function handleStorage(
     // Bytes are stored; now record them where the database can see them. A
     // failure here is reported rather than swallowed: an object nobody can
     // list is worse than a failed upload.
-    const recorded = await callRoom(
-      env,
-      workspaceId,
-      "/files",
-      {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          path: objectKey,
-          key,
-          size: body.byteLength,
-          contentType,
-        }),
-      },
-      trustedClaim
-    );
-    if (!recorded.ok) {
-      // Take the bytes back out: an object nobody can list is an orphan that
-      // costs storage forever. If the delete fails too, the 502 still tells
-      // the caller to retry, and a retried upload overwrites the same key.
-      try {
-        await bucket.delete(key);
-      } catch {
-        // Best effort.
-      }
-      return apiError(
-        502,
-        "file_index_failed",
-        "Could not record the upload in the workspace index; nothing was stored."
-      );
-    }
-
-    return json({ key, size: body.byteLength }, 201);
+    return recordUpload(env, bucket, workspaceId, objectKey, key, body.byteLength, contentType, trustedClaim);
   }
 
   if (request.method === "GET" || request.method === "HEAD") {

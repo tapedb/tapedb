@@ -1,5 +1,9 @@
-/** Authenticated file transport for the existing app-scoped R2 routes. */
-export const MAX_STORAGE_UPLOAD_BYTES = 25 * 1024 * 1024;
+/**
+ * Authenticated file transport for the workspace's R2 routes. A file of any
+ * size uploads: up to `UPLOAD_PART_BYTES` in one request, larger as a
+ * multipart upload of parts that size (R2 objects reach 5 TB).
+ */
+export const UPLOAD_PART_BYTES = 16 * 1024 * 1024;
 
 export interface StorageObject {
   id: string;
@@ -80,9 +84,11 @@ export function createStorageClient(
     path: string,
     method: string,
     body?: Blob,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    query = "",
+    contentType?: string
   ) {
-    const target = url(path);
+    const target = `${url(path)}${query}`;
     const token = await config.getToken();
     if (!token) throw new Error("Storage requires a workspace claim.");
     const response = await fetcher(target, {
@@ -94,9 +100,11 @@ export function createStorageClient(
       redirect: "error",
       headers: {
         authorization: `Bearer ${token}`,
-        ...(body
-          ? { "content-type": body.type || "application/octet-stream" }
-          : {}),
+        ...(contentType !== undefined
+          ? { "content-type": contentType }
+          : body
+            ? { "content-type": body.type || "application/octet-stream" }
+            : {}),
       },
     });
     if (!response.ok) {
@@ -115,11 +123,27 @@ export function createStorageClient(
 
   return {
     async upload(path, file, signal) {
-      if (file.size > MAX_STORAGE_UPLOAD_BYTES)
-        throw new StorageError(413, "upload_too_large");
-      return (
-        await request(path, "PUT", file, signal)
-      ).json() as Promise<StorageObject>;
+      if (file.size <= UPLOAD_PART_BYTES) {
+        return (await request(path, "PUT", file, signal)).json() as Promise<StorageObject>;
+      }
+      const type = file.type || "application/octet-stream";
+      const { uploadId } = (await (await request(path, "POST", undefined, signal, "?uploads", type)).json()) as {
+        uploadId: string;
+      };
+      const id = encodeURIComponent(uploadId);
+      try {
+        const parts: Array<{ partNumber: number; etag: string }> = [];
+        for (let offset = 0, partNumber = 1; offset < file.size; offset += UPLOAD_PART_BYTES, partNumber += 1) {
+          const chunk = file.slice(offset, Math.min(offset + UPLOAD_PART_BYTES, file.size));
+          const response = await request(path, "PUT", chunk, signal, `?uploadId=${id}&partNumber=${partNumber}`, "application/octet-stream");
+          parts.push((await response.json()) as { partNumber: number; etag: string });
+        }
+        const done = new Blob([JSON.stringify({ parts })], { type: "application/json" });
+        return (await request(path, "POST", done, signal, `?uploadId=${id}`)).json() as Promise<StorageObject>;
+      } catch (error) {
+        await request(path, "DELETE", undefined, undefined, `?uploadId=${id}`).catch(() => undefined);
+        throw error;
+      }
     },
     async download(path, signal) {
       return (await request(path, "GET", undefined, signal)).blob();

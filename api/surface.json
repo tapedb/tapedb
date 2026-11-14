@@ -1407,7 +1407,6 @@
     "erase_failed",
     "expired",
     "file_index_failed",
-    "file_too_large",
     "foreign_key_violation",
     "identity_not_configured",
     "insufficient_role",
@@ -1428,6 +1427,7 @@
     "invalid_size",
     "invalid_subscription_id",
     "invalid_target",
+    "invalid_upload",
     "invalid_value",
     "invalid_workspace_id",
     "jurisdiction_mismatch",
@@ -1453,6 +1453,7 @@
     "unknown_namespace",
     "unsupported_message_type",
     "upgrade_required",
+    "upload_too_large",
     "workspace_erased",
     "wrong_workspace"
   ]
