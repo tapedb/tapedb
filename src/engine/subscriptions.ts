@@ -178,6 +178,23 @@ export function queryReferencesNamespace(
  * Returns `null` when the payload is not a list of uniquely identified
  * entities; callers then send a full `query:data` payload instead of a diff.
  */
+/**
+ * Each entity's canonical JSON, computed once per object. A result object is
+ * the next flush's previous result, and identical subscriptions share one, so
+ * without this every entity was serialised twice per subscriber per flush.
+ */
+const entityJson = new WeakMap<object, string>();
+
+function canonical(entity: unknown): string {
+  if (typeof entity !== "object" || entity === null) return stableStringify(entity);
+  let json = entityJson.get(entity);
+  if (json === undefined) {
+    json = stableStringify(entity);
+    entityJson.set(entity, json);
+  }
+  return json;
+}
+
 export function diffEntityList(
   previous: unknown,
   next: unknown
@@ -196,7 +213,7 @@ export function diffEntityList(
       added.push(entity);
       continue;
     }
-    if (stableStringify(before) !== stableStringify(entity)) {
+    if (canonical(before) !== canonical(entity)) {
       updated.push(entity);
     }
   }

@@ -46,6 +46,7 @@ import {
   touchedNamespacesFromEnvelope,
 } from "./subscriptions";
 import { exportStream } from "./export";
+import { viewDependsOnSubject } from "./tx-permissions";
 import { isTopic, topicAllowed } from "./topics";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { runTransaction } from "./tx-pipeline";
@@ -984,6 +985,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     const sql = durableObjectSqlExecutor(this.ctx.storage);
     const now = Math.floor(Date.now() / 1000);
+    const runs = new Map<string, SubscriptionRun>();
 
     for (const ws of sockets) {
       const attachment = parseSocketAttachment(ws.deserializeAttachment());
@@ -1005,39 +1007,39 @@ export class WorkspaceRoom extends DurableObject<Env> {
       let attachmentChanged = false;
 
       for (const subscription of attachment.subscriptions) {
+        const claim = claimFromAttachment(attachment, this.workspaceId);
         let compiled: CompiledQuery;
         try {
-          compiled = compileQuery(
-            subscription.query,
-            viewAccess(claimFromAttachment(attachment, this.workspaceId))
-          );
+          compiled = compileQuery(subscription.query, viewAccess(claim));
         } catch {
           // A subscription stored by an older deployment may no longer
           // compile; leave it registered so the client can resubscribe.
           continue;
         }
-
         if (!queryMatchesTouched(compiled, touched)) continue;
 
-        let data: QueryResult;
-        let pageInfo: QueryPageInfo;
-        try {
-          ({ data, pageInfo } = executeCompiledQueryWithPageInfo(
-            sql,
-            compiled,
-            claimFromAttachment(attachment, this.workspaceId)
-          ));
-        } catch (error) {
-          const txError = error instanceof TxError ? error : null;
+        // Read rules see the caller's role and, for row rules, their subject.
+        // Subscriptions with the same query and the same role (and subject,
+        // when a row rule is involved) get the same answer, so it runs once
+        // per flush and is shared.
+        const bySubject = queriedNamespaces(compiled).some(viewDependsOnSubject);
+        const key = `${bySubject ? attachment.sub : ""}\u0000${attachment.role}\u0000${stableStringify(subscription.query)}`;
+        let run = runs.get(key);
+        if (run === undefined) {
+          run = this.runSubscription(sql, compiled, claim);
+          runs.set(key, run);
+        }
+        if (run.kind === "error") {
           this.send(ws, {
             type: "query:error",
             id: subscription.id,
-            code: txError?.code ?? "internal_error",
-            message: txError?.message ?? errorMessage(error),
+            code: run.code,
+            message: run.message,
           });
           results.delete(subscription.id);
           continue;
         }
+        const { data, pageInfo } = run;
 
         const previous = results.get(subscription.id);
         results.set(subscription.id, { data, pageInfo });
@@ -1103,6 +1105,24 @@ export class WorkspaceRoom extends DurableObject<Env> {
       }
 
       if (attachmentChanged) ws.serializeAttachment(attachment);
+    }
+  }
+
+  /** One subscription's re-run for this flush: its result, or why it failed. */
+  private runSubscription(
+    sql: ReturnType<typeof durableObjectSqlExecutor>,
+    compiled: CompiledQuery,
+    claim: RoleClaim
+  ): SubscriptionRun {
+    try {
+      return { kind: "result", ...executeCompiledQueryWithPageInfo(sql, compiled, claim) };
+    } catch (error) {
+      const txError = error instanceof TxError ? error : null;
+      return {
+        kind: "error",
+        code: txError?.code ?? "internal_error",
+        message: txError?.message ?? errorMessage(error),
+      };
     }
   }
 
@@ -1320,6 +1340,22 @@ export class WorkspaceRoom extends DurableObject<Env> {
     });
   }
 }
+
+/** Every namespace a compiled query reads: its levels and their relation filters. */
+function queriedNamespaces(compiled: CompiledQuery): string[] {
+  const namespaces = new Set<string>();
+  const visit = (node: CompiledQuery["nodes"][number]): void => {
+    namespaces.add(node.namespace);
+    for (const reference of node.references) namespaces.add(reference);
+    for (const child of node.children) visit(child.node);
+  };
+  for (const node of compiled.nodes) visit(node);
+  return [...namespaces];
+}
+
+type SubscriptionRun =
+  | { kind: "error"; code: string; message: string }
+  | { kind: "result"; data: QueryResult; pageInfo: QueryPageInfo };
 
 /** Close codes the runtime refuses to send (reserved for local use). */
 const RESERVED_CLOSE_CODES = new Set([1004, 1005, 1006, 1015]);
