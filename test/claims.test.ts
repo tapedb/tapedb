@@ -10,7 +10,7 @@ import { describe, expect, test } from "bun:test";
 import { handleClaimRequest } from "../src/claim-route";
 import { WORKSPACE_ROLE_LEVELS, type WorkspaceRole } from "../src/claims";
 import { mintClaim, mintDevClaim, signRoleClaim } from "../src/mint";
-import { ClaimError, verifyRoleClaim } from "../src/verify";
+import { ClaimError, extractClaimToken, verifyRoleClaim } from "../src/verify";
 
 const SECRET = "test-secret-do-not-use-in-production";
 const OTHER_SECRET = "a-different-secret";
@@ -249,5 +249,25 @@ describe("identity adapter", () => {
     const body = (await response.json()) as { token: string };
     const claim = await verifyRoleClaim(body.token, env, WORKSPACE);
     expect(claim.role).toBe(WORKSPACE_ROLE_LEVELS.GUEST);
+  });
+});
+
+describe("claim transport", () => {
+  test("reads a WebSocket upgrade's claim from Sec-WebSocket-Protocol", () => {
+    const request = new Request("https://x.test/engine/workspaces/w/websocket", {
+      headers: { "sec-websocket-protocol": "tapedb, tapedb.claim.h.p.s" },
+    });
+    expect(extractClaimToken(request)).toBe("h.p.s");
+  });
+
+  test("never reads a claim from the URL", () => {
+    expect(extractClaimToken(new Request("https://x.test/engine/workspaces/w/websocket?claim=h.p.s"))).toBeNull();
+  });
+
+  test("an Authorization header wins and is never mixed with the protocol header", () => {
+    const bearer = new Request("https://x.test/", { headers: { authorization: "Bearer a.b.c", "sec-websocket-protocol": "tapedb.claim.h.p.s" } });
+    expect(extractClaimToken(bearer)).toBe("a.b.c");
+    const basic = new Request("https://x.test/", { headers: { authorization: "Basic xyz", "sec-websocket-protocol": "tapedb.claim.h.p.s" } });
+    expect(extractClaimToken(basic)).toBeNull();
   });
 });

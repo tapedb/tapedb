@@ -408,7 +408,10 @@ export default tapedb.worker;
 
 `POST /_tapedb/claim` returns `{ token, workspaceId, roleLevel, expiresAt }`;
 the client sends it as `Authorization: Bearer <token>` and renews on
-reconnect. In development, `tapedb dev` enables a dev claim route so the
+reconnect. On the WebSocket, where browsers cannot set that header, it rides
+in `Sec-WebSocket-Protocol` as `tapedb.claim.<token>` next to `tapedb`, which
+the room selects. A token is never read from the URL, so it stays out of
+request logs and browser history. In development, `tapedb dev` enables a dev claim route so the
 client needs no session at all; `ENVIRONMENT=production` refuses that route,
 and `tapedb deploy` refuses to ship the flag.
 

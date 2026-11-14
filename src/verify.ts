@@ -3,6 +3,7 @@ import {
   type RoleClaim,
   type WorkspaceRole,
 } from "./claims";
+import { claimFromProtocols } from "./socket-protocol";
 
 /**
  * Engine role-claim verification.
@@ -52,13 +53,15 @@ const MAX_IAT_SKEW_SECONDS = 60;
 /**
  * Reads a claim token from the request.
  *
- * - `Authorization: Bearer <jwt>` is the preferred transport.
- * - `?claim=<jwt>` is a temporary fallback for WebSocket upgrades, where
- *   browser clients cannot set an `Authorization` header. The mint endpoint
- *   should prefer a header wherever the client supports it.
+ * - `Authorization: Bearer <jwt>` for HTTP requests.
+ * - A `tapedb.claim.<jwt>` entry in `Sec-WebSocket-Protocol` for WebSocket
+ *   upgrades, where browsers cannot set `Authorization`.
+ *
+ * Never the URL: a token in a query string ends up in request logs and
+ * browser history. A `?claim=` parameter is ignored.
  *
  * A present-but-non-Bearer `Authorization` header returns `null` instead of
- * falling back to the query string, so the two transports cannot be confused.
+ * falling back to the protocol header, so the two transports cannot be confused.
  */
 export function extractClaimToken(request: Request): string | null {
   const authorization = request.headers.get("authorization");
@@ -68,8 +71,7 @@ export function extractClaimToken(request: Request): string | null {
     return token.length > 0 ? token : null;
   }
 
-  const token = new URL(request.url).searchParams.get("claim")?.trim() ?? "";
-  return token.length > 0 ? token : null;
+  return claimFromProtocols(request.headers.get("sec-websocket-protocol"));
 }
 
 /**

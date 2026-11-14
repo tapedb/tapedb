@@ -1,11 +1,12 @@
 /**
  * One shared WebSocket per data client, with reconnect + resubscribe.
  *
- * The role claim rides on the query string because browsers cannot set an
- * `Authorization` header on a WebSocket upgrade. A fresh token is fetched for
- * every reconnect attempt.
+ * Browsers cannot set an `Authorization` header on a WebSocket upgrade, so
+ * the role claim rides in `Sec-WebSocket-Protocol` (see socket-protocol.ts),
+ * never in the URL. A fresh token is fetched for every reconnect attempt.
  */
 
+import { socketProtocols } from "../socket-protocol";
 import type { ClientMessage, ServerMessage } from "./types";
 
 export interface WebSocketLike {
@@ -17,10 +18,11 @@ export interface WebSocketLike {
   onclose: ((event: unknown) => void) | null;
 }
 
-export type WebSocketFactory = (url: string) => WebSocketLike;
+/** Creates a socket for `url`, offering `protocols` (they carry the claim; pass them on). */
+export type WebSocketFactory = (url: string, protocols: string[]) => WebSocketLike;
 
 export interface QuerySocketOptions {
-  /** Engine websocket URL without the `claim` query parameter. */
+  /** Engine websocket URL. The claim is sent as a subprotocol, not in the URL. */
   baseUrl: string;
   getToken: () => Promise<string>;
   onMessage: (message: ServerMessage) => void;
@@ -35,17 +37,12 @@ const DEFAULT_MIN_RECONNECT_DELAY_MS = 250;
 const DEFAULT_MAX_RECONNECT_DELAY_MS = 5_000;
 
 function defaultWebSocketFactory(): WebSocketFactory {
-  return (url) => {
+  return (url, protocols) => {
     if (typeof WebSocket === "undefined") {
       throw new Error("tapedb-data: WebSocket is not available in this runtime.");
     }
-    return new WebSocket(url) as unknown as WebSocketLike;
+    return new WebSocket(url, protocols) as unknown as WebSocketLike;
   };
-}
-
-function withClaim(baseUrl: string, token: string): string {
-  const separator = baseUrl.includes("?") ? "&" : "?";
-  return `${baseUrl}${separator}claim=${encodeURIComponent(token)}`;
 }
 
 function parseServerMessage(value: unknown): ServerMessage | null {
@@ -236,7 +233,7 @@ export class QuerySocket {
         reject(new Error("Connection attempt cancelled."));
         return;
       }
-      const ws = this.createWebSocket(withClaim(this.baseUrl, token));
+      const ws = this.createWebSocket(this.baseUrl, socketProtocols(token));
       this.ws = ws;
 
       ws.onopen = () => {
