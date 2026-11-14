@@ -85,6 +85,8 @@ export interface HistoryPruneResult {
   objects: number;
   /** Local replay-log rows deleted. */
   localRows: number;
+  /** Transaction receipts past the retry window, deleted. */
+  receipts: number;
   /** When the oldest remaining history becomes due, or null. */
   nextAt: number | null;
 }

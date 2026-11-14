@@ -414,8 +414,9 @@ class DataClientImpl {
       ops: ops.map((op) => cloneJson(op)),
       createdAt: this.now(),
       // Persisted with the entry before the first send. A retry reuses the
-      // clientTxId, whose receipt the engine keeps for good, so it is applied
-      // at most once however many attempts it takes.
+      // clientTxId, whose receipt the engine keeps for the retry window, so it
+      // is applied at most once however many attempts it takes; past the
+      // window the engine refuses it as retry_expired (see createdAt).
       attempts: 1,
     };
 
@@ -1307,6 +1308,9 @@ class DataClientImpl {
         body: JSON.stringify({
           txId: entry.txId,
           clientTxId: entry.clientTxId,
+          // The first attempt's time, on every retry: the engine refuses a
+          // retry older than its receipts.
+          issuedAt: entry.createdAt,
           ops: entry.ops,
         }),
       }

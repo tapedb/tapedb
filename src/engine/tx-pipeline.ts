@@ -15,6 +15,7 @@ import { assertRowPermissions, authorizeOps } from "./tx-permissions";
 import type { SqlExecutor } from "./tx-sql";
 import { TxError, type TxResult } from "./tx-types";
 import { validateEnvelope } from "./tx-validate";
+import { retryWindowMs } from "./durability/retention";
 
 const FALLBACK_SCHEMA_VERSION = "0001_baseline";
 
@@ -73,8 +74,17 @@ export function runTransaction(
           { txId: tx.txId }
         );
       }
-      // Every receipt is kept, through log pruning, snapshots and recovery,
-      // so an unknown key is a write that was never applied.
+      // A receipt is kept for the retry window (half the history retention),
+      // through log pruning, snapshots and recovery. Inside it an unknown key
+      // is a write that was never applied. A retry first issued before the
+      // window may have lost its receipt; applying it could apply it twice.
+      if (tx.issuedAt !== undefined && tx.issuedAt <= Date.now() - retryWindowMs()) {
+        throw new TxError(
+          "retry_expired",
+          `clientTxId "${tx.clientTxId}" was issued more than ${Math.round(retryWindowMs() / 86_400_000)} days ago; its receipt may be gone, so it is not applied. Send the write again as a new transaction if it still applies.`,
+          { txId: tx.txId }
+        );
+      }
     }
 
     // Bulk writes become one op per matching row, here, so everything below
@@ -173,7 +183,7 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
   );
 
   if (entry.clientTxId !== null) {
-    sql.exec(`INSERT INTO "_tx_receipts" (id, seq, ops_hash) VALUES (?, ?, ?)`, entry.clientTxId, seq, entry.opsHash);
+    sql.exec(`INSERT INTO "_tx_receipts" (id, seq, ops_hash, at) VALUES (?, ?, ?, ?)`, entry.clientTxId, seq, entry.opsHash, entry.at);
   }
   sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
   return seq;

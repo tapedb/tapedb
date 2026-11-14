@@ -1350,6 +1350,8 @@ describe("durable transaction receipts", () => {
     await snapshotWorkspace(bucket,source.sql,TEST_WORKSPACE,NOW,{retainLogSequences:0,chunkRows:3});
     expect(scalar(source.db,`SELECT COUNT(*) FROM "_tx_log"`)).toBe(0);
     expect([...bucket.objects.keys()].some(key=>key.includes('/log/'))).toBe(false);
+    const receiptTimes = source.db.query(`SELECT id, at FROM "_tx_receipts" ORDER BY id`).all();
+    expect((receiptTimes as Array<{ at: number }>).every((row) => row.at > 0)).toBe(true);
     for(let generation=0;generation<2;generation++) {
       const target=createSource();
       await recoverWorkspace(bucket as unknown as R2Bucket,recoveryExecutor(target.db,target.sql),TEST_WORKSPACE,{now:NOW+generation+1});
@@ -1357,6 +1359,8 @@ describe("durable transaction receipts", () => {
       expect(scalar(target.db,`SELECT name FROM folders WHERE id='receipt-folder'`)).toBe("Latest 29");
       expect(()=>run(target,{...first,ops:[{op:"update",namespace:"folders",id:"receipt-folder",values:{name:"Changed"}}]} as TxEnvelope)).toThrow(/different ops/);
       expect(scalar(target.db,`SELECT COUNT(*) FROM "_tx_receipts"`)).toBe(31);
+      // Each receipt keeps the time its write was applied, so its retry window does not restart.
+      expect(target.db.query(`SELECT id, at FROM "_tx_receipts" ORDER BY id`).all()).toEqual(receiptTimes);
       await snapshotWorkspace(bucket,target.sql,TEST_WORKSPACE,NOW+generation+100,{retainLogSequences:0});
       source=target;
     }
@@ -1399,6 +1403,8 @@ describe("durable transaction receipts", () => {
     await recoverWorkspace(bucket as unknown as R2Bucket,recoveryExecutor(target.db,target.sql),TEST_WORKSPACE,{now:NOW+3});
     expect(entityRows(target.db)).toEqual(entityRows(source.db));
     expect(scalar(target.db,`SELECT COUNT(*) FROM "_tx_receipts"`)).toBe(2);
+    // One restored from the snapshot, one replayed from the log: both keep their time.
+    expect(target.db.query(`SELECT id, at FROM "_tx_receipts" ORDER BY id`).all()).toEqual(source.db.query(`SELECT id, at FROM "_tx_receipts" ORDER BY id`).all());
     expect(source.db.query(`SELECT name FROM sqlite_master WHERE name LIKE '_tapedb_snapshot_%'`).all()).toEqual([]);
   });
 });

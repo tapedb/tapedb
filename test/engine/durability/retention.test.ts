@@ -159,6 +159,20 @@ describe("history retention", () => {
     expect(readSnapshotState(sql).status).toBe("completed");
   });
 
+  test("deletes receipts past the retry window and schedules the next", async () => {
+    const { sql } = openTestDb();
+    insertFolder(sql, "a", "a");
+    setHighWater(sql, 1);
+    setFlushSeq(sql, 1);
+    await snapshotWorkspace(new FakeR2Bucket(), sql, TEST_WORKSPACE, 0);
+    sql.exec(`INSERT INTO "_tx_receipts" (id, seq, ops_hash, at) VALUES ('old', 1, 'h', ?), ('new', 1, 'h', ?)`, DAY_MS, 5 * DAY_MS);
+
+    const result = await pruneHistory(new FakeR2Bucket(), sql, TEST_WORKSPACE, DAY_MS + R / 2);
+    expect(result.receipts).toBe(1);
+    expect(sql.exec<{ id: string }>(`SELECT id FROM "_tx_receipts"`).toArray().map((row) => row.id)).toEqual(["new"]);
+    expect(result.nextAt).toBe(5 * DAY_MS + R / 2);
+  });
+
   test("refuses a retention under two days", () => {
     expect(() => configureRetention({ days: 1 })).toThrow("at least 2");
     configureRetention({ days: 7 });
