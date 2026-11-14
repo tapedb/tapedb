@@ -67,7 +67,7 @@ Per model, `db.<model>` is a `ModelClient`:
 | `update({ where: { id }, data })` | `Write` | |
 | `upsert({ where: { id }, create, update })` | `Write` | |
 | `delete({ where: { id } })` | `Write` | |
-| `updateMany({ where, data })` | `Promise<{ count }>` | every matching row in one transaction, however many; commits whole or not at all |
+| `updateMany({ where, data })` | `Promise<{ count, queued? }>` | every matching row in one transaction, however many; commits whole or not at all. Applied to the cached rows it certainly matches and queued offline like any write; `queued: true` while it waits |
 | `deleteMany({ where })` | `Promise<{ count }>` | as above |
 
 A `Query` is awaitable, and live through `subscribe(listener)`, which receives
@@ -156,7 +156,7 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `POST /engine/workspaces/:id/transact` | a transaction: `{ txId, clientTxId?, issuedAt?, ops }` |
 | `POST /engine/workspaces/:id/query` | a one-off read |
 | `GET /engine/workspaces/:id/schema` | the schema document the workspace runs |
-| `GET /engine/workspaces/:id/status` | the workspace's status |
+| `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2 |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
 | `DELETE /engine/workspaces/:id` | erase the workspace; owner only; answers 410 afterwards |
 | `GET`/`HEAD`/`PUT`/`DELETE /engine/workspaces/:id/files/:path` | file bytes |

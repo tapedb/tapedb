@@ -79,8 +79,14 @@ export interface WriteResult {
 }
 
 export interface BulkResult {
-  /** Rows the filter matched, and therefore wrote. */
+  /**
+   * Rows the filter matched, and therefore wrote. While the write is queued
+   * offline: the cached rows it changed so far; the engine decides the rest
+   * when the write reaches it.
+   */
   count: number;
+  /** Set while the write waits in the offline queue. */
+  queued?: true;
 }
 
 export interface FindArgs<M extends Models, F extends Fields> {
@@ -145,13 +151,11 @@ export interface ModelClient<M extends Models, F extends Fields> {
 
   create(args: { data: CreateData<F, M> }): Write;
   /**
-   * Writes every row matching `where`. Sent straight to the engine, which
-   * resolves the rows: unlike single-row writes it is not applied
-   * optimistically and not queued offline, because which rows match is the
-   * engine's answer, not the cache's.
-   *
-   * Every matching row is written in one transaction, however many match:
-   * it commits whole or not at all.
+   * Writes every row matching `where`, in one transaction however many
+   * match: it commits whole or not at all. Like single-row writes it is
+   * queued offline and applied to the cache at once, to the cached rows it
+   * certainly matches; the engine resolves which rows match when the write
+   * reaches it, so a write queued offline applies to the rows matching then.
    */
   updateMany(args: { where: Where<F, M>; data: UpdateData<F, M> }): Promise<BulkResult>;
   /** Deletes every row matching `where`, in one transaction like `updateMany`. */

@@ -6,6 +6,7 @@
  * cloned result so a rejected transaction can restore the cache snapshot.
  */
 
+import { matchesWhere } from "./local-where";
 import { findLinkByApiName } from "./schema";
 import { cloneJson } from "./stable";
 import type {
@@ -143,11 +144,16 @@ export function applyOptimisticOp(
   pendingValues?: ReadonlyMap<string, Record<string, unknown>>
 ): QueryResult {
   switch (op.op) {
-    // Which rows a bulk write matches is decided by the engine, inside the
-    // transaction. The cache cannot know it, so these are not applied
-    // optimistically; the live query refresh that follows carries the result.
+    // Which rows a bulk write matches is the engine's answer. The cache
+    // changes the rows it holds that certainly match; rows whose match it
+    // cannot judge (a relation filter, a field it does not hold) wait for the
+    // engine's push, which also settles everything here.
     case "patchMany":
     case "deleteMany":
+      for (const id of certainMatches(data, op.namespace, op.where)) {
+        if (op.op === "deleteMany") removeEntity(data, op.namespace, id);
+        else applyValues(data, op.namespace, id, op.values);
+      }
       return data;
     case "insert":
     case "patch":
@@ -175,6 +181,16 @@ export function applyOptimisticOp(
       applyLink(data, op, schema, false, pendingValues);
       return data;
   }
+}
+
+/** Ids of the cached rows of `namespace` that certainly match `where`. */
+export function certainMatches(data: QueryResult, namespace: string, where: unknown): string[] {
+  const entities = data[namespace];
+  if (!Array.isArray(entities)) return [];
+  return entities
+    .filter((entity) => matchesWhere(entity as Record<string, unknown>, where) === true)
+    .map((entity) => entityId(entity))
+    .filter((id): id is string => typeof id === "string");
 }
 
 function applyValues(
