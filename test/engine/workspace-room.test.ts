@@ -478,4 +478,25 @@ describe("WorkspaceRoom erase", () => {
     expect((await erase()).status).toBe(200);
     expect(data.objects.size).toBe(0);
   });
+
+  test("checks roles on the file index itself", async () => {
+    const db = new Database(":memory:");
+    const context = new FakeContext(db, TEST_WORKSPACE);
+    const room = new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: new FakeR2Bucket() } as unknown as Env);
+    await context.ready;
+    const files = (method: string, role: number, body?: unknown) =>
+      room.fetch(new Request("http://test/files", {
+        method,
+        headers: { "content-type": "application/json", "x-tapedb-claims": encodeTrustedRoleClaim(claim(role)) },
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      }));
+    const entry = { path: "a.txt", key: `workspaces/${TEST_WORKSPACE}/files/a.txt`, size: 1 };
+
+    expect((await files("POST", WORKSPACE_ROLE_LEVELS.MEMBER, entry)).status).toBe(403);
+    expect((await files("GET", WORKSPACE_ROLE_LEVELS.USER)).status).toBe(403);
+    expect((await files("POST", WORKSPACE_ROLE_LEVELS.EDITOR, entry)).status).toBe(201);
+    expect((await files("DELETE", WORKSPACE_ROLE_LEVELS.MEMBER, { path: "a.txt" })).status).toBe(403);
+    const listed = await files("GET", WORKSPACE_ROLE_LEVELS.MEMBER);
+    expect(((await listed.json()) as { data: Array<{ path: string }> }).data.map((row) => row.path)).toEqual(["a.txt"]);
+  });
 });
