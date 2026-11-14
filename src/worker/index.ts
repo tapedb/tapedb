@@ -14,6 +14,7 @@ import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
 import { configureTopics, type TopicAuthorizer } from "../engine/topics";
+import { configureFileAccess, fileRulesConfigured } from "../engine/file-access";
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
 import { filesPrefix, isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
@@ -325,23 +326,62 @@ async function handleStorage(
     return apiError(501, "storage_not_configured", "Bind an FILES R2 bucket to use storage.");
   }
 
-  const required =
-    request.method === "GET" || request.method === "HEAD"
-      ? WORKSPACE_ROLE_LEVELS.MEMBER
-      : WORKSPACE_ROLE_LEVELS.EDITOR;
-  if (role < required) {
-    await discardBody(request);
-    return apiError(403, "insufficient_role", "Insufficient role for this file operation.");
+  // Without file rules, roles decide here. With rules, the workspace decides
+  // each operation before any byte moves (see engine/file-access.ts).
+  const ruled = fileRulesConfigured();
+  if (!ruled) {
+    const required =
+      request.method === "GET" || request.method === "HEAD"
+        ? WORKSPACE_ROLE_LEVELS.MEMBER
+        : WORKSPACE_ROLE_LEVELS.EDITOR;
+    if (role < required) {
+      await discardBody(request);
+      return apiError(403, "insufficient_role", "Insufficient role for this file operation.");
+    }
   }
+  const authorize = async (action: "read" | "write" | "delete", details: { size?: number; contentType?: string } = {}) => {
+    if (!ruled) return null;
+    const decision = await callRoom(
+      env,
+      workspaceId,
+      "/files/authorize",
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ path: objectKey, action, ...details }),
+      },
+      trustedClaim
+    );
+    if (decision.ok) {
+      await decision.body?.cancel();
+      return null;
+    }
+    await discardBody(request);
+    return new Response(decision.body, { status: decision.status, headers: { "content-type": "application/json" } });
+  };
 
   const key = storageKey(workspaceId, objectKey);
   const query = new URL(request.url).searchParams;
 
   if (query.has("uploads") || query.has("uploadId")) {
+    // Starting and completing an upload are writes; its parts and its abort
+    // need only the upload id, which only an authorized start handed out.
+    const decides = request.method === "POST";
+    const refused = decides
+      ? await authorize("write", query.has("uploads") ? { contentType: request.headers.get("content-type") ?? "application/octet-stream" } : {})
+      : null;
+    if (refused) return refused;
     return handleMultipart(request, env, bucket, workspaceId, objectKey, key, query, trustedClaim);
   }
 
   if (request.method === "PUT") {
+    const refused = await authorize("write", {
+      ...(Number.isFinite(Number(request.headers.get("content-length") ?? "")) && request.headers.has("content-length")
+        ? { size: Number(request.headers.get("content-length")) }
+        : {}),
+      contentType: request.headers.get("content-type") ?? "application/octet-stream",
+    });
+    if (refused) return refused;
     const declared = Number(request.headers.get("content-length") ?? "");
     if (Number.isFinite(declared) && declared > MAX_UPLOAD_BYTES) {
       await discardBody(request);
@@ -363,6 +403,8 @@ async function handleStorage(
   }
 
   if (request.method === "GET" || request.method === "HEAD") {
+    const refused = await authorize("read");
+    if (refused) return refused;
     const object = request.method === "HEAD" ? await bucket.head(key) : await bucket.get(key);
     if (!object) return apiError(404, "not_found", "No such object.");
     const headers = new Headers();
@@ -379,6 +421,8 @@ async function handleStorage(
   }
 
   if (request.method === "DELETE") {
+    const refused = await authorize("delete");
+    if (refused) return refused;
     await bucket.delete(key);
 
     const forgotten = await callRoom(
@@ -418,6 +462,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   );
   configurePermissions(schema.permissions);
   configureTopics(options.topics);
+  configureFileAccess(schema.files);
   configureRetention(options.retention);
 
   const worker = {
@@ -476,7 +521,8 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
               await discardBody(request);
               return apiError(405, "method_not_allowed", "The file index changes only through uploads and deletes under /files/<path>.");
             }
-            if (role < WORKSPACE_ROLE_LEVELS.MEMBER) {
+            // With file rules the room lists only what the caller may read.
+            if (!fileRulesConfigured() && role < WORKSPACE_ROLE_LEVELS.MEMBER) {
               return apiError(403, "insufficient_role", "Insufficient role to list files.");
             }
           }

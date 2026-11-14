@@ -63,6 +63,11 @@ export const ENGINE_MIGRATIONS: readonly BundledWorkspaceMigration[] = [
       PRIMARY KEY (seq, part)
     ) WITHOUT ROWID;`,
   },
+  {
+    // Who uploaded a file: the claim subject, for file access rules.
+    id: "tapedb_0006_file_uploader",
+    sql: `ALTER TABLE "_files" ADD COLUMN uploaded_by TEXT;`,
+  },
 ];
 
 /** Configured migrations, applied in order on Durable Object boot. */

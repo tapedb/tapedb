@@ -1,5 +1,5 @@
 /** Shared by the end-to-end scenarios: the schema the e2e project deploys, and its URL. */
-import { model, schema, t } from "tapedb/schema";
+import { fileCheck, model, schema, t } from "tapedb/schema";
 
 /** The Worker under test: a local `tapedb dev` by default, or TAPEDB_URL. */
 export const BASE = (process.env.TAPEDB_URL ?? "http://127.0.0.1:8787").replace(/\/+$/, "");
@@ -13,6 +13,13 @@ export const s = schema({
     tasks: t.hasMany("task"),
   }),
   task: model({ title: t.string(), done: t.boolean().default(false), column: t.belongsTo("column").optional() }),
+}, {
+  // File rules, so every file scenario runs through the workspace's decision:
+  // nothing under sealed/ may be read or written, whatever the role.
+  files: {
+    read: fileCheck(({ file }) => !file.path.startsWith("sealed/")),
+    write: fileCheck(({ file }) => !file.path.startsWith("sealed/")),
+  },
 });
 
 /** Polls `pred` every 50 ms for up to `ms` (longer against a remote Worker). */

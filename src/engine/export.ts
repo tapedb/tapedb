@@ -110,7 +110,7 @@ export function* exportLines(
     for (;;) {
       const files: Array<Record<string, string | number | null>> = sql.all<Record<string, string | number | null>>(
         `SELECT "id", "path", "r2_key" AS "r2Key", "size", "content_type" AS "contentType",
-                "created_at" AS "createdAt", "updated_at" AS "updatedAt"
+                "uploaded_by" AS "uploadedBy", "created_at" AS "createdAt", "updated_at" AS "updatedAt"
            FROM "${ENGINE_TABLES.files}"
           ${lastPath === null ? "" : `WHERE "path" > ?`}
           ORDER BY "path" LIMIT ?`,

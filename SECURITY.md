@@ -42,9 +42,12 @@ fix and disclosure. There is no bug bounty.
 - **Read and write rules.** `role()`, `filter()` and `check()` are applied in
   the engine. A rule that throws denies. Erasing a workspace requires an owner
   claim.
-- **Files.** Uploads go to the workspace's R2 prefix. Reads require at least
-  member, writes and deletes require at least editor. There is no per-file ACL
-  beyond that workspace role. One request carries at most 25 MiB; larger files
+- **Files.** Uploads go to the workspace's R2 prefix. Without file rules,
+  reads require at least member, writes and deletes at least editor. With
+  rules (`schema(models, { files })`), the workspace's Durable Object decides
+  every read, write, delete and multipart start or completion before bytes
+  move, and lists only readable files; a file the caller may not read answers
+  404. Rules fail closed. One request carries at most 25 MiB; larger files
   are R2 multipart uploads on the same route and role, tied to their file
   path, and listed only once complete.
 - **Transport.** HTTP uses `Authorization: Bearer`; WebSocket upgrades carry the
@@ -83,5 +86,5 @@ The library cannot enforce these for you:
 
 The design boundaries and release gates are listed in
 [LIMITATIONS.md](LIMITATIONS.md). In particular, TapeDB does not record who
-made each write, does not provide per-file ACLs, and its erasure cannot reach
+made each write and its erasure cannot reach
 Cloudflare's point-in-time recovery window.

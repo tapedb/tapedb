@@ -268,7 +268,7 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models>(models: M) => Schema<M>"
+        "shape": "<M extends Models>(models: M, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<M>"
       },
       "Schema": {
         "kind": "interface",
@@ -279,6 +279,7 @@
           "permissions": "import(\"src/engine/tx-permissions\").PermissionConfig",
           "migrations": "import(\"src/engine/migrations-bundle\").BundledWorkspaceMigration[]",
           "clientSchema": "import(\"src/client/types\").SchemaDefinition",
+          "files": "FileRules | undefined",
           "(declaration)": "<M extends Models = Models> extends TapeDBSchema"
         }
       },
@@ -300,6 +301,7 @@
           "r2Key": "string",
           "size": "number",
           "contentType": "string | null",
+          "uploadedBy": "string | null",
           "createdAt": "number",
           "updatedAt": "number"
         }
@@ -379,6 +381,10 @@
           "workspaceId": "string"
         }
       },
+      "attachedTo": {
+        "kind": "function",
+        "shape": "<K extends string>(model: K, locate: (path: string) => string | null | undefined) => AttachedToDecision<K>"
+      },
       "check": {
         "kind": "function",
         "shape": "<F extends Fields = Fields>(test: (context: CheckContext<F>) => boolean) => CheckDecision<F>"
@@ -415,6 +421,36 @@
           "(declaration)": "<T = Scalar>"
         }
       },
+      "FileAccess": {
+        "kind": "interface",
+        "shape": {
+          "read": "FileRuleDecision<K> | undefined",
+          "write": "FileRuleDecision<K> | undefined",
+          "delete": "FileRuleDecision<K> | undefined",
+          "(declaration)": "<K extends string = string>"
+        }
+      },
+      "fileCheck": {
+        "kind": "function",
+        "shape": "(test: (context: FileCheckContext) => boolean) => FileCheckDecision"
+      },
+      "FileCheckContext": {
+        "kind": "interface",
+        "shape": {
+          "auth": "AccessAuth",
+          "file": "FileInfo",
+          "existing": "FileInfo | undefined"
+        }
+      },
+      "FileInfo": {
+        "kind": "interface",
+        "shape": {
+          "path": "string",
+          "size": "number | null",
+          "contentType": "string | null",
+          "uploadedBy": "string | null"
+        }
+      },
       "filter": {
         "kind": "function",
         "shape": "<F extends Fields = Fields>(build: (context: { auth: AccessAuth; }) => Where<F> | Where<F>[]) => FilterDecision<F>"
@@ -445,7 +481,7 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models>(models: M) => Schema<M>"
+        "shape": "<M extends Models>(models: M, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<M>"
       },
       "Schema": {
         "kind": "interface",
@@ -456,6 +492,7 @@
           "permissions": "import(\"src/engine/tx-permissions\").PermissionConfig",
           "migrations": "import(\"src/engine/migrations-bundle\").BundledWorkspaceMigration[]",
           "clientSchema": "import(\"src/client/types\").SchemaDefinition",
+          "files": "FileRules | undefined",
           "(declaration)": "<M extends Models = Models> extends TapeDBSchema"
         }
       },
@@ -622,6 +659,15 @@
         "kind": "type",
         "shape": "Field<ScalarKind, boolean, boolean>"
       },
+      "AttachedToDecision (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "decision": "\"attachedTo\"",
+          "model": "K",
+          "locate": "(path: string) => string | null | undefined",
+          "(declaration)": "<K extends string = string>"
+        }
+      },
       "AttributeDefinition (src/client/types.ts)": {
         "kind": "interface",
         "shape": {
@@ -786,6 +832,46 @@
       "FieldsOf (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<M> M extends Model<infer F> ? F : never"
+      },
+      "FileCheckContext (src/engine/file-access.ts)": {
+        "kind": "interface",
+        "shape": {
+          "auth": "{ sub: string; role: number; workspaceId: string; }",
+          "file": "FileInfo",
+          "existing": "FileInfo | undefined"
+        }
+      },
+      "FileCheckDecision (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "decision": "\"check\"",
+          "test": "(context: FileCheckContext) => boolean"
+        }
+      },
+      "FileInfo (src/engine/file-access.ts)": {
+        "kind": "interface",
+        "shape": {
+          "path": "string",
+          "size": "number | null",
+          "contentType": "string | null",
+          "uploadedBy": "string | null"
+        }
+      },
+      "FileRule (src/engine/file-access.ts)": {
+        "kind": "type",
+        "shape": "| { readonly decision: \"role\"; readonly level: number } | { readonly decision: \"check\"; readonly test: (context: FileCheckContext) => boolean } | { readonly decision: \"attachedTo\"; readonly model: string; readonly locate: (path: string) => string | null | undefined; }"
+      },
+      "FileRuleDecision (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<K extends string = string> RoleDecision | FileCheckDecision | AttachedToDecision<K>"
+      },
+      "FileRules (src/engine/file-access.ts)": {
+        "kind": "interface",
+        "shape": {
+          "read": "FileRule | undefined",
+          "write": "FileRule | undefined",
+          "delete": "FileRule | undefined"
+        }
       },
       "FilterDecision (src/model/schema.ts)": {
         "kind": "interface",
@@ -1199,6 +1285,13 @@
           "links": "Record<string, LinkDefinition>"
         }
       },
+      "SchemaOptions (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "files": "FileAccess<K> | undefined",
+          "(declaration)": "<K extends string = string>"
+        }
+      },
       "Select (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<M extends Models, F extends Fields> { [K in keyof Row<F>]?: boolean; } & { [K in RelationKeys<F>]?: boolean | IncludeArgs<M, TargetFields<F[K], M>>; }"
@@ -1217,7 +1310,8 @@
           "registry": "RegistryDefinition",
           "permissions": "PermissionConfig",
           "migrations": "BundledWorkspaceMigration[]",
-          "clientSchema": "ClientSchemaDefinition"
+          "clientSchema": "ClientSchemaDefinition",
+          "files": "FileRules | undefined"
         }
       },
       "TargetFields (src/model/schema.ts)": {
@@ -1406,10 +1500,12 @@
     "engine_not_configured",
     "erase_failed",
     "expired",
+    "file_access_denied",
     "file_index_failed",
     "foreign_key_violation",
     "identity_not_configured",
     "insufficient_role",
+    "invalid_action",
     "invalid_body",
     "invalid_claim",
     "invalid_cursor",

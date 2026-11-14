@@ -85,7 +85,7 @@ writeFileSync(join(project, "package.json"), JSON.stringify({ name: "tapedb-e2e"
 run("npm", ["install", join(project, packed), "wrangler@4", "--no-audit", "--no-fund"], { cwd: project });
 run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "init", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], { cwd: project });
 
-const schemaSource = `import { model, schema, t } from "tapedb/schema";
+const schemaSource = `import { fileCheck, model, schema, t } from "tapedb/schema";
 
 export default schema({
   board: model({
@@ -103,6 +103,11 @@ export default schema({
     done: t.boolean().default(false),
     column: t.belongsTo("column").optional(),
   }),
+}, {
+  files: {
+    read: fileCheck(({ file }) => !file.path.startsWith("sealed/")),
+    write: fileCheck(({ file }) => !file.path.startsWith("sealed/")),
+  },
 });
 `;
 writeFileSync(join(project, "tapedb.schema.ts"), schemaSource);
@@ -428,7 +433,17 @@ async function client() {
 
 async function exported(db) {
   const records = [];
-  for await (const record of db.$export()) records.push(record);
+  try {
+    for await (const record of db.$export()) records.push(record);
+  } catch (error) {
+    // Show what the server said, not only the status.
+    const { token } = await (
+      await fetch(`${base}/_tapedb/claim`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId: WORKSPACE }) })
+    ).json();
+    const raw = await fetch(`${base}/engine/workspaces/${WORKSPACE}/export`, { headers: { authorization: `Bearer ${token}` } });
+    const status = await fetch(`${base}/engine/workspaces/${WORKSPACE}/status`, { headers: { authorization: `Bearer ${token}` } });
+    throw new Error(`${error.message} Now: export ${raw.status} ${(await raw.text()).slice(0, 600)}; status ${status.status} ${(await status.text()).slice(0, 600)}`);
+  }
   const end = records.at(-1);
   assert.equal(end.type, "end", "export ended without an end line");
   return {

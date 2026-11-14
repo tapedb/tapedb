@@ -101,7 +101,8 @@ export function executeQuery(
   authorizeQuery(claim, compiled);
 
   try {
-    return executeCompiledQuery(sql, compiled);
+    // The claim applies its read rules; without it every matching row comes back.
+    return executeCompiledQuery(sql, compiled, claim);
   } catch (error) {
     if (error instanceof TxError) throw error;
     throw new TxError("storage_error", errorMessage(error));

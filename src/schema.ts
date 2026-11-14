@@ -12,6 +12,7 @@
  * from the same object, so the two can never drift.
  */
 
+import type { FileRules } from "./engine/file-access";
 import { ENGINE_TABLES, toSnakeCase } from "./engine/registry";
 import type {
   AttributeDefinition,
@@ -58,6 +59,8 @@ export interface TapeDBSchema {
   permissions: PermissionConfig;
   migrations: BundledWorkspaceMigration[];
   clientSchema: ClientSchemaDefinition;
+  /** Who may read, write and delete each file; absent means the role defaults. */
+  files?: FileRules;
 }
 
 /**
@@ -315,10 +318,13 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
 // `schema()` builds on.
 export { t } from "./model/fields";
 export type { DeleteBehaviour, ScalarKind } from "./model/fields";
-export { schema, model, role, filter, check, Model } from "./model/schema";
+export { schema, model, role, filter, check, fileCheck, attachedTo, Model } from "./model/schema";
 export type {
   Access,
   AccessAuth,
+  FileAccess,
+  FileCheckContext,
+  FileInfo,
   CheckContext,
   CreateData,
   Include,
