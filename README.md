@@ -11,7 +11,8 @@ Think of it as an ORM whose database is Cloudflare: schema in TypeScript,
 committed migrations, typed queries — plus live queries and offline writes,
 because the engine underneath is built for them. It is a library, not a
 service: there is no hosted control plane, and your data never leaves your
-account.
+account. [PRIVACY.md](PRIVACY.md) covers what is stored where, for how long,
+and how to answer GDPR access and erasure requests.
 
 ```bash
 npx tapedb init     # schema, worker, wrangler config, first migration
