@@ -79,7 +79,10 @@ describe("write retries", () => {
 
     await db.flushOutbox();
     expect(bodies).toHaveLength(2);
-    expect(bodies[1]).toEqual({ txId: bodies[0].txId, clientTxId: bodies[0].clientTxId, ops: bodies[0].ops });
+    // The retry carries the first attempt's time, so the engine can refuse it
+    // once its receipt may have expired.
+    expect(typeof bodies[0].issuedAt).toBe("number");
+    expect(bodies[1]).toEqual({ txId: bodies[0].txId, clientTxId: bodies[0].clientTxId, issuedAt: bodies[0].issuedAt, ops: bodies[0].ops });
     expect(bodies[1]).not.toHaveProperty("basisSeq");
     expect(await outbox.list(WORKSPACE)).toEqual([]);
     db.close();
@@ -109,6 +112,22 @@ describe("write retries", () => {
     expect(await outbox.list(WORKSPACE)).toEqual([]);
     expect(rejections).toHaveLength(1);
     expect(rejections[0]).toMatchObject({ code: "conflict", ops: [op] });
+    db.close();
+  });
+
+  test("a retry refused as expired is dropped and reported, not retried", async () => {
+    const { db, outbox, rejections, bodies } = harness([
+      "network",
+      { status: 410, body: { ok: false, error: { code: "retry_expired", message: "issued too long ago" } } },
+    ]);
+
+    await db.transact([op as never]);
+    await db.flushOutbox();
+    await db.flushOutbox();
+
+    expect(bodies).toHaveLength(2);
+    expect(await outbox.list(WORKSPACE)).toEqual([]);
+    expect(rejections).toEqual([expect.objectContaining({ code: "retry_expired", ops: [op] })]);
     db.close();
   });
 });

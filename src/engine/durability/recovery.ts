@@ -878,8 +878,8 @@ function replayLine(
 function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
   const ops = line.ops as readonly unknown[];
   if (line.clientTxId) {
-    sql.exec(`INSERT OR IGNORE INTO "_tx_receipts" (id, seq, ops_hash) VALUES (?, ?, ?)`,
-      line.clientTxId, line.seq, line.opsHash ?? opsHash(ops));
+    sql.exec(`INSERT OR IGNORE INTO "_tx_receipts" (id, seq, ops_hash, at) VALUES (?, ?, ?, ?)`,
+      line.clientTxId, line.seq, line.opsHash ?? opsHash(ops), line.at);
   }
 
   sql.exec(
@@ -1107,6 +1107,9 @@ export async function recoverWorkspace(
     // never look caught up while its sequence state is only half written.
     sql.transactionSync(() => {
       writeFinalState(sql, manifest, replay.maxSeq, now);
+      // Receipts from snapshots taken before they recorded a time: their
+      // retry window starts now.
+      sql.exec(`UPDATE "_tx_receipts" SET at = ? WHERE at = 0`, now);
       // Written by engines that tracked missing receipts; nothing reads it.
       sql.exec(`DELETE FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`);
       markComplete(sql, manifest, now);

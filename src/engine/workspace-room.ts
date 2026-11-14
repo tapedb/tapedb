@@ -1414,6 +1414,8 @@ function statusForTxError(code: TxErrorCode): number {
     case "unique_violation":
     case "foreign_key_violation":
       return 409;
+    case "retry_expired":
+      return 410;
     case "storage_error":
       return 500;
     default:

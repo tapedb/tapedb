@@ -123,6 +123,12 @@ export interface TxEnvelope {
   txId: string;
   /** Client id used to dedupe retries of the same optimistic write. */
   clientTxId?: string;
+  /**
+   * When the client first issued the transaction (ms), resent unchanged on
+   * every retry. A retry issued before the retry window is refused with
+   * `retry_expired`, since its receipt may be gone.
+   */
+  issuedAt?: number;
   ops: TxOp[];
 }
 
@@ -154,6 +160,7 @@ export type TxErrorCode =
   | "unique_violation"
   | "foreign_key_violation"
   | "permission_denied"
+  | "retry_expired"
   | "storage_error";
 
 /** Plain-object form of a transaction error, suitable for JSON responses. */

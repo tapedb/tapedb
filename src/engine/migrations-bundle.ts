@@ -42,6 +42,16 @@ export const ENGINE_MIGRATIONS: readonly BundledWorkspaceMigration[] = [
     INSERT INTO "_tx_receipts" (id, seq, ops_hash)
       SELECT client_tx_id, seq, ops_hash FROM "_tx_log" WHERE client_tx_id IS NOT NULL;`,
   },
+  {
+    // Receipts expire with the history retention, so each records when its
+    // write was applied. Existing ones take their log row's time, or now.
+    id: "tapedb_0004_receipt_time",
+    sql: `ALTER TABLE "_tx_receipts" ADD COLUMN at INTEGER NOT NULL DEFAULT 0;
+    UPDATE "_tx_receipts" SET at = COALESCE(
+      (SELECT l.at FROM "_tx_log" l WHERE l.seq = "_tx_receipts".seq),
+      CAST(strftime('%s', 'now') AS INTEGER) * 1000
+    );`,
+  },
 ];
 
 /** Configured migrations, applied in order on Durable Object boot. */

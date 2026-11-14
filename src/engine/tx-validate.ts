@@ -94,6 +94,8 @@ export type ValidatedOp =
 export interface ValidatedTx {
   txId: string;
   clientTxId?: string;
+  /** When the client first issued this transaction (ms). Retries carry the original time. */
+  issuedAt?: number;
   ops: ValidatedOp[];
   /** Original ops array, used for the stable log hash. */
   rawOps: unknown[];
@@ -129,6 +131,11 @@ export function validateEnvelope(value: unknown): ValidatedTx {
     );
   }
 
+  const issuedAt = value.issuedAt;
+  if (issuedAt !== undefined && (typeof issuedAt !== "number" || !Number.isFinite(issuedAt))) {
+    throw new TxError("invalid_envelope", "issuedAt must be a timestamp in milliseconds when present.", { txId });
+  }
+
   const rawOps = value.ops;
   if (!Array.isArray(rawOps) || rawOps.length < 1) {
     throw new TxError(
@@ -143,6 +150,7 @@ export function validateEnvelope(value: unknown): ValidatedTx {
   return {
     txId,
     ...(clientTxId === undefined ? {} : { clientTxId }),
+    ...(issuedAt === undefined ? {} : { issuedAt }),
     ops,
     rawOps,
   };
