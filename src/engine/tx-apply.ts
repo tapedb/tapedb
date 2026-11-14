@@ -27,6 +27,12 @@ export interface ApplyContext {
   seq: number;
   now: number;
   txId?: string;
+  /**
+   * Recovery replay. An op that succeeded once is re-applied against a
+   * database that may already hold its effect, so insert behaves as an upsert
+   * and a patch of a missing row is a no-op instead of an error.
+   */
+  replay?: boolean;
 }
 
 interface ErrorContext {
@@ -62,9 +68,19 @@ function applyOp(context: ApplyContext, op: ValidatedOp): number {
   }
 
   switch (op.kind) {
+    case "insert":
+    case "patch":
+    case "upsert":
     case "update":
     case "merge":
       return applyValues(context, op, namespace);
+    case "patchMany":
+    case "deleteMany":
+      // expandBulkOps replaces these before anything is applied.
+      throw new TxError(
+        "invalid_op",
+        `"${op.kind}" reached the apply step; it should have been resolved to rows first.`
+      );
     case "delete": {
       const table = quoteIdentifier(namespace.table);
       const changes = context.sql.exec(
@@ -88,7 +104,28 @@ function applyValues(
   );
 
   if (existing === undefined) {
-    return insertRow(context, op, namespace, table);
+    if (op.kind === "patch") {
+      if (context.replay) return 0;
+      throw new TxError(
+        "not_found",
+        `No "${namespace.apiName}" row with id "${op.id}" to update.`
+      );
+    }
+    return insertRow(
+      context,
+      op.kind === "upsert" && op.createValues !== undefined
+        ? { ...op, values: op.createValues }
+        : op,
+      namespace,
+      table
+    );
+  }
+
+  if (op.kind === "insert" && !context.replay) {
+    throw new TxError(
+      "unique_violation",
+      `A "${namespace.apiName}" row with id "${op.id}" already exists.`
+    );
   }
 
   const columns = Object.keys(op.values);
@@ -112,7 +149,9 @@ function insertRow(
   namespace: NamespaceDefinition,
   table: string
 ): number {
-  for (const column of requiredColumns(namespace)) {
+  // A replayed insert was valid when it was written; a field made required
+  // since then is filled by its column default instead.
+  for (const column of context.replay ? [] : requiredColumns(namespace)) {
     if (!(column in op.values)) {
       throw new TxError(
         "invalid_op",

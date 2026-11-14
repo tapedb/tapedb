@@ -22,6 +22,8 @@ export interface NamespaceDiff {
   added: unknown[];
   updated: unknown[];
   removed: string[];
+  /** The engine's order for every id, when the diff alone would misplace rows. */
+  order?: string[];
 }
 
 function entityId(value: unknown): string | undefined {
@@ -82,6 +84,15 @@ export function applyQueryDiff(
     }
   }
 
+  if (diff.order !== undefined) {
+    // The engine's order wins. A row it does not list yet (an optimistic
+    // insert still in flight) keeps its place after the listed ones.
+    const rank = new Map(diff.order.map((id, index) => [id, index]));
+    const unlisted = order.filter((id) => !rank.has(id));
+    order.length = 0;
+    order.push(...diff.order.filter((id) => byId.has(id)), ...unlisted);
+  }
+
   const next = order
     .map((id) => byId.get(id))
     .filter((entity): entity is QueryEntity => entity !== undefined);
@@ -103,9 +114,18 @@ export function applyOptimisticOps(
   // so a link can materialise the child with them.
   const pendingValues = new Map<string, Record<string, unknown>>();
   for (const op of ops) {
-    if (op.op !== "update" && op.op !== "merge") continue;
+    if (
+      op.op === "link" ||
+      op.op === "unlink" ||
+      op.op === "delete" ||
+      op.op === "patchMany" ||
+      op.op === "deleteMany"
+    ) {
+      continue;
+    }
     pendingValues.set(op.id, {
       ...(pendingValues.get(op.id) ?? {}),
+      ...(op.op === "upsert" ? op.create : {}),
       ...op.values,
     });
   }
@@ -123,9 +143,27 @@ export function applyOptimisticOp(
   pendingValues?: ReadonlyMap<string, Record<string, unknown>>
 ): QueryResult {
   switch (op.op) {
+    // Which rows a bulk write matches is decided by the engine, inside the
+    // transaction. The cache cannot know it, so these are not applied
+    // optimistically; the live query refresh that follows carries the result.
+    case "patchMany":
+    case "deleteMany":
+      return data;
+    case "insert":
+    case "patch":
     case "update":
     case "merge":
       applyValues(data, op.namespace, op.id, op.values);
+      return data;
+    case "upsert":
+      // The cache decides the same way the engine will: a row it already
+      // holds gets `values`, an unknown one is created from `create`.
+      applyValues(
+        data,
+        op.namespace,
+        op.id,
+        findEntity(data, op.id) === undefined ? op.create : op.values
+      );
       return data;
     case "delete":
       removeEntity(data, op.namespace, op.id);

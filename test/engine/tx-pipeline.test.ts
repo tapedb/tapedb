@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../fixtures/registry";
+useLegacyFixture();
 
 import { readdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
@@ -11,6 +11,7 @@ import {
   type RoleClaim,
   type WorkspaceRole,
 } from "../../src/claims";
+import { ENGINE_MIGRATIONS } from "../../src/engine/migrations-bundle";
 import { opsHash } from "../../src/engine/tx-hash";
 import { runTransaction } from "../../src/engine/tx-pipeline";
 import type { SqlExecutor, SqlRow } from "../../src/engine/tx-sql";
@@ -37,6 +38,7 @@ function createStore(): TestStore {
   const db = new Database(":memory:");
   db.exec("PRAGMA foreign_keys = ON;");
   db.exec(SCHEMA);
+  for (const migration of ENGINE_MIGRATIONS) db.exec(migration.sql);
 
   const sql: SqlExecutor = {
     exec(query, ...params) {

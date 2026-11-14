@@ -19,9 +19,13 @@ import type {
   NamespaceDefinition,
   RegistryDefinition,
 } from "./engine/registry";
-import type { BundledWorkspaceMigration } from "./engine/migrations-bundle";
+import {
+  BASELINE_MIGRATION_ID,
+  ENGINE_MIGRATIONS,
+  type BundledWorkspaceMigration,
+} from "./engine/migrations-bundle";
+import { assertDecisionShape } from "./engine/permission-shape";
 import type {
-  PermissionAction,
   PermissionConfig,
   PermissionOverrides,
 } from "./engine/tx-permissions";
@@ -39,8 +43,14 @@ export interface EntityConfig {
 export interface SchemaConfig {
   entities: Record<string, EntityConfig>;
   links?: readonly LinkDefinition[];
-  /** Per-namespace role overrides; defaults are view=MEMBER, write=EDITOR. */
+  /**
+   * Per-namespace overrides; defaults are view=MEMBER, write=EDITOR,
+   * delete=MODERATOR. Each action takes a role level or a rule function;
+   * `view` also takes `{ where: (auth) => filter }`, which runs in SQL.
+   */
   permissions?: PermissionOverrides;
+  /** Table name per namespace, for mapping onto existing tables. Default: snake_case. */
+  tables?: Record<string, string>;
 }
 
 export interface TapeDBSchema {
@@ -54,6 +64,11 @@ export interface TapeDBSchema {
  * Engine bookkeeping tables. Copied verbatim from the engine's baseline
  * migration: the transaction pipeline, flusher and recovery all depend on
  * these exact names and columns.
+ *
+ * FROZEN. Deployed workspaces recorded this text's checksum when they applied
+ * 0001_baseline and refuse to boot if it changes. Engine schema changes go in
+ * ENGINE_MIGRATIONS instead; that is why the file table is created here under
+ * its old name and renamed by tapedb_0002_files_table.
  */
 const ENGINE_TABLE_DDL = `
 CREATE TABLE IF NOT EXISTS "_migrations" (
@@ -103,7 +118,7 @@ CREATE TABLE IF NOT EXISTS "_engine_meta" (
   value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS "${ENGINE_TABLES.files}" (
+CREATE TABLE IF NOT EXISTS "$files" (
   id TEXT PRIMARY KEY NOT NULL,
   path TEXT NOT NULL UNIQUE,
   r2_key TEXT NOT NULL,
@@ -123,7 +138,7 @@ INSERT OR IGNORE INTO "_engine_meta" ("key", value) VALUES
   ('schema_version', '0001_baseline');
 `;
 
-const SQL_TYPE: Record<string, string> = {
+export const SQL_TYPE: Record<string, string> = {
   string: "TEXT",
   json: "TEXT",
   date: "INTEGER",
@@ -132,7 +147,18 @@ const SQL_TYPE: Record<string, string> = {
   boolean: "INTEGER",
 };
 
-function entityDdl(
+/** A SQL literal for a column default. Numbers must be finite; strings are quoted. */
+export function sqlLiteral(value: string | number | null): string {
+  if (value === null) return "NULL";
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`Default ${value} is not a finite number.`);
+    return String(value);
+  }
+  return `'${value.replace(/'/g, "''")}'`;
+}
+
+/** CREATE TABLE plus its indexes, for one namespace. Shared with `tapedb migrate`. */
+export function entityDdl(
   namespace: NamespaceDefinition,
   attributes: EntityConfig
 ): string[] {
@@ -146,6 +172,7 @@ function entityDdl(
   for (const [name, attribute] of Object.entries(attributes)) {
     const column = toSnakeCase(name);
     let sql = `"${column}" ${SQL_TYPE[attribute.type] ?? "TEXT"}`;
+    if (attribute.default !== undefined) sql += ` DEFAULT ${sqlLiteral(attribute.default)}`;
     if (attribute.references) {
       const onDelete = attribute.references.onDelete ?? "SET NULL";
       sql += ` REFERENCES "${attribute.references.table}"("${attribute.references.column}") ON DELETE ${onDelete}`;
@@ -191,12 +218,15 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
         `Permissions reference unknown namespace "${namespace}".`
       );
     }
+    for (const [action, decision] of Object.entries(actions ?? {})) {
+      assertDecisionShape(namespace, action, decision);
+    }
   }
 
   const namespaces: NamespaceDefinition[] = Object.entries(config.entities).map(
     ([apiName, attributes]) => ({
       apiName,
-      table: toSnakeCase(apiName),
+      table: config.tables?.[apiName] ?? toSnakeCase(apiName),
       attributes,
     })
   );
@@ -229,7 +259,7 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
         : link.forward.namespace;
 
     attribute.references = {
-      table: toSnakeCase(target),
+      table: config.tables?.[target] ?? toSnakeCase(target),
       column: "id",
       onDelete: attribute.references?.onDelete ?? "SET NULL",
     };
@@ -243,7 +273,8 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
   }
 
   const migrations: BundledWorkspaceMigration[] = [
-    { id: "0001_baseline", sql: ENGINE_TABLE_DDL.trim() },
+    { id: BASELINE_MIGRATION_ID, sql: ENGINE_TABLE_DDL.trim() },
+    ...ENGINE_MIGRATIONS,
     {
       id: "0002_entities",
       sql: entityStatements.join("\n\n"),
@@ -279,3 +310,21 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
     clientSchema: i.schema({ entities: clientEntities, links: clientLinks }),
   };
 }
+
+// The model API. `defineSchema` above stays as the engine-level compiler that
+// `schema()` builds on.
+export { t } from "./model/fields";
+export type { DeleteBehaviour, ScalarKind } from "./model/fields";
+export { schema, model, role, filter, check, Model } from "./model/schema";
+export type {
+  Access,
+  AccessAuth,
+  CheckContext,
+  CreateData,
+  Include,
+  OrderBy,
+  Row,
+  Schema,
+  UpdateData,
+} from "./model/schema";
+export type { Where, FieldFilter } from "./model/where";

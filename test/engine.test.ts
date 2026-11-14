@@ -113,7 +113,7 @@ describe("schema", () => {
     const columns = schema.registry.namespaces.find((ns) => ns.apiName === "columns");
     expect(columns?.attributes.boardId?.references?.table).toBe("boards");
 
-    const sql = schema.migrations[1].sql;
+    const sql = schema.migrations.at(-1)!.sql;
     expect(sql).toContain('REFERENCES "boards"("id")');
   });
 
@@ -230,7 +230,7 @@ describe("recovery ordering", () => {
     expect(boards).toBeGreaterThanOrEqual(0);
     expect(boards).toBeLessThan(columns);
     expect(columns).toBeLessThan(tasks);
-    expect(order.at(-1)).toBe("$files");
+    expect(order.slice(-2)).toEqual(["_files", "_tx_receipts"]);
   });
 });
 
@@ -373,7 +373,7 @@ describe("recovery tables", () => {
     expect(tables.has("boards")).toBe(true);
     expect(tables.has("columns")).toBe(true);
     expect(tables.has("tasks")).toBe(true);
-    expect(tables.has("$files")).toBe(true);
+    expect(tables.has("_files")).toBe(true);
     expect(tables.has("_tx_log")).toBe(false);
   });
 });

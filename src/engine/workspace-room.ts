@@ -1,5 +1,6 @@
 import { DurableObject } from "cloudflare:workers";
 
+import { stableStringify } from "./tx-hash";
 import type { RoleClaim } from "../claims";
 import { apiError, discardBody, json } from "../http";
 import type { Env } from "../types";
@@ -11,20 +12,24 @@ import {
   shouldSnapshot,
 } from "./durability";
 import {
+  isEngineMigration,
   WORKSPACE_MIGRATIONS,
   type BundledWorkspaceMigration,
 } from "./migrations-bundle";
 import {
   assertMigrationOrder,
   migrationChecksum,
+  applyMigrationWithoutCascades,
   MIGRATIONS_TABLE_SQL,
 } from "./migrations";
+import { forgetFileEntry, recordFileEntry } from "./file-index";
 import { compileQuery, type CompiledQuery } from "./query-compile";
 import {
   authorizeQuery,
   executeCompiledQuery,
   executeCompiledQueryWithPageInfo,
   executeQueryWithPageInfo,
+  viewAccess,
 } from "./query-execute";
 import {
   isPlainObject,
@@ -40,6 +45,9 @@ import {
   queryMatchesTouched,
   touchedNamespacesFromEnvelope,
 } from "./subscriptions";
+import { exportStream } from "./export";
+import { viewDependsOnSubject } from "./tx-permissions";
+import { isTopic, topicAllowed } from "./topics";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { runTransaction } from "./tx-pipeline";
 import { durableObjectSqlExecutor, type SqlValue } from "./tx-sql";
@@ -81,7 +89,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    */
   private readonly subscriptionResults = new Map<
     string,
-    Map<string, QueryResult>
+    Map<string, CachedResult>
   >();
 
   /** Namespaces touched since the current debounce window opened. */
@@ -132,7 +140,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
   /**
    * Applies pending migrations before the object serves any request. Each
    * migration and its `_migrations` row commit in the same transaction, so a
-   * failed boot cannot leave a half-migrated schema.
+   * failed boot cannot leave a half-migrated schema, and each runs with
+   * foreign keys off and checked before commit (see
+   * `applyMigrationWithoutCascades`).
    */
   private async applyMigrations(): Promise<void> {
     assertMigrationOrder();
@@ -160,24 +170,46 @@ export class WorkspaceRoom extends DurableObject<Env> {
         continue;
       }
 
-      this.applyMigration(migration, checksum);
+      await this.applyMigration(migration, checksum);
     }
   }
 
-  private applyMigration(
+  private async applyMigration(
     migration: BundledWorkspaceMigration,
     checksum: string
-  ): void {
-    this.ctx.storage.transactionSync(() => {
-      const sql = this.ctx.storage.sql;
-      sql.exec(migration.sql);
-      sql.exec(
-        `INSERT INTO "_migrations" (id, checksum, applied_at) VALUES (?, ?, ?)`,
-        migration.id,
-        checksum,
-        Date.now()
-      );
-    });
+  ): Promise<void> {
+    const storage = this.ctx.storage;
+    const sql = storage.sql;
+    await applyMigrationWithoutCascades(
+      {
+        run: (statements) => void sql.exec(statements),
+        all: (query) => sql.exec<Record<string, SqlValue>>(query).toArray(),
+        transaction: (fn) => storage.transactionSync(fn),
+        settle: async () => {
+          // Writes made so far in this event sit in an implicit transaction;
+          // syncing them closes it, so the pragma that follows takes effect.
+          if (typeof storage.sync === "function") await storage.sync();
+          else await new Promise((resolve) => setTimeout(resolve, 0));
+        },
+      },
+      migration,
+      () => {
+        sql.exec(
+          `INSERT INTO "_migrations" (id, checksum, applied_at) VALUES (?, ?, ?)`,
+          migration.id,
+          checksum,
+          Date.now()
+        );
+        // Log lines record the app schema they were written under, so recovery
+        // knows which later changes to read them through.
+        if (!isEngineMigration(migration.id)) {
+          sql.exec(
+            `INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('schema_version', ?)`,
+            migration.id
+          );
+        }
+      }
+    );
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -207,6 +239,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
           "method_not_allowed",
           `${request.method} is not supported for ${url.pathname}.`
         );
+      }
+      try {
+        readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(403, error.code, error.message);
+        throw error;
       }
       return this.status();
     }
@@ -244,6 +282,26 @@ export class WorkspaceRoom extends DurableObject<Env> {
         );
       }
       return this.query(request);
+    }
+
+    // Every row the caller may read, as NDJSON, streamed a chunk at a time.
+    if (url.pathname === "/export") {
+      if (request.method !== "GET") {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) {
+          return apiError(statusForQueryError(error.code), error.code, error.message);
+        }
+        throw error;
+      }
+      return new Response(
+        exportStream(durableObjectSqlExecutor(this.ctx.storage), claim, this.workspaceId),
+        { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } }
+      );
     }
 
     // File metadata. Bytes live in R2 and are handled by the Worker; this is
@@ -322,7 +380,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   /**
-   * Runs an InstaQL query against this workspace. The claim is read from the
+   * Runs a query document against this workspace. The claim is read from the
    * Worker-forwarded header; `executeQuery` requires `view` on every requested
    * and traversed namespace before touching SQL.
    */
@@ -469,6 +527,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       case "drag:clear":
         this.handleDragClear(ws, attachment, payload);
         return;
+      case "topic:join":
+        this.handleTopicJoin(ws, attachment, payload);
+        return;
+      case "topic:leave":
+        this.handleTopicLeave(ws, attachment, payload);
+        return;
+      case "topic:send":
+        this.handleTopicSend(ws, attachment, payload);
+        return;
       default:
         this.send(ws, { type: "error", code: "unsupported_message_type" });
     }
@@ -477,7 +544,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
   webSocketClose(ws: WebSocket, code: number, reason: string): void {
     this.dropSubscriptionResults(ws);
     this.removePresence(ws);
-    this.closeSocket(ws, code, reason);
+    // Completes the closing handshake. A client that closes without a status
+    // arrives as 1005 (an abnormal drop as 1006); those codes may not be sent,
+    // and echoing them threw, so the client never got its close frame and
+    // waited out its timeout. Reply 1000 instead.
+    this.closeSocket(ws, sendableCloseCode(code), reason);
   }
 
   webSocketError(ws: WebSocket): void {
@@ -493,6 +564,88 @@ export class WorkspaceRoom extends DurableObject<Env> {
     };
     if ("at" in payload) pong.at = payload.at;
     this.send(ws, pong);
+  }
+
+  // ---- Broadcast topics ------------------------------------------------------
+
+  private topicError(ws: WebSocket, topic: unknown, code: string, message: string): void {
+    this.send(ws, { type: "topic:error", topic: isTopic(topic) ? topic : null, code, message });
+  }
+
+  private handleTopicJoin(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    payload: Record<string, unknown>
+  ): void {
+    const topic = payload.topic;
+    if (!isTopic(topic)) {
+      this.topicError(ws, topic, "invalid_topic", "A topic is 1 to 128 of A-Z a-z 0-9 : _ . -");
+      return;
+    }
+    if (!topicAllowed(claimFromAttachment(attachment, this.workspaceId), topic, "join")) {
+      this.topicError(ws, topic, "permission_denied", `Not allowed to join topic "${topic}".`);
+      return;
+    }
+    const topics = attachment.topics ?? [];
+    if (!topics.includes(topic)) {
+      attachment.topics = [...topics, topic];
+      ws.serializeAttachment(attachment);
+    }
+  }
+
+  private handleTopicLeave(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    payload: Record<string, unknown>
+  ): void {
+    const topic = payload.topic;
+    if (!isTopic(topic)) {
+      this.topicError(ws, topic, "invalid_topic", "A topic is 1 to 128 of A-Z a-z 0-9 : _ . -");
+      return;
+    }
+    const topics = attachment.topics ?? [];
+    if (topics.includes(topic)) {
+      attachment.topics = topics.filter((joined) => joined !== topic);
+      ws.serializeAttachment(attachment);
+    }
+  }
+
+  /**
+   * Delivers to every other socket joined to the topic. The sender need not
+   * be joined; it never receives its own message.
+   */
+  private handleTopicSend(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    payload: Record<string, unknown>
+  ): void {
+    const topic = payload.topic;
+    if (!isTopic(topic) || !("message" in payload)) {
+      this.topicError(ws, topic, "invalid_topic_message", "topic:send needs a topic and a message.");
+      return;
+    }
+    if (!topicAllowed(claimFromAttachment(attachment, this.workspaceId), topic, "send")) {
+      this.topicError(ws, topic, "permission_denied", `Not allowed to send to topic "${topic}".`);
+      return;
+    }
+    const delivery = JSON.stringify({
+      type: "topic:message",
+      topic,
+      message: payload.message,
+      from: { clientId: attachment.clientId, sub: attachment.sub },
+    });
+    const now = Math.floor(Date.now() / 1000);
+    for (const other of this.ctx.getWebSockets?.() ?? []) {
+      if (other === ws) continue;
+      const peer = parseSocketAttachment(other.deserializeAttachment());
+      // A socket whose claim has run out hears nothing more.
+      if (!peer?.topics?.includes(topic) || peer.exp <= now) continue;
+      try {
+        other.send(delivery);
+      } catch {
+        // A closing socket is cleaned up by its close handler.
+      }
+    }
   }
 
   private handlePresenceSet(
@@ -714,11 +867,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     let data: QueryResult;
     let pageInfo: QueryPageInfo;
     try {
-      const compiled = compileQuery(query);
-      authorizeQuery(
-        claimFromAttachment(attachment, this.workspaceId),
-        compiled
-      );
+      const socketClaim = claimFromAttachment(attachment, this.workspaceId);
+      const compiled = compileQuery(query, viewAccess(socketClaim));
+      authorizeQuery(socketClaim, compiled);
       ({ data, pageInfo } = executeCompiledQueryWithPageInfo(
         durableObjectSqlExecutor(this.ctx.storage),
         compiled,
@@ -741,7 +892,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       query as QueryDocument
     );
     ws.serializeAttachment(attachment);
-    this.resultsFor(attachment.clientId).set(id, data);
+    this.resultsFor(attachment.clientId).set(id, { data, pageInfo });
     this.send(ws, {
       type: "query:data",
       id,
@@ -794,10 +945,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
   }
 
-  private resultsFor(clientId: string): Map<string, QueryResult> {
+  private resultsFor(clientId: string): Map<string, CachedResult> {
     let results = this.subscriptionResults.get(clientId);
     if (!results) {
-      results = new Map<string, QueryResult>();
+      results = new Map<string, CachedResult>();
       this.subscriptionResults.set(clientId, results);
     }
     return results;
@@ -834,6 +985,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     const sql = durableObjectSqlExecutor(this.ctx.storage);
     const now = Math.floor(Date.now() / 1000);
+    const runs = new Map<string, SubscriptionRun>();
 
     for (const ws of sockets) {
       const attachment = parseSocketAttachment(ws.deserializeAttachment());
@@ -855,39 +1007,42 @@ export class WorkspaceRoom extends DurableObject<Env> {
       let attachmentChanged = false;
 
       for (const subscription of attachment.subscriptions) {
+        const claim = claimFromAttachment(attachment, this.workspaceId);
         let compiled: CompiledQuery;
         try {
-          compiled = compileQuery(subscription.query);
+          compiled = compileQuery(subscription.query, viewAccess(claim));
         } catch {
           // A subscription stored by an older deployment may no longer
           // compile; leave it registered so the client can resubscribe.
           continue;
         }
-
         if (!queryMatchesTouched(compiled, touched)) continue;
 
-        let data: QueryResult;
-        let pageInfo: QueryPageInfo;
-        try {
-          ({ data, pageInfo } = executeCompiledQueryWithPageInfo(
-            sql,
-            compiled,
-            claimFromAttachment(attachment, this.workspaceId)
-          ));
-        } catch (error) {
-          const txError = error instanceof TxError ? error : null;
+        // Read rules see the caller's role and, for row rules, their subject.
+        // Subscriptions with the same query and the same role (and subject,
+        // when a row rule is involved) get the same answer, so it runs once
+        // per flush and is shared.
+        const bySubject = queriedNamespaces(compiled).some(viewDependsOnSubject);
+        const key = `${bySubject ? attachment.sub : ""}\u0000${attachment.role}\u0000${stableStringify(subscription.query)}`;
+        let run = runs.get(key);
+        if (run === undefined) {
+          run = this.runSubscription(sql, compiled, claim);
+          runs.set(key, run);
+        }
+        if (run.kind === "error") {
           this.send(ws, {
             type: "query:error",
             id: subscription.id,
-            code: txError?.code ?? "internal_error",
-            message: txError?.message ?? errorMessage(error),
+            code: run.code,
+            message: run.message,
           });
           results.delete(subscription.id);
           continue;
         }
+        const { data, pageInfo } = run;
 
         const previous = results.get(subscription.id);
-        results.set(subscription.id, data);
+        results.set(subscription.id, { data, pageInfo });
 
         if (previous === undefined) {
           subscription.seq += 1;
@@ -902,7 +1057,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
           continue;
         }
 
-        const diffs = diffQueryResults(previous, data);
+        const diffs = diffQueryResults(previous.data, data);
         if (diffs === null) {
           subscription.seq += 1;
           this.send(ws, {
@@ -910,15 +1065,29 @@ export class WorkspaceRoom extends DurableObject<Env> {
             id: subscription.id,
             seq: subscription.seq,
             data,
+            pageInfo,
           });
           attachmentChanged = true;
           continue;
         }
 
-        if (diffs.length === 0) continue;
+        // Page metadata moves without row changes too: a row inserted past
+        // the window flips hasMore and moves nextCursor. It rides the first
+        // diff, or an empty one when no row in the window changed.
+        const pageInfoChanged =
+          stableStringify(previous.pageInfo) !== stableStringify(pageInfo);
+        if (diffs.length === 0 && !pageInfoChanged) continue;
+        if (diffs.length === 0) {
+          diffs.push({
+            namespace: Object.keys(data)[0] ?? "",
+            added: [],
+            updated: [],
+            removed: [],
+          });
+        }
 
         subscription.seq += 1;
-        for (const diff of diffs) {
+        for (const [index, diff] of diffs.entries()) {
           const message: QueryDiffMessage = {
             type: "query:diff",
             id: subscription.id,
@@ -927,6 +1096,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
             added: diff.added,
             updated: diff.updated,
             removed: diff.removed,
+            ...(diff.order ? { order: diff.order } : {}),
+            ...(index === 0 && pageInfoChanged ? { pageInfo } : {}),
           };
           this.send(ws, message);
         }
@@ -934,6 +1105,24 @@ export class WorkspaceRoom extends DurableObject<Env> {
       }
 
       if (attachmentChanged) ws.serializeAttachment(attachment);
+    }
+  }
+
+  /** One subscription's re-run for this flush: its result, or why it failed. */
+  private runSubscription(
+    sql: ReturnType<typeof durableObjectSqlExecutor>,
+    compiled: CompiledQuery,
+    claim: RoleClaim
+  ): SubscriptionRun {
+    try {
+      return { kind: "result", ...executeCompiledQueryWithPageInfo(sql, compiled, claim) };
+    } catch (error) {
+      const txError = error instanceof TxError ? error : null;
+      return {
+        kind: "error",
+        code: txError?.code ?? "internal_error",
+        message: txError?.message ?? errorMessage(error),
+      };
     }
   }
 
@@ -1041,25 +1230,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return apiError(400, "invalid_size", "size must be a non-negative number.");
     }
 
-    const now = Date.now();
-    const sql = durableObjectSqlExecutor(this.ctx.storage);
-    sql.exec(
-      `INSERT INTO "${ENGINE_TABLES.files}"
-         ("id", "path", "r2_key", "size", "content_type", "created_at", "updated_at")
-       VALUES (?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT("path") DO UPDATE SET
-         "r2_key" = excluded."r2_key",
-         "size" = excluded."size",
-         "content_type" = excluded."content_type",
-         "updated_at" = excluded."updated_at"`,
-      crypto.randomUUID(),
+    // Logged, not written in place: a row outside the log is lost by a restore
+    // from R2 (see file-index.ts).
+    recordFileEntry(durableObjectSqlExecutor(this.ctx.storage), {
       path,
       key,
       size,
-      typeof contentType === "string" ? contentType : null,
-      now,
-      now
-    );
+      contentType: typeof contentType === "string" ? contentType : null,
+    });
+    await this.scheduleFileFlush();
 
     return json({ ok: true, data: { path, size } }, 201);
   }
@@ -1077,12 +1256,25 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return apiError(400, "invalid_path", "path is required.");
     }
 
-    const sql = durableObjectSqlExecutor(this.ctx.storage);
-    const removed = sql.exec(
-      `DELETE FROM "${ENGINE_TABLES.files}" WHERE "path" = ?`,
+    const removed = forgetFileEntry(
+      durableObjectSqlExecutor(this.ctx.storage),
       path
     );
+    if (removed > 0) await this.scheduleFileFlush();
     return json({ ok: true, removed });
+  }
+
+  /** File-index entries are log rows, so they ship to R2 like any write. */
+  private async scheduleFileFlush(): Promise<void> {
+    try {
+      await this.scheduleNextDurabilityAlarm(Date.now());
+    } catch (error) {
+      // The entry is committed locally; the next write or boot reschedules.
+      console.error("workspace_durability_schedule_failed", {
+        workspaceId: this.workspaceId,
+        error: errorMessage(error),
+      });
+    }
   }
 
   /** Registry snapshot for tooling: API names, attribute types and links. */
@@ -1135,7 +1327,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       .exec<CountRow>(`SELECT COUNT(*) AS total FROM "_tx_log"`)
       .one().total;
     const files = sql
-      .exec<CountRow>(`SELECT COUNT(*) AS total FROM "$files"`)
+      .exec<CountRow>(`SELECT COUNT(*) AS total FROM "${ENGINE_TABLES.files}"`)
       .one().total;
 
     return json({
@@ -1147,6 +1339,29 @@ export class WorkspaceRoom extends DurableObject<Env> {
       counts: { txLog, files },
     });
   }
+}
+
+/** Every namespace a compiled query reads: its levels and their relation filters. */
+function queriedNamespaces(compiled: CompiledQuery): string[] {
+  const namespaces = new Set<string>();
+  const visit = (node: CompiledQuery["nodes"][number]): void => {
+    namespaces.add(node.namespace);
+    for (const reference of node.references) namespaces.add(reference);
+    for (const child of node.children) visit(child.node);
+  };
+  for (const node of compiled.nodes) visit(node);
+  return [...namespaces];
+}
+
+type SubscriptionRun =
+  | { kind: "error"; code: string; message: string }
+  | { kind: "result"; data: QueryResult; pageInfo: QueryPageInfo };
+
+/** Close codes the runtime refuses to send (reserved for local use). */
+const RESERVED_CLOSE_CODES = new Set([1004, 1005, 1006, 1015]);
+
+function sendableCloseCode(code: number): number {
+  return RESERVED_CLOSE_CODES.has(code) || code < 1000 || code > 4999 ? 1000 : code;
 }
 
 /**
@@ -1171,6 +1386,12 @@ function upsertSubscription(
   const created: StoredSubscription = { id, seq: 1, query };
   attachment.subscriptions.push(created);
   return created;
+}
+
+/** A subscription's last result, kept to diff the next one against. */
+interface CachedResult {
+  data: QueryResult;
+  pageInfo: QueryPageInfo;
 }
 
 function errorMessage(error: unknown): string {

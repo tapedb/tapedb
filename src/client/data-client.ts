@@ -1,19 +1,18 @@
 "use client";
 
 /**
- * ndex data client (KAN-394).
+ * The client runtime under `createClient()`.
  *
- * Keeps InstantDB's client surface over one WebSocket per workspace:
- * `useQuery`, `transact`, `tx`, plus native room and storage adapters. Queries are
- * subscribed once per unique query shape, transactions are optimistic and
- * durable via an IndexedDB outbox, and reconnects re-auth + resubscribe.
+ * One WebSocket per workspace carries live queries and presence; writes go
+ * over HTTP. Queries are subscribed once per unique document, writes are
+ * optimistic and durable through an IndexedDB outbox, and reconnects
+ * re-authenticate and resubscribe.
  */
 
 import { id } from "./id";
 import { createStorageClient, type StorageFetch } from "./storage-client";
 import { createOutbox, type Outbox } from "./outbox";
 import { applyOptimisticOps, applyQueryDiff } from "./query-cache";
-import { resolveLink } from "./schema";
 import { QuerySocket, type WebSocketFactory } from "./socket";
 import { cloneJson, stableStringify } from "./stable";
 import type {
@@ -30,13 +29,12 @@ import type {
   QueryState,
   SchemaDefinition,
   ServerMessage,
+  TopicListener,
+  TopicSender,
   TransactInput,
-  TxEntity,
-  TxLinkOp,
   TxOp,
-  TxProxy,
   TxStep,
-  TxUnlinkOp,
+  WriteRejection,
 } from "./types";
 
 const DEFAULT_API_URL = "http://localhost:8787";
@@ -66,6 +64,7 @@ const TERMINAL_AUTH_CODES = new Set([
 ]);
 
 export interface FetchResponseLike {
+  body?: ReadableStream<Uint8Array> | null;
   ok: boolean;
   status: number;
   json(): Promise<unknown>;
@@ -76,7 +75,7 @@ export type FetchLike = (
   init: {
     method: string;
     headers: Record<string, string>;
-    body: string;
+    body?: string;
   }
 ) => Promise<FetchResponseLike>;
 
@@ -88,12 +87,24 @@ export interface ClientDeps {
   now?: () => number;
 }
 
+/** One row of the workspace's file index. */
+export interface StoredFile {
+  id: string;
+  path: string;
+  r2Key: string;
+  size: number;
+  contentType: string | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
 interface ResolvedConfig {
   workspaceId: string;
   apiUrl: string;
   websocketUrl: string;
   getToken: (() => Promise<string>) | null;
   schema?: SchemaDefinition;
+  onWriteRejected?: (rejection: WriteRejection) => void;
 }
 
 interface CacheEntry {
@@ -103,7 +114,15 @@ interface CacheEntry {
   seq: number;
   subId: string;
   listeners: Set<() => void>;
+  /**
+   * Rows loaded per top-level namespace once `loadMore()` has run. The live
+   * subscription is widened to this many rows, so a reconnect re-subscribes
+   * every loaded page instead of resetting to the first, and diffs reach
+   * rows on later pages too.
+   */
+  window?: Record<string, number>;
 }
+
 
 interface CacheSnapshot {
   key: string;
@@ -129,6 +148,26 @@ export class ServerError extends Error {
     this.name = "ServerError";
     this.code = code;
     this.status = status;
+  }
+}
+
+/**
+ * A bulk write that failed after some of its batches committed. `written`
+ * rows are already changed; `cause` is the error that stopped the next batch.
+ * Rerunning the same filter continues where it stopped.
+ */
+export class BulkWriteError extends Error {
+  readonly code: string;
+
+  constructor(
+    readonly written: number,
+    readonly cause: unknown
+  ) {
+    super(
+      `tapedb: bulk write stopped after ${written} rows: ${cause instanceof Error ? cause.message : String(cause)}`
+    );
+    this.name = "BulkWriteError";
+    this.code = isServerError(cause) ? cause.code : "bulk_write_failed";
   }
 }
 
@@ -207,7 +246,7 @@ function normalizeOps(input: TransactInput): TxOp[] {
       ops.push(value);
       return;
     }
-    throw new Error("tapedb-data: transact() received an invalid operation.");
+    throw new Error("tapedb: transact() received an invalid operation.");
   };
 
   for (const item of input) visit(item);
@@ -257,13 +296,13 @@ function createDevTokenProvider(apiUrl: string, workspaceId: string) {
     });
     if (!response.ok) {
       throw new Error(
-        `tapedb-data: no getToken provided and the dev claim route returned ${response.status}. ` +
+        `tapedb: no getToken provided and the dev claim route returned ${response.status}. ` +
           `Pass init({ getToken: () => Promise<string> }) for production.`
       );
     }
     const body = (await response.json()) as { token?: unknown };
     if (typeof body.token !== "string") {
-      throw new Error("tapedb-data: dev claim route returned no token.");
+      throw new Error("tapedb: dev claim route returned no token.");
     }
     return body.token;
   };
@@ -281,81 +320,11 @@ function resolveConfig(config: InitConfig): ResolvedConfig {
     websocketUrl,
     getToken: config.getToken ?? createDevTokenProvider(apiUrl, workspaceId),
     schema: config.schema,
+    onWriteRejected: config.onWriteRejected,
   };
-}
-
-function single(op: TxOp): TxStep {
-  return { ops: [op], op };
-}
-
-function linkStep(
-  schema: SchemaDefinition | undefined,
-  namespace: string,
-  entityId: string,
-  links: Record<string, string>,
-  op: "link" | "unlink"
-): TxStep {
-  const entries = Object.entries(links);
-  if (entries.length === 0) {
-    throw new Error(`tapedb-data: ${op}() requires at least one link.`);
-  }
-
-  const ops = entries.map(([label, targetId]) => {
-    const resolved = resolveLink(schema, namespace, label);
-    const wireOp: TxLinkOp | TxUnlinkOp = {
-      op,
-      namespace,
-      id: entityId,
-      link: resolved.apiName,
-      targetId,
-    };
-    return wireOp;
-  });
-
-  return { ops, op: ops[0]! };
-}
-
-function createTxEntity(
-  schema: SchemaDefinition | undefined,
-  namespace: string,
-  entityId: string
-): TxEntity {
-  return {
-    update(values) {
-      return single({ op: "update", namespace, id: entityId, values });
-    },
-    merge(values) {
-      return single({ op: "merge", namespace, id: entityId, values });
-    },
-    delete() {
-      return single({ op: "delete", namespace, id: entityId });
-    },
-    link(links) {
-      return linkStep(schema, namespace, entityId, links, "link");
-    },
-    unlink(links) {
-      return linkStep(schema, namespace, entityId, links, "unlink");
-    },
-  };
-}
-
-export function createTxProxy(schema: SchemaDefinition | undefined): TxProxy {
-  return new Proxy({} as TxProxy, {
-    get(_target, namespace) {
-      if (typeof namespace !== "string") return undefined;
-
-      return new Proxy({} as Record<string, TxEntity>, {
-        get(_entityTarget, entityId) {
-          if (typeof entityId !== "string") return undefined;
-          return createTxEntity(schema, namespace, entityId);
-        },
-      });
-    },
-  });
 }
 
 class DataClientImpl {
-  readonly tx: TxProxy;
 
   private readonly config: ResolvedConfig;
   private readonly fetchImpl: FetchLike;
@@ -382,6 +351,7 @@ class DataClientImpl {
   /** Unacked optimistic ops, replayed over server data until they are acked. */
   private readonly pendingOps = new Map<string, readonly TxOp[]>();
   private readonly presencePeers = new Map<string, PresencePeer[]>();
+  private readonly topicListeners = new Map<string, Set<TopicListener>>();
   private readonly presenceListeners = new Map<
     string,
     Set<(peers: PresencePeer[]) => void>
@@ -399,7 +369,6 @@ class DataClientImpl {
     this.createWebSocket = deps.createWebSocket;
     this.outbox = deps.outbox ?? createOutbox();
     this.now = deps.now ?? (() => Date.now());
-    this.tx = createTxProxy(this.config.schema);
 
     if (
       typeof window !== "undefined" &&
@@ -421,9 +390,14 @@ class DataClientImpl {
     }
   }
 
-  async transact(input: TransactInput): Promise<void> {
+  /**
+   * Applies ops optimistically, queues them, and sends them. Resolves to
+   * "applied" once the engine acknowledged them, or "queued" when the send
+   * failed transiently and the outbox will retry. Permanent refusals reject.
+   */
+  async transact(input: TransactInput): Promise<"applied" | "queued"> {
     const ops = normalizeOps(input);
-    if (ops.length === 0) return;
+    if (ops.length === 0) return "applied";
 
     const problem = this.configProblem();
     if (problem) {
@@ -439,6 +413,10 @@ class DataClientImpl {
       workspaceId: this.config.workspaceId,
       ops: ops.map((op) => cloneJson(op)),
       createdAt: this.now(),
+      // Persisted with the entry before the first send. A retry reuses the
+      // clientTxId, whose receipt the engine keeps for good, so it is applied
+      // at most once however many attempts it takes.
+      attempts: 1,
     };
 
     const snapshot = this.snapshot();
@@ -462,6 +440,7 @@ class DataClientImpl {
       this.pendingOps.delete(clientTxId);
       this.retryAttempt = 0;
       this.clearRetryTimer();
+      return "applied";
     } catch (error) {
       if (isServerError(error) && !isRetryableServerError(error)) {
         try {
@@ -475,9 +454,158 @@ class DataClientImpl {
       // Transient (network, 5xx, 408, 429) or a rejected-after-retry write:
       // keep the optimistic state and the outbox entry so a later flush lands it.
       this.scheduleRetry();
+      return "queued";
     } finally {
       this.inFlight.delete(clientTxId);
     }
+  }
+
+  /**
+   * A bulk write: sent straight to the engine, which resolves the rows it
+   * matches. Not optimistic and not queued — the cache cannot know what the
+   * filter matches, and an offline queue would replay it against a different
+   * database than the one the caller was looking at.
+   *
+   * The engine writes one batch of rows per transaction, in id order, and
+   * returns a cursor while rows remain; this sends batch after batch until
+   * none do. A failure stops at a batch boundary: the batches before it are
+   * committed, and the error says how many rows they wrote.
+   */
+  async bulk(op: TxOp): Promise<{ count: number }> {
+    const problem = this.configProblem();
+    if (problem) throw new Error(problem);
+
+    let count = 0;
+    let after: string | undefined;
+    for (;;) {
+      const entry: OutboxEntry = {
+        clientTxId: id(),
+        txId: id(),
+        workspaceId: this.config.workspaceId,
+        ops: [after === undefined ? op : ({ ...op, after } as TxOp)],
+        createdAt: this.now(),
+      };
+      let result: Awaited<ReturnType<DataClientImpl["sendTransaction"]>>;
+      try {
+        result = await this.sendTransaction(entry);
+      } catch (error) {
+        if (count === 0) throw error;
+        throw new BulkWriteError(count, error);
+      }
+      // Live queries refresh through the engine's invalidation; a one-shot
+      // read after this call sees the new rows because it goes to the engine.
+      count += result?.matched?.[0] ?? 0;
+      const next = result?.more?.[0];
+      if (typeof next !== "string") return { count };
+      // Ids only grow along the batches; a cursor that does not would loop.
+      if (after !== undefined && next <= after) {
+        throw new BulkWriteError(count, new Error(`The engine returned a cursor (${next}) that does not advance.`));
+      }
+      after = next;
+    }
+  }
+
+  /**
+   * The workspace export, one parsed NDJSON record at a time, read from the
+   * response stream as it arrives rather than buffered.
+   */
+  async *exportRecords(): AsyncGenerator<Record<string, unknown>> {
+    const problem = this.configProblem();
+    if (problem) throw new Error(problem);
+
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/export`,
+      { method: "GET", headers: { authorization: `Bearer ${token}` } }
+    );
+    const body = (response as { body?: ReadableStream<Uint8Array> | null }).body;
+    if (!response.ok || !body) {
+      const payload = await response.json().catch(() => null);
+      const error = readServerError(payload);
+      throw new ServerError(
+        error?.code ?? "http_error",
+        error?.message ?? `Export failed with HTTP ${response.status}.`,
+        response.status
+      );
+    }
+
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffered = "";
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        buffered += done ? decoder.decode() : decoder.decode(value, { stream: true });
+        let newline = buffered.indexOf("\n");
+        while (newline !== -1) {
+          const line = buffered.slice(0, newline);
+          buffered = buffered.slice(newline + 1);
+          if (line.trim()) yield JSON.parse(line) as Record<string, unknown>;
+          newline = buffered.indexOf("\n");
+        }
+        if (done) break;
+      }
+      if (buffered.trim()) yield JSON.parse(buffered) as Record<string, unknown>;
+    } finally {
+      reader.releaseLock();
+    }
+  }
+
+  /** One-shot read over HTTP: no socket, no cache, no live updates. */
+  async queryOnce(
+    query: QueryDocument
+  ): Promise<{ data: QueryResult; pageInfo: QueryPageInfo }> {
+    const problem = this.configProblem();
+    if (problem) throw new Error(problem);
+
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/query`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ query }),
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as {
+      ok?: boolean;
+      data?: QueryResult;
+      pageInfo?: QueryPageInfo;
+    } | null;
+    if (!response.ok || payload?.ok !== true || payload.data === undefined) {
+      const error = readServerError(payload);
+      throw new ServerError(
+        error?.code ?? "http_error",
+        error?.message ?? `Query failed with HTTP ${response.status}.`,
+        response.status
+      );
+    }
+    return { data: payload.data, pageInfo: payload.pageInfo ?? {} };
+  }
+
+  /** The workspace's file index. */
+  async listFiles(): Promise<StoredFile[]> {
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/files`,
+      { method: "GET", headers: { authorization: `Bearer ${token}` } }
+    );
+    const payload = (await response.json().catch(() => null)) as {
+      ok?: boolean;
+      data?: StoredFile[];
+    } | null;
+    if (!response.ok || payload?.ok !== true || !Array.isArray(payload.data)) {
+      const error = readServerError(payload);
+      throw new ServerError(
+        error?.code ?? "http_error",
+        error?.message ?? `Listing files failed with HTTP ${response.status}.`,
+        response.status
+      );
+    }
+    return payload.data;
   }
 
   subscribeQuery(query: QueryDocument, listener: () => void): () => void {
@@ -595,6 +723,38 @@ class DataClientImpl {
     };
   }
 
+  /**
+   * Listens on a broadcast topic. The socket joins the topic with the first
+   * listener and leaves it with the last, and rejoins after a reconnect.
+   */
+  subscribeTopic(topic: string, listener: TopicListener): () => void {
+    let listeners = this.topicListeners.get(topic);
+    if (!listeners) {
+      listeners = new Set();
+      this.topicListeners.set(topic, listeners);
+    }
+    listeners.add(listener);
+    this.ensureSocket();
+    if (listeners.size === 1) this.socket?.send({ type: "topic:join", topic });
+
+    return () => {
+      const current = this.topicListeners.get(topic);
+      if (!current?.delete(listener) || current.size > 0) return;
+      this.topicListeners.delete(topic);
+      this.socket?.send({ type: "topic:leave", topic });
+    };
+  }
+
+  /**
+   * Sends to everyone else joined to `topic`. Fire-and-forget: returns false
+   * when the socket is not open, and the message is dropped rather than
+   * delivered late.
+   */
+  sendTopic(topic: string, message: unknown): boolean {
+    this.ensureSocket();
+    return this.socket?.send({ type: "topic:send", topic, message }) ?? false;
+  }
+
   async connect(): Promise<void> {
     const problem = this.configProblem();
     if (problem) {
@@ -605,7 +765,7 @@ class DataClientImpl {
     this.authFailures = 0;
     this.ensureSocket();
     if (!this.socket) {
-      throw new Error("tapedb-data: WebSocket is not available.");
+      throw new Error("tapedb: WebSocket is not available.");
     }
     await this.socket.connect();
   }
@@ -637,7 +797,7 @@ class DataClientImpl {
       this.failPage(
         id,
         new Error(
-          "tapedb-data: client closed while waiting for the next page."
+          "tapedb: client closed while waiting for the next page."
         )
       );
     }
@@ -657,10 +817,10 @@ class DataClientImpl {
 
   private configProblem(): string | null {
     if (!this.config.workspaceId) {
-      return "tapedb-data: missing workspaceId. Pass init({ workspaceId }) or set NEXT_PUBLIC_NDEX_WORKSPACE_ID.";
+      return "tapedb: missing workspace. Pass createClient({ workspace }).";
     }
     if (!this.config.getToken) {
-      return "tapedb-data: missing getToken. Pass init({ getToken: () => Promise<string> }).";
+      return "tapedb: missing getToken. Pass createClient({ getToken: () => Promise<string> }).";
     }
     return null;
   }
@@ -696,8 +856,29 @@ class DataClientImpl {
     this.socket?.send({
       type: "query:subscribe",
       id: entry.subId,
-      query: entry.query,
+      query: this.liveDocument(entry),
     });
+  }
+
+  /**
+   * The query the live subscription actually runs: the caller's query, with
+   * each paged namespace's limit widened to the rows already loaded. The cache
+   * key stays the caller's query, so `useQuery` callers are unaffected.
+   */
+  private liveDocument(entry: CacheEntry): QueryDocument {
+    if (!entry.window) return entry.query;
+
+    const document: QueryDocument = { ...entry.query };
+    for (const [namespace, rows] of Object.entries(entry.window)) {
+      const node = entry.query[namespace];
+      if (!isRecord(node)) continue;
+      const options: QueryOptions = isRecord(node.$) ? node.$ : {};
+      // However many rows are loaded: the engine reads a wide window in
+      // bounded chunks, so the subscription can cover every loaded page.
+      const limit = Math.max(rows, typeof options.limit === "number" ? options.limit : 0);
+      document[namespace] = { ...node, $: { ...options, limit } };
+    }
+    return document;
   }
 
   private resubscribeAll(): void {
@@ -749,7 +930,7 @@ class DataClientImpl {
     this.ensureSocket();
     const socket = this.socket;
     if (!socket) {
-      throw new Error("tapedb-data: WebSocket is not available.");
+      throw new Error("tapedb: WebSocket is not available.");
     }
     await socket.connect();
 
@@ -759,7 +940,7 @@ class DataClientImpl {
         this.failPage(
           id,
           new Error(
-            "tapedb-data: loadMore() timed out waiting for the next page."
+            "tapedb: loadMore() timed out waiting for the next page."
           )
         );
       }, LOAD_MORE_TIMEOUT_MS);
@@ -769,7 +950,7 @@ class DataClientImpl {
     if (!socket.send({ type: "query:subscribe", id, query: document })) {
       this.failPage(
         id,
-        new Error("tapedb-data: loadMore() could not send on the socket.")
+        new Error("tapedb: loadMore() could not send on the socket.")
       );
     }
 
@@ -830,6 +1011,17 @@ class DataClientImpl {
 
     entry.state = next;
     this.notify(entry);
+
+    // Widen the live subscription to everything now loaded. The engine
+    // answers with the same rows (plus anything that changed meanwhile), and
+    // from then on a reconnect restores this window and diffs cover it.
+    const window = { ...(entry.window ?? {}) };
+    for (const namespace of Object.keys(message.data)) {
+      const rows = data[namespace];
+      if (Array.isArray(rows)) window[namespace] = rows.length;
+    }
+    entry.window = window;
+    if (entry.listeners.size > 0) this.sendSubscribe(entry);
     return true;
   }
 
@@ -855,6 +1047,9 @@ class DataClientImpl {
         this.authFailures = 0;
         this.resubscribeAll();
         this.republishPresence();
+        for (const topic of this.topicListeners.keys()) {
+          this.socket?.send({ type: "topic:join", topic });
+        }
         void this.flushOutbox();
       },
       onMessage: (message) => this.handleServerMessage(message),
@@ -907,6 +1102,27 @@ class DataClientImpl {
 
   private handleServerMessage(message: ServerMessage): void {
     switch (message.type) {
+      case "topic:message": {
+        const from: TopicSender = { clientId: message.from.clientId, userId: message.from.sub };
+        for (const listener of [...(this.topicListeners.get(message.topic) ?? [])]) {
+          try {
+            listener.message(message.message, from);
+          } catch {
+            // One listener's error must not keep the message from the rest.
+          }
+        }
+        return;
+      }
+      case "topic:error": {
+        const targets =
+          message.topic === null
+            ? [...this.topicListeners.values()].flatMap((set) => [...set])
+            : [...(this.topicListeners.get(message.topic) ?? [])];
+        for (const listener of targets) {
+          listener.error?.({ code: message.code, message: message.message });
+        }
+        return;
+      }
       case "presence:update": {
         this.presencePeers.set(message.target, message.peers);
         this.notifyPresence(message.target);
@@ -947,10 +1163,14 @@ class DataClientImpl {
         const entry = this.entryBySubId(message.id);
         if (!entry || entry.state.data === null) return;
         entry.seq = message.seq;
+        // A diff without pageInfo leaves it as it was; dropping it here is
+        // what made loadMore() stop after the first live change.
+        const pageInfo = message.pageInfo ?? entry.state.pageInfo;
         entry.state = {
           data: applyQueryDiff(entry.state.data, message),
           isLoading: false,
           error: null,
+          ...(pageInfo === undefined ? {} : { pageInfo }),
         };
         this.notify(entry);
         return;
@@ -1057,7 +1277,24 @@ class DataClientImpl {
     }
   }
 
-  private async sendTransaction(entry: OutboxEntry): Promise<void> {
+  private reportRejection(entry: OutboxEntry, error: ServerError): void {
+    const listener = this.config.onWriteRejected;
+    if (!listener) return;
+    try {
+      listener({
+        clientTxId: entry.clientTxId,
+        ops: entry.ops,
+        code: error.code,
+        message: error.message,
+      });
+    } catch {
+      // A throwing listener must not stall the rest of the queue.
+    }
+  }
+
+  private async sendTransaction(
+    entry: OutboxEntry
+  ): Promise<{ seq?: number; applied?: number; matched?: Record<number, number>; more?: Record<number, string> } | null> {
     const token = await this.requireToken();
     const response = await this.fetchImpl(
       `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/transact`,
@@ -1097,11 +1334,15 @@ class DataClientImpl {
         response.status
       );
     }
+
+    const result = (payload as { result?: unknown }).result;
+    if (!isRecord(result)) return null;
+    return result as { seq?: number; applied?: number; matched?: Record<number, number>; more?: Record<number, string> };
   }
 
   private async requireToken(): Promise<string> {
     if (!this.config.getToken) {
-      throw new Error("tapedb-data: missing getToken.");
+      throw new Error("tapedb: missing getToken.");
     }
     return this.config.getToken();
   }
@@ -1115,8 +1356,17 @@ class DataClientImpl {
 
       this.pendingOps.set(entry.clientTxId, entry.ops);
 
+      // Anything already in the outbox may have reached the server. Count the
+      // attempt before sending, so the retry is marked even across a crash.
+      // An entry from an older client has no count and is treated as a retry.
+      const attempt: OutboxEntry = {
+        ...entry,
+        attempts: (entry.attempts ?? 1) + 1,
+      };
+
       try {
-        await this.sendTransaction(entry);
+        await this.outbox.add(attempt).catch(() => undefined);
+        await this.sendTransaction(attempt);
         await this.outbox.remove(entry.clientTxId);
         this.pendingOps.delete(entry.clientTxId);
         this.retryAttempt = 0;
@@ -1126,6 +1376,7 @@ class DataClientImpl {
           this.pendingOps.delete(entry.clientTxId);
           // The optimistic row will not be reconciled by a push; refetch.
           this.resubscribeAll();
+          this.reportRejection(entry, error);
           continue;
         }
         // Transient (network, 5xx, 408, 429): keep the entry and back off.
@@ -1166,7 +1417,8 @@ class DataClientImpl {
  * Framework-free client. Everything except the hook: usable from a Worker, a
  * Node script, a Svelte store or a test.
  */
-export type HeadlessDataClient = Omit<DataClient, "useQuery">;
+/** The runtime facade the model client and the tests drive. */
+export type HeadlessDataClient = DataClient;
 
 export function createClientParts(
   config: InitConfig,
@@ -1177,28 +1429,20 @@ export function createClientParts(
 
   const client: HeadlessDataClient = {
     transact: (input) => impl.transact(input),
-    tx: impl.tx,
     get files() {
       return createStorageClient({
         apiUrl: resolved.apiUrl,
         workspaceId: resolved.workspaceId,
-        getToken: async () => {
-          if (!config.getToken) throw new Error("Storage requires getToken.");
-          return config.getToken();
+        // The resolved provider, not config.getToken: without it uploads were
+        // the one part of the client that could not run under `tapedb dev`.
+        getToken: () => {
+          const provider = resolved.getToken;
+          if (!provider) throw new Error("tapedb: storage needs a workspace and an API URL.");
+          return provider();
         },
         fetch: deps.storageFetch,
       });
     },
-    storage: (appId) =>
-      createStorageClient({
-        apiUrl: resolved.apiUrl,
-        appId,
-        getToken: async () => {
-          if (!config.getToken) throw new Error("Storage requires getToken.");
-          return config.getToken();
-        },
-        fetch: deps.storageFetch,
-      }),
     room: (target) => {
       if (!target.trim()) throw new Error("Room target must not be empty.");
       return {
@@ -1239,10 +1483,4 @@ export function createHeadlessClient(
   return createClientParts(config, deps).client;
 }
 
-/** Exported for the React binding, which needs the same instance's hook. */
 export { DataClientImpl };
-
-/** Creates a workspace engine client with native room and storage adapters. */
-export function init(config: InitConfig): HeadlessDataClient {
-  return createHeadlessClient(config);
-}

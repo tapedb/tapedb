@@ -3,7 +3,7 @@ import { defineConfig } from "tsup";
 export default defineConfig({
   entry: {
     index: "src/index.ts",
-    schema: "src/schema.ts",
+    schema: "src/schema-entry.ts",
     react: "src/react/index.ts",
     worker: "src/worker/index.ts",
     cli: "src/cli/index.ts",

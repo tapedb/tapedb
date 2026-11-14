@@ -55,10 +55,10 @@ export interface SnapshotOptions {
   /** Snapshot prefixes to keep, including the one just written. Defaults to 2. */
   retention?: number;
   /**
-   * How far below the snapshot base a covered log segment is retained for
-   * idempotency keys. Defaults to `DEDUPE_HORIZON_SEQ`; 0 prunes immediately.
+   * Covered replay-log sequences retained below a snapshot. Transaction
+   * receipts are kept independently. Defaults to `LOG_RETENTION_SEQ`.
    */
-  dedupeHorizonSeq?: number;
+  retainLogSequences?: number;
 }
 
 export interface SnapshotResult {
