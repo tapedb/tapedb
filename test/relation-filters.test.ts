@@ -344,9 +344,10 @@ describe("depth", () => {
     };
 
     let seedValue = 7;
+    // The high bits: a power-of-two LCG's low bits cycle quickly.
     const random = (n: number) => {
       seedValue = (seedValue * 1103515245 + 12345) % 2147483648;
-      return seedValue % n;
+      return Math.floor((seedValue / 2147483648) * n);
     };
 
     type Filter = Record<string, unknown>;

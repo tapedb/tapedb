@@ -225,7 +225,7 @@ export interface TxPatchManyOp {
   namespace: string;
   where: Record<string, unknown>;
   values: Record<string, unknown>;
-  /** Resume after this id: the engine's `more` cursor from the previous batch. */
+  /** Resume after this id (engines before one-transaction bulk writes returned a cursor). */
   after?: string;
 }
 

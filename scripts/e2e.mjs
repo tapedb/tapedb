@@ -340,6 +340,15 @@ async function wipeStagingObjects() {
     migrations: [...wipe.migrations, { tag: `drill-${run}-recreate`, new_sqlite_classes: ["WorkspaceRoom"] }],
   };
   await redeployStaging();
+  // The wipe Worker answers 503 to everything, and a new version takes a
+  // moment to replace it everywhere: wait until it is gone for good.
+  let streak = 0;
+  for (let waited = 0; streak < 10; waited += 1000) {
+    if (waited > 180_000) throw new Error("the wipe Worker kept answering after the redeploy");
+    const status = await fetch(`${base}/status`).then((response) => response.status).catch(() => 0);
+    streak = status === 200 ? streak + 1 : 0;
+    await sleep(1000);
+  }
   console.log("  drill: class recreated, empty");
 }
 
@@ -429,6 +438,25 @@ async function exported(db) {
   };
 }
 
+/**
+ * Waits until a workspace's log has reached R2 up to its last write (and,
+ * with `snapshot`, until a snapshot exists), from the room's own status, so
+ * a drill never wipes storage that is still only local.
+ */
+async function durable(workspaceId, { snapshot = false } = {}) {
+  const deadline = Date.now() + 300_000;
+  for (;;) {
+    const { token } = await (
+      await fetch(`${base}/_tapedb/claim`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId }) })
+    ).json();
+    const status = await (await fetch(`${base}/engine/workspaces/${workspaceId}/status`, { headers: { authorization: `Bearer ${token}` } })).json();
+    const state = status.durability;
+    if (state && state.flushedSeq >= state.seq && (!snapshot || state.snapshotSeq > 0)) return state;
+    if (Date.now() > deadline) throw new Error(`workspace ${workspaceId} is not durable in R2: ${JSON.stringify(state ?? status)}`);
+    await sleep(2000);
+  }
+}
+
 async function transact(body) {
   const { token } = await (
     await fetch(`${base}/_tapedb/claim`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId: WORKSPACE }) })
@@ -470,13 +498,15 @@ async function drills() {
   await doomed.$files.upload(new Blob(["erase me"], { type: "text/plain" }), { path: "erase/me.txt" });
   doomed.$close();
   console.log("  drill: seeded 31,103 rows (and a workspace to erase); waiting for the durability alarm to flush and snapshot");
-  await sleep(40_000);
+  await durable(WORKSPACE, { snapshot: true });
+  await durable(erasedId);
   // Writes after the snapshot, replayed from log segments on recovery.
   for (let n = 0; n < 5; n += 1) await db.task.create({ data: { title: `late${n}` } });
   // One transaction over every task: its log entry is larger than a row, so it
   // is stored in parts and flushed as its own object, then replayed part by part.
   assert.deepEqual(await db.task.updateMany({ where: {}, data: { done: true } }), { count: 31_106 });
-  await sleep(40_000);
+  const flushed = await durable(WORKSPACE);
+  console.log(`  drill: log in R2 through seq ${flushed.flushedSeq} (snapshot at ${flushed.snapshotSeq})`);
   db.$close();
 
   // Rebuild of a referenced table (board <- column, cascade) with data in it.
