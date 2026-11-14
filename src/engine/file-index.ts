@@ -25,6 +25,8 @@ export interface FilePutOp {
   key: string;
   size: number;
   contentType: string | null;
+  /** The uploader's claim subject. Absent in entries logged before 0.1. */
+  uploadedBy?: string | null;
 }
 
 export interface FileForgetOp {
@@ -39,6 +41,7 @@ export interface FileRecord {
   key: string;
   size: number;
   contentType: string | null;
+  uploadedBy?: string | null;
 }
 
 /** True when a logged op list is a file-index entry rather than a client tx. */
@@ -72,18 +75,20 @@ export function applyFileOps(
     if (op.op === "file:put") {
       changed += sql.exec(
         `INSERT INTO "${ENGINE_TABLES.files}"
-           ("id", "path", "r2_key", "size", "content_type", "created_at", "updated_at")
-         VALUES (?, ?, ?, ?, ?, ?, ?)
+           ("id", "path", "r2_key", "size", "content_type", "uploaded_by", "created_at", "updated_at")
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT("path") DO UPDATE SET
            "r2_key" = excluded."r2_key",
            "size" = excluded."size",
            "content_type" = excluded."content_type",
+           "uploaded_by" = excluded."uploaded_by",
            "updated_at" = excluded."updated_at"`,
         op.id,
         op.path,
         op.key,
         op.size,
         op.contentType,
+        op.uploadedBy ?? null,
         at,
         at
       );
@@ -130,6 +135,7 @@ export function recordFileEntry(
         key: record.key,
         size: record.size,
         contentType: record.contentType,
+        ...(record.uploadedBy ? { uploadedBy: record.uploadedBy } : {}),
       },
     ],
     actor

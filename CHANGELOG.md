@@ -7,6 +7,12 @@ published.
 
 ### Added
 
+- Per-file access rules: `schema(models, { files: { read, write, delete } })`
+  with `role()`, `fileCheck()` over the caller and the file, or
+  `attachedTo(model, path => id)` to make a file follow its row's rules. The
+  workspace decides every file operation before bytes move and lists only
+  readable files. The index records each file's uploader (`uploadedBy`,
+  engine migration `tapedb_0006_file_uploader`).
 - A workspace's status reports `durability`: its last sequence, how far the
   log has reached R2, the snapshot base and the last flush error.
 - Real CI for the frozen install, typecheck, tests, build, package smoke and a
@@ -18,6 +24,10 @@ published.
 
 ### Fixed
 
+- `executeQuery` compiled the caller's read rules but ran the query without
+  them, so a `filter()` or `check()` read rule did not hide rows. No route
+  used it (routes use `executeQueryWithPageInfo`, which was correct); it now
+  applies the rules.
 - A transaction log entry over 10 MB could never reach R2: its multipart
   upload cut parts at line ends, so they differed in size, and R2 refuses
   that. Parts are now cut at exactly 5 MiB of encoded bytes.

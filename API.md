@@ -39,10 +39,19 @@ then records the new surface with `bun run api:update`.
 
 ## `tapedb/schema` — stable
 
-`schema`, `model`, `t` (field builders), `role`, `filter`, `check`, and the
-types `Schema`, `Row`, `Where`, `FieldFilter`, `OrderBy`, `Include`,
-`CreateData`, `UpdateData`, `DeleteBehaviour`, `ScalarKind`, `Access`,
-`AccessAuth`, `CheckContext`.
+`schema`, `model`, `t` (field builders), `role`, `filter`, `check`,
+`fileCheck`, `attachedTo`, and the types `Schema`, `Row`, `Where`,
+`FieldFilter`, `OrderBy`, `Include`, `CreateData`, `UpdateData`,
+`DeleteBehaviour`, `ScalarKind`, `Access`, `AccessAuth`, `CheckContext`,
+`FileAccess`, `FileCheckContext`, `FileInfo`.
+
+`schema(models, { files? })`: `files` is `{ read?, write?, delete? }`, each a
+`role(...)`, `fileCheck(({ auth, file, existing }) => boolean)` or
+`attachedTo(model, (path) => id | null)`. `file` is a `FileInfo`
+(`{ path, size, contentType, uploadedBy }`; for a write, the incoming file,
+and `existing` the one it replaces). `attachedTo` reads need the row readable
+by the caller; writes and deletes need the caller allowed to update it. Defaults:
+read `member`, write and delete `editor`. A rule that throws denies.
 
 ## `tapedb` — client
 
@@ -82,7 +91,7 @@ On the client itself:
 | Member | |
 | --- | --- |
 | `$transaction(writes)` | several writes, applied atomically → `Promise<WriteResult[]>` |
-| `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject` (any size: past 16 MiB it goes up as a multipart upload of 16 MiB parts, abandoned if a part fails), `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` |
+| `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject` (any size: past 16 MiB it goes up as a multipart upload of 16 MiB parts, abandoned if a part fails), `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` (the files the caller may read, each with `uploadedBy`) |
 | `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `subscribe(listener)` with `PresencePeer[]`, `leave()` |
 | `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean` (false, and dropped, when the socket is not open), `subscribe((message, from) => …, { onError? })`, which never hears your own messages; never stored, never delivered late |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
@@ -164,7 +173,7 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `PUT …/files/:path?uploadId=…&partNumber=n` | store part n (1–10000, at most `MAX_UPLOAD_BYTES`; all but the last the same size, at least 5 MiB) → `{ partNumber, etag }` |
 | `POST …/files/:path?uploadId=…` | `{ parts: [{ partNumber, etag }] }` completes it and records the file, like a `PUT` → 201 `{ key, size }` |
 | `DELETE …/files/:path?uploadId=…` | abandon it (R2 also drops unfinished uploads after 7 days). Nothing is listed or readable before completion |
-| `GET /engine/workspaces/:id/files` | the file index; MEMBER or higher. The index changes only through the byte routes (other methods: 405) |
+| `GET /engine/workspaces/:id/files` | the file index; MEMBER or higher, or with file rules any claim, filtered to readable files. The index changes only through the byte routes (other methods: 405) |
 | `GET /engine/workspaces/:id/websocket` | the live socket (below) |
 
 **Retries.** A transaction with `clientTxId` is applied at most once: a retry
