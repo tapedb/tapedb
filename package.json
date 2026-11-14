@@ -1,11 +1,17 @@
 {
   "name": "tapedb",
-  "version": "0.0.0-development",
+  "version": "0.1.0",
   "private": true,
   "description": "A log-structured database for Cloudflare Durable Objects. One SQLite database per workspace, transactions appended to a tape, replayed from R2 on cold start, with live queries and an offline-capable client.",
   "license": "MIT",
   "type": "module",
   "sideEffects": false,
+  "homepage": "https://tapedb.dev",
+  "packageManager": "bun@1.4.4",
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/tapedb/tapedb.git"
@@ -22,7 +28,7 @@
     "offline-first",
     "sync"
   ],
-  "files": ["dist", "README.md", "PRIVACY.md", "LICENSE"],
+  "files": ["dist", "README.md", "PRIVACY.md", "SECURITY.md", "LIMITATIONS.md", "RELEASING.md", "LICENSE"],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -76,6 +82,6 @@
     "typescript": "^5.7.2"
   },
   "engines": {
-    "node": ">=20"
+    "node": ">=22.18.0"
   }
 }

@@ -1,0 +1,54 @@
+name: Bug report
+description: Report a reproducible defect
+title: "[bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include claim tokens, `TAPEDB_CLAIM_SECRET`, Cloudflare credentials, customer data or personal data. Report security issues privately through the Security tab, not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: The package version, or the commit SHA you tested.
+      placeholder: "0.1.0 / abc1234"
+    validations:
+      required: true
+  - type: dropdown
+    id: environment
+    attributes:
+      label: Environment
+      options:
+        - Local Bun tests
+        - Local `tapedb dev`
+        - Workerd / Wrangler
+        - Deployed Cloudflare Worker
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: The smallest schema and request or script that shows the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behaviour
+      description: Include the error code and relevant logs with secrets redacted.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Node/Bun version, browser, Durable Object limits, or anything else that narrows it down.
