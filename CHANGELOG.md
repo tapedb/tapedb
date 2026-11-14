@@ -31,6 +31,13 @@ published.
 
 ### Changed
 
+- Files of any size upload. `$files.upload` sends files past 16 MiB as an R2
+  multipart upload in 16 MiB parts, through new `?uploads` / `?uploadId=`
+  forms of the file route, and abandons the upload if a part fails. One
+  request still carries at most 25 MiB (`MAX_UPLOAD_BYTES`). Oversized
+  requests now answer `upload_too_large` instead of `file_too_large`, and
+  the client's `MAX_STORAGE_UPLOAD_BYTES` is replaced by `UPLOAD_PART_BYTES`.
+
 - `updateMany` and `deleteMany` are queued offline and applied optimistically,
   like single-row writes: the cache changes the rows it holds that certainly
   match (a three-valued local evaluation of the filter, checked against the

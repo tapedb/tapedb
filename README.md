@@ -338,8 +338,8 @@ room.cursor({ x, y });
 const stop = room.subscribe((peers) => render(peers));
 ```
 
-File bytes live in the `FILES` bucket (25 MB cap, member read / editor
-write); their index is written through the transaction log, so a restore
+File bytes live in the `FILES` bucket (any size, uploaded in parts past
+16 MiB; member read / editor write); their index is written through the transaction log, so a restore
 keeps it. Presence is ephemeral and rides the workspace socket.
 
 ### Broadcast
