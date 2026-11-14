@@ -134,6 +134,48 @@ async function callRoom(
   return workspaceStub(env, workspaceId).fetch(request);
 }
 
+/**
+ * Reads a request body without ever holding more than `limit` bytes. A
+ * content-length check is not enough: a chunked request can omit or lie about
+ * it, and buffering the whole body first would turn an oversized upload into a
+ * Worker memory problem.
+ */
+async function readBodyWithinLimit(
+  request: Request,
+  limit: number
+): Promise<Uint8Array | null> {
+  if (request.body === null) return new Uint8Array();
+
+  const reader = request.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let total = 0;
+
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value) continue;
+
+      total += value.byteLength;
+      if (total > limit) {
+        await reader.cancel().catch(() => undefined);
+        return null;
+      }
+      chunks.push(value);
+    }
+  } finally {
+    reader.releaseLock();
+  }
+
+  const bytes = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
+}
+
 async function handleStorage(
   request: Request,
   env: Env,
@@ -165,8 +207,8 @@ async function handleStorage(
       await discardBody(request);
       return apiError(413, "file_too_large", `Files are capped at ${MAX_UPLOAD_BYTES} bytes.`);
     }
-    const body = await request.arrayBuffer();
-    if (body.byteLength > MAX_UPLOAD_BYTES) {
+    const body = await readBodyWithinLimit(request, MAX_UPLOAD_BYTES);
+    if (body === null) {
       return apiError(413, "file_too_large", `Files are capped at ${MAX_UPLOAD_BYTES} bytes.`);
     }
     const contentType =
@@ -220,7 +262,11 @@ async function handleStorage(
     if (object.httpMetadata?.contentType) {
       headers.set("content-type", object.httpMetadata.contentType);
     }
-    const body = "body" in object ? (object.body as unknown as BodyInit) : null;
+    // Uploaded bytes and the content type are user-controlled. Keep a
+    // same-origin HTML or SVG upload from becoming script execution.
+    headers.set("x-content-type-options", "nosniff");
+    headers.set("content-security-policy", "default-src 'none'; sandbox");
+    const body = "body" in object ? (object.body as BodyInit) : null;
     return new Response(body, { headers });
   }
 

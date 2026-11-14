@@ -17,7 +17,7 @@ class MockDurableObject {
   constructor(protected ctx: unknown, protected env: unknown) {}
 }
 mock.module("cloudflare:workers", () => ({ DurableObject: MockDurableObject }));
-const { defineTapeDB } = await import("../src/worker/index");
+const { defineTapeDB, MAX_UPLOAD_BYTES } = await import("../src/worker/index");
 
 const WORKSPACE = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a6b";
 const SECRET = "test-secret-test-secret-test-secret";
@@ -75,6 +75,50 @@ describe("uploads", () => {
     expect(response.status).toBe(502);
     expect(((await response.json()) as { error: { code: string } }).error.code).toBe("file_index_failed");
     // Before, the object stayed in R2 with nothing pointing at it.
+    expect([...target.files.objects.keys()]).toEqual([]);
+  });
+
+  test("serve bytes with a non-executable content policy", async () => {
+    const target = env(201);
+    await upload(target);
+    const { token } = await signRoleClaim(SECRET, {
+      sub: "u1",
+      workspaceId: WORKSPACE,
+      role: WORKSPACE_ROLE_LEVELS.MEMBER,
+    });
+    const response = await tapedb.worker.fetch(
+      new Request(`http://worker.test/engine/workspaces/${WORKSPACE}/files/avatars/me.png`, {
+        headers: { authorization: `Bearer ${token}` },
+      }),
+      target.env as never,
+      {} as ExecutionContext
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+  });
+
+  test("refuse an oversized body without buffering it or waking the room", async () => {
+    const target = env(201);
+    const { token } = await signRoleClaim(SECRET, {
+      sub: "u1",
+      workspaceId: WORKSPACE,
+      role: WORKSPACE_ROLE_LEVELS.EDITOR,
+    });
+    const response = await tapedb.worker.fetch(
+      new Request(`http://worker.test/engine/workspaces/${WORKSPACE}/files/avatars/big.bin`, {
+        method: "PUT",
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/octet-stream" },
+        body: new Uint8Array(MAX_UPLOAD_BYTES + 1),
+      }),
+      target.env as never,
+      {} as ExecutionContext
+    );
+
+    expect(response.status).toBe(413);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe("file_too_large");
+    expect(target.roomCalls).toEqual([]);
     expect([...target.files.objects.keys()]).toEqual([]);
   });
 });
