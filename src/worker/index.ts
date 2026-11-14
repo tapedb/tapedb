@@ -15,7 +15,7 @@ import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
 import { configureTopics, type TopicAuthorizer } from "../engine/topics";
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
-import { isWorkspaceId } from "../engine/r2-keys";
+import { filesPrefix, isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
 import { apiError, discardBody, json } from "../http";
 import { handleClaimRequest } from "../claim-route";
@@ -93,7 +93,7 @@ function roomRequest(request: Request, path: string): Request {
 }
 
 function storageKey(workspaceId: string, objectKey: string): string {
-  return `workspaces/${workspaceId}/files/${objectKey}`;
+  return `${filesPrefix(workspaceId)}${objectKey}`;
 }
 
 /**

@@ -81,6 +81,11 @@ function assertPositiveInteger(value: number, label: string): number {
   return value;
 }
 
+/** Where a workspace's uploaded files live, in the FILES bucket. */
+export function filesPrefix(workspaceId: string): string {
+  return `workspaces/${workspaceId}/files/`;
+}
+
 export function workspacePrefix(workspaceId: string): string {
   return `ws/${assertWorkspaceId(workspaceId)}`;
 }
