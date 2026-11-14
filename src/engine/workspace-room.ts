@@ -54,6 +54,7 @@ import { runTransaction } from "./tx-pipeline";
 import { durableObjectSqlExecutor, type SqlValue } from "./tx-sql";
 import { TxError, type TxErrorCode } from "./tx-types";
 import { acceptVerifiedSocket } from "./ws-handshake";
+import { offeredProtocols, SOCKET_PROTOCOL } from "../socket-protocol";
 import {
   claimFromAttachment,
   isPresenceTarget,
@@ -446,7 +447,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
       connections,
     });
 
-    return new Response(null, { status: 101, webSocket: accepted.client });
+    // A client that offered subprotocols fails the handshake unless one is selected.
+    const offered = offeredProtocols(request.headers.get("sec-websocket-protocol"));
+    return new Response(null, {
+      status: 101,
+      webSocket: accepted.client,
+      ...(offered.includes(SOCKET_PROTOCOL) ? { headers: { "sec-websocket-protocol": SOCKET_PROTOCOL } } : {}),
+    });
   }
 
   async webSocketMessage(

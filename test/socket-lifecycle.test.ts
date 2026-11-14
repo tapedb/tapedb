@@ -30,4 +30,11 @@ describe('connection cancellation',()=>{
     socket.close();expect(await result).toBe(true);expect(socket.isOpen).toBe(false);
     ws.onopen?.({});expect(socket.isOpen).toBe(false);
   });
+  test('the claim travels as a subprotocol, never in the URL',async()=>{
+    const calls:Array<{url:string;protocols:string[]}>=[];
+    const socket=new QuerySocket({baseUrl:'wss://example.test/engine/workspaces/w/websocket',getToken:async()=>'h.p.s',onMessage(){},createWebSocket(url,protocols){calls.push({url,protocols});return wire();}});
+    void socket.connect().catch(()=>{});await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    expect(calls).toEqual([{url:'wss://example.test/engine/workspaces/w/websocket',protocols:['tapedb','tapedb.claim.h.p.s']}]);
+    socket.close();
+  });
 });

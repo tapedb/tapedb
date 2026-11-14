@@ -918,6 +918,21 @@ describe("WorkspaceRoom live queries", () => {
     });
   });
 
+  test("selects the tapedb subprotocol when the client offers it, so browsers accept the handshake", async () => {
+    const trusted = encodeTrustedRoleClaim(claim(WORKSPACE_ROLE_LEVELS.MEMBER));
+    const offered = await room.fetch(
+      new Request("http://test/websocket", {
+        headers: { upgrade: "websocket", "x-tapedb-claims": trusted, "sec-websocket-protocol": "tapedb, tapedb.claim.a.b.c" },
+      })
+    );
+    expect(offered.status).toBe(101);
+    expect(offered.headers.get("sec-websocket-protocol")).toBe("tapedb");
+
+    const none = await room.fetch(new Request("http://test/websocket", { headers: { upgrade: "websocket", "x-tapedb-claims": trusted } }));
+    expect(none.status).toBe(101);
+    expect(none.headers.get("sec-websocket-protocol")).toBeNull();
+  });
+
   test("returns 426 without an upgrade header", async () => {
     const response = await room.fetch(
       new Request("http://test/websocket", {
