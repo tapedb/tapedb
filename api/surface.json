@@ -534,7 +534,8 @@
         "kind": "interface",
         "shape": {
           "getSubject": "(headers: Headers) => Promise<{ sub: string; } | null>",
-          "getRole": "(workspaceId: string, sub: string) => Promise<WorkspaceRole | null>"
+          "getRole": "(workspaceId: string, sub: string) => Promise<WorkspaceRole | null>",
+          "allowRequest": "((key: string) => Promise<boolean>) | undefined"
         }
       },
       "defineTapeDB": {
@@ -1445,14 +1446,19 @@
     "invalid_value",
     "invalid_workspace_id",
     "jurisdiction_mismatch",
+    "membership_lookup_failed",
     "message_too_large",
     "method_not_allowed",
     "missing_token",
     "no_route",
+    "not_a_member",
     "not_found",
     "not_in_target",
     "permission_denied",
+    "rate_limit_unavailable",
+    "rate_limited",
     "retry_expired",
+    "session_lookup_failed",
     "storage_error",
     "storage_not_configured",
     "unauthenticated",

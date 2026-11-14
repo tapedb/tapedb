@@ -90,14 +90,22 @@ export async function signRoleClaim(
 }
 
 /**
- * The two methods a deployment implements. Everything else about identity
- * (passwords, magic codes, OAuth, cookies) stays in the host application.
+ * The two methods a deployment implements, and an optional rate limit.
+ * Everything else about identity (passwords, magic codes, OAuth, cookies)
+ * stays in the host application.
  */
 export interface ClaimIdentity {
   /** Resolve the caller's subject from the request. Null means "not signed in". */
   getSubject(headers: Headers): Promise<{ sub: string } | null>;
   /** Resolve the caller's role in a workspace. Null means "not a member". */
   getRole(workspaceId: string, sub: string): Promise<WorkspaceRole | null>;
+  /**
+   * Optional per-caller limit for the claim route, checked before anything
+   * else. `key` is `claim:<cf-connecting-ip>`. Return false to refuse with
+   * 429 `rate_limited`; a throw refuses with 500 `rate_limit_unavailable`.
+   * Back it with a Cloudflare rate-limit binding when the route is public.
+   */
+  allowRequest?(key: string): Promise<boolean>;
 }
 
 export interface MintClaimDependencies {

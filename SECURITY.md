@@ -67,7 +67,7 @@ The library cannot enforce these for you:
   requests carrying that token in `x-tapedb-dev-token`, and answers 401
   otherwise. Set the token before turning dev claims on. `tapedb deploy`
   refuses `TAPEDB_DEV_CLAIMS`, but a manual `wrangler deploy` can still ship it.
-- Add rate limiting to the public claim route with `allowRequest` if needed,
+- Add rate limiting to the public claim route with `identity.allowRequest` if needed,
   and protect session-bearing identity lookups against CSRF according to your
   auth system.
 - Exclude the `Authorization` and `Sec-WebSocket-Protocol` headers from

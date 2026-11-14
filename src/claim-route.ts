@@ -102,6 +102,7 @@ export async function handleClaimRequest(
 
   return mintClaim(request, {
     identity,
+    ...(identity.allowRequest ? { allowRequest: (key: string) => identity.allowRequest!(key) } : {}),
     secret: env.TAPEDB_CLAIM_SECRET,
     issuer: env.TAPEDB_CLAIM_ISSUER,
     audience: env.TAPEDB_CLAIM_AUDIENCE,
