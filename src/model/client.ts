@@ -115,9 +115,10 @@ export interface PageArgs<M extends Models, F extends Fields> extends FindArgs<M
   after?: string | null;
 }
 
-export type Result<M extends Models, F extends Fields, A> = A extends { select: infer S }
+export type Result<M extends Models, F extends Fields, A> = (A extends { select: infer S }
   ? Selected<M, F, S>
-  : Row<F> & (A extends { include: infer I } ? WithInclude<M, F, I> : unknown);
+  : Row<F>) &
+  (A extends { include: infer I } ? WithInclude<M, F, I> : unknown);
 
 export interface ModelClient<M extends Models, F extends Fields> {
   findMany<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A): Query<Result<M, F, A>[]>;

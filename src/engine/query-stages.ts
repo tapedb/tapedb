@@ -20,7 +20,7 @@
  * allow-lists, so the scratch table never reaches a copy of the workspace.
  */
 
-import type { SqlExecutor, SqlValue } from "./tx-sql";
+import type { SqlExecutor, SqlRow, SqlValue } from "./tx-sql";
 
 export const SCRATCH_TABLE = "_tapedb_scratch";
 
@@ -36,7 +36,17 @@ export interface Stage {
   /** `INSERT OR IGNORE INTO _tapedb_scratch (k, id) SELECT ?, ...`; the first parameter is `key`. */
   sql: string;
   params: SqlValue[];
+  /**
+   * A stage a SQL predicate cannot express: `sql` selects candidate rows
+   * (`alias.*` plus the staged value as `"__tapedb_staged"`), they are read in
+   * id order a chunk at a time, and only those `keep` accepts are staged.
+   * Used for a read rule that is a function, which runs on fetched rows.
+   */
+  scan?: { alias: string; keep: (row: SqlRow) => boolean };
 }
+
+/** Rows a scan stage reads per statement, and ids it stages per insert. */
+const SCAN_CHUNK = 1000;
 
 // Placeholders carry a random per-isolate prefix: a filter value a client
 // sends can equal one only by guessing it. Made on first use, because a
@@ -106,10 +116,55 @@ export function runStaged<T>(
   ensureScratch(sql);
   const used = [...keys.values()];
   try {
-    for (const stage of stages) sql.exec(stage.sql, ...bind(stage.params));
+    for (const stage of stages) {
+      if (stage.scan === undefined) sql.exec(stage.sql, ...bind(stage.params));
+      else runScan(sql, stage, bind(stage.params));
+    }
     return run(bind(params));
   } finally {
     sql.exec(`DELETE FROM "${SCRATCH_TABLE}" WHERE "k" IN (SELECT value FROM json_each(?))`, JSON.stringify(used));
+  }
+}
+
+/** The `SELECT` a scan stage reads candidates with; the first parameter is the key. */
+export function stageScan(
+  key: string,
+  alias: string,
+  select: string,
+  from: string,
+  where: string,
+  params: SqlValue[],
+  keep: (row: SqlRow) => boolean
+): Stage {
+  return {
+    key,
+    sql: `SELECT ${alias}.*, ${select} AS "__tapedb_staged" FROM ${from} WHERE ${where}`,
+    params: [key, ...params],
+    scan: { alias, keep },
+  };
+}
+
+function runScan(sql: SqlExecutor, stage: Stage, params: SqlValue[]): void {
+  const [key, ...where] = params;
+  const { alias, keep } = stage.scan!;
+  let after: SqlValue | null = null;
+  for (;;) {
+    const rows: SqlRow[] =
+      after === null
+        ? sql.all(`${stage.sql} ORDER BY ${alias}."id" LIMIT ${SCAN_CHUNK}`, ...where)
+        : sql.all(`${stage.sql} AND ${alias}."id" > ? ORDER BY ${alias}."id" LIMIT ${SCAN_CHUNK}`, ...where, after);
+    const kept = rows
+      .filter((row) => row.__tapedb_staged !== null && keep(row))
+      .map((row) => row.__tapedb_staged);
+    if (kept.length > 0) {
+      sql.exec(
+        `INSERT OR IGNORE INTO "${SCRATCH_TABLE}" ("k", "id") SELECT ?, value FROM json_each(?)`,
+        key,
+        JSON.stringify(kept)
+      );
+    }
+    if (rows.length < SCAN_CHUNK) return;
+    after = rows[rows.length - 1].id;
   }
 }
 

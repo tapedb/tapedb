@@ -213,17 +213,45 @@ describe("access", () => {
     ]);
   });
 
-  test("a function read rule on the linked model is refused, not ignored", async () => {
-    build({ board: { view: ({ auth, data }) => data?.ownerId === auth.sub } });
+  test("a function read rule on the linked model is applied, in every mode", async () => {
+    build({
+      board: { view: ({ auth, data }) => data?.ownerId === auth.sub },
+      task: { view: ({ data }) => data?.done === false },
+    });
     await seed();
 
-    // A function rule runs after fetch, so it cannot filter a subquery; a
-    // filter compiled without it would answer questions about hidden rows.
-    await expect(
-      client().column.findMany({ where: { board: { archived: true } } as never }).then()
-    ).rejects.toThrow(/read rule is a function/);
+    // Parent: alice cannot see mallory's archived board, so no column of hers
+    // matches through it; mallory can.
+    const ids = async (sub: string, where: object) =>
+      (await client(sub).column.findMany({ where: where as never, orderBy: { id: "asc" } })).map((row) => row.id);
+    expect(await ids("alice", { board: { archived: true } })).toEqual([]);
+    expect(await ids("mallory", { board: { archived: true } })).toEqual(["c-hidden"]);
+    expect(await ids("alice", { board: { name: "Open" } })).toEqual(["c-done", "c-todo"]);
+
+    // Children: only tasks with done = false are visible (t1, t4).
+    expect(await ids("alice", { tasks: { some: { title: "two" } } })).toEqual([]);
+    expect(await ids("alice", { tasks: { some: { title: "one" } } })).toEqual(["c-todo"]);
+    // c-todo's only visible task is t1; c-done's only task is hidden, so it has
+    // no visible child and passes vacuously; c-hidden's visible t4 fails.
+    expect(await ids("alice", { tasks: { every: { title: "one" } } })).toEqual(["c-done", "c-todo"]);
+    expect(await ids("alice", { tasks: { none: { title: "two" } } })).toEqual(["c-done", "c-hidden", "c-todo"]);
     // The same model is still filterable on its own fields.
     expect((await client().column.findMany({ where: { position: 1 } })).map((row) => row.id)).toEqual(["c-todo"]);
+  });
+
+  test("a function read rule on a linked model is applied past the first chunk of rows", async () => {
+    build({ task: { view: ({ data }) => data?.done === false } });
+    await seed();
+    const db = client("alice", WORKSPACE_ROLE_LEVELS.OWNER);
+    const writes = Array.from({ length: 2500 }, (_, index) =>
+      db.task.create({ data: { id: `bulk-${String(index).padStart(4, "0")}`, title: index === 2400 ? "needle" : "hay", done: index === 2401, column: { connect: "c-done" } } })
+    );
+    await db.$transaction(writes);
+    await db.task.create({ data: { id: "zz-hidden", title: "hidden-needle", done: true, column: { connect: "c-todo" } } });
+    const ids = async (where: object) =>
+      (await client().column.findMany({ where: where as never, orderBy: { id: "asc" } })).map((row) => row.id);
+    expect(await ids({ tasks: { some: { title: "needle" } } })).toEqual(["c-done"]);
+    expect(await ids({ tasks: { some: { title: "hidden-needle" } } })).toEqual([]);
   });
 
   test("a role that cannot read the linked model cannot filter through it", async () => {

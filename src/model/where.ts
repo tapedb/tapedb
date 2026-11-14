@@ -42,40 +42,18 @@ export interface ManyFilter<W> {
 }
 
 /**
- * Filters, in two concrete levels rather than one recursive type.
- *
- * The engine compiles relation filters at any depth; the types describe the
- * first hop and accept deeper ones untyped. Spelling the levels out keeps the
- * checker from unfolding models into each other forever — boards hold columns
- * hold boards — which it does if the depth is a type parameter it has to
- * count down.
+ * Filters, typed at every depth. Relation keys resolve lazily, as property
+ * types of a mapped object, so models that point at each other (boards hold
+ * columns hold boards) are unfolded only as far as a filter actually goes.
  */
 type Scalars<F extends Fields> = {
   [K in FilterKeys<F>]?: Scalar | FieldFilter;
 };
 
-/**
- * The deepest level the types follow: the target's own fields.
- *
- * Relation keys are accepted here but not described. The engine compiles
- * relation filters at any depth and validates every level against the
- * registry, so a further hop still works and a wrong name is still an error —
- * at the call, not in the editor. Typing the second hop as well means
- * resolving the model graph into itself for every key, which runs the
- * checker out of memory on schemas whose models point at each other.
- */
-export type WhereLeaf<F extends Fields> = Scalars<F> & {
-  [K in RelationKeys<F>]?: unknown;
-} & {
-  AND?: WhereLeaf<F> | WhereLeaf<F>[];
-  OR?: WhereLeaf<F>[];
-  NOT?: WhereLeaf<F> | WhereLeaf<F>[];
-};
-
 export type Where<F extends Fields = Fields, M extends Models = Models> = Scalars<F> & {
   [K in RelationKeys<F>]?: F[K] extends HasMany
-    ? ManyFilter<WhereLeaf<TargetFieldsOf<F[K], M>>>
-    : WhereLeaf<TargetFieldsOf<F[K], M>> | null;
+    ? ManyFilter<Where<TargetFieldsOf<F[K], M>, M>>
+    : Where<TargetFieldsOf<F[K], M>, M> | null;
 } & {
   AND?: Where<F, M> | Where<F, M>[];
   OR?: Where<F, M>[];
@@ -311,6 +289,42 @@ export function splitSelect(
   return { fields, relations };
 }
 
+/**
+ * The relations a level returns: those `select` lists and those `include`
+ * adds. A relation named in both gets both sets of arguments; the same
+ * argument given two different values is a mistake, not a choice to make.
+ */
+function relationsOf(
+  model: ModelInfo,
+  args: NodeArgs,
+  split: { relations: Record<string, unknown> } | null
+): Record<string, unknown> {
+  const merged: Record<string, unknown> = { ...(args.include ?? {}) };
+  for (const [name, value] of Object.entries(split?.relations ?? {})) {
+    const other = merged[name];
+    if (other === undefined || other === false || other === true) {
+      merged[name] = value === true && typeof other === "object" ? other : value;
+      continue;
+    }
+    if (value === true || value === false || value === undefined) continue;
+    const a = other as Record<string, unknown>;
+    const b = value as Record<string, unknown>;
+    const combined: Record<string, unknown> = { ...a };
+    for (const [key, item] of Object.entries(b)) {
+      if (item === undefined) continue;
+      if (key === "select" || key === "include") {
+        combined[key] = { ...((a[key] as object | undefined) ?? {}), ...(item as object) };
+      } else if (a[key] !== undefined && JSON.stringify(a[key]) !== JSON.stringify(item)) {
+        throw new Error(`"${model.key}.${name}" has a different ${key} in select and in include.`);
+      } else {
+        combined[key] = item;
+      }
+    }
+    merged[name] = combined;
+  }
+  return merged;
+}
+
 /** One level of an engine query document: `{ $: options, label: child, ... }`. */
 export function toEngineNode(
   graph: Record<string, ModelInfo>,
@@ -325,19 +339,13 @@ export function toEngineNode(
   if (args.take !== undefined) options.limit = args.take;
   if (args.after !== undefined) options.after = args.after;
 
-  let relations = args.include ?? {};
-  if (args.select !== undefined) {
-    if (args.include !== undefined) {
-      throw new Error(
-        `"${model.key}": use select or include, not both. Relations listed in select are included.`
-      );
-    }
-    const split = splitSelect(model, args.select);
+  const split = args.select === undefined ? null : splitSelect(model, args.select);
+  if (split !== null) {
     // The engine always returns the id, so a select of relations alone
     // still asks for one column.
     options.select = split.fields.length > 0 ? split.fields : ["id"];
-    relations = split.relations;
   }
+  const relations = relationsOf(model, args, split);
 
   const node: Record<string, unknown> = { $: options };
   for (const [name, value] of Object.entries(relations)) {
@@ -370,7 +378,7 @@ export function shapeFor(
 ): Shape | null {
   const split =
     args.select === undefined ? null : splitSelect(model, args.select);
-  const relations = split?.relations ?? args.include ?? {};
+  const relations = relationsOf(model, args, split);
 
   const nested: Array<[string, Shape | null]> = [];
   for (const [name, value] of Object.entries(relations)) {

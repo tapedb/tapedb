@@ -302,11 +302,35 @@ describe("select", () => {
     expect(await client("alice").note.count()).toBe(1);
   });
 
-  test("select and include together, or an unknown field, fail before the request", () => {
+  test("select and include together: the selected fields plus the included relations", async () => {
+    const ids = await seed();
     const db = client();
-    expect(() => db.task.findMany({ select: { title: true }, include: { column: true } } as never)).toThrow(
-      /select or include, not both/
-    );
+    const rows = await db.task.findMany({
+      where: { id: "t1" },
+      select: { title: true },
+      include: { column: { select: { name: true } } },
+    });
+    expect(rows).toEqual([{ title: "Write spec", column: { name: "Todo" } }]);
+    // The types say the same: title and column, nothing else.
+    const typed: { title: string; column: { name: string } | null }[] = rows;
+    expect(typed.length).toBe(1);
+
+    // A relation named in both gets both sets of arguments.
+    const boards = await db.board.findMany({
+      select: { name: true, columns: { where: { position: 1 } } },
+      include: { columns: { select: { name: true } } },
+    });
+    expect(boards).toEqual([{ name: "Roadmap", columns: [{ name: "Todo" }] }]);
+    expect(ids.todo).toBeString();
+
+    // The same argument with two values is a mistake, and says so.
+    expect(() =>
+      db.board.findMany({ select: { columns: { take: 1 } }, include: { columns: { take: 2 } } } as never)
+    ).toThrow(/different take in select and in include/);
+  });
+
+  test("an unknown field fails before the request", () => {
+    const db = client();
     expect(() => db.task.findMany({ select: { nope: true } } as never)).toThrow(/no field "nope" to select/);
     expect(db.task.findMany({ select: { title: true, column: true } }).document).toEqual({
       task: { $: { select: ["title"] }, column: { $: {} } },
