@@ -147,4 +147,31 @@ describe("engine routes", () => {
     expect(status.status).toBe(200);
     expect(target.roomCalls).toEqual(["GET /status"]);
   });
+
+  test("the file index changes only through the byte routes, and lists for members", async () => {
+    const call = async (method: string, role: number, body?: unknown) => {
+      const target = env(200);
+      const { token } = await signRoleClaim(SECRET, { sub: "u1", workspaceId: WORKSPACE, role: role as never });
+      const response = await tapedb.worker.fetch(
+        new Request(`http://worker.test/engine/workspaces/${WORKSPACE}/files`, {
+          method,
+          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+        }),
+        target.env as never,
+        {} as ExecutionContext
+      );
+      return { status: response.status, roomCalls: target.roomCalls };
+    };
+
+    // Writing the index directly: never, whatever the role.
+    const fake = { path: "ghost.txt", key: "workspaces/other/files/secret", size: 1 };
+    for (const role of [WORKSPACE_ROLE_LEVELS.GUEST, WORKSPACE_ROLE_LEVELS.EDITOR, WORKSPACE_ROLE_LEVELS.OWNER]) {
+      expect(await call("POST", role, fake)).toEqual({ status: 405, roomCalls: [] });
+      expect(await call("DELETE", role, { path: "avatars/me.png" })).toEqual({ status: 405, roomCalls: [] });
+    }
+    // Listing it: the role that reads files.
+    expect(await call("GET", WORKSPACE_ROLE_LEVELS.USER)).toEqual({ status: 403, roomCalls: [] });
+    expect(await call("GET", WORKSPACE_ROLE_LEVELS.MEMBER)).toEqual({ status: 200, roomCalls: ["GET /files"] });
+  });
 });
