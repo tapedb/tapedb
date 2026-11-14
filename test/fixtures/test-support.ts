@@ -196,31 +196,68 @@ export class FakeR2Bucket {
     return this.objectFor(key);
   }
 
-  /** Like R2: parts are joined in part-number order on complete; nothing is visible before. */
+  /**
+   * Like R2: an upload is resumable by id; parts are joined in part-number
+   * order on complete, and nothing is visible before. Complete enforces R2's
+   * rules: every part but the last at least 5 MiB, and all of them the same size.
+   */
+  private readonly uploads = new Map<string, { key: string; contentType?: string; parts: Map<number, Uint8Array> }>();
+
   async createMultipartUpload(key: string, options?: { httpMetadata?: { contentType?: string } }) {
     if (this.failPuts) throw new Error("R2 write failed.");
-    const parts = new Map<number, Uint8Array>();
     this.multipartUploads += 1;
+    const uploadId = `upload-${this.multipartUploads}`;
+    this.uploads.set(uploadId, { key, contentType: options?.httpMetadata?.contentType, parts: new Map() });
+    return this.resumeMultipartUpload(key, uploadId);
+  }
+
+  resumeMultipartUpload(key: string, uploadId: string) {
+    const find = () => {
+      const upload = this.uploads.get(uploadId);
+      if (!upload || upload.key !== key) throw new Error("NoSuchUpload");
+      return upload;
+    };
     return {
+      uploadId,
+      key,
       uploadPart: async (partNumber: number, value: unknown) => {
         if (this.failPuts) throw new Error("R2 write failed.");
-        parts.set(partNumber, await toBytes(value));
+        find().parts.set(partNumber, await toBytes(value));
         return { partNumber, etag: `part-${partNumber}` };
       },
-      complete: async (uploaded: Array<{ partNumber: number }>) => {
-        const chunks = uploaded.map((part) => parts.get(part.partNumber)!);
+      complete: async (uploaded: Array<{ partNumber: number; etag: string }>) => {
+        const upload = find();
+        const chunks = uploaded.map((part) => {
+          const chunk = upload.parts.get(part.partNumber);
+          if (!chunk || part.etag !== `part-${part.partNumber}`) throw new Error("InvalidPart");
+          return chunk;
+        });
+        chunks.forEach((chunk, index) => {
+          const last = index === chunks.length - 1;
+          if (!last && chunk.byteLength < 5 * 1024 * 1024) throw new Error("EntityTooSmall");
+          if (!last && chunk.byteLength !== chunks[0].byteLength) throw new Error("Parts differ in size");
+        });
         const body = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
         let offset = 0;
         for (const chunk of chunks) {
           body.set(chunk, offset);
           offset += chunk.byteLength;
         }
-        this.objects.set(key, { body, etag: this.nextEtag(), contentType: options?.httpMetadata?.contentType, uploaded: this.clock });
-        this.puts.push({ key, options });
-        return this.objectFor(key);
+        this.uploads.delete(uploadId);
+        this.objects.set(key, { body, etag: this.nextEtag(), contentType: upload.contentType, uploaded: this.clock });
+        this.puts.push({ key, options: { httpMetadata: { contentType: upload.contentType } } });
+        return { ...(this.objectFor(key) as object), size: body.byteLength, httpMetadata: { contentType: upload.contentType } };
       },
-      abort: async () => undefined,
+      abort: async () => {
+        this.uploads.delete(uploadId);
+        this.aborted.push(uploadId);
+      },
     };
+  }
+
+  readonly aborted: string[] = [];
+  get openUploads(): number {
+    return this.uploads.size;
   }
 
   multipartUploads = 0;
