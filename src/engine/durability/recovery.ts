@@ -1112,10 +1112,14 @@ export async function recoverWorkspace(
     // Snapshots from development builds before transaction receipts existed
     // carry none, so retries of writes folded into them cannot be recognised.
     // (A manifest with no snapshot yet replays every line, receipts included.)
+    // Like receipts past the retry window: a retry first issued before this
+    // restore may already be in the snapshot, so it is refused (retry_expired)
+    // rather than applied a second time. The data itself is restored.
     const receiptless =
       manifest.baseSeq > 0 &&
       !manifest.tables.some((table) => table.name === ENGINE_TABLES.txReceipts);
     if (receiptless) {
+      sql.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('receipts_since', ?)`, String(now));
       console.warn("workspace_recovered_without_receipts", { workspaceId, baseSeq: manifest.baseSeq });
     }
 
@@ -1129,7 +1133,7 @@ export async function recoverWorkspace(
       ...(receiptless
         ? {
             warnings: [
-              `The snapshot predates transaction receipts: a retry of a write at or below seq ${manifest.baseSeq} is not recognised as a retry.`,
+              `The snapshot predates transaction receipts: retries first issued before this restore are refused as retry_expired.`,
             ],
           }
         : {}),
