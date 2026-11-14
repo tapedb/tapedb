@@ -360,6 +360,19 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
           role = claim.role;
           trustedClaim = encodeTrustedRoleClaim(claim);
 
+          // The file index is written only by the byte routes below, which
+          // check roles and keep index and bytes in step. A client may list
+          // it with the role that reads files, and nothing else.
+          if (roomPath === "/files") {
+            if (request.method !== "GET") {
+              await discardBody(request);
+              return apiError(405, "method_not_allowed", "The file index changes only through uploads and deletes under /files/<path>.");
+            }
+            if (role < WORKSPACE_ROLE_LEVELS.MEMBER) {
+              return apiError(403, "insufficient_role", "Insufficient role to list files.");
+            }
+          }
+
           if (roomPath.startsWith("/files/")) {
             return handleStorage(
               request,

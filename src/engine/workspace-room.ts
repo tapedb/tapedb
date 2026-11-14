@@ -342,6 +342,17 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // File metadata. Bytes live in R2 and are handled by the Worker; this is
     // the queryable index so a workspace can be asked what it contains.
     if (url.pathname === "/files") {
+      // The same roles as the byte routes the Worker serves: reading files
+      // needs a member, changing them an editor.
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(403, error.code, error.message);
+        throw error;
+      }
+      const needed = request.method === "GET" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR;
+      if (claim.role < needed) return apiError(403, "insufficient_role", "Insufficient role for this file operation.");
       if (request.method === "GET") return this.listFiles();
       if (request.method === "POST") return this.recordFile(request);
       if (request.method === "DELETE") return this.forgetFile(request);
