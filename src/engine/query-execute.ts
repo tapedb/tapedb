@@ -7,6 +7,7 @@
  * every requested and traversed namespace before any SQL executes.
  */
 
+import { runStaged, stagesOf } from "./query-stages";
 import type { RoleClaim } from "../claims";
 import {
   buildSelectSql,
@@ -254,7 +255,10 @@ function aggregateRows(
 
   if (claim === undefined || !hasFunctionViewRule(node.namespace)) {
     const statement = buildAggregateSql(node.table, aggregate, conditions);
-    return groupsFromSql(aggregate, sql.all<PhysicalRow>(statement.sql, ...statement.params), fromStoredValue);
+    const rows = runStaged(sql, statement.stages, statement.params, (params) =>
+      sql.all<PhysicalRow>(statement.sql, ...params)
+    );
+    return groupsFromSql(aggregate, rows, fromStoredValue);
   }
 
   const namespace = findNamespace(node.namespace);
@@ -353,9 +357,8 @@ function countRows(
     conditions.length > 0
       ? ` WHERE ${balancedJoin(conditions.map((condition) => condition.sql), " AND ")}`
       : "";
-  const row = sql.one<{ total: number }>(
-    `SELECT COUNT(*) AS "total" FROM ${quoteIdentifier(node.table)}${whereSql}`,
-    ...conditions.flatMap((condition) => condition.params)
+  const row = runStaged(sql, stagesOf(conditions), conditions.flatMap((condition) => condition.params), (params) =>
+    sql.one<{ total: number }>(`SELECT COUNT(*) AS "total" FROM ${quoteIdentifier(node.table)}${whereSql}`, ...params)
   );
   return Number(row?.total ?? 0);
 }
@@ -564,8 +567,8 @@ function hydrateNode(
   node: CompiledNode,
   extra?: { column: string; ids: string[] }
 ): HydratedEntity[] {
-  const { sql: statement, params } = buildSelectSql(node, extra);
-  const rows = sql.all<PhysicalRow>(statement, ...params);
+  const { sql: statement, params, stages } = buildSelectSql(node, extra);
+  const rows = runStaged(sql, stages, params, (bound) => sql.all<PhysicalRow>(statement, ...bound));
   const entities: HydratedEntity[] = rows.map((row) => ({
     namespace: node.namespace,
     row,

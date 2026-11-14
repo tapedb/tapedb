@@ -15,6 +15,7 @@
 
 import { invalidOp, invalidValue, isPlainObject } from "./query-types";
 import { toSnakeCase, type AttributeType, type NamespaceDefinition } from "./registry";
+import { stagesOf, type Stage } from "./query-stages";
 import { balancedJoin } from "./sql-binding";
 import { quoteIdentifier } from "./tx-apply";
 import type { SqlValue } from "./tx-sql";
@@ -233,8 +234,8 @@ export function aggregateColumns(aggregate: CompiledAggregate): string[] {
 export function buildAggregateSql(
   table: string,
   aggregate: CompiledAggregate,
-  conditions: ReadonlyArray<{ sql: string; params: SqlValue[] }>
-): { sql: string; params: SqlValue[] } {
+  conditions: ReadonlyArray<{ sql: string; params: SqlValue[]; stages?: Stage[] }>
+): { sql: string; params: SqlValue[]; stages?: Stage[] } {
   const columns: string[] = [];
   aggregate.groupBy.forEach((field, index) =>
     columns.push(`${quoteIdentifier(field.column)} AS "g${index}"`)
@@ -276,6 +277,7 @@ export function buildAggregateSql(
   return {
     sql: `SELECT ${columns.join(", ")} FROM ${quoteIdentifier(table)}${whereSql}${groupSql}${orderSql}${limitSql}`,
     params,
+    stages: stagesOf(conditions),
   };
 }
 
