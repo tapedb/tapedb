@@ -80,9 +80,20 @@ export interface DurabilityOptions {
   snapshot?: SnapshotOptions;
 }
 
+export interface HistoryPruneResult {
+  /** R2 objects deleted. */
+  objects: number;
+  /** Local replay-log rows deleted. */
+  localRows: number;
+  /** When the oldest remaining history becomes due, or null. */
+  nextAt: number | null;
+}
+
 export interface DurabilityTickResult {
   flushed: boolean;
   snapshot: SnapshotResult | null;
+  /** Set when history was pruned by age on this pass. */
+  history: HistoryPruneResult | null;
 }
 
 export type DurabilityErrorCode =

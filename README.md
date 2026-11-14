@@ -428,6 +428,20 @@ rebuilding from R2: rows, sequence numbers, idempotency keys and the file
 index all survive, including across schema migrations made since the
 snapshot.
 
+### History retention
+
+Old values live on in the workspace's history: the R2 log segments, older
+snapshots and the local replay log. tapedb bounds how long. A value deleted or
+overwritten at time T is gone from every copy by T + 30 days, also in a
+workspace that sees few writes: a workspace with changes snapshots once its
+newest snapshot is half the retention old, and superseded snapshots, the log
+they cover and covered local log rows are deleted once older than that.
+Recovery always keeps the newest snapshot and the log after it.
+
+```ts
+export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
+```
+
 ## Entry points
 
 | import | contains | React |

@@ -8,6 +8,7 @@ import {
 import { deleteR2Keys, listAllR2 } from "../r2-list";
 import { ENGINE_TABLES, namespaceTables } from "../registry";
 import { readFlushState } from "./flusher";
+import { historyAgeLimit, historyRetentionMs, SUPERSEDED_GRACE_MS } from "./retention";
 import {
   commitManifest,
   manifestCreatedAt,
@@ -16,6 +17,7 @@ import {
 } from "./manifest";
 import type { SqlExecutor, SqlValue } from "./sql";
 import type {
+  HistoryPruneResult,
   SnapshotOptions,
   SnapshotResult,
   SnapshotState,
@@ -131,15 +133,26 @@ function markSnapshotFailed(sql: SqlExecutor): void {
   );
 }
 
-/** True when a snapshot is due, based on sequence lag or a missing baseline. */
-export function shouldSnapshot(sql: SqlExecutor, _now: number): boolean {
+/**
+ * True when a snapshot is due: sequence lag, a missing baseline, or changes
+ * since a snapshot that has reached half the history retention (so values
+ * deleted after it stop living in it; see retention.ts).
+ */
+export function shouldSnapshot(sql: SqlExecutor, now: number, retentionMs: number = historyRetentionMs()): boolean {
+  const due = snapshotDueAt(sql, retentionMs);
+  return due !== null && due <= now;
+}
+
+/** When the next snapshot is due, or null while none is needed. */
+export function snapshotDueAt(sql: SqlExecutor, retentionMs: number = historyRetentionMs()): number | null {
   const highWater = readHighWater(sql);
-  if (highWater <= 0) return false;
+  if (highWater <= 0) return null;
 
   const state = readSnapshotState(sql);
-  if (highWater - state.baseSeq >= SNAPSHOT_SEQ_THRESHOLD) return true;
-
-  return state.status !== "completed";
+  if (state.status !== "completed") return Number.NEGATIVE_INFINITY;
+  if (highWater - state.baseSeq >= SNAPSHOT_SEQ_THRESHOLD) return Number.NEGATIVE_INFINITY;
+  if (highWater > state.baseSeq) return (state.completedAt ?? 0) + historyAgeLimit(retentionMs);
+  return null;
 }
 
 async function gzipBytes(bytes: Uint8Array): Promise<Uint8Array> {
@@ -468,6 +481,8 @@ export async function snapshotWorkspace(
     );
 
     markSnapshotCompleted(sql, workspaceId, baseSeq, now);
+    // The superseded snapshot and the log it covers age out once its grace ends.
+    setHistoryPruneAt(sql, now + SUPERSEDED_GRACE_MS);
 
     const warnings = await pruneSafely(
       bucket,
@@ -506,4 +521,102 @@ export async function snapshotWorkspace(
   } finally {
     for (const table of staged) sql.exec(`DROP TABLE IF EXISTS "${table}"`);
   }
+}
+
+const HISTORY_PRUNE_KEY = "history_prune_at";
+
+function setHistoryPruneAt(sql: SqlExecutor, at: number | null): void {
+  sql.exec(
+    `INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES (?, ?)`,
+    HISTORY_PRUNE_KEY,
+    at === null ? "" : String(at)
+  );
+}
+
+/**
+ * When history next needs pruning by age, or null when nothing is waiting.
+ * A workspace that has never recorded one (new, upgraded or recovered) is
+ * due as soon as it has a snapshot to rely on.
+ */
+export function historyPruneAt(sql: SqlExecutor): number | null {
+  const state = readSnapshotState(sql);
+  if (state.status !== "completed") return null;
+  const row = sql
+    .exec<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = ?`, HISTORY_PRUNE_KEY)
+    .toArray()[0];
+  if (row === undefined) return Number.NEGATIVE_INFINITY;
+  return row.value === "" ? null : Number(row.value);
+}
+
+/**
+ * Deletes history older than half the retention: superseded snapshots, the
+ * log segments the newest snapshot covers, covered local log rows, and stale
+ * staging left by a failed snapshot. The newest snapshot and the log after it
+ * are what recovery needs, and are never touched here.
+ */
+export async function pruneHistory(
+  bucket: R2Bucket,
+  sql: SqlExecutor,
+  workspaceId: string,
+  now: number,
+  retentionMs: number = historyRetentionMs()
+): Promise<HistoryPruneResult> {
+  const state = readSnapshotState(sql);
+  if (state.status !== "completed" || state.completedAt === null) {
+    return { objects: 0, localRows: 0, nextAt: null };
+  }
+  const age = historyAgeLimit(retentionMs);
+  const graceEnds = state.completedAt + SUPERSEDED_GRACE_MS;
+  let nextAt: number | null = null;
+  const later = (at: number) => {
+    nextAt = nextAt === null ? at : Math.min(nextAt, at);
+  };
+  const keys: string[] = [];
+  const uploadedAt = (object: R2Object) => new Date(object.uploaded).getTime();
+
+  const logPrefix = `${workspacePrefix(workspaceId)}/log/`;
+  for (const object of await listAllR2(bucket, logPrefix)) {
+    const match = LOG_SEGMENT_NAME.exec(object.key.slice(logPrefix.length));
+    if (!match || Number(match[2]) > state.baseSeq) continue;
+    const due = Math.max(uploadedAt(object) + age, graceEnds);
+    if (due <= now) keys.push(object.key);
+    else later(due);
+  }
+
+  const snapshotPrefix = `${workspacePrefix(workspaceId)}/snapshots/`;
+  const prefixes = new Map<number, { keys: string[]; uploaded: number }>();
+  for (const object of await listAllR2(bucket, snapshotPrefix)) {
+    const match = SNAPSHOT_OBJECT.exec(object.key.slice(snapshotPrefix.length));
+    if (!match) continue;
+    const seq = Number(match[1]);
+    if (seq === state.baseSeq) continue;
+    const entry = prefixes.get(seq) ?? { keys: [], uploaded: 0 };
+    entry.keys.push(object.key);
+    entry.uploaded = Math.max(entry.uploaded, uploadedAt(object));
+    prefixes.set(seq, entry);
+  }
+  for (const [seq, entry] of prefixes) {
+    // An older snapshot is the fallback for the newest during its grace;
+    // staging from a failed newer one is no one's fallback.
+    const due = seq < state.baseSeq ? Math.max(entry.uploaded + age, graceEnds) : entry.uploaded + age;
+    if (due <= now) keys.push(...entry.keys);
+    else later(due);
+  }
+  await deleteR2Keys(bucket, keys);
+
+  // Covered local rows: flushed to R2 and inside the newest snapshot.
+  const flushed = readFlushState(sql).lastSeq;
+  const cut = Math.min(state.baseSeq, flushed);
+  const localRows =
+    sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_log" WHERE seq <= ? AND at <= ?`, cut, now - age)
+      .toArray()[0]?.n ?? 0;
+  if (localRows > 0) sql.exec(`DELETE FROM "_tx_log" WHERE seq <= ? AND at <= ?`, cut, now - age);
+  const oldest = sql
+    .exec<{ at: number | null }>(`SELECT MIN(at) AS at FROM "_tx_log" WHERE seq <= ?`, cut)
+    .toArray()[0]?.at;
+  if (oldest !== null && oldest !== undefined) later(oldest + age);
+
+  setHistoryPruneAt(sql, nextAt);
+  return { objects: keys.length, localRows: Number(localRows), nextAt };
 }

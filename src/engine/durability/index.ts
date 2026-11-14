@@ -31,13 +31,23 @@ export {
   DEFAULT_SNAPSHOT_RETENTION,
   LOG_RETENTION_SEQ,
   SNAPSHOT_SEQ_THRESHOLD,
+  historyPruneAt,
   pruneCoveredLogSegments,
+  pruneHistory,
   pruneOldSnapshots,
   readHighWater,
   readSnapshotState,
   sha256Hex,
   shouldSnapshot,
+  snapshotDueAt,
   snapshotWorkspace,
 } from "./snapshot";
+export {
+  configureRetention,
+  DEFAULT_HISTORY_RETENTION_MS,
+  historyRetentionMs,
+  MIN_HISTORY_RETENTION_MS,
+  type RetentionOptions,
+} from "./retention";
 export * from "./types";
 export type { SqlCursor, SqlExecutor, SqlValue } from "./sql";
