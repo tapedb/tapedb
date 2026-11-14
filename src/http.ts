@@ -20,10 +20,6 @@ export function apiError(
   return json({ error: { code, message } }, status);
 }
 
-/** True when the deployment opted into the deep `/smoke` probe. */
-export function smokeEnabled(env: { ENABLE_SMOKE?: string }): boolean {
-  return env.ENABLE_SMOKE === "true";
-}
 
 /**
  * Discards an unread request body before responding. Workers tear down a

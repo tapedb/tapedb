@@ -156,7 +156,6 @@ export type TxErrorCode =
   | "invalid_value"
   | "not_found"
   | "conflict"
-  | "duplicate_tx"
   | "unique_violation"
   | "foreign_key_violation"
   | "permission_denied"

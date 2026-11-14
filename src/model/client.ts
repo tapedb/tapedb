@@ -131,9 +131,15 @@ export interface ModelClient<M extends Models, F extends Fields> {
   /**
    * Count, sum, average, minimum and maximum over the rows matching `where`,
    * as the caller's read rules see them. Await it or subscribe to it.
+   *
+   * @experimental The result shape may change in a minor release; see API.md.
    */
   aggregate<A extends AggregateArgs<M, F>>(args: A): Query<AggregateOutput<F, A>>;
-  /** The same measures, one row per distinct value of the `by` fields. */
+  /**
+   * The same measures, one row per distinct value of the `by` fields.
+   *
+   * @experimental The result shape may change in a minor release; see API.md.
+   */
   groupBy<A extends GroupByArgs<M, F>>(args: A): Query<GroupRow<F, A>[]>;
 
   create(args: { data: CreateData<F, M> }): Write;
@@ -172,7 +178,11 @@ export interface PresenceRoom {
   leave(): void;
 }
 
-/** A broadcast topic: fire-and-forget messages between clients of a workspace. */
+/**
+ * A broadcast topic: fire-and-forget messages between clients of a workspace.
+ *
+ * @experimental May change in a minor release; see API.md.
+ */
 export interface BroadcastTopic<T = unknown> {
   /**
    * Sends to every other client listening on the topic. Returns false, and
@@ -228,7 +238,11 @@ export interface ClientExtras {
   $transaction(writes: Write[]): Promise<WriteResult[]>;
   $files: FilesClient;
   $presence(room: string): PresenceRoom;
-  /** A broadcast topic on the workspace socket. Topics are 1-128 of A-Z a-z 0-9 : _ . - */
+  /**
+   * A broadcast topic on the workspace socket. Topics are 1-128 of A-Z a-z 0-9 : _ . -
+   *
+   * @experimental May change in a minor release; see API.md.
+   */
   $broadcast<T = unknown>(topic: string): BroadcastTopic<T>;
   /**
    * Every row the caller may read, model by model, then the file index, as

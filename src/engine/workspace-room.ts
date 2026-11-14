@@ -1507,7 +1507,6 @@ function statusForTxError(code: TxErrorCode): number {
     case "permission_denied":
       return 403;
     case "conflict":
-    case "duplicate_tx":
     case "not_found":
     case "unique_violation":
     case "foreign_key_violation":

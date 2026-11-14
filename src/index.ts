@@ -8,7 +8,7 @@
  * live, writes are optimistic and survive going offline.
  *
  * This entry is React-free and has zero runtime dependencies. Hooks live in
- * `tapedb/react`, the Worker in `tapedb/worker`, the CLI in `tapedb/cli`.
+ * `tapedb/react`, the Worker in `tapedb/worker`; the CLI is `npx tapedb`.
  */
 
 export { createClient, Query, PageQuery, Write } from "./model/client";
@@ -51,6 +51,5 @@ export type { StoredFile } from "./client/data-client";
 export type { PresencePeer, QueryError, TopicSender, WriteRejection } from "./client/types";
 export type { StorageObject } from "./client/storage-client";
 
-export type { Env } from "./types";
 export { WORKSPACE_ROLE_LEVELS, hasRole, hasRoleLevel } from "./claims";
 export type { RoleClaim, WorkspaceRole } from "./claims";

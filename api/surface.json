@@ -1,0 +1,1468 @@
+{
+  "entries": {
+    "tapedb": {
+      "Access": {
+        "kind": "interface",
+        "shape": {
+          "read": "RoleDecision | FilterDecision<F> | CheckDecision<F> | undefined",
+          "create": "RoleDecision | CheckDecision<F> | undefined",
+          "update": "RoleDecision | CheckDecision<F> | undefined",
+          "delete": "RoleDecision | CheckDecision<F> | undefined",
+          "(declaration)": "<F extends Fields = Fields>"
+        }
+      },
+      "AccessAuth": {
+        "kind": "interface",
+        "shape": {
+          "sub": "string",
+          "role": "WorkspaceRole",
+          "workspaceId": "string"
+        }
+      },
+      "BroadcastTopic": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "send": "(message: T) => boolean",
+          "subscribe": "(listener: (message: T, from: TopicSender) => void, options?: { onError?: (error: QueryError) => void; }) => () => void",
+          "(declaration)": "<T = unknown>"
+        }
+      },
+      "BulkWriteError": {
+        "kind": "class",
+        "shape": {
+          "code": "string",
+          "written": "number",
+          "cause": "unknown",
+          "name": "string",
+          "message": "string",
+          "stack": "string | undefined",
+          "(declaration)": "extends Error"
+        }
+      },
+      "check": {
+        "kind": "function",
+        "shape": "<F extends Fields = Fields>(test: (context: CheckContext<F>) => boolean) => CheckDecision<F>"
+      },
+      "CheckContext": {
+        "kind": "interface",
+        "shape": {
+          "auth": "AccessAuth",
+          "row": "(Partial<Row<F>> & { id: string; }) | undefined",
+          "data": "Record<string, unknown> | undefined",
+          "changed": "string[] | undefined",
+          "(declaration)": "<F extends Fields = Fields>"
+        }
+      },
+      "Client": {
+        "kind": "type",
+        "shape": "<M extends Models> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\"> & { $export(): AsyncIterable<ExportRecord<M>>; }"
+      },
+      "ClientConfig": {
+        "kind": "interface",
+        "shape": {
+          "schema": "Schema<M>",
+          "url": "string",
+          "workspace": "string",
+          "getToken": "(() => Promise<string>) | undefined",
+          "onWriteRejected": "((rejection: WriteRejection) => void) | undefined",
+          "(declaration)": "<M extends Models>"
+        }
+      },
+      "createClient": {
+        "kind": "function",
+        "shape": "<M extends Models>(config: ClientConfig<M>, deps?: ClientDeps) => Client<M>"
+      },
+      "CreateData": {
+        "kind": "type",
+        "shape": "<F, M extends Models = Models> { id?: string } & RequiredParents<F> & { [K in RequiredScalarKeys<F>]: InputOf<F[K]>; } & { [K in OptionalScalarKeys<F>]?: InputOf<F[K]>; } & { [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>; } & { [K in BelongsToKeys<F> as `${K}Id`]?: string | null; } & { [K in HasManyKeys<F>]?: HasManyInput<F[K], M>; }"
+      },
+      "DeleteBehaviour": {
+        "kind": "type",
+        "shape": "\"setNull\" | \"cascade\" | \"restrict\""
+      },
+      "ExportRecord": {
+        "kind": "type",
+        "shape": "<M extends Models = Models> | { type: \"header\"; format: \"tapedb-export\"; version: 1; workspaceId: string; seq: number; exportedAt: number; schemaVersion: string | null; models: string[]; skipped: Array<{ model: string; reason: string }>; } | { [K in keyof M & string]: { type: \"row\"; model: K; data: Row<FieldsOf<M[K]>> }; }[keyof M & string] | { type: \"file\"; file: StoredFile & { id: string; r2Key: string; createdAt: number; updatedAt: number } } | { type: \"end\"; startSeq: number; seq: number; rows: number; counts: Record<string, number>; consistent: boolean; } | { type: \"error\"; code: string; message: string }"
+      },
+      "FieldFilter": {
+        "kind": "interface",
+        "shape": {
+          "equals": "T | undefined",
+          "not": "FieldFilter<T> | T | undefined",
+          "in": "T[] | undefined",
+          "notIn": "T[] | undefined",
+          "gt": "T | undefined",
+          "gte": "T | undefined",
+          "lt": "T | undefined",
+          "lte": "T | undefined",
+          "(declaration)": "<T = Scalar>"
+        }
+      },
+      "FilesClient": {
+        "kind": "interface",
+        "shape": {
+          "upload": "(file: Blob, options: { path: string; }) => Promise<StorageObject>",
+          "download": "(path: string) => Promise<Blob>",
+          "delete": "(path: string) => Promise<void>",
+          "list": "(options?: { prefix?: string; }) => Promise<StoredFile[]>"
+        }
+      },
+      "filter": {
+        "kind": "function",
+        "shape": "<F extends Fields = Fields>(build: (context: { auth: AccessAuth; }) => Where<F> | Where<F>[]) => FilterDecision<F>"
+      },
+      "FindArgs": {
+        "kind": "interface",
+        "shape": {
+          "where": "Where<F, M> | undefined",
+          "orderBy": "OrderBy<F> | undefined",
+          "take": "number | undefined",
+          "include": "Include<M, F> | undefined",
+          "select": "Select<M, F> | undefined",
+          "(declaration)": "<M extends Models, F extends Fields>"
+        }
+      },
+      "hasRole": {
+        "kind": "function",
+        "shape": "(claim: RoleClaim, minimum: WorkspaceRole) => boolean"
+      },
+      "hasRoleLevel": {
+        "kind": "function",
+        "shape": "(role: WorkspaceRole, minimum: WorkspaceRole) => boolean"
+      },
+      "id": {
+        "kind": "function",
+        "shape": "() => string"
+      },
+      "Include": {
+        "kind": "type",
+        "shape": "<M extends Models, F extends Fields> { [K in RelationKeys<F>]?: true | IncludeArgs<M, TargetFields<F[K], M>>; }"
+      },
+      "LiveState": {
+        "kind": "interface",
+        "shape": {
+          "data": "T | undefined",
+          "isLoading": "boolean",
+          "error": "QueryError | null",
+          "(declaration)": "<T>"
+        }
+      },
+      "model": {
+        "kind": "function",
+        "shape": "<F extends Fields>(fields: F, options?: ModelOptions) => Model<F>"
+      },
+      "ModelClient": {
+        "kind": "interface",
+        "shape": {
+          "findMany": "<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A) => Query<Result<M, F, A>[]>",
+          "findFirst": "<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A) => Query<Result<M, F, A> | null>",
+          "findUnique": "<A extends { where: { id: string; }; include?: Include<M, F>; select?: Select<M, F>; }>(args: A) => Query<Result<M, F, A> | null>",
+          "findPage": "<A extends PageArgs<M, F> = PageArgs<M, F>>(args?: A) => PageQuery<Result<M, F, A>>",
+          "count": "(args?: { where?: Where<F, M>; }) => Query<number>",
+          "aggregate": "<A extends AggregateArgs<M, F>>(args: A) => Query<AggregateOutput<F, A>> @experimental",
+          "groupBy": "<A extends GroupByArgs<M, F>>(args: A) => Query<GroupRow<F, A>[]> @experimental",
+          "create": "(args: { data: CreateData<F, M>; }) => Write",
+          "updateMany": "(args: { where: Where<F, M>; data: UpdateData<F, M>; }) => Promise<BulkResult>",
+          "deleteMany": "(args: { where: Where<F, M>; }) => Promise<BulkResult>",
+          "update": "(args: { where: { id: string; }; data: UpdateData<F, M>; }) => Write",
+          "upsert": "(args: { where: { id: string; }; create: CreateData<F, M>; update: UpdateData<F, M>; }) => Write",
+          "delete": "(args: { where: { id: string; }; }) => Write",
+          "(declaration)": "<M extends Models, F extends Fields>"
+        }
+      },
+      "OrderBy": {
+        "kind": "type",
+        "shape": "<F> | Partial<Record<FilterKeys<F>, \"asc\" | \"desc\">> | Partial<Record<FilterKeys<F>, \"asc\" | \"desc\">>[]"
+      },
+      "Page": {
+        "kind": "interface",
+        "shape": {
+          "rows": "R[]",
+          "hasMore": "boolean",
+          "cursor": "string | null",
+          "(declaration)": "<R>"
+        }
+      },
+      "PageArgs": {
+        "kind": "interface",
+        "shape": {
+          "after": "string | null | undefined",
+          "where": "Where<F, M> | undefined",
+          "orderBy": "OrderBy<F> | undefined",
+          "take": "number | undefined",
+          "include": "Include<M, F> | undefined",
+          "select": "Select<M, F> | undefined",
+          "(declaration)": "<M extends Models, F extends Fields> extends FindArgs<M, F>"
+        }
+      },
+      "PageQuery": {
+        "kind": "class",
+        "shape": {
+          "loadMore": "() => Promise<boolean>",
+          "key": "string",
+          "document": "QueryDocument",
+          "then": "<R1 = Page<R>, R2 = never>(onFulfilled?: ((value: Page<R>) => R1 | PromiseLike<R1>) | null | undefined, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null | undefined) => Promise<R1 | R2>",
+          "catch": "<R = never>(onRejected?: ((reason: unknown) => R | PromiseLike<R>) | null | undefined) => Promise<Page<R> | R>",
+          "finally": "(onFinally?: (() => void) | null) => Promise<Page<R>>",
+          "subscribe": "(listener: (state: LiveState<Page<R>>) => void) => () => void",
+          "snapshot": "() => LiveState<Page<R>>",
+          "(declaration)": "<R> extends Query<Page<R>>"
+        }
+      },
+      "PresencePeer": {
+        "kind": "interface",
+        "shape": {
+          "clientId": "string",
+          "presence": "unknown",
+          "cursor": "unknown",
+          "drag": "unknown"
+        }
+      },
+      "PresenceRoom": {
+        "kind": "interface",
+        "shape": {
+          "set": "(presence: unknown) => void",
+          "cursor": "(cursor: unknown) => void",
+          "drag": "(drag: unknown) => void",
+          "clearDrag": "() => void",
+          "subscribe": "(listener: (peers: PresencePeer[]) => void) => () => void",
+          "leave": "() => void"
+        }
+      },
+      "Query": {
+        "kind": "class",
+        "shape": {
+          "key": "string",
+          "document": "QueryDocument",
+          "then": "<R1 = T, R2 = never>(onFulfilled?: ((value: T) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null) => Promise<R1 | R2>",
+          "catch": "<R = never>(onRejected?: ((reason: unknown) => R | PromiseLike<R>) | null) => Promise<T | R>",
+          "finally": "(onFinally?: (() => void) | null) => Promise<T>",
+          "subscribe": "(listener: (state: LiveState<T>) => void) => () => void",
+          "snapshot": "() => LiveState<T>",
+          "(declaration)": "<T> implements PromiseLike<T>"
+        }
+      },
+      "QueryError": {
+        "kind": "interface",
+        "shape": {
+          "code": "string",
+          "message": "string"
+        }
+      },
+      "Result": {
+        "kind": "type",
+        "shape": "<M extends Models, F extends Fields, A> A extends { select: infer S } ? Selected<M, F, S> : Row<F> & (A extends { include: infer I } ? WithInclude<M, F, I> : unknown)"
+      },
+      "role": {
+        "kind": "function",
+        "shape": "(name: RoleName) => RoleDecision"
+      },
+      "RoleClaim": {
+        "kind": "interface",
+        "shape": {
+          "sub": "string",
+          "workspaceId": "string",
+          "role": "WorkspaceRole",
+          "exp": "number",
+          "iat": "number",
+          "iss": "string | undefined",
+          "aud": "string | undefined"
+        }
+      },
+      "Row": {
+        "kind": "type",
+        "shape": "<F> { id: string; createdAt: number; updatedAt: number } & { [K in ScalarKeys<F>]: OutputOf<F[K]>; } & { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }"
+      },
+      "ScalarKind": {
+        "kind": "type",
+        "shape": "\"string\" | \"number\" | \"boolean\" | \"date\" | \"json\""
+      },
+      "schema": {
+        "kind": "function",
+        "shape": "<M extends Models>(models: M) => Schema<M>"
+      },
+      "Schema": {
+        "kind": "interface",
+        "shape": {
+          "models": "M",
+          "graph": "Record<string, ModelInfo>",
+          "registry": "import(\"src/engine/registry\").RegistryDefinition",
+          "permissions": "import(\"src/engine/tx-permissions\").PermissionConfig",
+          "migrations": "import(\"src/engine/migrations-bundle\").BundledWorkspaceMigration[]",
+          "clientSchema": "import(\"src/client/types\").SchemaDefinition",
+          "(declaration)": "<M extends Models = Models> extends TapeDBSchema"
+        }
+      },
+      "StorageObject": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "key": "string",
+          "size": "number",
+          "etag": "string",
+          "contentType": "string"
+        }
+      },
+      "StoredFile": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "path": "string",
+          "r2Key": "string",
+          "size": "number",
+          "contentType": "string | null",
+          "createdAt": "number",
+          "updatedAt": "number"
+        }
+      },
+      "t": {
+        "kind": "value",
+        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string>(target: T, options?: HasManyOptions) => HasMany<T>; }"
+      },
+      "TopicSender": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "clientId": "string",
+          "userId": "string"
+        }
+      },
+      "UpdateData": {
+        "kind": "type",
+        "shape": "<F, M extends Models = Models> { [K in ScalarKeys<F>]?: InputOf<F[K]>; } & { [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>; } & { [K in BelongsToKeys<F> as `${K}Id`]?: string | null; } & { [K in HasManyKeys<F>]?: HasManyInput<F[K], M>; }"
+      },
+      "Where": {
+        "kind": "type",
+        "shape": "<F extends Fields = Fields, M extends Models = Models> Scalars<F> & { [K in RelationKeys<F>]?: F[K] extends HasMany ? ManyFilter<WhereLeaf<TargetFieldsOf<F[K], M>>> : WhereLeaf<TargetFieldsOf<F[K], M>> | null; } & { AND?: Where<F, M> | Where<F, M>[]; OR?: Where<F, M>[]; NOT?: Where<F, M> | Where<F, M>[]; }"
+      },
+      "WORKSPACE_ROLE_LEVELS": {
+        "kind": "value",
+        "shape": "{ readonly GUEST: 0; readonly USER: 1; readonly MEMBER: 2; readonly EDITOR: 3; readonly MODERATOR: 4; readonly ADMIN: 5; readonly OWNER: 6; readonly FOUNDER: 7; readonly DEVELOPER: 8; }"
+      },
+      "WorkspaceRole": {
+        "kind": "type",
+        "shape": "(typeof WORKSPACE_ROLE_LEVELS)[keyof typeof WORKSPACE_ROLE_LEVELS]"
+      },
+      "Write": {
+        "kind": "class",
+        "shape": {
+          "ops": "TxOp[]",
+          "id": "string",
+          "then": "<R1 = WriteResult, R2 = never>(onFulfilled?: ((value: WriteResult) => R1 | PromiseLike<R1>) | null, onRejected?: ((reason: unknown) => R2 | PromiseLike<R2>) | null) => Promise<R1 | R2>",
+          "catch": "<R = never>(onRejected?: ((reason: unknown) => R | PromiseLike<R>) | null) => Promise<WriteResult | R>",
+          "finally": "(onFinally?: (() => void) | null) => Promise<WriteResult>",
+          "(declaration)": "implements PromiseLike<WriteResult>"
+        }
+      },
+      "WriteRejection": {
+        "kind": "interface",
+        "shape": {
+          "clientTxId": "string",
+          "ops": "TxOp[]",
+          "code": "string",
+          "message": "string"
+        }
+      },
+      "WriteResult": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "status": "\"applied\" | \"queued\""
+        }
+      }
+    },
+    "tapedb/schema": {
+      "Access": {
+        "kind": "interface",
+        "shape": {
+          "read": "RoleDecision | FilterDecision<F> | CheckDecision<F> | undefined",
+          "create": "RoleDecision | CheckDecision<F> | undefined",
+          "update": "RoleDecision | CheckDecision<F> | undefined",
+          "delete": "RoleDecision | CheckDecision<F> | undefined",
+          "(declaration)": "<F extends Fields = Fields>"
+        }
+      },
+      "AccessAuth": {
+        "kind": "interface",
+        "shape": {
+          "sub": "string",
+          "role": "WorkspaceRole",
+          "workspaceId": "string"
+        }
+      },
+      "check": {
+        "kind": "function",
+        "shape": "<F extends Fields = Fields>(test: (context: CheckContext<F>) => boolean) => CheckDecision<F>"
+      },
+      "CheckContext": {
+        "kind": "interface",
+        "shape": {
+          "auth": "AccessAuth",
+          "row": "(Partial<Row<F>> & { id: string; }) | undefined",
+          "data": "Record<string, unknown> | undefined",
+          "changed": "string[] | undefined",
+          "(declaration)": "<F extends Fields = Fields>"
+        }
+      },
+      "CreateData": {
+        "kind": "type",
+        "shape": "<F, M extends Models = Models> { id?: string } & RequiredParents<F> & { [K in RequiredScalarKeys<F>]: InputOf<F[K]>; } & { [K in OptionalScalarKeys<F>]?: InputOf<F[K]>; } & { [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>; } & { [K in BelongsToKeys<F> as `${K}Id`]?: string | null; } & { [K in HasManyKeys<F>]?: HasManyInput<F[K], M>; }"
+      },
+      "DeleteBehaviour": {
+        "kind": "type",
+        "shape": "\"setNull\" | \"cascade\" | \"restrict\""
+      },
+      "FieldFilter": {
+        "kind": "interface",
+        "shape": {
+          "equals": "T | undefined",
+          "not": "FieldFilter<T> | T | undefined",
+          "in": "T[] | undefined",
+          "notIn": "T[] | undefined",
+          "gt": "T | undefined",
+          "gte": "T | undefined",
+          "lt": "T | undefined",
+          "lte": "T | undefined",
+          "(declaration)": "<T = Scalar>"
+        }
+      },
+      "filter": {
+        "kind": "function",
+        "shape": "<F extends Fields = Fields>(build: (context: { auth: AccessAuth; }) => Where<F> | Where<F>[]) => FilterDecision<F>"
+      },
+      "Include": {
+        "kind": "type",
+        "shape": "<M extends Models, F extends Fields> { [K in RelationKeys<F>]?: true | IncludeArgs<M, TargetFields<F[K], M>>; }"
+      },
+      "model": {
+        "kind": "function",
+        "shape": "<F extends Fields>(fields: F, options?: ModelOptions) => Model<F>"
+      },
+      "OrderBy": {
+        "kind": "type",
+        "shape": "<F> | Partial<Record<FilterKeys<F>, \"asc\" | \"desc\">> | Partial<Record<FilterKeys<F>, \"asc\" | \"desc\">>[]"
+      },
+      "role": {
+        "kind": "function",
+        "shape": "(name: RoleName) => RoleDecision"
+      },
+      "Row": {
+        "kind": "type",
+        "shape": "<F> { id: string; createdAt: number; updatedAt: number } & { [K in ScalarKeys<F>]: OutputOf<F[K]>; } & { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }"
+      },
+      "ScalarKind": {
+        "kind": "type",
+        "shape": "\"string\" | \"number\" | \"boolean\" | \"date\" | \"json\""
+      },
+      "schema": {
+        "kind": "function",
+        "shape": "<M extends Models>(models: M) => Schema<M>"
+      },
+      "Schema": {
+        "kind": "interface",
+        "shape": {
+          "models": "M",
+          "graph": "Record<string, ModelInfo>",
+          "registry": "import(\"src/engine/registry\").RegistryDefinition",
+          "permissions": "import(\"src/engine/tx-permissions\").PermissionConfig",
+          "migrations": "import(\"src/engine/migrations-bundle\").BundledWorkspaceMigration[]",
+          "clientSchema": "import(\"src/client/types\").SchemaDefinition",
+          "(declaration)": "<M extends Models = Models> extends TapeDBSchema"
+        }
+      },
+      "t": {
+        "kind": "value",
+        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string>(target: T, options?: HasManyOptions) => HasMany<T>; }"
+      },
+      "UpdateData": {
+        "kind": "type",
+        "shape": "<F, M extends Models = Models> { [K in ScalarKeys<F>]?: InputOf<F[K]>; } & { [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>; } & { [K in BelongsToKeys<F> as `${K}Id`]?: string | null; } & { [K in HasManyKeys<F>]?: HasManyInput<F[K], M>; }"
+      },
+      "Where": {
+        "kind": "type",
+        "shape": "<F extends Fields = Fields, M extends Models = Models> Scalars<F> & { [K in RelationKeys<F>]?: F[K] extends HasMany ? ManyFilter<WhereLeaf<TargetFieldsOf<F[K], M>>> : WhereLeaf<TargetFieldsOf<F[K], M>> | null; } & { AND?: Where<F, M> | Where<F, M>[]; OR?: Where<F, M>[]; NOT?: Where<F, M> | Where<F, M>[]; }"
+      }
+    },
+    "tapedb/react": {
+      "LivePage": {
+        "kind": "interface",
+        "shape": {
+          "rows": "R[]",
+          "hasMore": "boolean",
+          "isLoading": "boolean",
+          "error": "import(\"src/index\").QueryError | null",
+          "loadMore": "() => Promise<boolean>",
+          "(declaration)": "<R>"
+        }
+      },
+      "useBroadcast": {
+        "kind": "function",
+        "experimental": true,
+        "shape": "<T = unknown>(db: { $broadcast<M>(topic: string): BroadcastTopic<M>; }, topic: string, onMessage?: (message: T, from: TopicSender) => void) => (message: T) => boolean"
+      },
+      "useLive": {
+        "kind": "function",
+        "shape": "<T>(query: Query<T>) => LiveState<T>"
+      },
+      "useLivePage": {
+        "kind": "function",
+        "shape": "<R>(query: PageQuery<R>) => LivePage<R>"
+      },
+      "usePresence": {
+        "kind": "function",
+        "shape": "(db: { $presence(room: string): PresenceRoom; }, room: string, presence?: unknown) => PresencePeer[]"
+      }
+    },
+    "tapedb/worker": {
+      "AppMigration": {
+        "kind": "type",
+        "shape": "BundledWorkspaceMigration"
+      },
+      "ClaimError": {
+        "kind": "class",
+        "shape": {
+          "code": "ClaimErrorCode",
+          "name": "string",
+          "message": "string",
+          "stack": "string | undefined",
+          "cause": "unknown",
+          "(declaration)": "extends Error"
+        }
+      },
+      "ClaimIdentity": {
+        "kind": "interface",
+        "shape": {
+          "getSubject": "(headers: Headers) => Promise<{ sub: string; } | null>",
+          "getRole": "(workspaceId: string, sub: string) => Promise<WorkspaceRole | null>"
+        }
+      },
+      "defineTapeDB": {
+        "kind": "function",
+        "shape": "(options: DefineTapeDBOptions) => TapeDBWorker"
+      },
+      "DefineTapeDBOptions": {
+        "kind": "interface",
+        "shape": {
+          "schema": "TapeDBSchema",
+          "migrations": "readonly BundledWorkspaceMigration[] | undefined",
+          "identity": "ClaimIdentity | undefined",
+          "devClaims": "boolean | undefined",
+          "topics": "{ authorize?: TopicAuthorizer; } | undefined @experimental",
+          "retention": "RetentionOptions | undefined"
+        }
+      },
+      "Env": {
+        "kind": "interface",
+        "shape": {
+          "WORKSPACE": "DurableObjectNamespace<WorkspaceRoom>",
+          "DATA": "R2Bucket",
+          "FILES": "R2Bucket | undefined",
+          "ENVIRONMENT": "string | undefined",
+          "TAPEDB_JURISDICTION": "string | undefined",
+          "TAPEDB_CLAIM_SECRET": "string",
+          "TAPEDB_CLAIM_ISSUER": "string | undefined",
+          "TAPEDB_CLAIM_AUDIENCE": "string | undefined",
+          "TAPEDB_DEV_CLAIMS": "string | undefined",
+          "TAPEDB_DEV_CLAIMS_TOKEN": "string | undefined"
+        }
+      },
+      "MAX_UPLOAD_BYTES": {
+        "kind": "value",
+        "shape": "number"
+      },
+      "signRoleClaim": {
+        "kind": "function",
+        "shape": "(secret: string, input: MintClaimInput, now?: number) => Promise<MintedClaim>"
+      },
+      "TapeDBWorker": {
+        "kind": "interface",
+        "shape": {
+          "WorkspaceRoom": "typeof WorkspaceRoom",
+          "worker": "{ fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response>; }"
+        }
+      },
+      "TopicAction": {
+        "kind": "type",
+        "experimental": true,
+        "shape": "\"join\" | \"send\""
+      },
+      "TopicAuthorizer": {
+        "kind": "type",
+        "experimental": true,
+        "shape": "(context: { auth: { sub: string; role: number; workspaceId: string }; topic: string; action: TopicAction; }) => boolean"
+      },
+      "verifyRoleClaim": {
+        "kind": "function",
+        "shape": "(token: string, env: ClaimVerificationEnv, expectedWorkspaceId: string) => Promise<RoleClaim>"
+      },
+      "WORKSPACE_ROLE_LEVELS": {
+        "kind": "value",
+        "shape": "{ readonly GUEST: 0; readonly USER: 1; readonly MEMBER: 2; readonly EDITOR: 3; readonly MODERATOR: 4; readonly ADMIN: 5; readonly OWNER: 6; readonly FOUNDER: 7; readonly DEVELOPER: 8; }"
+      }
+    },
+    "(referenced, not exported)": {
+      "AggregateArgs (src/model/client.ts)": {
+        "kind": "interface",
+        "shape": {
+          "where": "Where<F, M> | undefined",
+          "_count": "true | ({ _all?: boolean; } & { [P in \"id\" | \"createdAt\" | \"updatedAt\" | import(\"src/model/schema\").ScalarKeys<F> | keyof { [K in import(\"src/model/schema\").BelongsToKeys<F> as `${K}Id`]: F[K] extends import(\"src/model/fields\").BelongsTo<string, infer O extends boolean> ? string | (O extends true ? null : never) : never; }]?: boolean | undefined; }) | undefined",
+          "_sum": "{ [P in { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"number\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]]?: boolean | undefined; } | undefined",
+          "_avg": "{ [P in { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"number\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]]?: boolean | undefined; } | undefined",
+          "_min": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
+          "_max": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
+          "(declaration)": "<M extends Models, F extends Fields> extends AggregateMeasures<F>"
+        }
+      },
+      "AggregateMeasures (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "_count": "true | ({ _all?: boolean; } & Flags<\"id\" | \"createdAt\" | \"updatedAt\" | ScalarKeys<F> | keyof { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }>) | undefined",
+          "_sum": "Flags<NumberKeys<F>> | undefined",
+          "_avg": "Flags<NumberKeys<F>> | undefined",
+          "_min": "Flags<Exclude<\"createdAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"id\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<{ [K in ScalarKeys<F>]: F[K] extends Field<\"json\", boolean, boolean> ? never : K; }[ScalarKeys<F>], { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<`${BelongsToKeys<F>}Id`, { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]>> | undefined",
+          "_max": "Flags<Exclude<\"createdAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"id\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<{ [K in ScalarKeys<F>]: F[K] extends Field<\"json\", boolean, boolean> ? never : K; }[ScalarKeys<F>], { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<`${BelongsToKeys<F>}Id`, { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]>> | undefined",
+          "(declaration)": "<F>"
+        }
+      },
+      "AggregateOutput (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F, A> (A extends { _count: infer C } ? { _count: C extends true ? number : { [K in On<C>]: number } } : unknown) & (A extends { _sum: infer S } ? { _sum: { [K in On<S>]: number | null } } : unknown) & (A extends { _avg: infer S } ? { _avg: { [K in On<S>]: number | null } } : unknown) & (A extends { _min: infer S } ? { _min: { [K in On<S> & keyof Row<F>]: Row<F>[K] | null } } : unknown) & (A extends { _max: infer S } ? { _max: { [K in On<S> & keyof Row<F>]: Row<F>[K] | null } } : unknown)"
+      },
+      "AnyField (src/model/fields.ts)": {
+        "kind": "type",
+        "shape": "Field<ScalarKind, boolean, boolean>"
+      },
+      "AttributeDefinition (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "type": "AttributeType",
+          "isOptional": "boolean",
+          "isIndexed": "boolean",
+          "isUnique": "boolean",
+          "optional": "() => AttributeDefinition<T>",
+          "indexed": "() => AttributeDefinition<T>",
+          "unique": "() => AttributeDefinition<T>",
+          "(declaration)": "<T = unknown>"
+        }
+      },
+      "AttributeDefinition (src/engine/registry.ts)": {
+        "kind": "interface",
+        "shape": {
+          "type": "AttributeType",
+          "optional": "boolean | undefined",
+          "default": "string | number | null | undefined",
+          "indexed": "boolean | undefined",
+          "unique": "boolean | undefined",
+          "references": "AttributeReference | undefined"
+        }
+      },
+      "AttributeReference (src/engine/registry.ts)": {
+        "kind": "interface",
+        "shape": {
+          "table": "string",
+          "column": "string",
+          "onDelete": "DeleteRule | undefined"
+        }
+      },
+      "AttributeType (src/client/types.ts)": {
+        "kind": "type",
+        "shape": "| \"string\" | \"number\" | \"boolean\" | \"date\" | \"json\" | \"any\""
+      },
+      "AttributeType (src/engine/registry.ts)": {
+        "kind": "type",
+        "shape": "| \"string\" | \"number\" | \"boolean\" | \"date\" | \"json\" | \"any\""
+      },
+      "BelongsTo (src/model/fields.ts)": {
+        "kind": "class",
+        "shape": {
+          "tag": "\"belongsTo\"",
+          "target": "T",
+          "isOptional": "O",
+          "onDelete": "DeleteBehaviour",
+          "optional": "() => BelongsTo<T, true>",
+          "(declaration)": "<T extends string = string, O extends boolean = boolean>"
+        }
+      },
+      "BelongsToInput (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F, M extends Models> | { connect: string } | { create: NestedCreate<TargetFieldsOf<F, M>> } | { disconnect: true } | null"
+      },
+      "BelongsToKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> Keys<F, BelongsTo>"
+      },
+      "BulkResult (src/model/client.ts)": {
+        "kind": "interface",
+        "shape": {
+          "count": "number"
+        }
+      },
+      "BundledWorkspaceMigration (src/engine/migrations-bundle.ts)": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "sql": "string",
+          "changes": "SchemaChange[] | undefined"
+        }
+      },
+      "CheckDecision (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "decision": "\"check\"",
+          "test": "(context: CheckContext<F>) => boolean",
+          "(declaration)": "<F extends Fields = Fields>"
+        }
+      },
+      "ClaimErrorCode (src/verify.ts)": {
+        "kind": "type",
+        "shape": "| \"missing_token\" | \"invalid_format\" | \"invalid_signature\" | \"expired\" | \"wrong_workspace\" | \"invalid_claim\""
+      },
+      "ClaimVerificationEnv (src/verify.ts)": {
+        "kind": "interface",
+        "shape": {
+          "TAPEDB_CLAIM_SECRET": "string",
+          "TAPEDB_CLAIM_ISSUER": "string | undefined",
+          "TAPEDB_CLAIM_AUDIENCE": "string | undefined"
+        }
+      },
+      "ClientDeps (src/client/data-client.ts)": {
+        "kind": "interface",
+        "shape": {
+          "fetch": "FetchLike | undefined",
+          "storageFetch": "StorageFetch | undefined",
+          "createWebSocket": "WebSocketFactory | undefined",
+          "outbox": "Outbox | undefined",
+          "now": "(() => number) | undefined"
+        }
+      },
+      "ClientExtras (src/model/client.ts)": {
+        "kind": "interface",
+        "shape": {
+          "$transaction": "(writes: Write[]) => Promise<WriteResult[]>",
+          "$files": "FilesClient",
+          "$presence": "(room: string) => PresenceRoom",
+          "$broadcast": "<T = unknown>(topic: string) => BroadcastTopic<T> @experimental",
+          "$export": "() => AsyncIterable<ExportRecord<Models>>",
+          "$flush": "() => Promise<void>",
+          "$close": "() => void"
+        }
+      },
+      "DeleteRule (src/engine/registry.ts)": {
+        "kind": "type",
+        "shape": "\"CASCADE\" | \"SET NULL\" | \"RESTRICT\""
+      },
+      "EntityDefinition (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "type": "\"entity\"",
+          "attrs": "Record<string, AttributeDefinition<unknown>>"
+        }
+      },
+      "FetchLike (src/client/data-client.ts)": {
+        "kind": "type",
+        "shape": "( url: string, init: { method: string; headers: Record<string, string>; body?: string; } ) => Promise<FetchResponseLike>"
+      },
+      "FetchResponseLike (src/client/data-client.ts)": {
+        "kind": "interface",
+        "shape": {
+          "body": "ReadableStream<Uint8Array<ArrayBufferLike>> | null | undefined",
+          "ok": "boolean",
+          "status": "number",
+          "json": "() => Promise<unknown>"
+        }
+      },
+      "Field (src/model/fields.ts)": {
+        "kind": "class",
+        "shape": {
+          "tag": "\"field\"",
+          "kind": "K",
+          "isOptional": "O",
+          "hasDefault": "D",
+          "defaultValue": "unknown",
+          "isIndexed": "boolean",
+          "isUnique": "boolean",
+          "optional": "() => Field<K, true, D>",
+          "default": "(value: KindInput[K]) => Field<K, O, true>",
+          "index": "() => Field<K, O, D>",
+          "unique": "() => Field<K, O, D>",
+          "(declaration)": "<K extends ScalarKind = ScalarKind, O extends boolean = boolean, D extends boolean = boolean>"
+        }
+      },
+      "Fields (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "Record<string, ModelMember>"
+      },
+      "FieldsOf (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M> M extends Model<infer F> ? F : never"
+      },
+      "FilterDecision (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "decision": "\"filter\"",
+          "build": "(context: { auth: AccessAuth; }) => Where<F> | Where<F>[]",
+          "(declaration)": "<F extends Fields = Fields>"
+        }
+      },
+      "FilterKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> | \"id\" | { [K in ScalarKeys<F>]: F[K] extends Field<\"json\", boolean, boolean> ? never : K }[ScalarKeys<F>] | `${BelongsToKeys<F>}Id`"
+      },
+      "Flags (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<K extends PropertyKey> { [P in K]?: boolean }"
+      },
+      "ForeignKeyOf (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<S> S extends BelongsTo<string, infer O> ? string | (O extends true ? null : never) : never"
+      },
+      "GroupByArgs (src/model/client.ts)": {
+        "kind": "interface",
+        "shape": {
+          "by": "GroupKeys<F>[]",
+          "where": "Where<F, M> | undefined",
+          "orderBy": "Partial<Record<GroupKeys<F>, \"asc\" | \"desc\">> | undefined",
+          "take": "number | undefined",
+          "_count": "true | ({ _all?: boolean; } & { [P in \"id\" | \"createdAt\" | \"updatedAt\" | import(\"src/model/schema\").ScalarKeys<F> | keyof { [K in import(\"src/model/schema\").BelongsToKeys<F> as `${K}Id`]: F[K] extends import(\"src/model/fields\").BelongsTo<string, infer O extends boolean> ? string | (O extends true ? null : never) : never; }]?: boolean | undefined; }) | undefined",
+          "_sum": "{ [P in { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"number\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]]?: boolean | undefined; } | undefined",
+          "_avg": "{ [P in { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"number\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]]?: boolean | undefined; } | undefined",
+          "_min": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
+          "_max": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
+          "(declaration)": "<M extends Models, F extends Fields> extends AggregateMeasures<F>"
+        }
+      },
+      "GroupKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> FilterKeys<F> | \"createdAt\" | \"updatedAt\""
+      },
+      "GroupRow (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F, A> (A extends { by: ReadonlyArray<infer K> } ? { [P in K & keyof Row<F>]: Row<F>[P] } : unknown) & AggregateOutput<F, A>"
+      },
+      "HasMany (src/model/fields.ts)": {
+        "kind": "class",
+        "shape": {
+          "tag": "\"hasMany\"",
+          "target": "T",
+          "inverse": "string | undefined",
+          "(declaration)": "<T extends string = string>"
+        }
+      },
+      "HasManyInput (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F, M extends Models> { connect?: string[]; disconnect?: string[]; create?: NestedCreate<TargetFieldsOf<F, M>> | NestedCreate<TargetFieldsOf<F, M>>[]; }"
+      },
+      "HasManyKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> Keys<F, HasMany>"
+      },
+      "IncludeArgs (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "where": "Where<F, M> | undefined",
+          "orderBy": "OrderBy<F> | undefined",
+          "take": "number | undefined",
+          "include": "Include<M, F> | undefined",
+          "select": "Select<M, F> | undefined",
+          "(declaration)": "<M extends Models, F extends Fields>"
+        }
+      },
+      "Included (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models, S, A> A extends { select: infer Sel } ? Selected<M, TargetFields<S, M>, Sel> : Row<TargetFields<S, M>> & (A extends { include: infer I } ? WithInclude<M, TargetFields<S, M>, I> : unknown)"
+      },
+      "InputOf (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<S> S extends Field<infer K, infer O, boolean> ? KindInput[K] | (O extends true ? null : never) : never"
+      },
+      "Keys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F, Tag> { [K in keyof F]: F[K] extends Tag ? K : never }[keyof F] & string"
+      },
+      "KindInput (src/model/fields.ts)": {
+        "kind": "interface",
+        "shape": {
+          "string": "string",
+          "number": "number",
+          "boolean": "boolean",
+          "date": "string | number | Date",
+          "json": "unknown"
+        }
+      },
+      "KindOutput (src/model/fields.ts)": {
+        "kind": "interface",
+        "shape": {
+          "string": "string",
+          "number": "number",
+          "boolean": "boolean",
+          "date": "number",
+          "json": "unknown"
+        }
+      },
+      "LinkDefinition (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "forward": "LinkSide",
+          "reverse": "LinkSide"
+        }
+      },
+      "LinkDefinition (src/engine/registry.ts)": {
+        "kind": "type",
+        "shape": "OneToManyLink | OneToOneLink"
+      },
+      "LinkSide (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "on": "string",
+          "has": "\"many\" | \"one\"",
+          "label": "string"
+        }
+      },
+      "ManyFilter (src/model/where.ts)": {
+        "kind": "interface",
+        "shape": {
+          "some": "W | undefined",
+          "every": "W | undefined",
+          "none": "W | undefined",
+          "(declaration)": "<W>"
+        }
+      },
+      "MintClaimInput (src/mint.ts)": {
+        "kind": "interface",
+        "shape": {
+          "sub": "string",
+          "workspaceId": "string",
+          "role": "WorkspaceRole",
+          "iss": "string | undefined",
+          "aud": "string | undefined",
+          "ttlSeconds": "number | undefined"
+        }
+      },
+      "MintedClaim (src/mint.ts)": {
+        "kind": "interface",
+        "shape": {
+          "token": "string",
+          "expiresAt": "number",
+          "expiresIn": "number"
+        }
+      },
+      "Model (src/model/schema.ts)": {
+        "kind": "class",
+        "shape": {
+          "fields": "F",
+          "options": "ModelOptions",
+          "rules": "Access<F>",
+          "access": "(rules: Access<F>) => Model<F>",
+          "(declaration)": "<F extends Fields = Fields>"
+        }
+      },
+      "ModelInfo (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "key": "string",
+          "scalars": "Record<string, { kind: ScalarKind; optional: boolean; hasDefault: boolean; defaultValue: unknown; }>",
+          "relations": "Record<string, RelationInfo>",
+          "filterable": "Set<string>"
+        }
+      },
+      "ModelMember (src/model/fields.ts)": {
+        "kind": "type",
+        "shape": "AnyField | BelongsTo | HasMany"
+      },
+      "ModelOptions (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "table": "string | undefined"
+        }
+      },
+      "Models (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "Record<string, Model>"
+      },
+      "NamespaceDefinition (src/engine/registry.ts)": {
+        "kind": "interface",
+        "shape": {
+          "apiName": "string",
+          "table": "string",
+          "attributes": "Record<string, AttributeDefinition>"
+        }
+      },
+      "NestedCreate (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> { id?: string } & { [K in RequiredScalarKeys<F>]: InputOf<F[K]>; } & { [K in OptionalScalarKeys<F>]?: InputOf<F[K]>; } & { [K in RelationKeys<F>]?: unknown; } & { [K in BelongsToKeys<F> as `${K}Id`]?: string | null; }"
+      },
+      "NumberKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> { [K in ScalarKeys<F>]: F[K] extends Field<\"number\", boolean, boolean> ? K : never; }[ScalarKeys<F>]"
+      },
+      "On (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<S> { [K in keyof S]: S[K] extends false | undefined ? never : K }[keyof S]"
+      },
+      "OneToManyLink (src/engine/registry.ts)": {
+        "kind": "interface",
+        "shape": {
+          "apiName": "string",
+          "kind": "\"one-to-many\"",
+          "forward": "{ namespace: string; label: string; has: \"many\"; }",
+          "reverse": "{ namespace: string; label: string; has: \"one\"; }",
+          "foreignKey": "{ namespace: string; attribute: string; }"
+        }
+      },
+      "OneToOneLink (src/engine/registry.ts)": {
+        "kind": "interface",
+        "shape": {
+          "apiName": "string",
+          "kind": "\"one-to-one\"",
+          "forward": "{ namespace: string; label: string; has: \"one\"; }",
+          "reverse": "{ namespace: string; label: string; has: \"one\"; }",
+          "foreignKey": "{ namespace: string; attribute: string; unique: true; }"
+        }
+      },
+      "OptionalScalarKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> Exclude<ScalarKeys<F>, RequiredScalarKeys<F>>"
+      },
+      "OrderedKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> | Exclude<GroupKeys<F>, { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never }[ScalarKeys<F>]>"
+      },
+      "Outbox (src/client/outbox.ts)": {
+        "kind": "interface",
+        "shape": {
+          "add": "(entry: OutboxEntry) => Promise<void>",
+          "list": "(workspaceId: string) => Promise<OutboxEntry[]>",
+          "remove": "(clientTxId: string) => Promise<void>",
+          "clear": "(workspaceId?: string) => Promise<void>"
+        }
+      },
+      "OutboxEntry (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "clientTxId": "string",
+          "txId": "string",
+          "workspaceId": "string",
+          "ops": "TxOp[]",
+          "createdAt": "number",
+          "attempts": "number | undefined"
+        }
+      },
+      "OutputOf (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<S> S extends Field<infer K, infer O, boolean> ? KindOutput[K] | (O extends true ? null : never) : never"
+      },
+      "PermissionAction (src/engine/tx-permissions.ts)": {
+        "kind": "type",
+        "shape": "\"view\" | \"create\" | \"update\" | \"delete\""
+      },
+      "PermissionAuth (src/engine/tx-permissions.ts)": {
+        "kind": "interface",
+        "shape": {
+          "sub": "string",
+          "role": "WorkspaceRole",
+          "workspaceId": "string"
+        }
+      },
+      "PermissionConfig (src/engine/tx-permissions.ts)": {
+        "kind": "interface",
+        "shape": {
+          "overrides": "PermissionOverrides | undefined"
+        }
+      },
+      "PermissionContext (src/engine/tx-permissions.ts)": {
+        "kind": "interface",
+        "shape": {
+          "auth": "PermissionAuth",
+          "data": "Record<string, unknown> | undefined",
+          "next": "Record<string, unknown> | undefined",
+          "changed": "string[] | undefined"
+        }
+      },
+      "PermissionDecision (src/engine/tx-permissions.ts)": {
+        "kind": "type",
+        "shape": "WorkspaceRole | PermissionRule | ViewWhereRule"
+      },
+      "PermissionOverrides (src/engine/tx-permissions.ts)": {
+        "kind": "type",
+        "shape": "Record< string, Partial<Record<PermissionAction, PermissionDecision>> >"
+      },
+      "PermissionRule (src/engine/tx-permissions.ts)": {
+        "kind": "type",
+        "shape": "(context: PermissionContext) => boolean"
+      },
+      "QueryComparison (src/engine/query-types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "$ne": "QueryScalar | undefined",
+          "$in": "QueryScalar[] | undefined",
+          "$nin": "QueryScalar[] | undefined",
+          "$gt": "QueryScalar | undefined",
+          "$gte": "QueryScalar | undefined",
+          "$lt": "QueryScalar | undefined",
+          "$lte": "QueryScalar | undefined"
+        }
+      },
+      "QueryRelationFilter (src/engine/query-types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "label": "string",
+          "mode": "RelationMode",
+          "where": "QueryWhere"
+        }
+      },
+      "QueryScalar (src/engine/query-types.ts)": {
+        "kind": "type",
+        "shape": "string | number | boolean | null"
+      },
+      "QueryWhere (src/engine/query-types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "$or": "QueryWhere[] | undefined",
+          "$and": "QueryWhere[] | undefined",
+          "$not": "QueryWhere | undefined",
+          "$link": "QueryRelationFilter[] | undefined"
+        }
+      },
+      "QueryWhereValue (src/engine/query-types.ts)": {
+        "kind": "type",
+        "shape": "QueryScalar | QueryComparison"
+      },
+      "RegistryDefinition (src/engine/registry.ts)": {
+        "kind": "interface",
+        "shape": {
+          "namespaces": "readonly NamespaceDefinition[]",
+          "links": "readonly LinkDefinition[]"
+        }
+      },
+      "RelationInfo (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "kind": "\"belongsTo\" | \"hasMany\"",
+          "target": "string",
+          "link": "string",
+          "foreignKey": "string | undefined",
+          "optional": "boolean | undefined"
+        }
+      },
+      "RelationKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> BelongsToKeys<F> | HasManyKeys<F>"
+      },
+      "RelationMode (src/engine/query-types.ts)": {
+        "kind": "type",
+        "shape": "\"parent\" | \"some\" | \"every\" | \"none\""
+      },
+      "RelationOutput (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models, S, A> S extends HasMany ? Included<M, S, A>[] : S extends BelongsTo<string, infer O> ? Included<M, S, A> | (O extends true ? null : never) : never"
+      },
+      "RequiredBelongsToKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> { [K in BelongsToKeys<F>]: F[K] extends BelongsTo<string, false> ? K : never; }[BelongsToKeys<F>]"
+      },
+      "RequiredParents (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> [RequiredBelongsToKeys<F>] extends [never] ? unknown : Unbox< UnionToIntersection< { [K in RequiredBelongsToKeys<F>]: { box: { [P in K]: { connect: string } } | { [P in `${K}Id`]: string }; }; }[RequiredBelongsToKeys<F>] > >"
+      },
+      "RequiredScalarKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> { [K in ScalarKeys<F>]: F[K] extends Field<ScalarKind, false, false> ? K : never; }[ScalarKeys<F>]"
+      },
+      "RetentionOptions (src/engine/durability/retention.ts)": {
+        "kind": "interface",
+        "shape": {
+          "days": "number | undefined"
+        }
+      },
+      "RoleDecision (src/model/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "decision": "\"role\"",
+          "level": "WorkspaceRole"
+        }
+      },
+      "RoleName (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "| \"guest\" | \"user\" | \"member\" | \"editor\" | \"moderator\" | \"admin\" | \"owner\""
+      },
+      "Scalar (src/model/where.ts)": {
+        "kind": "type",
+        "shape": "string | number | boolean | null | Date"
+      },
+      "ScalarKeys (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F> Keys<F, Field>"
+      },
+      "Scalars (src/model/where.ts)": {
+        "kind": "type",
+        "shape": "<F extends Fields> { [K in FilterKeys<F>]?: Scalar | FieldFilter; }"
+      },
+      "SchemaChange (src/engine/schema-evolution.ts)": {
+        "kind": "type",
+        "shape": "| { kind: \"dropModel\"; model: string; table: string } | { kind: \"renameModel\"; from: string; to: string; fromTable: string; toTable: string } | { kind: \"dropField\"; model: string; table: string; field: string; column: string } | { kind: \"renameField\"; model: string; table: string; from: string; to: string; fromColumn: string; toColumn: string; } | { kind: \"retypeField\"; model: string; field: string }"
+      },
+      "SchemaDefinition (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "entities": "Record<string, EntityDefinition>",
+          "links": "Record<string, LinkDefinition>"
+        }
+      },
+      "Select (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models, F extends Fields> { [K in keyof Row<F>]?: boolean; } & { [K in RelationKeys<F>]?: boolean | IncludeArgs<M, TargetFields<F[K], M>>; }"
+      },
+      "Selected (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models, F extends Fields, S> { [K in keyof S & keyof Row<F> as S[K] extends false | undefined ? never : K]: Row<F>[K]; } & { [K in keyof S & RelationKeys<F> as S[K] extends false | undefined ? never : K]: RelationOutput< M, F[K], S[K] >; }"
+      },
+      "StorageFetch (src/client/storage-client.ts)": {
+        "kind": "type",
+        "shape": "( input: RequestInfo | URL, init?: RequestInit ) => Promise<Response>"
+      },
+      "TapeDBSchema (src/schema.ts)": {
+        "kind": "interface",
+        "shape": {
+          "registry": "RegistryDefinition",
+          "permissions": "PermissionConfig",
+          "migrations": "BundledWorkspaceMigration[]",
+          "clientSchema": "ClientSchemaDefinition"
+        }
+      },
+      "TargetFields (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<S, M extends Models> TargetOf<S> extends keyof M ? FieldsOf<M[TargetOf<S>]> : Fields"
+      },
+      "TargetFieldsOf (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<S, M extends Models> TargetFields<S, M>"
+      },
+      "TargetOf (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<S> S extends BelongsTo<infer T, boolean> ? T : S extends HasMany<infer T> ? T : never"
+      },
+      "TxDeleteManyOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"deleteMany\"",
+          "namespace": "string",
+          "where": "Record<string, unknown>",
+          "after": "string | undefined"
+        }
+      },
+      "TxDeleteOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"delete\"",
+          "namespace": "string",
+          "id": "string",
+          "(declaration)": "extends TxOpBase"
+        }
+      },
+      "TxInsertOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"insert\"",
+          "values": "Record<string, unknown>",
+          "namespace": "string",
+          "id": "string",
+          "(declaration)": "extends TxOpBase"
+        }
+      },
+      "TxLinkOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"link\"",
+          "link": "string",
+          "targetId": "string",
+          "namespace": "string",
+          "id": "string",
+          "(declaration)": "extends TxOpBase"
+        }
+      },
+      "TxMergeOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"merge\"",
+          "values": "Record<string, unknown>",
+          "namespace": "string",
+          "id": "string",
+          "(declaration)": "extends TxOpBase"
+        }
+      },
+      "TxOp (src/client/types.ts)": {
+        "kind": "type",
+        "shape": "| TxPatchManyOp | TxDeleteManyOp | TxInsertOp | TxPatchOp | TxUpsertOp | TxUpdateOp | TxMergeOp | TxLinkOp | TxUnlinkOp | TxDeleteOp"
+      },
+      "TxOpBase (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "TxOpKind",
+          "namespace": "string",
+          "id": "string"
+        }
+      },
+      "TxOpKind (src/client/types.ts)": {
+        "kind": "type",
+        "shape": "| \"insert\" | \"patch\" | \"upsert\" | \"patchMany\" | \"deleteMany\" | \"update\" | \"merge\" | \"link\" | \"unlink\" | \"delete\""
+      },
+      "TxPatchManyOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"patchMany\"",
+          "namespace": "string",
+          "where": "Record<string, unknown>",
+          "values": "Record<string, unknown>",
+          "after": "string | undefined"
+        }
+      },
+      "TxPatchOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"patch\"",
+          "values": "Record<string, unknown>",
+          "namespace": "string",
+          "id": "string",
+          "(declaration)": "extends TxOpBase"
+        }
+      },
+      "TxUnlinkOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"unlink\"",
+          "link": "string",
+          "targetId": "string",
+          "namespace": "string",
+          "id": "string",
+          "(declaration)": "extends TxOpBase"
+        }
+      },
+      "TxUpdateOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"update\"",
+          "values": "Record<string, unknown>",
+          "namespace": "string",
+          "id": "string",
+          "(declaration)": "extends TxOpBase"
+        }
+      },
+      "TxUpsertOp (src/client/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "op": "\"upsert\"",
+          "values": "Record<string, unknown>",
+          "create": "Record<string, unknown>",
+          "namespace": "string",
+          "id": "string",
+          "(declaration)": "extends TxOpBase"
+        }
+      },
+      "Unbox (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<T> T extends { box: infer B } ? B : never"
+      },
+      "UnionToIntersection (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<U> (U extends unknown ? (value: U) => void : never) extends ( value: infer I ) => void ? I : never"
+      },
+      "ViewWhereRule (src/engine/tx-permissions.ts)": {
+        "kind": "interface",
+        "shape": {
+          "where": "(auth: PermissionAuth) => QueryWhere | readonly QueryWhere[]"
+        }
+      },
+      "WebSocketFactory (src/client/socket.ts)": {
+        "kind": "type",
+        "shape": "(url: string, protocols: string[]) => WebSocketLike"
+      },
+      "WebSocketLike (src/client/socket.ts)": {
+        "kind": "interface",
+        "shape": {
+          "send": "(data: string) => void",
+          "close": "(code?: number, reason?: string) => void",
+          "onopen": "((event: unknown) => void) | null",
+          "onmessage": "((event: { data: unknown; }) => void) | null",
+          "onerror": "((event: unknown) => void) | null",
+          "onclose": "((event: unknown) => void) | null"
+        }
+      },
+      "WhereLeaf (src/model/where.ts)": {
+        "kind": "type",
+        "shape": "<F extends Fields> Scalars<F> & { [K in RelationKeys<F>]?: unknown; } & { AND?: WhereLeaf<F> | WhereLeaf<F>[]; OR?: WhereLeaf<F>[]; NOT?: WhereLeaf<F> | WhereLeaf<F>[]; }"
+      },
+      "WithInclude (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models, F extends Fields, I> I extends object ? { [K in keyof I & RelationKeys<F>]: RelationOutput<M, F[K], I[K]>; } : unknown"
+      },
+      "WorkspaceRoom (src/engine/workspace-room.ts)": {
+        "kind": "class",
+        "shape": {
+          "fetch": "(request: Request) => Promise<Response>",
+          "webSocketMessage": "(ws: WebSocket, message: string | ArrayBuffer) => Promise<void>",
+          "webSocketClose": "(ws: WebSocket, code: number, reason: string) => void",
+          "webSocketError": "(ws: WebSocket) => void",
+          "alarm": "() => Promise<void>",
+          "connect": "((socket: Socket) => void | Promise<void>) | undefined",
+          "__DURABLE_OBJECT_BRAND": "never",
+          "(declaration)": "extends DurableObject<Env>"
+        }
+      }
+    }
+  },
+  "cli": "tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out\n\nUsage:\n  tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--force]\n  tapedb migrate dev|status|check [--dir <path>] [--schema <file>]\n  tapedb deploy [--dir <path>] [--env <name>]\n  tapedb dev  [--dir <path>] [--port <port>]\n  tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]\n  tapedb export --workspace <uuid> [--url <worker-url>] [--out <file>]\n  tapedb erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]\n\nCommands:\n  init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,\n          and the first migration. Existing files are kept unless --force.\n          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.\n  migrate dev --name <name> [--rename old=new] [--accept-data-loss]\n          Diff the schema against the last migration and write the next one.\n  migrate status | check\n          List migrations; check fails if the schema has unmigrated changes.\n  deploy  [--env <name>]  Check ENVIRONMENT, dev claims, data residency and migrations, then wrangler deploy.\n  dev     Run the local database with wrangler dev on port 8787.\n  studio  Open a local table browser against a running Worker.\n  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).\n  erase   Delete a workspace for good: its data, history and files (owner claim).\n          --confirm must repeat the workspace id. The id answers 410 afterwards.",
+  "errorCodes": [
+    "claim_expired",
+    "claim_secret_missing",
+    "conflict",
+    "dev_token_required",
+    "engine_not_configured",
+    "erase_failed",
+    "expired",
+    "file_index_failed",
+    "file_too_large",
+    "foreign_key_violation",
+    "identity_not_configured",
+    "insufficient_role",
+    "invalid_body",
+    "invalid_claim",
+    "invalid_cursor",
+    "invalid_drag",
+    "invalid_envelope",
+    "invalid_format",
+    "invalid_json",
+    "invalid_key",
+    "invalid_message",
+    "invalid_op",
+    "invalid_path",
+    "invalid_presence",
+    "invalid_query",
+    "invalid_signature",
+    "invalid_size",
+    "invalid_subscription_id",
+    "invalid_target",
+    "invalid_value",
+    "invalid_workspace_id",
+    "jurisdiction_mismatch",
+    "message_too_large",
+    "method_not_allowed",
+    "missing_token",
+    "no_route",
+    "not_found",
+    "not_in_target",
+    "permission_denied",
+    "retry_expired",
+    "storage_error",
+    "storage_not_configured",
+    "unauthenticated",
+    "unique_violation",
+    "unknown_attribute",
+    "unknown_link",
+    "unknown_namespace",
+    "unsupported_message_type",
+    "upgrade_required",
+    "workspace_erased",
+    "wrong_workspace"
+  ]
+}
