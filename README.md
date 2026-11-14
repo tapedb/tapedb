@@ -161,10 +161,11 @@ The linked model's own read rule is compiled into the subquery, so a filter
 cannot answer a question about rows the caller may not see; a model whose read
 rule is a function (which only runs after fetch) is refused as a filter
 target. The types follow one link; further hops are checked by the engine.
-Includes nest without limit. Relation filters nest until SQLite's expression
-depth in a Durable Object, about eight hops inside one filter; past that the
-query is a 400 that says so. Wide filters are not limited: long `in` lists
-and `OR`s of hundreds of branches compile to shallow SQL.
+Includes and relation filters nest without limit, and filters can be as wide
+as you like. A Durable Object's SQLite refuses expressions deeper than 100 and
+very long statements, so past a few hops, or past that length, the engine runs
+part of the filter first into a scratch table and tests membership in it;
+every statement stays shallow and short. The results are the same either way.
 
 Building a query validates it against the schema, so an unknown field,
 operator or relation throws there and then, at the call, rather than

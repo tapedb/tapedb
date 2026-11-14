@@ -13,7 +13,9 @@ import { beforeEach, describe, expect, test } from "bun:test";
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { MemoryOutbox } from "../src/client/outbox";
 import { configureMigrations } from "../src/engine/migrations-bundle";
+import { buildSelectSql, compileQuery } from "../src/engine/query-compile";
 import { executeQueryWithPageInfo } from "../src/engine/query-execute";
+import { STAGE_DEPTH } from "../src/engine/query-stages";
 import { configureRegistry } from "../src/engine/registry";
 import { configurePermissions, type PermissionOverrides } from "../src/engine/tx-permissions";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
@@ -275,18 +277,137 @@ describe("depth", () => {
     expect(boards[0].columns[0].tasks.map((task) => (task as { column: { board: { name: string } } }).column.board.name)).toEqual(["Open", "Open"]);
   });
 
-  test("a filter deeper than SQLite can run is a bad request, not a server error", async () => {
+  test("a filter of any depth runs, staged past a few hops", async () => {
     await seed();
     // Alternates column -> tasks -> column ..., 41 hops, ending on column.
+    // Each round trip lands back on the same column, so the answer is the
+    // one-hop "columns with a task titled one".
     let where: Record<string, unknown> = { title: "one" };
     for (let hop = 0; hop < 41; hop += 1) {
       where = hop % 2 === 0 ? { tasks: { some: where } } : { column: where };
     }
-    const outcome = await client().column.findMany({ where: where as never }).then(
-      () => null,
-      (error: unknown) => error
-    );
-    expect(outcome).toMatchObject({ code: "invalid_op", status: 400 });
-    expect(String(outcome)).toMatch(/larger than SQLite can run/);
+    const deep = await client().column.findMany({ where: where as never, orderBy: { id: "asc" } });
+    expect(deep.map((row) => row.id)).toEqual(["c-todo"]);
+  });
+
+  test("staged filters agree with a direct evaluation, every mode at every depth", async () => {
+    await seed();
+    const db = client("alice", WORKSPACE_ROLE_LEVELS.OWNER);
+    await db.task.create({ data: { id: "loose", title: "one", done: true } });
+    await db.column.create({ data: { id: "c-empty", name: "Empty", position: 4, board: { connect: "b-secret" } } });
+
+    type Row = Record<string, unknown>;
+    const rows = {
+      board: sql.all("SELECT * FROM board") as Row[],
+      column: sql.all("SELECT * FROM column") as Row[],
+      task: sql.all("SELECT * FROM task") as Row[],
+    };
+    type Model = keyof typeof rows;
+    const scalar: Record<Model, Array<[string, unknown[]]>> = {
+      board: [["name", ["Open", "Secret"]], ["archived", [true, false]]],
+      column: [["name", ["Todo", "Done", "Hidden", "Empty"]]],
+      task: [["title", ["one", "two", "three", "four"]], ["done", [true, false]]],
+    };
+    const parent: Record<Model, Array<[string, Model, string]>> = {
+      board: [], column: [["board", "board", "board_id"]], task: [["column", "column", "column_id"]],
+    };
+    const children: Record<Model, Array<[string, Model, string]>> = {
+      board: [["columns", "column", "board_id"]], column: [["tasks", "task", "column_id"]], task: [],
+    };
+
+    let seedValue = 7;
+    const random = (n: number) => {
+      seedValue = (seedValue * 1103515245 + 12345) % 2147483648;
+      return seedValue % n;
+    };
+
+    type Filter = Record<string, unknown>;
+    const make = (model: Model, depth: number): Filter => {
+      const choices = random(depth <= 0 ? 2 : 7);
+      if (choices <= 1 || (parent[model].length === 0 && children[model].length === 0)) {
+        const [field, values] = scalar[model][random(scalar[model].length)];
+        return { [field]: values[random(values.length)] };
+      }
+      if (choices === 2) return { OR: [make(model, depth - 1), make(model, depth - 1)] };
+      if (choices === 3) return { NOT: make(model, depth - 1) };
+      const links = [...parent[model].map((link) => ["parent", ...link]), ...children[model].map((link) => ["child", ...link])] as Array<[string, string, Model, string]>;
+      const [kind, label, target] = links[random(links.length)];
+      if (kind === "parent") return { [label]: make(target, depth - 1) };
+      const mode = ["some", "every", "none"][random(3)];
+      return { [label]: { [mode]: make(target, depth - 1) } };
+    };
+
+    const matches = (model: Model, row: Row, filter: Filter): boolean =>
+      Object.entries(filter).every(([key, value]) => {
+        if (key === "OR") return (value as Filter[]).some((branch) => matches(model, row, branch));
+        if (key === "NOT") return !matches(model, row, value as Filter);
+        const up = parent[model].find(([label]) => label === key);
+        if (up) {
+          const target = rows[up[1]].find((candidate) => candidate.id === row[up[2]]);
+          return target !== undefined && matches(up[1], target, value as Filter);
+        }
+        const down = children[model].find(([label]) => label === key);
+        if (down) {
+          const kids = rows[down[1]].filter((candidate) => candidate[down[2]] === row.id);
+          const [mode, inner] = Object.entries(value as Filter)[0];
+          const hits = kids.map((kid) => matches(down[1], kid, inner as Filter));
+          return mode === "some" ? hits.some(Boolean) : mode === "every" ? hits.every(Boolean) : !hits.some(Boolean);
+        }
+        const stored = row[key];
+        return typeof value === "boolean" ? Boolean(stored) === value : stored === value;
+      });
+
+    let deepest = 0;
+    for (let round = 0; round < 150; round += 1) {
+      const model = (["board", "column", "task"] as Model[])[round % 3];
+      const filter = make(model, 9);
+      deepest = Math.max(deepest, JSON.stringify(filter).split("{").length);
+      const expected = rows[model].filter((row) => matches(model, row, filter)).map((row) => row.id as string).sort();
+      const got = (await (db[model] as { findMany(args: object): Promise<Array<{ id: string }>> }).findMany({ where: filter }))
+        .map((row) => row.id)
+        .sort();
+      expect({ filter, ids: got }).toEqual({ filter, ids: expected });
+    }
+    expect(deepest).toBeGreaterThan(8);
+  });
+
+  test("a filter too long for one statement is staged, not refused", async () => {
+    await seed();
+    const titles = Array.from({ length: 4000 }, (_, index) => `missing-${index}`).concat(["two"]);
+    const tasks = await client().task.findMany({ where: { OR: titles.map((title) => ({ title })) } as never });
+    expect(tasks.map((task) => task.id)).toEqual(["t2"]);
+    const none = await client().task.findMany({ where: { AND: titles.map((title) => ({ NOT: { title } })) } as never, orderBy: { id: "asc" } });
+    expect(none.map((task) => task.id)).toEqual(["t1", "t3", "t4"]);
+  });
+
+  test("every statement it runs stays shallow and short, however deep or wide the filter", () => {
+    let deep: Record<string, unknown> = { title: "one" };
+    for (let hop = 0; hop < 41; hop += 1) {
+      deep = hop % 2 === 0 ? { $link: [{ label: "tasks", mode: "some", where: deep }] } : { $link: [{ label: "column", mode: "parent", where: deep }] };
+    }
+    const wide = { $or: Array.from({ length: 4000 }, (_, index) => ({ title: `missing-${index}` })) };
+    for (const [namespace, where] of [["column", deep], ["task", wide]] as const) {
+      const node = compileQuery({ [namespace]: { $: { where } } }).nodes[0];
+      const statement = buildSelectSql(node);
+      const all = [statement.sql, ...(statement.stages ?? []).map((stage) => stage.sql)];
+      for (const text of all) {
+        // Nesting: a subquery inside a subquery is what SQLite's depth counts.
+        let open = 0;
+        let deepest = 0;
+        const stack: boolean[] = [];
+        for (let index = 0; index < text.length; index += 1) {
+          if (text[index] === "(") {
+            const isSelect = text.startsWith("(SELECT", index);
+            stack.push(isSelect);
+            if (isSelect) deepest = Math.max(deepest, ++open);
+          } else if (text[index] === ")" && stack.pop()) {
+            open -= 1;
+          }
+        }
+        expect(deepest).toBeLessThanOrEqual(STAGE_DEPTH + 1);
+        expect(text.length).toBeLessThan(40_000);
+      }
+      expect((statement.stages ?? []).length).toBeGreaterThan(0);
+    }
   });
 });

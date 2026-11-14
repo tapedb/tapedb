@@ -11,13 +11,22 @@
  * Supported subset: equality and `$ne`/`$in`/`$gt`/`$gte`/`$lt`/`$lte` on
  * scalar attributes, `order` and `limit` (1..1000). JSON/`any` attributes are
  * returned but cannot be filtered or ordered on. Links nest as deep as the
- * document asks (one statement per level); relation filters nest until
- * SQLite's expression depth (about eight hops in a Durable Object), past
- * which the query is a bad request (`sqliteLimitError`).
+ * document asks (one statement per level). Relation filters nest as deep as
+ * the document asks too: past a few hops, and past a statement length SQLite
+ * accepts, the filter is cut into stages that run first (`query-stages.ts`).
  */
 
 import { compileAggregate, type CompiledAggregate } from "./query-aggregate";
 import { balancedJoin } from "./sql-binding";
+import {
+  MAX_CONDITION_SQL,
+  membership,
+  STAGE_DEPTH,
+  stageInsert,
+  stageKey,
+  stagesOf,
+  type Stage,
+} from "./query-stages";
 import {
   invalidOp,
   invalidValue,
@@ -53,6 +62,8 @@ export type LinkMultiplicity = "one" | "many";
 export interface CompiledCondition {
   sql: string;
   params: SqlValue[];
+  /** Statements that must run first, in order (see `query-stages.ts`). */
+  stages?: Stage[];
   /** The `after` keyset predicate: a count ignores it. */
   cursor?: true;
 }
@@ -178,17 +189,14 @@ export function compileQuery(value: unknown, view?: ViewAccess): CompiledQuery {
 
 /**
  * SQLite's own bounds on one statement, reported as a bad request naming
- * the bound. The one a query can realistically reach is expression depth:
- * a Durable Object's SQLite allows 100, and each relation filter nested
- * inside another costs more than the last (SQLite counts the enclosing
- * expression again for every subquery), so about eight hops fit in one
- * filter, measured in workerd. Wide filters do not count against it:
- * `balancedJoin` keeps AND/OR chains logarithmic and lists travel as one
- * JSON parameter.
+ * the bound. Queries should not reach them: deep relation filters and long
+ * filters are staged (`query-stages.ts`), `balancedJoin` keeps AND/OR chains
+ * logarithmic, and lists travel as one JSON parameter. This stays as a guard,
+ * so a bound no stage covers is a 400 that names it, not a 500.
  */
 export function sqliteLimitError(error: unknown): TxError | null {
   const message = error instanceof Error ? error.message : String(error);
-  if (/expression tree is too large|recursion limit|too many terms|parser stack overflow|too many SQL variables|string or blob too big/i.test(message)) {
+  if (/expression tree is too large|recursion limit|too many terms|parser stack overflow|too many SQL variables|string or blob too big|statement too long/i.test(message)) {
     return invalidOp(`The query is larger than SQLite can run as one statement (${message}). Split the filter.`);
   }
   return null;
@@ -202,7 +210,7 @@ export function sqliteLimitError(error: unknown): TxError | null {
 export function buildSelectSql(
   node: CompiledNode,
   extra?: ForeignKeyFilter
-): { sql: string; params: SqlValue[] } {
+): { sql: string; params: SqlValue[]; stages?: Stage[] } {
   const conditions = [...node.conditions];
 
   if (extra !== undefined) {
@@ -243,6 +251,7 @@ export function buildSelectSql(
       node.table
     )}${whereSql}${orderSql}${limitSql}`,
     params,
+    stages: stagesOf(conditions),
   };
 }
 
@@ -444,7 +453,8 @@ export function compileViewCondition(
   namespaceName: string,
   branches: readonly unknown[],
   alias?: string,
-  references?: Set<string>
+  references?: Set<string>,
+  depth = 0
 ): CompiledCondition {
   const namespace = findNamespace(namespaceName);
   if (!namespace) {
@@ -457,10 +467,11 @@ export function compileViewCondition(
 
   const parts: string[] = [];
   const params: SqlValue[] = [];
+  const all: CompiledCondition[] = [];
   for (const branch of branches) {
     let conditions: CompiledCondition[];
     try {
-      conditions = compileWhere(namespace, parseWhere(branch), { alias, references });
+      conditions = compileWhere(namespace, parseWhere(branch), { alias, references, depth });
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       throw new TxError(
@@ -474,9 +485,10 @@ export function compileViewCondition(
     }
     parts.push(balancedJoin(conditions.map((condition) => condition.sql), " AND "));
     for (const condition of conditions) params.push(...condition.params);
+    all.push(...conditions);
   }
 
-  return { sql: balancedJoin(parts, " OR "), params };
+  return { sql: balancedJoin(parts, " OR "), params, stages: stagesOf(all) };
 }
 
 /** The physical column behind a selectable API name, or undefined. */
@@ -568,7 +580,7 @@ function compileWhere(
         conjunction(compileWhere(namespace, branch, context))
       );
       conditions.push(
-        joinConditions(branches, attribute === "$or" ? " OR " : " AND ")
+        fitJoin(branches, attribute === "$or" ? " OR " : " AND ", namespace, context)
       );
       continue;
     }
@@ -580,6 +592,7 @@ function compileWhere(
       conditions.push({
         sql: `NOT COALESCE((${inner.sql}), 0)`,
         params: inner.params,
+        stages: inner.stages,
       });
       continue;
     }
@@ -610,7 +623,59 @@ function compileWhere(
         : compileEquality(resolved, attribute, value as QueryScalar, context.alias)
     );
   }
-  return conditions;
+  const length = conditions.reduce((total, condition) => total + condition.sql.length + 9, 0);
+  return length > MAX_CONDITION_SQL ? [fitJoin(conditions, " AND ", namespace, context)] : conditions;
+}
+
+/**
+ * Joins conditions, staging them when the joined text would be longer than
+ * SQLite takes in one statement. An OR stages every chunk under one key (the
+ * union); an AND stages each chunk under its own key and requires membership
+ * in all of them. Each chunk selects this level's ids from this level's table
+ * under the same alias, so correlated subqueries inside it still resolve.
+ */
+function fitJoin(
+  conditions: CompiledCondition[],
+  joiner: " AND " | " OR ",
+  namespace: NamespaceDefinition,
+  context: WhereContext
+): CompiledCondition {
+  const joined = joinConditions(conditions, joiner);
+  if (joined.sql.length <= MAX_CONDITION_SQL) return joined;
+
+  const chunks: CompiledCondition[][] = [];
+  let chunk: CompiledCondition[] = [];
+  let size = 0;
+  for (const condition of conditions) {
+    // The balanced join wraps each part in parentheses and adds the joiner.
+    const cost = condition.sql.length + joiner.length + 4;
+    if (chunk.length > 0 && size + cost > MAX_CONDITION_SQL) {
+      chunks.push(chunk);
+      chunk = [];
+      size = 0;
+    }
+    chunk.push(condition);
+    size += cost;
+  }
+  if (chunk.length > 0) chunks.push(chunk);
+
+  const alias = context.alias ?? namespace.table;
+  const from =
+    context.alias === undefined
+      ? quoteIdentifier(namespace.table)
+      : `${quoteIdentifier(namespace.table)} AS ${quoteIdentifier(context.alias)}`;
+  const idColumn = qualify("id", alias);
+  const stages: Stage[] = [];
+  const memberships: CompiledCondition[] = [];
+  const unionKey = joiner === " OR " ? stageKey() : null;
+  for (const part of chunks) {
+    const key = unionKey ?? stageKey();
+    const inner = joinConditions(part, joiner);
+    stages.push(...(inner.stages ?? []), stageInsert(key, idColumn, from, inner.sql, inner.params));
+    if (unionKey === null || memberships.length === 0) memberships.push(membership(idColumn, key));
+  }
+  const result = joinConditions(memberships, " AND ");
+  return { ...result, stages: [...stages, ...(result.stages ?? [])] };
 }
 
 /**
@@ -680,13 +745,37 @@ function compileRelationFilter(
 
   const viewBranches = context.view?.branches(target.apiName);
   if (viewBranches !== undefined && viewBranches !== null) {
-    inner.push(compileViewCondition(target.apiName, viewBranches, alias, context.references));
+    inner.push(compileViewCondition(target.apiName, viewBranches, alias, context.references, depth + 1));
   }
 
   const params: SqlValue[] = inner.flatMap((condition) => condition.params);
+  const innerStages = stagesOf(inner) ?? [];
   const innerSql =
     inner.length === 0 ? "1 = 1" : balancedJoin(inner.map((condition) => condition.sql), " AND ");
   const from = `${quoteIdentifier(target.table)} AS ${quoteIdentifier(alias)}`;
+  const outer = context.alias ?? namespace.table;
+
+  if (depth > 0 && depth % STAGE_DEPTH === 0) {
+    // Deep enough that nesting further would exhaust SQLite's expression
+    // depth: run this hop first, into the scratch table, and test membership.
+    const key = stageKey();
+    const fk = qualify(foreignKey, alias);
+    const staged =
+      relation.mode === "parent"
+        ? stageInsert(key, qualify("id", alias), from, `(${innerSql})`, params)
+        : stageInsert(
+            key,
+            fk,
+            from,
+            `${fk} IS NOT NULL AND ${relation.mode === "every" ? `NOT COALESCE((${innerSql}), 0)` : `(${innerSql})`}`,
+            params
+          );
+    const test =
+      relation.mode === "parent"
+        ? membership(qualify(foreignKey, outer), key)
+        : membership(qualify("id", outer), key, relation.mode !== "some");
+    return { ...test, stages: [...innerStages, staged] };
+  }
 
   if (relation.mode === "parent") {
     // The outer row holds the key. A null key matches nothing, which is what
@@ -694,6 +783,7 @@ function compileRelationFilter(
     return {
       sql: `${qualify(foreignKey, context.alias ?? namespace.table)} IN (SELECT ${quoteIdentifier(alias)}."id" FROM ${from} WHERE ${innerSql})`,
       params,
+      stages: stagesOf(inner),
     };
   }
 
@@ -704,10 +794,11 @@ function compileRelationFilter(
     return {
       sql: `NOT EXISTS (SELECT 1 FROM ${from} WHERE ${correlation} AND NOT COALESCE((${innerSql}), 0))`,
       params,
+      stages: stagesOf(inner),
     };
   }
   const exists = `EXISTS (SELECT 1 FROM ${from} WHERE ${correlation} AND (${innerSql}))`;
-  return { sql: relation.mode === "none" ? `NOT ${exists}` : exists, params };
+  return { sql: relation.mode === "none" ? `NOT ${exists}` : exists, params, stages: stagesOf(inner) };
 }
 
 /** AND of a branch's conditions; an empty branch matches everything. */
@@ -723,6 +814,7 @@ function joinConditions(
   return {
     sql: balancedJoin(conditions.map((condition) => condition.sql), joiner),
     params: conditions.flatMap((condition) => condition.params),
+    stages: stagesOf(conditions),
   };
 }
 
