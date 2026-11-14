@@ -14,6 +14,7 @@ import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
 import { configureTopics, type TopicAuthorizer } from "../engine/topics";
+import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
 import { isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
 import { apiError, discardBody, json } from "../http";
@@ -64,6 +65,12 @@ export interface DefineTapeDBOptions {
    * presence.
    */
   topics?: { authorize?: TopicAuthorizer };
+  /**
+   * How long deleted or overwritten values may remain in the workspace's
+   * history (R2 log segments, older snapshots, the local replay log).
+   * Defaults to 30 days; at least 2.
+   */
+  retention?: RetentionOptions;
 }
 
 export interface TapeDBWorker {
@@ -243,6 +250,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   );
   configurePermissions(schema.permissions);
   configureTopics(options.topics);
+  configureRetention(options.retention);
 
   const worker = {
     async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
