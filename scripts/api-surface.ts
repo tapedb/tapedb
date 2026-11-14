@@ -171,35 +171,38 @@ function cliUsage(): string {
   return match[1].trim();
 }
 
-/** Every literal error code the engine or Worker can answer with. */
+/**
+ * Every literal error code a caller can receive: from a Worker or engine
+ * response, a socket message, or an error the client raises. All of src is
+ * scanned, so a new module cannot be missed, except two places whose codes
+ * never reach a caller: the CLI (messages for a terminal) and the durability
+ * flusher (results the alarm logs). Codes that reach an answer through a
+ * variable are covered by the declared `*ErrorCode` unions.
+ */
+const INTERNAL_CODE_DIRS = [join(root, "src/cli"), join(root, "src/engine/durability")];
+
 function errorCodes(): string[] {
   const codes = new Set<string>();
+  const patterns = [
+    /apiError\(\s*\d+,\s*"([a-z_]+)"/g,
+    /new (?:TxError|ReadError|QueryError|ClaimError)\(\s*"([a-z_]+)"/g,
+    /code:\s*"([a-z_]+)"/g,
+  ];
   const walk = (dir: string) => {
     for (const name of readdirSync(dir)) {
       const path = join(dir, name);
-      if (statSync(path).isDirectory()) walk(path);
-      else if (path.endsWith(".ts")) {
+      if (statSync(path).isDirectory()) {
+        if (!INTERNAL_CODE_DIRS.includes(path)) walk(path);
+      } else if (path.endsWith(".ts")) {
         const text = readFileSync(path, "utf8");
-        for (const pattern of [/apiError\(\s*\d+,\s*"([a-z_]+)"/g, /new (?:TxError|ReadError|QueryError)\(\s*"([a-z_]+)"/g, /code:\s*"([a-z_]+)"/g]) {
-          for (const match of text.matchAll(pattern)) codes.add(match[1]);
+        for (const pattern of patterns) for (const match of text.matchAll(pattern)) codes.add(match[1]);
+        for (const union of text.matchAll(/export type \w*ErrorCode =([^;]+);/g)) {
+          for (const match of union[1].matchAll(/"([a-z_]+)"/g)) codes.add(match[1]);
         }
       }
     }
   };
-  for (const dir of ["src/engine", "src/worker"]) walk(join(root, dir));
-  for (const file of ["src/claim-route.ts", "src/http.ts", "src/verify.ts"]) {
-    const text = readFileSync(join(root, file), "utf8");
-    for (const match of text.matchAll(/apiError\(\s*\d+,\s*"([a-z_]+)"/g)) codes.add(match[1]);
-    for (const match of text.matchAll(/new ClaimError\(\s*"([a-z_]+)"/g)) codes.add(match[1]);
-  }
-  // Codes that reach a response through a variable: the declared code types.
-  const declared = (file: string) => {
-    const text = readFileSync(join(root, file), "utf8");
-    for (const union of text.matchAll(/export type \w*ErrorCode =([^;]+);/g)) {
-      for (const match of union[1].matchAll(/"([a-z_]+)"/g)) codes.add(match[1]);
-    }
-  };
-  for (const file of ["src/engine/tx-types.ts", "src/verify.ts"]) declared(file);
+  walk(join(root, "src"));
   return [...codes].sort();
 }
 
