@@ -355,6 +355,7 @@ Usage:
   tapedb dev  [--dir <path>] [--port <port>]
   tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
   tapedb export --workspace <uuid> [--url <worker-url>] [--out <file>]
+  tapedb erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]
 
 Commands:
   init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,
@@ -367,6 +368,8 @@ Commands:
   dev     Run the local database with wrangler dev on port 8787.
   studio  Open a local table browser against a running Worker.
   export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).
+  erase   Delete a workspace for good: its data, history and files (owner claim).
+          --confirm must repeat the workspace id. The id answers 410 afterwards.
 `);
   return 0;
 }
@@ -498,6 +501,43 @@ async function studio(argv: string[]): Promise<number> {
   return 0;
 }
 
+/**
+ * Erases a workspace: DELETE /engine/workspaces/:id with an owner claim
+ * (TAPEDB_TOKEN, or a dev claim). Irreversible, so the id is typed twice.
+ */
+export async function eraseWorkspace(argv: string[]): Promise<number> {
+  const flags = parseFlags(argv);
+  const url = (typeof flags.url === "string" ? flags.url : "http://localhost:8787").replace(/\/+$/, "");
+  const workspace = typeof flags.workspace === "string" ? flags.workspace : "";
+  if (!workspace || flags.confirm !== workspace) {
+    console.error("Erasing cannot be undone. Name the workspace twice: tapedb erase --workspace <uuid> --confirm <uuid> [--url <worker>]");
+    return 1;
+  }
+
+  let response: Response;
+  try {
+    const token = process.env.TAPEDB_TOKEN || (await mintToken(url, workspace));
+    response = await fetch(`${url}/engine/workspaces/${workspace}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 1;
+  }
+  const body = (await response.json().catch(() => null)) as { erased?: { historyObjects: number; files: number }; error?: { message?: string } } | null;
+  if (response.status === 410) {
+    console.log(`Workspace ${workspace} was already erased.`);
+    return 0;
+  }
+  if (!response.ok || !body?.erased) {
+    console.error(`Erase failed with HTTP ${response.status}: ${body?.error?.message ?? "no details"}. It is safe to run again.`);
+    return 1;
+  }
+  console.log(`Erased workspace ${workspace}: ${body.erased.historyObjects} history objects and ${body.erased.files} files deleted, Durable Object storage cleared.`);
+  return 0;
+}
+
 /** Runs the CLI and returns its exit code. Importable without side effects. */
 export async function run(argv: string[]): Promise<number> {
   const command = argv[0];
@@ -508,6 +548,7 @@ export async function run(argv: string[]): Promise<number> {
   if (command === "dev") return dev(argv.slice(1));
   if (command === "studio") return studio(argv.slice(1));
   if (command === "export") return exportWorkspace(argv.slice(1));
+  if (command === "erase") return eraseWorkspace(argv.slice(1));
   if (command === undefined || command === "--help" || command === "-h") {
     return usage();
   }

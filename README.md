@@ -377,6 +377,24 @@ Writes keep landing during an export; `end.consistent` is true when none did,
 and the export is then the workspace exactly at `end.seq`. An export that
 stops early ends with an `error` line instead of `end` (the CLI exits 1).
 
+## Erasing a workspace
+
+```bash
+npx tapedb erase --workspace <uuid> --confirm <uuid>   # owner claim: TAPEDB_TOKEN, or a dev claim
+```
+
+`DELETE /engine/workspaces/:id` with an owner's claim deletes everything the
+workspace holds: its R2 history (the manifest first, so nothing can be
+recovered from what remains), its uploaded files, then its Durable Object
+storage and alarm. Every step is idempotent: a failed erase (HTTP 500) is
+finished by calling it again. Afterwards the workspace answers
+`410 workspace_erased` to every request, so a client reconnecting with
+queued writes cannot recreate it under the same id. Cloudflare keeps 30 days
+of point-in-time recovery for every SQLite-backed Durable Object; tapedb never
+restores from it, but until it ages out an erased (or deleted) value can still
+be restored by code running in your account. That is why the default history
+retention is also 30 days.
+
 ## Claims and identity
 
 The engine verifies a short-lived signed claim and never issues one. Identity

@@ -389,7 +389,15 @@ async function drills() {
   const receipt = await transact({ txId: "drill-tx", clientTxId: "drill-receipt", ops: [{ op: "insert", namespace: "task", id: "drill-once", values: { title: "once", done: false } }] });
   assert.equal(receipt.ok, true, JSON.stringify(receipt));
   await db.$files.upload(new Blob(["drill"], { type: "text/plain" }), { path: "drill/file.txt" });
-  console.log("  drill: seeded 1,103 rows; waiting for the durability alarm to flush and snapshot");
+  // A second workspace, durable in R2 by the same wait, erased before the wipe.
+  const { createClient } = await import(join(project, "node_modules/tapedb/dist/index.js"));
+  const { s } = await import(join(project, "common.mjs"));
+  const erasedId = randomUUID();
+  const doomed = createClient({ schema: s, url: base, workspace: erasedId });
+  for (let n = 0; n < 20; n += 1) await doomed.task.create({ data: { title: `erase-me-${n}` } });
+  await doomed.$files.upload(new Blob(["erase me"], { type: "text/plain" }), { path: "erase/me.txt" });
+  doomed.$close();
+  console.log("  drill: seeded 1,103 rows (and a workspace to erase); waiting for the durability alarm to flush and snapshot");
   await sleep(40_000);
   // Writes after the snapshot, replayed from log segments on recovery.
   for (let n = 0; n < 5; n += 1) await db.task.create({ data: { title: `late${n}` } });
@@ -414,6 +422,10 @@ async function drills() {
   migrated.$close();
   console.log(`  drill: referenced table rebuilt, children intact; export at seq ${before.end.seq}`);
 
+  // Erase the second workspace. The wipe below removes its tombstone with
+  // everything else, so after it the workspace must come back from R2 empty.
+  run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "erase", "--workspace", erasedId, "--confirm", erasedId, "--url", base], { cwd: project });
+
   // Wipe every Durable Object's storage; R2 stays.
   if (deployName) {
     await wipeStagingObjects();
@@ -436,7 +448,14 @@ async function drills() {
   const next = await restored.task.create({ data: { title: "after" } });
   assert.ok(next.id);
   restored.$close();
+
   console.log(`  drill: recovered ${after.rows.length} rows, ${after.files.length} file, seq ${after.end.seq}, receipt kept`);
+  // Nothing of the erased workspace was left in R2 to recover from.
+  const reborn = createClient({ schema: s, url: base, workspace: erasedId });
+  const leftovers = await exported(reborn);
+  reborn.$close();
+  assert.deepEqual([leftovers.rows.length, leftovers.files.length, leftovers.end.seq], [0, 0, 0], "erased workspace after recovery");
+  console.log("  drill: the erased workspace recovered with nothing: R2 held none of it");
 }
 
 // ---- Run --------------------------------------------------------------------
