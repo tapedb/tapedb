@@ -4,6 +4,10 @@
 //                                           then the local drills (migration rebuild, recovery)
 //   node scripts/e2e.mjs --url <worker>     the scenarios against a deployed Worker
 //                                           (dev claims on; deployed with scripts/e2e/common.mjs's schema)
+//   node scripts/e2e.mjs --deploy <name>    deploy a staging Worker <name> with your wrangler login
+//                                           (buckets <name>-data / <name>-files, ENVIRONMENT=staging,
+//                                           dev claims on), then run the scenarios and the load
+//                                           test against it
 //   node scripts/e2e.mjs --only select,bulk only these scenarios; --no-drills skips the drills
 //
 // Scenarios live in scripts/e2e/*.mjs. Each is a plain Node script against `tapedb` as a
@@ -23,9 +27,13 @@ const flag = (name) => {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? undefined : args[index + 1];
 };
-const remote = flag("url");
+const deployName = flag("deploy");
+if (deployName !== undefined && !/^[a-z0-9-]{1,54}$/.test(deployName)) {
+  throw new Error(`--deploy takes a Worker name (a-z 0-9 -), not ${JSON.stringify(deployName)}`);
+}
+let remote = flag("url");
 const only = flag("only")?.split(",");
-const runDrills = !remote && !args.includes("--no-drills") && only === undefined;
+const runDrills = !remote && !deployName && !args.includes("--no-drills") && only === undefined;
 
 function run(command, commandArgs, options = {}) {
   const result = spawnSync(command, commandArgs, { encoding: "utf8", timeout: 600_000, ...options });
@@ -80,6 +88,59 @@ export default schema({
 writeFileSync(join(project, "tapedb.schema.ts"), schemaSource);
 run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "check"], { cwd: project });
 for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(project, file));
+
+// ---- Staging deploy -----------------------------------------------------------
+
+/** Runs wrangler from the project with the caller's own login; streams its output. */
+function wrangler(commandArgs, input) {
+  const result = spawnSync(join(project, "node_modules/.bin/wrangler"), commandArgs, {
+    cwd: project,
+    encoding: "utf8",
+    input,
+    timeout: 600_000,
+  });
+  return { ok: result.status === 0, output: `${result.stdout ?? ""}${result.stderr ?? ""}` };
+}
+
+async function deployStaging(name) {
+  const config = JSON.parse(readFileSync(join(project, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
+  config.name = name;
+  config.vars = { ENVIRONMENT: "staging", TAPEDB_DEV_CLAIMS: "true" };
+  config.r2_buckets = [
+    { binding: "DATA", bucket_name: `${name}-data` },
+    { binding: "FILES", bucket_name: `${name}-files` },
+  ];
+  writeFileSync(join(project, "wrangler.jsonc"), JSON.stringify(config, null, 2));
+
+  for (const bucket of [`${name}-data`, `${name}-files`]) {
+    const created = wrangler(["r2", "bucket", "create", bucket]);
+    if (!created.ok && !/already exists|already own/i.test(created.output)) {
+      throw new Error(`creating bucket ${bucket} failed:\n${created.output}`);
+    }
+    console.log(`  bucket ${bucket}: ${created.ok ? "created" : "exists"}`);
+  }
+
+  const deployed = wrangler(["deploy"]);
+  if (!deployed.ok) throw new Error(`wrangler deploy failed:\n${deployed.output}`);
+  const url = /https:\/\/[\w.-]+\.workers\.dev/.exec(deployed.output)?.[0];
+  if (!url) throw new Error(`deployed, but found no workers.dev URL in:\n${deployed.output}`);
+
+  // The claim secret init generated for this project, shared with the load test.
+  const secret = /^TAPEDB_CLAIM_SECRET=(.*)$/m.exec(readFileSync(join(project, ".dev.vars"), "utf8"))?.[1];
+  const put = wrangler(["secret", "put", "TAPEDB_CLAIM_SECRET"], `${secret}\n`);
+  if (!put.ok) throw new Error(`setting TAPEDB_CLAIM_SECRET failed:\n${put.output}`);
+  process.env.TAPEDB_CLAIM_SECRET = secret;
+
+  // A new version takes a few seconds to answer everywhere.
+  for (let waited = 0; ; waited += 2000) {
+    const response = await fetch(`${url}/status`).catch(() => null);
+    if (response?.ok) break;
+    if (waited > 60_000) throw new Error(`${url}/status did not answer after deploy`);
+    await sleep(2000);
+  }
+  console.log(`  deployed ${name} at ${url}`);
+  return url;
+}
 
 // ---- Worker -----------------------------------------------------------------
 
@@ -234,12 +295,16 @@ const scenarios = readdirSync(suite)
   .filter((file) => file.endsWith(".mjs") && file !== "common.mjs")
   .map((file) => file.replace(/\.mjs$/, ""))
   // The load run measures rather than checks, and takes a while: only on request.
-  .filter((name) => (only === undefined ? name !== "load" : only.includes(name)))
+  .filter((name) => (only === undefined ? name !== "load" || deployName !== undefined : only.includes(name)))
   .sort();
 
 let failed = 0;
 try {
-  if (!remote) await startDev();
+  if (deployName) {
+    base = remote = await deployStaging(deployName);
+  } else if (!remote) {
+    await startDev();
+  }
   console.log(`against ${base}`);
   for (const name of scenarios) {
     const result = await scenario(`${name}.mjs`);
