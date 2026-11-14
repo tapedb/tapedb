@@ -219,8 +219,8 @@ describe("transaction pipeline", () => {
     expect(log).toHaveLength(4);
     expect(log[0].seq).toBe(1);
     expect(log[0].client_tx_id).toBeNull();
-    expect(log[0].user_id).toBe("user-1");
-    expect(log[0].role).toBe(WORKSPACE_ROLE_LEVELS.EDITOR);
+    // The writer's identity is not kept: nothing reads it (data minimisation).
+    expect(log.map((row) => [row.user_id, row.role])).toEqual(log.map(() => [null, null]));
     expect(log[0].schema_version).toBe("0001_baseline");
     expect(log[0].at).toBeGreaterThan(0);
 

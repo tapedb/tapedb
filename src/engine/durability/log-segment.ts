@@ -84,8 +84,6 @@ export function buildLogSegment(
       // ops stored beside it: a bulk write logs the rows it resolved. Carried
       // so a retry after a restore is still recognised.
       opsHash: row.ops_hash,
-      userId: row.user_id,
-      role: row.role,
       at: row.at,
       schemaVersion: row.schema_version,
     };
