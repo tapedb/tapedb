@@ -103,11 +103,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private pendingInvalidationNamespaces = new Set<string>();
 
   private erased = false;
+  private misplaced: string | null = null;
   private invalidationTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
+      // A room reached outside the configured jurisdiction stores nothing.
+      const expected = env.TAPEDB_JURISDICTION;
+      if (expected && ctx.id.jurisdiction !== expected) {
+        this.misplaced = `This workspace's Durable Object is in jurisdiction ${JSON.stringify(ctx.id.jurisdiction ?? null)}, not ${JSON.stringify(expected)}; it serves nothing.`;
+        return;
+      }
+
       // An erased workspace stays erased: no migrations, no recovery, no alarm.
       if (ctx.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ERASED_TABLE}'`).toArray().length > 0) {
         this.erased = true;
@@ -227,6 +235,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (this.misplaced !== null) {
+      await discardBody(request);
+      return apiError(500, "jurisdiction_mismatch", this.misplaced);
+    }
     if (this.erased) {
       await discardBody(request);
       return apiError(410, "workspace_erased", "This workspace was erased.");
@@ -1207,7 +1219,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * accumulate into fewer, larger log segments.
    */
   async alarm(): Promise<void> {
-    if (this.erased) return;
+    if (this.erased || this.misplaced !== null) return;
     const workspaceId = this.workspaceId;
 
     try {

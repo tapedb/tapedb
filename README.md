@@ -395,6 +395,27 @@ restores from it, but until it ages out an erased (or deleted) value can still
 be restored by code running in your account. That is why the default history
 retention is also 30 days.
 
+## Data residency
+
+```bash
+npx tapedb init --jurisdiction eu
+```
+
+writes `"TAPEDB_JURISDICTION": "eu"` into `wrangler.jsonc` vars and
+`"jurisdiction": "eu"` on both R2 buckets (create them with
+`wrangler r2 bucket create <name> --jurisdiction eu`). Every workspace's
+Durable Object is then created in Cloudflare's EU jurisdiction, where it runs
+and stores data only in the EU, and the R2 history and files stay there too.
+A room reached outside the configured jurisdiction answers
+`500 jurisdiction_mismatch` and stores nothing. `tapedb deploy` refuses a
+config where the objects and the buckets disagree. `fedramp` works the same
+way.
+
+Choose before the first deploy. A Durable Object's id depends on its
+jurisdiction, so turning it on later addresses new, empty workspaces: move
+existing ones with `tapedb export`. Locally workerd has no jurisdictions;
+`tapedb dev` leaves the setting out.
+
 ## Claims and identity
 
 The engine verifies a short-lived signed claim and never issues one. Identity

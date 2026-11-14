@@ -172,7 +172,8 @@ async function deploy(argv: string[]): Promise<number> {
   }
   const config = parseJsonc(readFileSync(configPath, "utf8")) as {
     vars?: Record<string, string>;
-    env?: Record<string, { vars?: Record<string, string> }>;
+    r2_buckets?: Array<{ binding?: string; bucket_name?: string; jurisdiction?: string }>;
+    env?: Record<string, { vars?: Record<string, string>; r2_buckets?: Array<{ binding?: string; bucket_name?: string; jurisdiction?: string }> }>;
   };
   const vars = env === undefined ? config.vars : config.env?.[env]?.vars;
   if (vars?.ENVIRONMENT !== "production") {
@@ -183,6 +184,11 @@ async function deploy(argv: string[]): Promise<number> {
   }
   if (vars.TAPEDB_DEV_CLAIMS !== undefined) {
     console.error("Refusing to deploy: TAPEDB_DEV_CLAIMS is set. It must never reach production.");
+    return 1;
+  }
+  const residency = checkJurisdiction(vars, (env === undefined ? undefined : config.env?.[env]?.r2_buckets) ?? config.r2_buckets ?? []);
+  if (residency !== null) {
+    console.error(`Refusing to deploy: ${residency}`);
     return 1;
   }
 
@@ -197,6 +203,28 @@ async function deploy(argv: string[]): Promise<number> {
     stdio: "inherit",
   });
   return run.status ?? 1;
+}
+
+const JURISDICTIONS = ["eu", "fedramp"];
+
+/**
+ * Data residency is all or nothing: the Durable Objects (TAPEDB_JURISDICTION)
+ * and every R2 bucket in the same jurisdiction, or none restricted.
+ */
+export function checkJurisdiction(
+  vars: Record<string, string>,
+  buckets: Array<{ binding?: string; bucket_name?: string; jurisdiction?: string }>
+): string | null {
+  const wanted = vars.TAPEDB_JURISDICTION;
+  if (wanted !== undefined && !JURISDICTIONS.includes(wanted)) {
+    return `TAPEDB_JURISDICTION is ${JSON.stringify(wanted)}; Cloudflare's jurisdictions are ${JURISDICTIONS.join(" and ")}.`;
+  }
+  const outside = buckets.filter((bucket) => bucket.jurisdiction !== wanted);
+  if (outside.length === 0) return null;
+  const names = outside.map((bucket) => `${bucket.binding ?? "?"} (${bucket.bucket_name ?? "?"}: ${bucket.jurisdiction ?? "no jurisdiction"})`).join(", ");
+  return wanted === undefined
+    ? `R2 buckets ${names} are restricted to a jurisdiction but TAPEDB_JURISDICTION is not set, so the Durable Objects holding the same data are not. Set TAPEDB_JURISDICTION, before the first deploy.`
+    : `TAPEDB_JURISDICTION is "${wanted}" but R2 buckets ${names} are not. Create them with \`wrangler r2 bucket create <name> --jurisdiction ${wanted}\` and add "jurisdiction": "${wanted}" to each r2_buckets entry.`;
 }
 
 const SCHEMA_FILE = `import { model, schema, t } from "tapedb/schema";
@@ -244,7 +272,9 @@ export const WorkspaceRoom = tapedb.WorkspaceRoom;
 export default tapedb.worker;
 `;
 
-function wrangler(name: string): string {
+function wrangler(name: string, jurisdiction?: string): string {
+  const vars = jurisdiction ? `{ "ENVIRONMENT": "development", "TAPEDB_JURISDICTION": "${jurisdiction}" }` : `{ "ENVIRONMENT": "development" }`;
+  const where = jurisdiction ? `, "jurisdiction": "${jurisdiction}"` : "";
   return `{
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "${name}",
@@ -252,14 +282,14 @@ function wrangler(name: string): string {
   "compatibility_date": "${new Date().toISOString().slice(0, 10)}",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
-  "vars": { "ENVIRONMENT": "development" },
+  "vars": ${vars},
   "durable_objects": {
     "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceRoom" }]
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceRoom"] }],
   "r2_buckets": [
-    { "binding": "DATA", "bucket_name": "${name}-data" },
-    { "binding": "FILES", "bucket_name": "${name}-files" }
+    { "binding": "DATA", "bucket_name": "${name}-data"${where} },
+    { "binding": "FILES", "bucket_name": "${name}-files"${where} }
   ]
 }
 `;
@@ -294,6 +324,11 @@ async function init(argv: string[]): Promise<number> {
   const target = resolve(typeof flags.dir === "string" ? flags.dir : ".");
   const name = typeof flags.name === "string" ? flags.name : "tapedb-app";
   const force = flags.force === true;
+  const jurisdiction = typeof flags.jurisdiction === "string" ? flags.jurisdiction : undefined;
+  if (jurisdiction !== undefined && !JURISDICTIONS.includes(jurisdiction)) {
+    console.error(`--jurisdiction must be one of ${JURISDICTIONS.join(", ")}.`);
+    return 1;
+  }
 
   mkdirSync(target, { recursive: true });
 
@@ -306,7 +341,7 @@ async function init(argv: string[]): Promise<number> {
   const results: Array<[string, string]> = [
     ["tapedb.schema.ts", write(join(target, "tapedb.schema.ts"), SCHEMA_FILE, force)],
     ["worker.ts", write(join(target, "worker.ts"), WORKER_FILE, force)],
-    ["wrangler.jsonc", write(join(target, "wrangler.jsonc"), wrangler(name), force)],
+    ["wrangler.jsonc", write(join(target, "wrangler.jsonc"), wrangler(name, jurisdiction), force)],
     [
       ".dev.vars",
       write(devVarsPath, `TAPEDB_CLAIM_SECRET=${secret}\n`, force),
@@ -334,8 +369,8 @@ async function init(argv: string[]): Promise<number> {
   console.log(`
 Next:
 
-  npx wrangler r2 bucket create ${name}-data
-  npx wrangler r2 bucket create ${name}-files
+  npx wrangler r2 bucket create ${name}-data${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
+  npx wrangler r2 bucket create ${name}-files${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
   npx wrangler secret put TAPEDB_CLAIM_SECRET
   npx tapedb dev          # local database
   npx tapedb deploy       # once ENVIRONMENT is "production"
@@ -349,7 +384,7 @@ function usage(): number {
   console.log(`tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out
 
 Usage:
-  tapedb init [--dir <path>] [--name <worker-name>] [--force]
+  tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--force]
   tapedb migrate dev|status|check [--dir <path>] [--schema <file>]
   tapedb deploy [--dir <path>] [--env <name>]
   tapedb dev  [--dir <path>] [--port <port>]
@@ -360,11 +395,12 @@ Usage:
 Commands:
   init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,
           and the first migration. Existing files are kept unless --force.
+          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.
   migrate dev --name <name> [--rename old=new] [--accept-data-loss]
           Diff the schema against the last migration and write the next one.
   migrate status | check
           List migrations; check fails if the schema has unmigrated changes.
-  deploy  [--env <name>]  Check ENVIRONMENT, dev claims and migrations, then wrangler deploy.
+  deploy  [--env <name>]  Check ENVIRONMENT, dev claims, data residency and migrations, then wrangler deploy.
   dev     Run the local database with wrangler dev on port 8787.
   studio  Open a local table browser against a running Worker.
   export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).
@@ -407,6 +443,10 @@ function dev(argv: string[]): number {
       // therefore has no dev claim route even if ENVIRONMENT is the default.
       "--var",
       "TAPEDB_DEV_CLAIMS:true",
+      // workerd has no jurisdictions: locally every object is unrestricted.
+      // Deployed, TAPEDB_JURISDICTION from wrangler.jsonc applies.
+      "--var",
+      "TAPEDB_JURISDICTION:",
     ],
     { cwd: target, stdio: "inherit" }
   );

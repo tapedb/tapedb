@@ -13,6 +13,7 @@
 //                                           that rebuilds a referenced table, then a real wipe
 //                                           (the Durable Object class deleted and recreated)
 //                                           and recovery from R2 (needs CLOUDFLARE_API_TOKEN)
+//   node scripts/e2e.mjs --jurisdiction eu  init the project (and staging buckets) in a jurisdiction
 //   node scripts/e2e.mjs --only select,bulk only these scenarios; --no-drills skips the drills
 //
 // Scenarios live in scripts/e2e/*.mjs. Each is a plain Node script against `tapedb` as a
@@ -40,6 +41,10 @@ if (deployName !== undefined && !/^[a-z0-9-]{1,54}$/.test(deployName)) {
 const domain = flag("domain");
 if (domain !== undefined && !/^[a-z0-9.-]+\.[a-z]{2,}$/.test(domain)) {
   throw new Error(`--domain takes a host name, not ${JSON.stringify(domain)}`);
+}
+const jurisdiction = flag("jurisdiction");
+if (jurisdiction !== undefined && !["eu", "fedramp"].includes(jurisdiction)) {
+  throw new Error(`--jurisdiction takes eu or fedramp, not ${JSON.stringify(jurisdiction)}`);
 }
 let remote = flag("url");
 const only = flag("only")?.split(",");
@@ -75,7 +80,7 @@ run("npm", ["run", "build"], { cwd: root });
 const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", project], { cwd: root }))[0].filename;
 writeFileSync(join(project, "package.json"), JSON.stringify({ name: "tapedb-e2e", private: true, type: "module" }));
 run("npm", ["install", join(project, packed), "wrangler@4", "--no-audit", "--no-fund"], { cwd: project });
-run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "init"], { cwd: project });
+run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "init", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], { cwd: project });
 
 const schemaSource = `import { model, schema, t } from "tapedb/schema";
 
@@ -105,9 +110,19 @@ for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(proj
 
 /** Runs wrangler from the project with the caller's own login; streams its output. */
 function wrangler(commandArgs, input) {
+  // Workers Builds pins deploys to the Worker the build is connected to
+  // (and to its tag). A run deploying a different name, such as the EU
+  // staging Worker, must not be redirected onto it.
+  const pinned = process.env.WRANGLER_CI_OVERRIDE_NAME;
+  const env = { ...process.env };
+  if (deployName !== undefined && pinned !== undefined && pinned !== deployName) {
+    delete env.WRANGLER_CI_OVERRIDE_NAME;
+    delete env.WRANGLER_CI_MATCH_TAG;
+  }
   const result = spawnSync(join(project, "node_modules/.bin/wrangler"), commandArgs, {
     cwd: project,
     encoding: "utf8",
+    env,
     input,
     timeout: 600_000,
   });
@@ -214,18 +229,19 @@ async function deployStaging(name) {
   const config = JSON.parse(readFileSync(join(project, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
   config.migrations = migrationsFrom(await currentMigrationTag(name));
   config.name = name;
-  config.vars = { ENVIRONMENT: "staging", TAPEDB_DEV_CLAIMS: "true" };
+  config.vars = { ENVIRONMENT: "staging", TAPEDB_DEV_CLAIMS: "true", ...(jurisdiction ? { TAPEDB_JURISDICTION: jurisdiction } : {}) };
   if (domain) {
     // A Workers custom domain: Cloudflare creates the DNS record and certificate.
     config.routes = [{ pattern: domain, custom_domain: true }];
     config.workers_dev = false;
   }
+  const where = jurisdiction ? { jurisdiction } : {};
   config.r2_buckets = [
-    { binding: "DATA", bucket_name: `${name}-data` },
-    { binding: "FILES", bucket_name: `${name}-files` },
+    { binding: "DATA", bucket_name: `${name}-data`, ...where },
+    { binding: "FILES", bucket_name: `${name}-files`, ...where },
   ];
   for (const bucket of [`${name}-data`, `${name}-files`]) {
-    const created = wrangler(["r2", "bucket", "create", bucket]);
+    const created = wrangler(["r2", "bucket", "create", bucket, ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])]);
     if (!created.ok && !/already exists|already own/i.test(created.output)) {
       throw new Error(`creating bucket ${bucket} failed:\n${created.output}`);
     }
@@ -233,7 +249,7 @@ async function deployStaging(name) {
   }
 
   const output = await deployConfig(config);
-  const url = domain ? `https://${domain}` : /https:\/\/[\w.-]+\.workers\.dev/.exec(deployed.output)?.[0];
+  const url = domain ? `https://${domain}` : /https:\/\/[\w.-]+\.workers\.dev/.exec(output)?.[0];
   if (!url) throw new Error(`deployed, but found no workers.dev URL in:\n${output}`);
 
   // The claim secret init generated for this project, shared with the load test.

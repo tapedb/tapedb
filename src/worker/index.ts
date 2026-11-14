@@ -92,6 +92,20 @@ function roomRequest(request: Request, path: string): Request {
   return new Request(new URL(path, "https://room.internal"), init);
 }
 
+/** The workspace's Durable Object, inside TAPEDB_JURISDICTION when set. */
+function workspaceStub(env: Env, workspaceId: string): DurableObjectStub<WorkspaceRoom> {
+  let namespace = env.WORKSPACE;
+  if (env.TAPEDB_JURISDICTION) {
+    try {
+      namespace = env.WORKSPACE.jurisdiction(env.TAPEDB_JURISDICTION as DurableObjectJurisdiction);
+    } catch (error) {
+      // Plain `wrangler dev`: workerd has no jurisdictions. `tapedb dev` clears the var.
+      throw new Error(`TAPEDB_JURISDICTION is "${env.TAPEDB_JURISDICTION}" but this runtime has no jurisdictions (${error instanceof Error ? error.message : String(error)}). Run locally with \`tapedb dev\`, which leaves it out.`);
+    }
+  }
+  return namespace.get(namespace.idFromName(workspaceId));
+}
+
 function storageKey(workspaceId: string, objectKey: string): string {
   return `${filesPrefix(workspaceId)}${objectKey}`;
 }
@@ -117,7 +131,7 @@ async function callRoom(
     headers,
   });
 
-  return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)).fetch(request);
+  return workspaceStub(env, workspaceId).fetch(request);
 }
 
 async function handleStorage(
@@ -323,7 +337,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
       const forwarded = roomRequest(request, roomPath);
       if (trustedClaim !== null) forwarded.headers.set(TRUSTED_CLAIM_HEADER, trustedClaim);
 
-      return env.WORKSPACE.get(env.WORKSPACE.idFromName(workspaceId)).fetch(forwarded);
+      return workspaceStub(env, workspaceId).fetch(forwarded);
     },
   };
 
