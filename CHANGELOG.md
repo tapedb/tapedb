@@ -37,6 +37,13 @@ published.
 
 ### Security
 
+- The public claim route can be rate-limited: `ClaimIdentity` takes an
+  optional `allowRequest(key)`, checked before the session lookup. SECURITY.md
+  already recommended this, but `defineTapeDB` never passed a limit to the
+  route, and since the freeze no exported function could set one. The API
+  snapshot now scans all of `src` for error codes; it had missed the claim
+  route's `rate_limited`, `rate_limit_unavailable`, `not_a_member`,
+  `session_lookup_failed` and `membership_lookup_failed`.
 - The workspace file index now checks roles: clients can list it with MEMBER
   or higher and can no longer write it directly; the room checks the claim
   itself as well. Before, any claim holder could list, add or remove index

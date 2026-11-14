@@ -431,6 +431,7 @@ The engine verifies a short-lived signed claim and never issues one. Identity
 stays yours: implement two methods and the library serves the claim route.
 
 ```ts
+import { env } from "cloudflare:workers";
 import { defineTapeDB, WORKSPACE_ROLE_LEVELS } from "tapedb/worker";
 import schema from "./tapedb.schema";
 import { migrations } from "./tapedb/migrations.gen";
@@ -447,6 +448,11 @@ const tapedb = defineTapeDB({
       const member = await memberships.get(workspaceId, sub);
       return member ? WORKSPACE_ROLE_LEVELS[member.role] : null;
     },
+    // Optional, checked first: a Cloudflare rate-limit binding (CLAIM_LIMIT
+    // in wrangler.jsonc) per caller IP.
+    async allowRequest(key) {
+      return (await env.CLAIM_LIMIT.limit({ key })).success;
+    },
   },
 });
 
@@ -454,7 +460,8 @@ export const WorkspaceRoom = tapedb.WorkspaceRoom;
 export default tapedb.worker;
 ```
 
-`POST /_tapedb/claim` returns `{ token, workspaceId, roleLevel, expiresAt }`;
+`POST /_tapedb/claim` returns `{ token, workspaceId, roleLevel, expiresAt, expiresIn }`
+(429 `rate_limited` when `allowRequest` says no);
 the client sends it as `Authorization: Bearer <token>` and renews on
 reconnect. On the WebSocket, where browsers cannot set that header, it rides
 in `Sec-WebSocket-Protocol` as `tapedb.claim.<token>` next to `tapedb`, which

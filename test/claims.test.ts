@@ -258,7 +258,45 @@ describe("identity adapter", () => {
     expect(claim.role).toBe(WORKSPACE_ROLE_LEVELS.EDITOR);
   });
 
-  test("mintClaim is reachable directly for custom routes", async () => {
+  test("the identity's allowRequest limits the claim route before anything else runs", async () => {
+    const keys: string[] = [];
+    let lookups = 0;
+    const limited = {
+      ...identity,
+      async getSubject(headers: Headers) {
+        lookups++;
+        return identity.getSubject(headers);
+      },
+      async allowRequest(key: string) {
+        keys.push(key);
+        return keys.length <= 1;
+      },
+    };
+    const claim = () =>
+      handleClaimRequest(
+        new Request("https://x/_tapedb/claim", {
+          method: "POST",
+          headers: { "x-test-user": "user-editor", "cf-connecting-ip": "203.0.113.7" },
+          body: JSON.stringify({ workspaceId: WORKSPACE }),
+        }),
+        { env, identity: limited }
+      );
+
+    expect((await claim()).status).toBe(200);
+    const refused = await claim();
+    expect(refused.status).toBe(429);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("rate_limited");
+    expect(keys).toEqual(["claim:203.0.113.7", "claim:203.0.113.7"]);
+    expect(lookups).toBe(1);
+
+    const broken = await handleClaimRequest(
+      new Request("https://x/_tapedb/claim", { method: "POST", body: JSON.stringify({ workspaceId: WORKSPACE }) }),
+      { env, identity: { ...identity, allowRequest: async () => { throw new Error("binding down"); } } }
+    );
+    expect(broken.status).toBe(500);
+  });
+
+  test("mintClaim mints the resolved role for the claim route", async () => {
     const response = await mintClaim(
       new Request("https://x/_tapedb/claim", {
         method: "POST",

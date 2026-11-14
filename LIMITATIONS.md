@@ -35,8 +35,12 @@ public release. None of these are claims that the implementation is bug-free.
 - **Offline writes expire.** Transaction receipts live for half the history
   retention, 15 days by default. A retry older than that is refused rather than
   risking a duplicate application.
-- **Claim rate limiting is optional.** A public claim route should supply
-  `allowRequest`; the library does not impose a global limit.
+- **Claim rate limiting is optional.** A public claim route should set
+  `identity.allowRequest`, for example backed by a Cloudflare rate-limit
+  binding; the library does not impose a global limit. The key is the caller's
+  IP, the only identifier before the session lookup, so callers behind one
+  address share a limit, and Cloudflare's limits are per location and
+  approximate.
 
 ## Release gates
 
