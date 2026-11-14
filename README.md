@@ -505,9 +505,15 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | --- | --- | --- |
 | `tapedb` | `createClient`, schema builders, `id` | no (zero runtime deps) |
 | `tapedb/schema` | `schema`, `model`, `t`, `role`, `filter`, `check` | no |
-| `tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer |
-| `tapedb/worker` | `defineTapeDB`, the Durable Object class | no |
-| `tapedb/cli` | `init`, `migrate`, `dev`, `studio`, `deploy` | no |
+| `tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer (React 19) |
+| `tapedb/worker` | `defineTapeDB`, claim helpers | no |
+
+The CLI is a command, not an import: `npx tapedb init | migrate | dev | studio
+| deploy | export | erase`.
+
+[API.md](API.md) is the reference: every export and signature, what is stable
+and what is experimental, the HTTP routes, the export format and the error
+codes. A test checks the package against it.
 
 ## Development
 

@@ -85,6 +85,8 @@ export function usePresence(
 /**
  * Listens on a broadcast topic while mounted and returns its `send`. The
  * latest `onMessage` is always the one called, so it need not be memoised.
+ *
+ * @experimental May change in a minor release; see API.md.
  */
 export function useBroadcast<T = unknown>(
   db: { $broadcast<M>(topic: string): BroadcastTopic<M> },
