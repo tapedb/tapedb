@@ -18,8 +18,7 @@ public release. None of these are claims that the implementation is bug-free.
   of Durable Object point-in-time recovery. Erasure cannot shorten that window.
 - **Jurisdiction is chosen before the first deploy.** Changing it later means
   exporting and moving existing workspaces. Local workerd has no jurisdictions.
-- **Query boundaries.** Relation filters nest to SQLite's expression depth in a
-  Durable Object, about eight hops. A function-based read rule cannot be a
+- **Query boundaries.** A function-based read rule cannot be a
   relation-filter target. `select` and `include` cannot be combined at one
   level, and deep `create` types follow one level while the engine checks the
   rest at runtime.

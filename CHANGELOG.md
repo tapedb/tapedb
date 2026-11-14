@@ -16,6 +16,11 @@ published.
 
 ### Changed
 
+- Relation filters nest without limit and filters can be any length. A Durable
+  Object's SQLite refuses expressions deeper than 100 and very long statements,
+  which capped relation filters at about eight hops and failed `OR`s of a few
+  thousand branches; past a few hops, or past that length, the engine now runs
+  part of the filter first into a scratch table and tests membership in it.
 - The public API is frozen and documented in `API.md`: every export is stable,
   experimental (`aggregate`, `groupBy`, `$broadcast`, `useBroadcast` and the
   `topics` option) or internal. `test/api-surface.test.ts` checks exports,

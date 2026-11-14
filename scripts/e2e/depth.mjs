@@ -1,4 +1,4 @@
-// Deep relation filters and includes against workerd; SQLite's bound surfaces as a 400.
+// Deep and wide filters against workerd: past SQLite's depth and length bounds, they are staged, not refused.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createClient } from "tapedb";
@@ -12,8 +12,18 @@ const hits = await db.task.findMany({ where: { column: { board: { columns: { som
 assert.deepEqual(hits, [{ title: "a" }]);
 const deep = await db.board.findMany({ select: { columns: { where: { name: "Todo" }, select: { tasks: { select: { column: { select: { board: { select: { name: true } } } } } } } } } });
 assert.equal(deep[0].columns[0].tasks[0].column.board.name, "B");
+// 41 hops alternating column -> task -> column: each round trip lands on the
+// same column, so the answer is the one-hop "columns with a task titled a".
 let where = { title: "a" };
 for (let hop = 0; hop < 41; hop += 1) where = hop % 2 === 0 ? { tasks: { some: where } } : { column: where };
-await assert.rejects(db.column.findMany({ where }), (error) => error.code === "invalid_op" && error.status === 400);
+assert.deepEqual((await db.column.findMany({ where, select: { name: true } })).map((row) => row.name), ["Todo"]);
+// Every mode staged at depth: "boards with no column that has every task untitled 'z'"... composed six hops deep.
+const modes = { columns: { every: { tasks: { none: { column: { board: { columns: { some: { tasks: { some: { title: "a" } } } } } } } } } } };
+assert.deepEqual((await db.board.findMany({ where: modes, select: { name: true } })).map((row) => row.name), []);
+// 4,000 branches: far past the statement length SQLite accepts in one go.
+const titles = Array.from({ length: 4000 }, (_, index) => `missing-${index}`).concat(["a"]);
+assert.deepEqual((await db.task.findMany({ where: { OR: titles.map((title) => ({ title })) }, select: { title: true } })), [{ title: "a" }]);
+assert.equal((await db.task.findMany({ where: { AND: titles.map((title) => ({ NOT: { title } })) } })).length, 0);
+assert.equal(await db.task.count({ where: { OR: titles.map((title) => ({ title })) } }), 1);
 db.$close();
 console.log("drive-depth: ok");
