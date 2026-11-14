@@ -1142,24 +1142,32 @@ describe("transaction receipts through a restore", () => {
     manifest.dedupeFloorSeq = 0;
     manifest.tables = manifest.tables.filter((table: { name: string }) => table.name !== "_tx_receipts");
     bucket.seed(key, JSON.stringify(manifest));
+    // And the log that would have carried client-r's receipt has been pruned.
+    for (const logKey of [...bucket.objects.keys()].filter((k) => k.includes("/log/"))) bucket.objects.delete(logKey);
 
     const target = createSource();
+    const restoredAt = Date.now();
     // A floor an older engine wrote is cleared, not obeyed.
     target.db.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('dedupe_floor_seq', '9')`);
     const result = await recoverWorkspace(
       bucket as unknown as R2Bucket,
       recoveryExecutor(target.db, target.sql),
       TEST_WORKSPACE,
-      { now: NOW + 30, force: true }
+      { now: restoredAt, force: true }
     );
     expect(result).toMatchObject({ recovered: true, baseSeq: 2 });
-    expect((result as { warnings?: string[] }).warnings?.[0]).toMatch(/predates transaction receipts/);
+    expect((result as { warnings?: string[] }).warnings?.[0]).toMatch(/refused as retry_expired/);
     expect(scalar(target.db, `SELECT COUNT(*) FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe(0);
 
-    // New writes are deduped as always; nothing is refused.
+    // client-r is in the snapshot but its receipt is not: a retry issued
+    // before the restore is refused, not applied twice.
+    expect(() => run(target, { txId: "w1-retry", clientTxId: "client-r", issuedAt: restoredAt - 60_000, ops } as TxEnvelope)).toThrow(/issued before/);
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(0);
+
+    // New writes are deduped as always.
     const fresh = [{ op: "update", namespace: "folders", id: "f-new", values: { name: "New" } }];
-    expect(run(target, { txId: "n1", clientTxId: "client-new", ops: fresh } as TxEnvelope)).toMatchObject({ seq: 3, applied: 1 });
-    expect(run(target, { txId: "n2", clientTxId: "client-new", ops: fresh } as TxEnvelope)).toMatchObject({ seq: 3, applied: 0 });
+    expect(run(target, { txId: "n1", clientTxId: "client-new", issuedAt: restoredAt + 1, ops: fresh } as TxEnvelope)).toMatchObject({ seq: 3, applied: 1 });
+    expect(run(target, { txId: "n2", clientTxId: "client-new", issuedAt: restoredAt + 1, ops: fresh } as TxEnvelope)).toMatchObject({ seq: 3, applied: 0 });
   });
 });
 

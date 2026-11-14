@@ -78,10 +78,10 @@ export function runTransaction(
       // through log pruning, snapshots and recovery. Inside it an unknown key
       // is a write that was never applied. A retry first issued before the
       // window may have lost its receipt; applying it could apply it twice.
-      if (tx.issuedAt !== undefined && tx.issuedAt <= Date.now() - retryWindowMs()) {
+      if (tx.issuedAt !== undefined && tx.issuedAt <= Math.max(Date.now() - retryWindowMs(), receiptsSince(sql))) {
         throw new TxError(
           "retry_expired",
-          `clientTxId "${tx.clientTxId}" was issued more than ${Math.round(retryWindowMs() / 86_400_000)} days ago; its receipt may be gone, so it is not applied. Send the write again as a new transaction if it still applies.`,
+          `clientTxId "${tx.clientTxId}" was issued before this workspace can recognise a retry (more than ${Math.round(retryWindowMs() / 86_400_000)} days ago, or before a restore that lost receipts), so it is not applied: it may already have been. Send the write again as a new transaction if it still applies.`,
           { txId: tx.txId }
         );
       }
@@ -186,6 +186,15 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
   }
   sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE "id" = 1`, seq);
   return seq;
+}
+
+/**
+ * Receipts are complete only from this time: set when a workspace was
+ * restored from a snapshot that predates receipts. 0 when complete.
+ */
+function receiptsSince(sql: SqlExecutor): number {
+  const row = sql.one<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = 'receipts_since'`);
+  return row === undefined ? 0 : Number(row.value);
 }
 
 function readSchemaVersion(sql: SqlExecutor): string {
