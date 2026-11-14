@@ -16,6 +16,14 @@ export interface Env {
   FILES?: R2Bucket;
 
   ENVIRONMENT?: string;
+  /**
+   * Restricts every workspace's Durable Object to a Cloudflare jurisdiction
+   * ("eu" or "fedramp"): it runs and stores data only there. Set it before
+   * the first deploy: an object's id depends on its jurisdiction, so changing
+   * it later addresses new, empty workspaces. `tapedb deploy` checks that the
+   * R2 buckets are declared in the same jurisdiction.
+   */
+  TAPEDB_JURISDICTION?: string;
   SERVICE_VERSION?: string;
   ENABLE_SMOKE?: string;
   ALLOWED_ORIGINS?: string;
