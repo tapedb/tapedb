@@ -38,7 +38,9 @@ import {
   type QueryPageInfo,
   type QueryResult,
 } from "./query-types";
-import { isWorkspaceId } from "./r2-keys";
+import { filesPrefix, isWorkspaceId, manifestKey, workspacePrefix } from "./r2-keys";
+import { deleteR2Keys, listAllR2 } from "./r2-list";
+import { WORKSPACE_ROLE_LEVELS } from "../claims";
 import { ENGINE_TABLES, LINKS, NAMESPACES } from "./registry";
 import {
   DEFAULT_INVALIDATION_DEBOUNCE_MS,
@@ -83,6 +85,9 @@ const DURABILITY_ALARM_DELAY_MS = 30_000;
  * Owns its SQLite schema, applies bundled Atlas migrations on boot, commits
  * transactions, and flushes/snapshots to R2 on a 30-second alarm.
  */
+/** Left in an erased workspace's otherwise empty SQLite: when it was erased, nothing else. */
+const ERASED_TABLE = "_tapedb_erased";
+
 export class WorkspaceRoom extends DurableObject<Env> {
   /**
    * Last emitted result per socket client id and subscription id. This is a
@@ -97,11 +102,18 @@ export class WorkspaceRoom extends DurableObject<Env> {
   /** Namespaces touched since the current debounce window opened. */
   private pendingInvalidationNamespaces = new Set<string>();
 
+  private erased = false;
   private invalidationTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
     void ctx.blockConcurrencyWhile(async () => {
+      // An erased workspace stays erased: no migrations, no recovery, no alarm.
+      if (ctx.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ERASED_TABLE}'`).toArray().length > 0) {
+        this.erased = true;
+        return;
+      }
+
       // Foreign-key enforcement is per connection and off by default in
       // SQLite. Set it before migrations so every request sees it.
       ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
@@ -215,6 +227,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (this.erased) {
+      await discardBody(request);
+      return apiError(410, "workspace_erased", "This workspace was erased.");
+    }
     const response = await this.route(request);
     await discardBody(request);
     return response;
@@ -232,6 +248,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
         );
       }
       return this.handleWebSocket(request);
+    }
+
+    // DELETE /engine/workspaces/:id: erase everything the workspace holds.
+    if (url.pathname === "/" && request.method === "DELETE") {
+      return this.erase(request);
     }
 
     if (url.pathname === "/status" || url.pathname === "/health") {
@@ -937,6 +958,52 @@ export class WorkspaceRoom extends DurableObject<Env> {
     this.send(ws, { type: "query:unsubscribed", id });
   }
 
+  /**
+   * Erases the workspace: its R2 history (manifest first, so nothing can
+   * recover from what is left), its uploaded files, then its Durable Object
+   * storage and alarm. Owners only. Each step is idempotent, so a failed
+   * erase is retried by calling it again. A tombstone stays behind so the
+   * workspace answers 410 from then on: a reconnecting client's outbox cannot
+   * quietly recreate it under the same id.
+   */
+  private async erase(request: Request): Promise<Response> {
+    let claim: RoleClaim;
+    try {
+      claim = readTrustedRoleClaim(request, this.workspaceId);
+    } catch (error) {
+      if (error instanceof TxError) return apiError(403, error.code, error.message);
+      throw error;
+    }
+    if (claim.role < WORKSPACE_ROLE_LEVELS.OWNER) {
+      return apiError(403, "insufficient_role", "Only an owner can erase a workspace.");
+    }
+
+    const workspaceId = this.workspaceId;
+    this.erased = true;
+    try {
+      await this.env.DATA.delete(manifestKey(workspaceId));
+      const history = (await listAllR2(this.env.DATA, `${workspacePrefix(workspaceId)}/`)).map((object) => object.key);
+      await deleteR2Keys(this.env.DATA, history);
+      const files = this.env.FILES ? (await listAllR2(this.env.FILES, filesPrefix(workspaceId))).map((object) => object.key) : [];
+      if (this.env.FILES) await deleteR2Keys(this.env.FILES, files);
+
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      this.ctx.storage.sql.exec(`CREATE TABLE "${ERASED_TABLE}" (at INTEGER NOT NULL)`);
+      this.ctx.storage.sql.exec(`INSERT INTO "${ERASED_TABLE}" (at) VALUES (?)`, Date.now());
+
+      for (const ws of this.ctx.getWebSockets()) this.closeSocket(ws, 4410, "workspace erased");
+      this.subscriptionResults.clear();
+      console.log("workspace_erased", { workspaceId, objects: history.length + 1, files: files.length });
+      return json({ ok: true, erased: { historyObjects: history.length + 1, files: files.length } });
+    } catch (error) {
+      // Not erased yet: let the retry in. Each step above is idempotent.
+      this.erased = false;
+      console.error("workspace_erase_failed", { workspaceId, error: String(error) });
+      return apiError(500, "erase_failed", `Erasing did not finish (${errorMessage(error)}); call it again.`);
+    }
+  }
+
   private send(ws: WebSocket, message: unknown): void {
     try {
       ws.send(JSON.stringify(message));
@@ -1140,6 +1207,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * accumulate into fewer, larger log segments.
    */
   async alarm(): Promise<void> {
+    if (this.erased) return;
     const workspaceId = this.workspaceId;
 
     try {

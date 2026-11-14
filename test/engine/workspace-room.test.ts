@@ -113,6 +113,8 @@ class FakeContext {
     transactionSync<T>(fn: () => T): T;
     getAlarm(): Promise<number | null>;
     setAlarm(at: number): Promise<void>;
+    deleteAlarm(): Promise<void>;
+    deleteAll(): Promise<void>;
   };
 
   readonly id: { name: string };
@@ -126,6 +128,15 @@ class FakeContext {
       getAlarm: async () => this.alarm,
       setAlarm: async (at: number) => {
         this.alarm = at;
+      },
+      deleteAlarm: async () => {
+        this.alarm = null;
+      },
+      // A SQLite-backed object's deleteAll() empties its whole database.
+      deleteAll: async () => {
+        const tables = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all() as Array<{ name: string }>;
+        db.exec("PRAGMA foreign_keys = OFF");
+        for (const { name } of tables) db.exec(`DROP TABLE IF EXISTS "${name}"`);
       },
     };
   }
@@ -141,12 +152,12 @@ class FakeContext {
   }
 }
 
-function claim(): RoleClaim {
+function claim(role: number = WORKSPACE_ROLE_LEVELS.EDITOR): RoleClaim {
   const now = Math.floor(Date.now() / 1000);
   return {
     sub: "user-1",
     workspaceId: TEST_WORKSPACE,
-    role: WORKSPACE_ROLE_LEVELS.EDITOR,
+    role: role as RoleClaim["role"],
     exp: now + 60,
     iat: now,
   };
@@ -396,5 +407,75 @@ describe("WorkspaceRoom presence", () => {
       type: "error",
       code: "not_in_target",
     });
+  });
+});
+
+describe("WorkspaceRoom erase", () => {
+  const OTHER = "99999999-9999-4999-8999-999999999999";
+
+  test("an owner erases the workspace's history, files and storage; it stays erased", async () => {
+    const db = new Database(":memory:");
+    const context = new FakeContext(db, TEST_WORKSPACE);
+    const data = new FakeR2Bucket();
+    const files = new FakeR2Bucket();
+    const env = { DATA: data, FILES: files } as unknown as Env;
+    const room = new WorkspaceRoom(context as unknown as DurableObjectState, env);
+    await context.ready;
+
+    const write = await room.fetch(new Request("http://test/transact", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-tapedb-claims": encodeTrustedRoleClaim(claim()) },
+      body: JSON.stringify({ txId: "t", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "alice@example.com" } }] }),
+    }));
+    expect(write.status).toBe(200);
+    await room.alarm();
+    files.seed(`workspaces/${TEST_WORKSPACE}/files/cv.pdf`, "cv");
+    data.seed(`ws/${OTHER}/manifest.json`, "{}");
+    files.seed(`workspaces/${OTHER}/files/keep.txt`, "keep");
+    expect([...data.objects.keys()].filter((key) => key.includes(TEST_WORKSPACE)).length).toBeGreaterThan(1);
+
+    const erase = (role: number) =>
+      room.fetch(new Request("http://test/", { method: "DELETE", headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim(role)) } }));
+
+    const editor = await erase(WORKSPACE_ROLE_LEVELS.EDITOR);
+    expect(editor.status).toBe(403);
+    expect(data.objects.size).toBeGreaterThan(1);
+
+    const owner = await erase(WORKSPACE_ROLE_LEVELS.OWNER);
+    expect(owner.status).toBe(200);
+    expect([...data.objects.keys()]).toEqual([`ws/${OTHER}/manifest.json`]);
+    expect([...files.objects.keys()]).toEqual([`workspaces/${OTHER}/files/keep.txt`]);
+    expect(context.alarm).toBeNull();
+    const tables = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all();
+    expect(tables).toEqual([{ name: "_tapedb_erased" }]);
+
+    // Everything after answers 410, including after a restart.
+    expect((await room.fetch(new Request("http://test/status", { headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim()) } }))).status).toBe(410);
+    const restarted = new WorkspaceRoom(new FakeContext(db, TEST_WORKSPACE) as unknown as DurableObjectState, env);
+    const again = await restarted.fetch(new Request("http://test/transact", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-tapedb-claims": encodeTrustedRoleClaim(claim()) },
+      body: JSON.stringify({ txId: "late", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "back" } }] }),
+    }));
+    expect(again.status).toBe(410);
+    expect(((await again.json()) as { error: { code: string } }).error.code).toBe("workspace_erased");
+    await restarted.alarm();
+    expect(data.objects.size).toBe(1);
+  });
+
+  test("a failed erase can be retried", async () => {
+    const db = new Database(":memory:");
+    const context = new FakeContext(db, TEST_WORKSPACE);
+    const data = new FakeR2Bucket();
+    const room = new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: data } as unknown as Env);
+    await context.ready;
+    data.seed(`ws/${TEST_WORKSPACE}/log/1-1.ndjson`, "x");
+
+    const erase = () => room.fetch(new Request("http://test/", { method: "DELETE", headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim(WORKSPACE_ROLE_LEVELS.OWNER)) } }));
+    data.failDeletes = true;
+    expect((await erase()).status).toBe(500);
+    data.failDeletes = false;
+    expect((await erase()).status).toBe(200);
+    expect(data.objects.size).toBe(0);
   });
 });
