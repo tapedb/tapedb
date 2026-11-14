@@ -18,6 +18,9 @@ published.
 
 ### Fixed
 
+- A transaction log entry over 10 MB could never reach R2: its multipart
+  upload cut parts at line ends, so they differed in size, and R2 refuses
+  that. Parts are now cut at exactly 5 MiB of encoded bytes.
 - The durability pass flushed one ~1 MB log segment per alarm, every 30
   seconds, so a workspace writing faster than that fell further behind R2
   with every write and could lose its newest writes in a wipe. A pass now
