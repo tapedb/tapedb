@@ -1,5 +1,5 @@
 /**
- * Executes compiled InstaQL queries against workspace SQLite (KAN-392).
+ * Executes compiled query documents against workspace SQLite.
  *
  * Entity rows are read as physical columns, hydrated one link level at a time,
  * then folded back into the API shape: camelCase registry attributes, real
@@ -11,6 +11,11 @@ import type { RoleClaim } from "../claims";
 import {
   buildSelectSql,
   compileQuery,
+  sqliteLimitError,
+  selectColumns,
+  conditionAfterValues,
+  compileViewCondition,
+  type ViewAccess,
   type CompiledChild,
   type CompiledCondition,
   type CompiledNode,
@@ -18,13 +23,28 @@ import {
   type CompiledQuery,
 } from "./query-compile";
 import {
+  AggregateFold,
+  aggregateColumns,
+  buildAggregateSql,
+  groupsFromSql,
+} from "./query-aggregate";
+import type { AggregateGroup } from "./query-aggregate";
+import { balancedJoin } from "./sql-binding";
+import {
   encodeQueryCursor,
   parseQueryEnvelope,
+  QUERY_CHUNK_ROWS,
   type QueryPageInfo,
   type QueryResult,
 } from "./query-types";
 import { findNamespace, toSnakeCase, type AttributeType } from "./registry";
-import { allowRowView, assertPermission } from "./tx-permissions";
+import {
+  allowRowView,
+  assertPermission,
+  hasFunctionViewRule,
+  viewWhereBranches,
+} from "./tx-permissions";
+import { TxError as PermissionError } from "./tx-types";
 import { quoteIdentifier } from "./tx-apply";
 import type { SqlExecutor, SqlValue } from "./tx-sql";
 import { TxError } from "./tx-types";
@@ -34,6 +54,8 @@ type PhysicalRow = Record<string, SqlValue>;
 interface HydratedEntity {
   namespace: string;
   row: PhysicalRow;
+  /** API attributes the query selected, or null for all of them. */
+  select: string[] | null;
   links: Record<string, HydratedEntity | HydratedEntity[] | null>;
 }
 
@@ -42,13 +64,36 @@ interface HydratedEntity {
  * executes it. Invalid queries and permission failures surface as `TxError`;
  * driver failures become `storage_error` so the route maps them to 500.
  */
+/**
+ * What a relation filter's subquery may see, for this caller. A namespace the
+ * caller cannot read at all, or whose read rule is a function that only runs
+ * after fetch, cannot be filtered on in SQL without leaking the rows it hides.
+ */
+export function viewAccess(claim: RoleClaim): ViewAccess {
+  return {
+    branches: (namespace) => viewWhereBranches(claim, namespace),
+    refusal: (namespace) => {
+      try {
+        assertPermission(claim, namespace, "view");
+      } catch (error) {
+        return error instanceof PermissionError
+          ? error.message
+          : `Cannot filter on "${namespace}".`;
+      }
+      return hasFunctionViewRule(namespace)
+        ? `Cannot filter on "${namespace}" through a link: its read rule is a function, which runs after fetch, so the filter would match rows the rule hides. Use a { where } read rule.`
+        : null;
+    },
+  };
+}
+
 export function executeQuery(
   sql: SqlExecutor,
   claim: RoleClaim,
   envelope: unknown
 ): QueryResult {
   const document = parseQueryEnvelope(envelope);
-  const compiled = compileQuery(document);
+  const compiled = compileQuery(document, viewAccess(claim));
 
   authorizeQuery(claim, compiled);
 
@@ -67,7 +112,7 @@ export function executeQueryWithPageInfo(
   envelope: unknown
 ): { data: QueryResult; pageInfo: QueryPageInfo } {
   const document = parseQueryEnvelope(envelope);
-  const compiled = compileQuery(document);
+  const compiled = compileQuery(document, viewAccess(claim));
 
   authorizeQuery(claim, compiled);
 
@@ -109,22 +154,6 @@ export function executeCompiledQuery(
 }
 
 /**
- * Multiplier and floor for the scan cap. One page may read at most
- * `max(limit * 10, 200)` matching rows before it gives up filling: a rule that
- * hides every row must terminate instead of walking the whole namespace.
- */
-const SCAN_CAP_FACTOR = 10;
-const SCAN_CAP_FLOOR = 200;
-
-/**
- * Hard ceiling on how many rows one page may read while filling. Returns rows
- * are bounded by `limit`; this bounds the work behind them.
- */
-export function pageScanCap(limit: number): number {
-  return Math.max(limit * SCAN_CAP_FACTOR, SCAN_CAP_FLOOR);
-}
-
-/**
  * Executes a compiled query and reports truncation per namespace.
  *
  * Each chunk asks for one row beyond the limit so `hasMore` is exact instead of
@@ -132,8 +161,8 @@ export function pageScanCap(limit: number): number {
  *
  * Row-level `view` rules run in TypeScript, so they cannot be pushed into SQL:
  * they see API-shaped values and may be arbitrary predicates. A page is
- * therefore filled by scanning further when a rule hides rows, up to
- * `pageScanCap(limit)`. `hasMore` and `nextCursor` stay honest: `returned`
+ * therefore filled by scanning further until it has enough visible rows or
+ * exhausts the matching rows. `hasMore` and `nextCursor` stay honest: `returned`
  * counts visible rows only, `hasMore` means matching rows remain outside this
  * page, and `nextCursor` resumes after the last VISIBLE row.
  */
@@ -142,40 +171,193 @@ export function executeCompiledQueryWithPageInfo(
   compiled: CompiledQuery,
   claim?: RoleClaim
 ): { data: QueryResult; pageInfo: QueryPageInfo } {
+  try {
+    return executePages(sql, compiled, claim);
+  } catch (error) {
+    throw sqliteLimitError(error) ?? error;
+  }
+}
+
+function executePages(
+  sql: SqlExecutor,
+  compiled: CompiledQuery,
+  claim?: RoleClaim
+): { data: QueryResult; pageInfo: QueryPageInfo } {
   const data: QueryResult = {};
   const pageInfo: QueryPageInfo = {};
+  const nodes =
+    claim === undefined
+      ? compiled.nodes
+      : compiled.nodes.map((node) => withViewConditions(node, claim));
 
-  for (const node of compiled.nodes) {
+  for (const node of nodes) {
     const limit = node.limit;
 
     if (limit === null) {
-      // A nested level is bounded per parent, not by a page: there is no page
-      // to fill and no cursor to resume from.
+      // No limit: every matching row, so there is no page to fill and no
+      // cursor to resume from.
       const entities = hydrateNode(sql, node);
       const visible =
         claim === undefined ? entities : visibleOnly(entities, claim);
+      const count = node.count ? countRows(sql, node, claim) : undefined;
 
       data[node.namespace] = visible.map(toApiEntity);
       pageInfo[node.namespace] = {
         limit,
         returned: visible.length,
         hasMore: false,
+        ...(count === undefined ? {} : { count }),
       };
       continue;
     }
 
-    const { page, hasMore } = fillPage(sql, node, claim, limit);
+    const count = node.count ? countRows(sql, node, claim) : undefined;
+    const aggregate =
+      node.aggregate === null ? undefined : aggregateRows(sql, node, claim);
+
+    // limit 0 is a count or aggregate with no rows: nothing to fill, nothing
+    // to resume.
+    const { page, hasMore } =
+      limit === 0
+        ? { page: [] as HydratedEntity[], hasMore: (count ?? 0) > 0 }
+        : fillPage(sql, node, claim, limit);
 
     data[node.namespace] = page.map(toApiEntity);
 
     const nextCursor = cursorFor(node, page, hasMore);
-    pageInfo[node.namespace] =
-      nextCursor === undefined
-        ? { limit, returned: page.length, hasMore }
-        : { limit, returned: page.length, hasMore, nextCursor };
+    pageInfo[node.namespace] = {
+      limit,
+      returned: page.length,
+      hasMore,
+      ...(nextCursor === undefined ? {} : { nextCursor }),
+      ...(count === undefined ? {} : { count }),
+      ...(aggregate === undefined ? {} : { aggregate }),
+    };
   }
 
   return { data, pageInfo };
+}
+
+/**
+ * Aggregates the rows matching the node's conditions, `where` read rules
+ * included. A function read rule cannot run in SQL, so for one the matching
+ * rows are walked in bounded chunks in id order, the rule applied to each,
+ * and the visible ones folded; no limit on how far the walk goes.
+ */
+function aggregateRows(
+  sql: SqlExecutor,
+  node: CompiledNode,
+  claim: RoleClaim | undefined
+): AggregateGroup[] {
+  const aggregate = node.aggregate!;
+  const conditions = node.conditions.filter((condition) => !condition.cursor);
+
+  if (claim === undefined || !hasFunctionViewRule(node.namespace)) {
+    const statement = buildAggregateSql(node.table, aggregate, conditions);
+    return groupsFromSql(aggregate, sql.all<PhysicalRow>(statement.sql, ...statement.params), fromStoredValue);
+  }
+
+  const namespace = findNamespace(node.namespace);
+  const fold = new AggregateFold(aggregate);
+  const chunk = 200;
+  const base: CompiledNode = {
+    ...node,
+    columns: [
+      ...new Set([
+        ...(namespace === undefined ? node.columns : selectColumns(namespace)),
+        ...aggregateColumns(aggregate),
+      ]),
+    ],
+    conditions,
+    order: [{ column: "id", direction: "asc" }],
+    children: [],
+    limit: chunk,
+  };
+  let cursor: CompiledCondition | null = null;
+  for (;;) {
+    const rows = hydrateNode(sql, cursor === null ? base : { ...base, conditions: [...conditions, cursor] });
+    for (const entity of rows) {
+      if (allowRowView(claim, entity.namespace, rowToApi(entity))) fold.add(entity.row);
+    }
+    if (rows.length < chunk) return fold.groups(fromStoredValue);
+    cursor = conditionAfter(base.order, rows[rows.length - 1].row)!;
+  }
+}
+
+/**
+ * Pushes `where` view rules into the SQL of every level that reads a
+ * namespace with one. Those rows never reach the post-fetch filter, so a page
+ * fills directly from its SQL index.
+ */
+function withViewConditions(node: CompiledNode, claim: RoleClaim): CompiledNode {
+  const branches = viewWhereBranches(claim, node.namespace);
+  const children = node.children.map((child) => ({
+    ...child,
+    node: withViewConditions(child.node, claim),
+  }));
+  // A function read rule sees the whole row, so a projected read still
+  // fetches every column; only the response is narrowed.
+  const namespace = findNamespace(node.namespace);
+  const columns =
+    node.select !== null && namespace !== undefined && hasFunctionViewRule(node.namespace)
+      ? [...new Set([...node.columns, ...selectColumns(namespace)])]
+      : node.columns;
+  if (branches === null) return { ...node, columns, children };
+
+  return {
+    ...node,
+    columns,
+    conditions: [
+      ...node.conditions,
+      compileViewCondition(node.namespace, branches),
+    ],
+    children,
+  };
+}
+
+/**
+ * Rows matching the node's filters, ignoring `after` and `limit`. Uses the
+ * same conditions the page used, `where` view rules included, so the count
+ * never sees a row the caller could not read.
+ */
+function countRows(
+  sql: SqlExecutor,
+  node: CompiledNode,
+  claim: RoleClaim | undefined
+): number {
+  if (claim !== undefined && hasFunctionViewRule(node.namespace)) {
+    // Arbitrary predicates cannot be compiled to SQL. Walk bounded chunks in
+    // primary-key order, applying the same rule as reads, without limiting how
+    // far through the matching set the count may look.
+    const base: CompiledNode = {
+      ...node,
+      conditions: node.conditions.filter((condition) => !condition.cursor),
+      order: [{ column: "id", direction: "asc" }],
+      children: [],
+      limit: 200,
+    };
+    let cursor: CompiledCondition | null = null;
+    let total = 0;
+    for (;;) {
+      const rows = hydrateNode(sql, cursor === null ? base : {
+        ...base, conditions: [...base.conditions, cursor],
+      });
+      total += visibleOnly(rows, claim).length;
+      if (rows.length < 200) return total;
+      cursor = conditionAfter(base.order, rows[rows.length - 1].row)!;
+    }
+  }
+
+  const conditions = node.conditions.filter((condition) => !condition.cursor);
+  const whereSql =
+    conditions.length > 0
+      ? ` WHERE ${balancedJoin(conditions.map((condition) => condition.sql), " AND ")}`
+      : "";
+  const row = sql.one<{ total: number }>(
+    `SELECT COUNT(*) AS "total" FROM ${quoteIdentifier(node.table)}${whereSql}`,
+    ...conditions.flatMap((condition) => condition.params)
+  );
+  return Number(row?.total ?? 0);
 }
 
 /** Rows the namespace's `view` rule hides are dropped at every link depth. */
@@ -191,10 +373,9 @@ function visibleOnly(
 /**
  * Fills one page by scanning forward while `view` rules hide rows.
  *
- * Stops on the first of: a full page, an exhausted match set, or the scan cap.
- * `hasMore` is only ever set when a row outside the page is known to exist, so
- * a cap-limited page resumes from its last visible row without skipping or
- * repeating anything.
+ * Stops on the first of a full page with another visible row, or exhaustion.
+ * `hasMore` requires another visible row; hidden rows cannot truncate a
+ * page or create an empty follow-up page.
  */
 function fillPage(
   sql: SqlExecutor,
@@ -202,16 +383,13 @@ function fillPage(
   claim: RoleClaim | undefined,
   limit: number
 ): { page: HydratedEntity[]; hasMore: boolean } {
-  const maxScan = pageScanCap(limit);
   const page: HydratedEntity[] = [];
 
   const more =
     node.order.length === 0
-      ? fillUnordered(sql, node, claim, limit, maxScan, page)
-      : fillOrdered(sql, node, claim, limit, maxScan, page);
+      ? fillUnordered(sql, node, claim, limit, page)
+      : fillOrdered(sql, node, claim, limit, page);
 
-  // A cap-limited page with nothing visible has no valid cursor to hand back,
-  // so it must be terminal rather than an unactionable `hasMore: true`.
   return { page, hasMore: more && page.length > 0 };
 }
 
@@ -231,14 +409,13 @@ function fillOrdered(
   node: CompiledNode,
   claim: RoleClaim | undefined,
   limit: number,
-  maxScan: number,
   page: HydratedEntity[]
 ): boolean {
-  let scanned = 0;
   let cursor: CompiledCondition | null = null;
 
-  while (scanned < maxScan) {
-    const chunkLimit = Math.min(limit + 1, maxScan - scanned);
+  for (;;) {
+    // A wide page is read in bounded chunks, each resuming after the last.
+    const chunkLimit = Math.min(limit, QUERY_CHUNK_ROWS) + 1;
     const chunkNode: CompiledNode =
       cursor === null
         ? { ...node, limit: chunkLimit }
@@ -246,8 +423,6 @@ function fillOrdered(
 
     const chunk = hydrateNode(sql, chunkNode);
     if (chunk.length === 0) return false;
-
-    scanned += chunk.length;
 
     for (const entity of chunk) {
       const visible = claim === undefined ? entity : filterVisible(entity, claim);
@@ -263,30 +438,25 @@ function fillOrdered(
     if (chunk.length < chunkLimit) return false;
 
     const next = conditionAfter(node.order, chunk[chunk.length - 1].row);
-    // A null ordering value has no total order to advance along, so the scan
-    // cannot continue; report the rows it may not have reached.
-    if (next === null) return true;
+    if (next === null) throw new TxError("storage_error", "Cannot read an ordering column from the stored row.");
     cursor = next;
   }
-
-  return true; // scan cap: rows were left unread
 }
 
 /**
  * Unordered scan: no total order exists, so there is no keyset to advance.
  * Re-read one widening window from the start instead of inventing offsets.
- * Bounded by the same cap, so it terminates; the window doubles, so it costs
- * a logarithmic number of queries.
+ * The window doubles until enough visible rows or the end of the result set
+ * is reached.
  */
 function fillUnordered(
   sql: SqlExecutor,
   node: CompiledNode,
   claim: RoleClaim | undefined,
   limit: number,
-  maxScan: number,
   page: HydratedEntity[]
 ): boolean {
-  let window = Math.min(limit + 1, maxScan);
+  let window = limit + 1;
 
   for (;;) {
     const rows = hydrateNode(sql, { ...node, limit: window });
@@ -296,10 +466,9 @@ function fillUnordered(
     page.push(...visible.slice(0, limit));
 
     if (rows.length < window) return false; // exhausted
-    if (visible.length >= limit) return true; // window held more than a page
-    if (window >= maxScan) return true; // cap: rows were left unread
+    if (visible.length > limit) return true; // window held more than a page
 
-    window = Math.min(window * 2, maxScan);
+    window *= 2;
   }
 }
 
@@ -308,44 +477,16 @@ function fillUnordered(
  *
  * Mirrors the compiler's private `cursorCondition`: for `(a ASC, b DESC)` it
  * builds `a > ? OR (a = ? AND b < ?)`. The executor needs it mid-scan, from a
- * row it just read rather than an opaque client cursor, so it cannot reuse the
- * compile-time helper. Returns null when a value cannot be compared, matching
- * the compiler's refusal to resume from a null.
+ * row it just read rather than an opaque client cursor. Both paths share the
+ * same null-aware tuple comparison. Missing or invalid ordering columns fail closed.
  */
 function conditionAfter(
   order: CompiledOrder[],
   row: PhysicalRow
 ): CompiledCondition | null {
-  const clauses: string[] = [];
-  const params: SqlValue[] = [];
-
-  for (let index = 0; index < order.length; index += 1) {
-    const parts: string[] = [];
-
-    for (let prior = 0; prior < index; prior += 1) {
-      const value = row[order[prior].column];
-      if (!isComparable(value)) return null;
-      parts.push(`${quoteIdentifier(order[prior].column)} = ?`);
-      params.push(value);
-    }
-
-    const value = row[order[index].column];
-    if (!isComparable(value)) return null;
-    const operator = order[index].direction === "desc" ? "<" : ">";
-    parts.push(`${quoteIdentifier(order[index].column)} ${operator} ?`);
-    params.push(value);
-
-    clauses.push(`(${parts.join(" AND ")})`);
-  }
-
-  if (clauses.length === 0) return null;
-  return { sql: clauses.join(" OR "), params };
-}
-
-function isComparable(
-  value: SqlValue | undefined
-): value is string | number {
-  return typeof value === "string" || typeof value === "number";
+  const values = order.map(entry => row[entry.column]);
+  if (values.some(value => value !== null && typeof value !== "string" && typeof value !== "number")) return null;
+  return conditionAfterValues(order, values as (string | number | null)[]);
 }
 
 /** Drops rows the namespace's `view` rule hides, at every link depth. */
@@ -393,8 +534,7 @@ function rowToApi(entity: HydratedEntity): Record<string, unknown> {
  * Cursor for the next page, or undefined when there is nothing to resume from.
  *
  * Requires an explicit order: without one there is no total order for a keyset
- * cursor to sit in. A null ordering value also yields no cursor, because
- * comparisons against null never select a row.
+ * cursor to sit in. Null ordering values use SQLite's null-aware ordering.
  */
 function cursorFor(
   node: CompiledNode,
@@ -408,8 +548,7 @@ function cursorFor(
 
   for (const entry of node.order) {
     const value = last.row[entry.column];
-    if (value === null || value === undefined) return undefined;
-    if (typeof value !== "string" && typeof value !== "number") return undefined;
+    if (value !== null && typeof value !== "string" && typeof value !== "number") return undefined;
     values.push(value);
   }
 
@@ -430,6 +569,7 @@ function hydrateNode(
   const entities: HydratedEntity[] = rows.map((row) => ({
     namespace: node.namespace,
     row,
+    select: node.select,
     links: {},
   }));
 
@@ -440,7 +580,24 @@ function hydrateNode(
   return entities;
 }
 
+/**
+ * Hydrates one link level for every parent, a chunk of parents at a time: the
+ * parents' keys travel as one JSON list per statement, and a list of every
+ * key on an unbounded page would outgrow what one bound value may hold.
+ * Each parent's children come from the one statement that holds its key, so
+ * per-parent order and limits are unchanged.
+ */
 function hydrateChild(
+  sql: SqlExecutor,
+  entities: HydratedEntity[],
+  child: CompiledChild
+): void {
+  for (let start = 0; start < entities.length; start += QUERY_CHUNK_ROWS) {
+    hydrateChildChunk(sql, entities.slice(start, start + QUERY_CHUNK_ROWS), child);
+  }
+}
+
+function hydrateChildChunk(
   sql: SqlExecutor,
   entities: HydratedEntity[],
   child: CompiledChild
@@ -550,6 +707,23 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
   }
 
   const output: Record<string, unknown> = { id: entity.row.id };
+  if (entity.select !== null) {
+    for (const name of entity.select) {
+      if (name === "id") continue;
+      const definition = namespace.attributes[name];
+      if (definition !== undefined) {
+        output[name] = fromStoredValue(definition.type, entity.row[toSnakeCase(name)]);
+      } else if (name === "createdAt") {
+        output.createdAt = fromStoredValue("date", entity.row.created_at);
+      } else if (name === "updatedAt") {
+        output.updatedAt = fromStoredValue("date", entity.row.updated_at);
+      } else if (name === "updatedSeq") {
+        output.updatedSeq = fromStoredValue("number", entity.row.updated_seq) ?? 0;
+      }
+    }
+    appendLinks(output, entity);
+    return output;
+  }
   const attributes = new Set<string>(["id"]);
 
   for (const [attribute, definition] of Object.entries(namespace.attributes)) {
@@ -569,7 +743,11 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
     output.updatedAt = fromStoredValue("date", entity.row.updated_at);
   }
   output.updatedSeq = fromStoredValue("number", entity.row.updated_seq) ?? 0;
+  appendLinks(output, entity);
+  return output;
+}
 
+function appendLinks(output: Record<string, unknown>, entity: HydratedEntity): void {
   for (const [label, value] of Object.entries(entity.links)) {
     output[label] = Array.isArray(value)
       ? value.map(toApiEntity)
@@ -577,8 +755,6 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
         ? null
         : toApiEntity(value);
   }
-
-  return output;
 }
 
 /** Converts a stored value to the API shape for its registry type. */

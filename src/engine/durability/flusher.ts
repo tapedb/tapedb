@@ -162,6 +162,7 @@ export async function flushPending(
       logSeq: Math.max(current?.logSeq ?? 0, segment.toSeq),
       createdAt: current?.createdAt ?? manifestCreatedAt(now),
       engineVersion: readEngineVersion(sql),
+      schemaVersion: current?.schemaVersion,
       tables: current?.tables ?? [],
       totalRows: current?.totalRows ?? 0,
       totalBytes: current?.totalBytes ?? 0,

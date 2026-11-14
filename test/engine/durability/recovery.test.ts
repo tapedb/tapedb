@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../../fixtures/registry";
+useLegacyFixture();
 
 import { createHash } from "node:crypto";
 import { gunzipSync, gzipSync } from "node:zlib";
@@ -18,7 +18,8 @@ import {
   type RecoveryResult,
   type RecoverySqlExecutor,
 } from "../../../src/engine/durability/recovery";
-import { snapshotWorkspace } from "../../../src/engine/durability/snapshot";
+import { snapshotWorkspace, trimLocalLog } from "../../../src/engine/durability/snapshot";
+import { forgetFileEntry, recordFileEntry } from "../../../src/engine/file-index";
 import type { SqlExecutor as DurabilitySql, SqlValue } from "../../../src/engine/durability/sql";
 import { FakeR2Bucket, openTestDb, TEST_WORKSPACE } from "../../fixtures/test-support";
 
@@ -324,7 +325,7 @@ async function publish(
 function entityRows(db: Database): Record<string, Record<string, unknown>[]> {
   const result: Record<string, Record<string, unknown>[]> = {};
 
-  for (const table of [...namespaceTables(), "$files"]) {
+  for (const table of [...namespaceTables(), "_files"]) {
     result[table] = db
       .query(`SELECT * FROM "${table}" ORDER BY "id"`)
       .all() as Record<string, unknown>[];
@@ -424,9 +425,10 @@ describe("recoverWorkspace", () => {
     const manifest = await manifestOf(bucket);
     expect(manifest.baseSeq).toBe(1);
     expect(manifest.logSeq).toBe(1);
-    expect(manifest.tables.map((table) => table.name)).toEqual(
-      namespaceTables()
-    );
+    expect(manifest.tables.map((table) => table.name)).toEqual([
+      ...namespaceTables(),
+      "_files", "_tx_receipts",
+    ]);
 
     const target = createSource();
     const result = (await recoverWorkspace(
@@ -440,7 +442,7 @@ describe("recoverWorkspace", () => {
       recovered: true,
       baseSeq: 1,
       logSeq: 1,
-      tables: namespaceTables().length,
+      tables: namespaceTables().length + 2, // models, file index, and transaction receipts
       rows: 22,
       replayed: 0,
     });
@@ -1026,5 +1028,377 @@ describe("recoverWorkspace", () => {
     );
 
     expect(meta(target.db, "recovery_status")).toBe("failed");
+  });
+});
+
+describe("file index across a restore", () => {
+  function files(db: Database): Array<{ path: string; r2_key: string; size: number }> {
+    return db
+      .query(`SELECT "path", "r2_key", "size" FROM "_files" ORDER BY "path"`)
+      .all() as Array<{ path: string; r2_key: string; size: number }>;
+  }
+
+  test("uploads and deletes after the snapshot survive a cold start", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const sql = txExecutor(source.db);
+
+    recordFileEntry(sql, { path: "kept.png", key: "k/kept", size: 10, contentType: "image/png" });
+    recordFileEntry(sql, { path: "doomed.png", key: "k/doomed", size: 20, contentType: null });
+
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW); // snapshot holds kept + doomed
+
+    // After the snapshot: one new upload, one overwrite, one delete.
+    recordFileEntry(sql, { path: "late.pdf", key: "k/late", size: 30, contentType: "application/pdf" });
+    recordFileEntry(sql, { path: "kept.png", key: "k/kept-v2", size: 11, contentType: "image/png" });
+    expect(forgetFileEntry(sql, "doomed.png")).toBe(1);
+
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+
+    const target = createSource();
+    await recoverWorkspace(
+      bucket as unknown as R2Bucket,
+      recoveryExecutor(target.db, target.sql),
+      TEST_WORKSPACE,
+      { now: NOW + 20 }
+    );
+
+    expect(files(target.db)).toEqual([
+      { path: "kept.png", r2_key: "k/kept-v2", size: 11 },
+      { path: "late.pdf", r2_key: "k/late", size: 30 },
+    ]);
+    expect(files(target.db)).toEqual(files(source.db));
+
+    // File entries take sequences, so a write after recovery cannot reuse one.
+    const next = run(target, {
+      txId: "after",
+      ops: [{ op: "update", namespace: "folders", id: "f-after", values: { name: "After" } }],
+    });
+    expect(next.seq).toBe(Number(scalar(source.db, `SELECT MAX(seq) FROM "_tx_log"`)) + 1);
+  });
+
+  test("forgetting a path that is not indexed burns no sequence", () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const before = scalar(source.db, `SELECT high_water_seq FROM "_tx_state"`);
+    expect(forgetFileEntry(txExecutor(source.db), "never.png")).toBe(0);
+    expect(scalar(source.db, `SELECT high_water_seq FROM "_tx_state"`)).toBe(before);
+  });
+
+  test("a client cannot forge a file op through a transaction", () => {
+    const source = createSource();
+    expect(() =>
+      run(source, {
+        txId: "forged",
+        ops: [{ op: "file:put", id: "x", path: "evil", key: "k", size: 1, contentType: null }],
+      } as unknown as TxEnvelope)
+    ).toThrow(/Op kind is not recognised/);
+  });
+});
+
+describe("transaction receipts through a restore", () => {
+  const ops = [
+    { op: "update", namespace: "folders", id: "f-retry", values: { name: "Once" } },
+  ];
+
+  /** Seq 1 seed, seq 2 the client's write, both folded into a snapshot at base 2. */
+  async function restored(): Promise<Source> {
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+
+    run(source, { txId: "w1", clientTxId: "client-r", ops } as TxEnvelope);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+    await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 20);
+
+    const target = createSource();
+    await recoverWorkspace(
+      bucket as unknown as R2Bucket,
+      recoveryExecutor(target.db, target.sql),
+      TEST_WORKSPACE,
+      { now: NOW + 30 }
+    );
+    return target;
+  }
+
+  test("a restore keeps every receipt, so a retry of a write in the snapshot is answered, not applied", async () => {
+    const target = await restored();
+    const retry = run(target, { txId: "w2", clientTxId: "client-r", ops } as TxEnvelope);
+    expect(retry).toMatchObject({ seq: 2, applied: 0 });
+  });
+
+  test("a snapshot from before receipts still restores, and says what it could not carry", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+    run(source, { txId: "w1", clientTxId: "client-r", ops } as TxEnvelope);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+    await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 20);
+    const key = manifestKey(TEST_WORKSPACE);
+    const manifest = JSON.parse(new TextDecoder().decode(bucket.bodyOf(key)!));
+    manifest.dedupeFloorSeq = 0;
+    manifest.tables = manifest.tables.filter((table: { name: string }) => table.name !== "_tx_receipts");
+    bucket.seed(key, JSON.stringify(manifest));
+
+    const target = createSource();
+    // A floor an older engine wrote is cleared, not obeyed.
+    target.db.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('dedupe_floor_seq', '9')`);
+    const result = await recoverWorkspace(
+      bucket as unknown as R2Bucket,
+      recoveryExecutor(target.db, target.sql),
+      TEST_WORKSPACE,
+      { now: NOW + 30, force: true }
+    );
+    expect(result).toMatchObject({ recovered: true, baseSeq: 2 });
+    expect((result as { warnings?: string[] }).warnings?.[0]).toMatch(/predates transaction receipts/);
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`)).toBe(0);
+
+    // New writes are deduped as always; nothing is refused.
+    const fresh = [{ op: "update", namespace: "folders", id: "f-new", values: { name: "New" } }];
+    expect(run(target, { txId: "n1", clientTxId: "client-new", ops: fresh } as TxEnvelope)).toMatchObject({ seq: 3, applied: 1 });
+    expect(run(target, { txId: "n2", clientTxId: "client-new", ops: fresh } as TxEnvelope)).toMatchObject({ seq: 3, applied: 0 });
+  });
+});
+
+describe("strict ops through a restore", () => {
+  test("insert and patch replay from segments, and a forced recovery converges", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+
+    run(source, { txId: "i1", ops: [{ op: "insert", namespace: "folders", id: "f-strict", values: { name: "Made" } }] } as unknown as TxEnvelope);
+    run(source, { txId: "p1", ops: [{ op: "patch", namespace: "folders", id: "f-strict", values: { name: "Renamed" } }] } as unknown as TxEnvelope);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+
+    const target = createSource();
+    const exec = recoveryExecutor(target.db, target.sql);
+    await recoverWorkspace(bucket as unknown as R2Bucket, exec, TEST_WORKSPACE, { now: NOW + 20 });
+    expect(scalar(target.db, `SELECT name FROM "folders" WHERE "id" = 'f-strict'`)).toBe("Renamed");
+
+    // A forced re-run restores over the same rows and must land identically.
+    await recoverWorkspace(bucket as unknown as R2Bucket, exec, TEST_WORKSPACE, { force: true, now: NOW + 30 });
+    expect(scalar(target.db, `SELECT name FROM "folders" WHERE "id" = 'f-strict'`)).toBe("Renamed");
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+  });
+});
+
+describe("the file index in snapshots", () => {
+  async function uploadedBeforeSnapshot() {
+    const source = createSource();
+    seedWorkspace(source);
+    recordFileEntry(txExecutor(source.db), { path: "old.png", key: "k/old", size: 5, contentType: null });
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW); // the file entry is at or below the base
+    return { source, bucket };
+  }
+
+  async function restoredPaths(bucket: FakeR2Bucket): Promise<unknown[]> {
+    const target = createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now: NOW + 10 });
+    return target.db.query(`SELECT "path" FROM "_files"`).all();
+  }
+
+  test("a file uploaded before the snapshot survives a restore", async () => {
+    const { bucket } = await uploadedBeforeSnapshot();
+    const manifest = JSON.parse(new TextDecoder().decode(bucket.bodyOf(manifestKey(TEST_WORKSPACE))!));
+    expect(manifest.tables.map((table: { name: string }) => table.name)).toContain("_files");
+
+    // Without the snapshot the segment would be the only copy; drop it.
+    for (const key of [...bucket.objects.keys()]) if (key.includes("/log/")) bucket.objects.delete(key);
+    expect(await restoredPaths(bucket)).toEqual([{ path: "old.png" }]);
+  });
+
+  test("an older snapshot without the index is filled from retained segments", async () => {
+    const { bucket } = await uploadedBeforeSnapshot();
+    // Rewrite the manifest the way an older engine wrote it: no _files table.
+    const key = manifestKey(TEST_WORKSPACE);
+    const manifest = JSON.parse(new TextDecoder().decode(bucket.bodyOf(key)!));
+    manifest.tables = manifest.tables.filter((table: { name: string }) => table.name !== "_files");
+    bucket.seed(key, JSON.stringify(manifest));
+
+    expect(await restoredPaths(bucket)).toEqual([{ path: "old.png" }]);
+  });
+});
+
+describe("the local log is bounded", () => {
+  const write = (source: Source, n: number) =>
+    run(source, {
+      txId: `t${n}`,
+      clientTxId: `c${n}`,
+      ops: [{ op: "update", namespace: "folders", id: `f${n}`, values: { name: `F${n}` } }],
+    } as TxEnvelope);
+
+  test("trimming replay rows keeps durable transaction receipts", async () => {
+    const source = createSource();
+    seedWorkspace(source); // seq 1
+    for (let n = 2; n <= 10; n += 1) write(source, n);
+    const bucket = new FakeR2Bucket();
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
+    await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW, { retainLogSequences: 3 });
+
+    // base 10, horizon 3: rows 1..7 go, 8..10 stay.
+    expect(scalar(source.db, `SELECT GROUP_CONCAT(seq) FROM (SELECT seq FROM "_tx_log" ORDER BY seq)`)).toBe("8,9,10");
+    expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_receipts"`)).toBe(9);
+    expect(run(source, { txId: "r", clientTxId: "c4", ops: [{ op: "update", namespace: "folders", id: "f4", values: { name: "F4" } }] } as TxEnvelope)).toMatchObject({seq: 4, applied: 0});
+    // ...one above it is still deduped, and new writes continue the sequence.
+    expect(run(source, { txId: "r2", clientTxId: "c9", ops: [{ op: "update", namespace: "folders", id: "f9", values: { name: "F9" } }] } as TxEnvelope)).toMatchObject({ seq: 9, applied: 0 });
+    expect(write(source, 11).seq).toBe(11);
+  });
+
+  test("never trims a row that has not reached R2", () => {
+    const source = createSource();
+    seedWorkspace(source);
+    for (let n = 2; n <= 10; n += 1) write(source, n);
+    source.db.exec(`UPDATE "_flush_state" SET last_seq = 4 WHERE id = 1`);
+
+    // A snapshot base of 10 alone would allow cutting to 7; flushed is 4.
+    trimLocalLog(source.sql, 10, { retainLogSequences: 3 });
+    expect(scalar(source.db, `SELECT MIN(seq) FROM "_tx_log"`)).toBe(2);
+    expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(9);
+  });
+});
+
+describe("bulk writes through a restore", () => {
+  test("replay changes the rows the original changed, not the ones the filter matches now", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const sql = txExecutor(source.db);
+    void sql;
+
+    // Snapshot first, so everything below is rebuilt by replaying the log
+    // rather than restored from the snapshot.
+    const snapshotBucket = new FakeR2Bucket();
+    await flushPending(snapshotBucket, source.sql, TEST_WORKSPACE, NOW);
+    await snapshotWorkspace(snapshotBucket, source.sql, TEST_WORKSPACE, NOW);
+
+    // Three folders named "Batch", bulk-renamed, then a fourth added with the
+    // old name afterwards. Re-running the filter during a replay would catch
+    // the fourth as well; replaying the resolved rows cannot.
+    run(source, {
+      txId: "mk",
+      ops: ["p1", "p2", "p3"].map((id) => ({ op: "insert", namespace: "folders", id, values: { name: "Batch" } })),
+    } as unknown as TxEnvelope);
+    run(source, {
+      txId: "bulk",
+      ops: [{ op: "patchMany", namespace: "folders", where: { name: "Batch" }, values: { name: "Renamed" } }],
+    } as unknown as TxEnvelope);
+    run(source, {
+      txId: "after",
+      ops: [{ op: "insert", namespace: "folders", id: "p4", values: { name: "Batch" } }],
+    } as unknown as TxEnvelope);
+
+    const bucket = snapshotBucket;
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 5);
+    const target = createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, {
+      now: NOW + 10,
+    });
+
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    expect(
+      target.db.query(`SELECT "id" FROM "folders" WHERE "name" = 'Batch' ORDER BY "id"`).all()
+    ).toEqual([{ id: "p4" }]);
+  });
+
+  test("a retry of a bulk write is still deduped after a restore", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    run(source, {
+      txId: "mk",
+      ops: [{ op: "insert", namespace: "folders", id: "q1", values: { name: "Batch" } }],
+    } as unknown as TxEnvelope);
+
+    const envelope = {
+      txId: "bulk",
+      clientTxId: "client-bulk",
+      ops: [{ op: "patchMany", namespace: "folders", where: { name: "Batch" }, values: { name: "Renamed" } }],
+    } as unknown as TxEnvelope;
+    run(source, envelope);
+
+    const bucket = new FakeR2Bucket();
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
+
+    const target = createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, {
+      now: NOW + 10,
+    });
+
+    // The log holds the resolved rows, whose hash is not the hash of what the
+    // client sent; the segment carries the client's hash so this still matches.
+    const retry = run(target, { ...envelope, txId: "retry" });
+    expect(retry).toMatchObject({ applied: 0 });
+  });
+});
+
+
+describe("durable transaction receipts", () => {
+  test("retries survive complete log pruning, two recoveries and changed-op conflicts", async () => {
+    let source = createSource();
+    const bucket = new FakeR2Bucket();
+    const first = { txId: "first", clientTxId: "receipt-first", ops: [
+      { op: "update", namespace: "folders", id: "receipt-folder", values: { name: "Original" } },
+    ] } as TxEnvelope;
+    expect(run(source, first)).toMatchObject({seq:1,applied:1});
+    for (let n=0;n<30;n++) run(source, {txId:`later-${n}`,clientTxId:`later-${n}`,ops:[
+      {op:"update",namespace:"folders",id:"receipt-folder",values:{name:`Latest ${n}`}},
+    ]} as TxEnvelope);
+    await flushPending(bucket,source.sql,TEST_WORKSPACE,NOW);
+    await snapshotWorkspace(bucket,source.sql,TEST_WORKSPACE,NOW,{retainLogSequences:0,chunkRows:3});
+    expect(scalar(source.db,`SELECT COUNT(*) FROM "_tx_log"`)).toBe(0);
+    expect([...bucket.objects.keys()].some(key=>key.includes('/log/'))).toBe(false);
+    for(let generation=0;generation<2;generation++) {
+      const target=createSource();
+      await recoverWorkspace(bucket as unknown as R2Bucket,recoveryExecutor(target.db,target.sql),TEST_WORKSPACE,{now:NOW+generation+1});
+      expect(run(target,{...first,txId:"retry"} as TxEnvelope)).toMatchObject({seq:1,applied:0});
+      expect(scalar(target.db,`SELECT name FROM folders WHERE id='receipt-folder'`)).toBe("Latest 29");
+      expect(()=>run(target,{...first,ops:[{op:"update",namespace:"folders",id:"receipt-folder",values:{name:"Changed"}}]} as TxEnvelope)).toThrow(/different ops/);
+      expect(scalar(target.db,`SELECT COUNT(*) FROM "_tx_receipts"`)).toBe(31);
+      await snapshotWorkspace(bucket,target.sql,TEST_WORKSPACE,NOW+generation+100,{retainLogSequences:0});
+      source=target;
+    }
+  });
+
+  test("a no-match bulk retry stays a no-op after a restore even if new rows match", async()=>{
+    const source=createSource(),bucket=new FakeR2Bucket();
+    const request={txId:"empty",clientTxId:"empty-once",ops:[{op:"patchMany",namespace:"folders",where:{name:"Later"},values:{name:"Must not apply"}}]} as unknown as TxEnvelope;
+    expect(run(source,request).applied).toBe(0);
+    run(source,{txId:"insert",ops:[{op:"update",namespace:"folders",id:"new-match",values:{name:"Later"}}]} as TxEnvelope);
+    await flushPending(bucket,source.sql,TEST_WORKSPACE,NOW);
+    const target=createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket,recoveryExecutor(target.db,target.sql),TEST_WORKSPACE,{now:NOW+1});
+    expect(run(target,request).applied).toBe(0);
+    expect(scalar(target.db,`SELECT name FROM folders WHERE id='new-match'`)).toBe("Later");
+  });
+
+  test("a checkpoint remains coherent while writes arrive during chunk uploads",async()=>{
+    const source=createSource(),bucket=new FakeR2Bucket();
+    run(source,{txId:"before",clientTxId:"before",ops:[
+      {op:"update",namespace:"folders",id:"a",values:{name:"Before"}},
+      {op:"update",namespace:"folders",id:"b",values:{name:"Delete later"}},
+    ]} as TxEnvelope);
+    await flushPending(bucket,source.sql,TEST_WORKSPACE,NOW);
+    const put=bucket.put.bind(bucket);let interrupted=false;
+    bucket.put=async(...args:Parameters<typeof bucket.put>)=>{
+      if(!interrupted&&args[0].includes('/snapshots/')) {
+        interrupted=true;
+        run(source,{txId:"during",clientTxId:"during",ops:[
+          {op:"update",namespace:"folders",id:"a",values:{name:"After"}},
+          {op:"delete",namespace:"folders",id:"b"},
+          {op:"update",namespace:"folders",id:"c",values:{name:"Created during upload"}},
+        ]} as TxEnvelope, WORKSPACE_ROLE_LEVELS.OWNER);
+        await flushPending(bucket,source.sql,TEST_WORKSPACE,NOW+1);
+      }
+      return put(...args);
+    };
+    expect(await snapshotWorkspace(bucket,source.sql,TEST_WORKSPACE,NOW+2,{chunkRows:1})).toMatchObject({snapshotted:true});
+    const target=createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket,recoveryExecutor(target.db,target.sql),TEST_WORKSPACE,{now:NOW+3});
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    expect(scalar(target.db,`SELECT COUNT(*) FROM "_tx_receipts"`)).toBe(2);
+    expect(source.db.query(`SELECT name FROM sqlite_master WHERE name LIKE '_tapedb_snapshot_%'`).all()).toEqual([]);
   });
 });

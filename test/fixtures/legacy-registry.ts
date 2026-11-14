@@ -1,5 +1,5 @@
 /**
- * Registry mapping InstantDB-style API names to workspace SQLite tables.
+ * Registry mapping the original-style API names to workspace SQLite tables.
  *
  * DDL is owned by Atlas (`migrations/workspace`). This registry is the runtime
  * contract used by query compilation, validation and permissions. Registry
@@ -58,7 +58,7 @@ export interface OneToOneLink {
 export type LinkDefinition = OneToManyLink | OneToOneLink;
 
 /**
- * Engine-owned tables. `$files` is InstantDB's file-metadata table; the rest
+ * Engine-owned tables. `_files` is the file-metadata table; the rest
  * hold migration state, the transaction log, flush/snapshot bookkeeping and
  * engine metadata.
  */
@@ -69,7 +69,7 @@ export const ENGINE_TABLES = {
   flushState: "_flush_state",
   snapshotState: "_snapshot_state",
   engineMeta: "_engine_meta",
-  files: "$files",
+  files: "_files",
 } as const;
 
 export const NAMESPACES = {

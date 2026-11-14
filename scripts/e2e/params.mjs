@@ -1,0 +1,22 @@
+// Includes, in-lists and wide OR filters over more than 100 values, against workerd's 100-parameter limit.
+import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { createClient } from "tapedb";
+import { BASE, s } from "./common.mjs";
+const db = createClient({ schema: s, url: BASE, workspace: randomUUID() });
+const board = await db.board.create({ data: { name: "B" } });
+const columns = Array.from({ length: 150 }, (_, n) => db.column.create({ data: { name: `c${n}`, position: n, board: { connect: board.id } } }));
+await db.$transaction(columns);
+const ids = columns.map((write) => write.id);
+await db.$transaction(ids.map((id) => db.task.create({ data: { title: "t", column: { connect: id } } })));
+const withTasks = await db.column.findMany({ take: 150, include: { tasks: true } });
+assert.equal(withTasks.length, 150);
+assert.ok(withTasks.every((c) => c.tasks.length === 1));
+const tasks = await db.task.findMany({ take: 200, include: { column: true } });
+assert.ok(tasks.length === 150 && tasks.every((t) => t.column !== null));
+assert.equal(await db.column.count({ where: { id: { in: ids.slice(0, 140) } } }), 140);
+assert.equal(await db.column.count({ where: { id: { notIn: ids.slice(0, 140) } } }), 10);
+assert.equal(await db.column.count({ where: { OR: ids.slice(0, 120).map((id) => ({ id })) } }), 120);
+assert.deepEqual(await db.column.updateMany({ where: { OR: ids.slice(0, 120).map((id) => ({ id })) }, data: { name: "x" } }), { count: 120 });
+db.$close();
+console.log("drive-params: ok");

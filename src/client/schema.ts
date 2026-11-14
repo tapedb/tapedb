@@ -1,10 +1,8 @@
 /**
- * InstantDB-shaped schema builders.
+ * The client's copy of the schema: entities and links keyed by label.
  *
- * `ndex.schema.ts` imports `i` from the package root and must keep
- * compiling unchanged. The client only needs the schema to resolve link
- * labels to engine link api names; all attribute metadata is recorded so the
- * builders behave like InstantDB's.
+ * `schema()` builds it so the runtime can resolve a relation label to its
+ * engine link. Internal: the public schema API is `schema()` / `model()` / `t`.
  */
 
 import type {
@@ -52,7 +50,7 @@ export function schema(definition: SchemaDefinition): SchemaDefinition {
   return definition;
 }
 
-/** The `i` namespace exported to schema files, mirroring InstantDB. */
+/** Internal builders for the client schema. */
 export const i = {
   schema,
   entity,

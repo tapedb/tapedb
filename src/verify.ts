@@ -5,7 +5,7 @@ import {
 } from "./claims";
 
 /**
- * Engine role-claim verification (KAN-390).
+ * Engine role-claim verification.
  *
  * The platform mints a short-lived HS256 JWT whose payload matches the frozen
  * `RoleClaim` contract in `./claims.ts`. This module is the Worker half: it
@@ -217,39 +217,6 @@ export async function authenticateEngineRequest(
   if (token === null) {
     throw new ClaimError("missing_token", "Missing engine claim token.");
   }
-  return verifyRoleClaim(token, env, workspaceId);
-}
-
-/**
- * Verifies a claim for a route that is not addressed by workspace id (the
- * legacy `/storage/*` and `/api/apps/:appId/*` surfaces).
- *
- * The signature, expiry and role range are enforced exactly as for engine
- * requests; only the workspace comparison is skipped, because the URL does not
- * name a workspace. That authenticates the caller, it does not authorize it
- * against the tenant — `appId` has no mapping to a workspace anywhere in this
- * repository, so that scoping needs a platform-side decision.
- */
-export async function authenticateAnyRoleClaim(
-  request: Request,
-  env: ClaimVerificationEnv
-): Promise<RoleClaim> {
-  const token = extractClaimToken(request);
-  if (token === null) {
-    throw new ClaimError("missing_token", "Missing engine claim token.");
-  }
-
-  const parts = token.split(".");
-  if (parts.length !== 3) {
-    throw new ClaimError("invalid_format", "Token is not a compact JWS.");
-  }
-
-  const payload = decodeJsonSegment(parts[1]!, "payload");
-  const workspaceId = payload.workspaceId;
-  if (typeof workspaceId !== "string" || workspaceId.length === 0) {
-    throw new ClaimError("invalid_claim", "Claim workspace id must be set.");
-  }
-
   return verifyRoleClaim(token, env, workspaceId);
 }
 

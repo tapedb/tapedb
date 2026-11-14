@@ -10,16 +10,20 @@
  * this". They run inside the transaction, next to the write they gate, so the
  * row they judge is the row being changed.
  *
- * `view` stays level-only in v1: filtering rows at read time is a different
- * mechanism (post-fetch filtering per namespace), and pretending otherwise
- * would ship a rule that silently does nothing.
+ * `view` accepts two rule forms. A function rule is evaluated per fetched row,
+ * so it can express anything but cannot use an index: the executor scans to
+ * fill a page, bounded by a cap. A `where` rule returns a query filter for the
+ * caller, which is compiled into the SQL of every level that reads the
+ * namespace, so it uses indexes and never short-fills a page.
  */
 
 import { hasRole, WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../claims";
+import { assertDecisionShape, isViewWhereRule } from "./permission-shape";
+import type { QueryWhere } from "./query-types";
 import { findNamespace, toSnakeCase } from "./registry";
 import type { SqlExecutor, SqlRow } from "./tx-sql";
 import { TxError } from "./tx-types";
-import { isLinkOp, type ValidatedOp } from "./tx-validate";
+import { isBulkOp, isLinkOp, type ValidatedOp } from "./tx-validate";
 
 export type PermissionAction = "view" | "create" | "update" | "delete";
 
@@ -51,7 +55,17 @@ export interface PermissionContext {
 /** A rule returns true to allow. Throw or return false to deny. */
 export type PermissionRule = (context: PermissionContext) => boolean;
 
-export type PermissionDecision = WorkspaceRole | PermissionRule;
+/**
+ * A `view` rule SQL can evaluate: the rows the caller may see, as a `where`
+ * filter. An array is OR of its branches, so "mine or public" is
+ * `[{ ownerId: auth.sub }, { isPublic: true }]`. An empty array hides
+ * everything. Only valid for `view`.
+ */
+export interface ViewWhereRule {
+  where: (auth: PermissionAuth) => QueryWhere | readonly QueryWhere[];
+}
+
+export type PermissionDecision = WorkspaceRole | PermissionRule | ViewWhereRule;
 
 export type PermissionOverrides = Record<
   string,
@@ -60,6 +74,12 @@ export type PermissionOverrides = Record<
 
 export interface PermissionConfig {
   overrides?: PermissionOverrides;
+}
+
+export { assertDecisionShape, isViewWhereRule };
+
+function isRule(decision: PermissionDecision): boolean {
+  return typeof decision === "function" || isViewWhereRule(decision);
 }
 
 const DEFAULT_PERMISSIONS: Record<PermissionAction, WorkspaceRole> = {
@@ -78,8 +98,39 @@ export function configurePermissions(config: PermissionConfig = {}): void {
     delete NAMESPACE_OVERRIDES[key];
   }
   for (const [namespace, actions] of Object.entries(config.overrides ?? {})) {
+    for (const [action, decision] of Object.entries(actions ?? {})) {
+      assertDecisionShape(namespace, action, decision);
+    }
     NAMESPACE_OVERRIDES[namespace] = actions;
   }
+}
+
+function authOf(claim: RoleClaim): PermissionAuth {
+  return { sub: claim.sub, role: claim.role, workspaceId: claim.workspaceId };
+}
+
+/**
+ * The caller's `where` view filter for a namespace, as OR branches.
+ *
+ * `null` means the namespace has no where rule. A rule that throws returns no
+ * branches, which hides every row: a broken rule must never widen access. The
+ * shape is validated by the compiler, so a malformed filter is an error, not a
+ * silent pass.
+ */
+export function viewWhereBranches(
+  claim: RoleClaim,
+  namespace: string
+): readonly QueryWhere[] | null {
+  const decision = decisionFor(namespace, "view");
+  if (!isViewWhereRule(decision)) return null;
+
+  let result: QueryWhere | readonly QueryWhere[];
+  try {
+    result = decision.where(authOf(claim));
+  } catch {
+    return [];
+  }
+  return Array.isArray(result) ? result : [result as QueryWhere];
 }
 
 function decisionFor(
@@ -87,6 +138,26 @@ function decisionFor(
   action: PermissionAction
 ): PermissionDecision {
   return NAMESPACE_OVERRIDES[namespace]?.[action] ?? DEFAULT_PERMISSIONS[action];
+}
+
+/**
+ * True when what a caller may read of the namespace depends on who they are,
+ * not only on their role: a function rule or a `where` rule, both of which
+ * see the caller's subject. Role levels and the defaults depend on the role
+ * alone, so two callers with the same role read the same rows.
+ */
+export function viewDependsOnSubject(namespace: string): boolean {
+  const decision = decisionFor(namespace, "view");
+  return typeof decision === "function" || isViewWhereRule(decision);
+}
+
+/**
+ * True when the namespace's `view` decision is a function rule, which runs
+ * after fetch. A count over such a namespace would include rows the rule
+ * hides, so the executor refuses one.
+ */
+export function hasFunctionViewRule(namespace: string): boolean {
+  return typeof decisionFor(namespace, "view") === "function";
 }
 
 /**
@@ -102,6 +173,7 @@ export function allowRowView(
   data: Record<string, unknown>
 ): boolean {
   const decision = decisionFor(namespace, "view");
+  // Level decisions were checked up front; where rules already ran in SQL.
   if (typeof decision !== "function") return true;
 
   try {
@@ -131,13 +203,13 @@ export function minimumRole(
   }
 
   const decision = decisionFor(namespace, action);
-  if (typeof decision === "function") {
+  if (isRule(decision)) {
     throw new TxError(
       "permission_denied",
       `"${namespace}.${action}" is a row rule, not a role level.`
     );
   }
-  return decision;
+  return decision as WorkspaceRole;
 }
 
 /**
@@ -154,9 +226,9 @@ export function assertPermission(
   }
 
   const decision = decisionFor(namespace, action);
-  if (typeof decision === "function") return;
+  if (isRule(decision)) return;
 
-  if (!hasRole(claim, decision)) {
+  if (!hasRole(claim, decision as WorkspaceRole)) {
     throw new TxError(
       "permission_denied",
       `Role ${claim.role} is not allowed to ${action} "${namespace}".`
@@ -171,6 +243,17 @@ export function assertOpPermission(claim: RoleClaim, op: ValidatedOp): void {
   }
 
   switch (op.kind) {
+    case "patchMany":
+      assertPermission(claim, op.namespace, "update");
+      return;
+    case "deleteMany":
+      assertPermission(claim, op.namespace, "delete");
+      return;
+    case "insert":
+      assertPermission(claim, op.namespace, "create");
+      return;
+    case "patch":
+    case "upsert":
     case "update":
     case "merge":
       assertPermission(claim, op.namespace, "update");
@@ -201,6 +284,13 @@ interface RowTarget {
  * create rule entirely.
  */
 function targetOf(op: ValidatedOp, rowExists: boolean): RowTarget {
+  if (isBulkOp(op)) {
+    // expandBulkOps resolves these to per-row ops before rules are evaluated.
+    throw new TxError(
+      "invalid_op",
+      `"${op.kind}" reached the row rules; it should have been resolved to rows first.`
+    );
+  }
   if (isLinkOp(op)) {
     // A link writes the child's foreign key, so the child's update rule decides.
     return { namespace: op.childNamespace, action: "update", id: op.childId };
@@ -208,11 +298,25 @@ function targetOf(op: ValidatedOp, rowExists: boolean): RowTarget {
   if (op.kind === "delete") {
     return { namespace: op.namespace, action: "delete", id: op.id };
   }
+  // insert and patch name their action outright; the apply step refuses an
+  // insert over an existing row and a patch of a missing one.
+  const action =
+    op.kind === "insert"
+      ? "create"
+      : op.kind === "patch"
+        ? "update"
+        : rowExists
+          ? "update"
+          : "create";
   return {
     namespace: op.namespace,
-    action: rowExists ? "update" : "create",
+    action,
     id: op.id,
-    values: op.values,
+    // An upsert that creates is judged on what it will create.
+    values:
+      op.kind === "upsert" && !rowExists && op.createValues !== undefined
+        ? op.createValues
+        : op.values,
   };
 }
 
@@ -271,6 +375,12 @@ export function assertRowPermissions(
   ops: ValidatedOp[]
 ): void {
   for (const op of ops) {
+    if (isBulkOp(op)) {
+      throw new TxError(
+        "invalid_op",
+        `"${op.kind}" reached the row rules; it should have been resolved to rows first.`
+      );
+    }
     const id = isLinkOp(op) ? op.childId : op.id;
     const namespace = isLinkOp(op) ? op.childNamespace : op.namespace;
     const data = readRow(sql, namespace, id);

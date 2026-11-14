@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../fixtures/registry";
+useLegacyFixture();
 
 import { describe, expect, test } from "bun:test";
 
@@ -8,7 +8,6 @@ import {
   compileQuery,
   type CompiledNode,
 } from "../../src/engine/query-compile";
-import { MAX_QUERY_LIMIT } from "../../src/engine/query-types";
 import { TxError } from "../../src/engine/tx-types";
 
 function expectCode(fn: () => unknown, code: string): void {
@@ -107,11 +106,12 @@ describe("compileQuery", () => {
       ids: ["d1", "d2"],
     });
 
-    expect(sql).toContain('("document_id" IN (?, ?))');
+    // One parameter however many parents: a Durable Object binds at most 100.
+    expect(sql).toContain('("document_id" IN (SELECT value FROM json_each(?)))');
     // A nested level carries no implicit LIMIT: one LIMIT over `fk IN (...)` is
     // shared by every parent, which silently truncates the later parents.
     expect(sql.endsWith("LIMIT ?")).toBe(false);
-    expect(params).toEqual(["d1", "d2"]);
+    expect(params).toEqual(['["d1","d2"]']);
   });
 
   test("keeps an explicit limit on a nested level", () => {
@@ -173,7 +173,8 @@ describe("compileQuery", () => {
     const boolean = compileQuery({
       blocks: { $: { where: { checked: true } } },
     });
-    expect(buildSelectSql(node(boolean)).params).toEqual([1, 100]);
+    // No implicit LIMIT: a read without one returns every match.
+    expect(buildSelectSql(node(boolean)).params).toEqual([1]);
 
     const date = compileQuery({
       kanbanTasks: {
@@ -199,10 +200,10 @@ describe("compileQuery", () => {
 
     const { sql, params } = buildSelectSql(node(compiled));
     expect(sql).toContain('("status" IS NULL OR "status" <> ?)');
-    expect(sql).toContain('("status" IN (?, ?))');
+    expect(sql).toContain('("status" IN (SELECT value FROM json_each(?)))');
     expect(sql).toContain('("order" > ?)');
     expect(sql).toContain('("order" <= ?)');
-    expect(params).toEqual(["done", "todo", "done", 1, 4, 100]);
+    expect(params).toEqual(["done", '["todo","done"]', 1, 4]);
   });
 
   test("compiles an empty $in to a false predicate", () => {
@@ -250,22 +251,15 @@ describe("compileQuery", () => {
     );
   });
 
-  test("enforces two link levels, limits and array shape", () => {
-    expectCode(
-      () =>
-        compileQuery({
-          folders: { children: { children: { children: {} } } },
-        }),
-      "invalid_op"
-    );
+  test("compiles links at any depth; enforces limits and array shape", () => {
+    const deep = compileQuery({ folders: { children: { children: { children: {} } } } });
+    expect(deep.nodes[0]?.children[0]?.node.children[0]?.node.children[0]?.node.depth).toBe(3);
     expectCode(
       () => compileQuery({ folders: { $: { limit: 0 } } }),
       "invalid_value"
     );
-    expectCode(
-      () => compileQuery({ folders: { $: { limit: MAX_QUERY_LIMIT + 1 } } }),
-      "invalid_value"
-    );
+    expect(compileQuery({ folders: { $: { limit: 50_000 } } }).nodes[0]?.limit).toBe(50_000);
+    expectCode(() => compileQuery({ folders: { $: { limit: 1.5 } } }), "invalid_value");
     expectCode(() => compileQuery({ folders: { children: [] } }), "invalid_op");
   });
 

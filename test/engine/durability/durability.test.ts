@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../../fixtures/registry";
+useLegacyFixture();
 
 import { describe, expect, test } from "bun:test";
 

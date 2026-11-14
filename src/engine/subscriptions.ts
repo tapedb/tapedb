@@ -1,5 +1,5 @@
 /**
- * Live-query invalidation and diffing (KAN-393).
+ * Live-query invalidation and diffing.
  *
  * The workspace DO keeps one subscription per client query. After a commit we
  * derive the namespaces a transaction touched, re-run only the subscriptions
@@ -46,6 +46,12 @@ export interface EntityDiff {
   updated: unknown[];
   /** Ids that disappeared from the result. */
   removed: string[];
+  /**
+   * Every id of the new result in order, when applying the diff the simple
+   * way — survivors keep their places, `added` is appended — would not
+   * reproduce it.
+   */
+  order?: string[];
 }
 
 export interface NamespaceDiff extends EntityDiff {
@@ -137,7 +143,7 @@ export function touchedNamespacesFromEnvelope(envelope: unknown): Set<string> {
 
 /**
  * True when any node of the compiled query — top-level or nested traversal —
- * requests one of the touched namespaces.
+ * reads one of the touched namespaces, as rows or through a relation filter.
  */
 export function queryMatchesTouched(
   compiled: CompiledQuery,
@@ -147,6 +153,7 @@ export function queryMatchesTouched(
 
   const visit = (node: CompiledNode): boolean =>
     touched.has(node.namespace) ||
+    (node.references ?? []).some((namespace) => touched.has(namespace)) ||
     node.children.some((child) => visit(child.node));
 
   return compiled.nodes.some(visit);
@@ -159,6 +166,7 @@ export function queryReferencesNamespace(
 ): boolean {
   const visit = (node: CompiledNode): boolean =>
     node.namespace === namespace ||
+    (node.references ?? []).includes(namespace) ||
     node.children.some((child) => visit(child.node));
 
   return compiled.nodes.some(visit);
@@ -170,6 +178,23 @@ export function queryReferencesNamespace(
  * Returns `null` when the payload is not a list of uniquely identified
  * entities; callers then send a full `query:data` payload instead of a diff.
  */
+/**
+ * Each entity's canonical JSON, computed once per object. A result object is
+ * the next flush's previous result, and identical subscriptions share one, so
+ * without this every entity was serialised twice per subscriber per flush.
+ */
+const entityJson = new WeakMap<object, string>();
+
+function canonical(entity: unknown): string {
+  if (typeof entity !== "object" || entity === null) return stableStringify(entity);
+  let json = entityJson.get(entity);
+  if (json === undefined) {
+    json = stableStringify(entity);
+    entityJson.set(entity, json);
+  }
+  return json;
+}
+
 export function diffEntityList(
   previous: unknown,
   next: unknown
@@ -188,7 +213,7 @@ export function diffEntityList(
       added.push(entity);
       continue;
     }
-    if (stableStringify(before) !== stableStringify(entity)) {
+    if (canonical(before) !== canonical(entity)) {
       updated.push(entity);
     }
   }
@@ -197,7 +222,14 @@ export function diffEntityList(
     if (!nextById.has(id)) removed.push(id);
   }
 
-  return { added, updated, removed };
+  const nextIds = [...nextById.keys()];
+  const merged = [
+    ...[...previousById.keys()].filter((id) => nextById.has(id)),
+    ...added.map((entity) => (entity as { id: string }).id),
+  ];
+  const inPlace = merged.every((id, index) => id === nextIds[index]);
+
+  return inPlace ? { added, updated, removed } : { added, updated, removed, order: nextIds };
 }
 
 /**
@@ -225,7 +257,7 @@ export function diffQueryResults(
     const diff = diffEntityList(before, after);
     if (diff === null) return null;
 
-    if (diff.added.length + diff.updated.length + diff.removed.length > 0) {
+    if (diff.added.length + diff.updated.length + diff.removed.length > 0 || diff.order) {
       diffs.push({ namespace, ...diff });
     }
   }

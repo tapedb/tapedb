@@ -6,7 +6,7 @@ import {
   type ManifestTable,
 } from "../r2-keys";
 import { deleteR2Keys, listAllR2 } from "../r2-list";
-import { namespaceTables } from "../registry";
+import { ENGINE_TABLES, namespaceTables } from "../registry";
 import { readFlushState } from "./flusher";
 import {
   commitManifest,
@@ -54,6 +54,13 @@ function assertPositiveInteger(value: number, label: string): number {
     throw new Error(`${label} must be a positive integer.`);
   }
   return value;
+}
+
+function readSchemaVersion(sql: SqlExecutor): string | undefined {
+  const row = sql
+    .exec<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = 'schema_version'`)
+    .toArray()[0];
+  return row?.value;
 }
 
 export function readHighWater(sql: SqlExecutor): number {
@@ -162,7 +169,8 @@ async function snapshotTable(
   baseSeq: number,
   table: string,
   chunkRows: number,
-  chunkBytes: number
+  chunkBytes: number,
+  sourceTable: string = table
 ): Promise<TableChunkAccumulator> {
   if (!SAFE_TABLE.test(table)) {
     throw new Error(`Unsafe table name in registry: ${table}`);
@@ -209,13 +217,13 @@ async function snapshotTable(
       lastId === null
         ? sql
             .exec<SqlRow>(
-              `SELECT * FROM "${table}" ORDER BY id LIMIT ?`,
+              `SELECT * FROM "${sourceTable}" ORDER BY id LIMIT ?`,
               chunkRows
             )
             .toArray()
         : sql
             .exec<SqlRow>(
-              `SELECT * FROM "${table}" WHERE id > ? ORDER BY id LIMIT ?`,
+              `SELECT * FROM "${sourceTable}" WHERE id > ? ORDER BY id LIMIT ?`,
               lastId,
               chunkRows
             )
@@ -253,33 +261,48 @@ async function snapshotTable(
 
 const LOG_SEGMENT_NAME = /^(\d+)-(\d+)\.ndjson$/;
 
-/**
- * How far below the snapshot base a log segment is kept.
- *
- * A snapshot stores rows, not idempotency keys, so a segment folded into a
- * snapshot is still the only durable record of the `clientTxId` values it
- * carried. Deleting it the moment the snapshot lands is what made a retried
- * write apply twice after an eviction. Keeping roughly two snapshots' worth of
- * covered segments bounds the retry window explicitly instead of pretending it
- * is unlimited: R2 holds a few small objects, and the guarantee matches what a
- * client outbox can realistically replay.
- */
-export const DEDUPE_HORIZON_SEQ = 2 * SNAPSHOT_SEQ_THRESHOLD;
+/** Replay-log retention is independent of permanent transaction receipts. */
+export const LOG_RETENTION_SEQ = 2 * SNAPSHOT_SEQ_THRESHOLD;
+
+/** Trim flushed replay rows after their checkpoint; receipts remain intact. */
+export function trimLocalLog(
+  sql: SqlExecutor,
+  baseSeq: number,
+  options: { retainLogSequences?: number } = {}
+): number {
+  const horizon = options.retainLogSequences ?? LOG_RETENTION_SEQ;
+  const flushed =
+    sql
+      .exec<{ last_seq: number }>(`SELECT last_seq FROM "_flush_state" WHERE id = 1`)
+      .toArray()[0]?.last_seq ?? 0;
+  const cut = Math.min(baseSeq, flushed) - horizon;
+  if (cut <= 0) return 0;
+
+  const removable =
+    sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_log" WHERE seq <= ?`, cut)
+      .toArray()[0]?.n ?? 0;
+  if (removable === 0) return 0;
+
+  sql.exec(`DELETE FROM "_tx_log" WHERE seq <= ?`, cut);
+  // Receipts are independent of the replay log and are never trimmed here.
+  return Number(removable);
+}
 
 /**
  * Deletes log segments wholly covered by `baseSeq`, keeping those inside the
- * idempotency horizon so cold-start recovery can still rebuild `_tx_log`.
+ * configured replay retention. Transaction receipts live in the snapshot.
  */
 export async function pruneCoveredLogSegments(
   bucket: R2Bucket,
   workspaceId: string,
   baseSeq: number,
-  options: { dedupeHorizonSeq?: number } = {}
+  options: { retainLogSequences?: number } = {}
 ): Promise<number> {
   const prefix = `${workspacePrefix(workspaceId)}/log/`;
   const objects = await listAllR2(bucket, prefix);
   const keys: string[] = [];
-  const horizon = options.dedupeHorizonSeq ?? DEDUPE_HORIZON_SEQ;
+  const horizon = options.retainLogSequences ?? LOG_RETENTION_SEQ;
   const retainFrom = baseSeq - horizon;
 
   for (const object of objects) {
@@ -335,13 +358,13 @@ async function pruneSafely(
   workspaceId: string,
   baseSeq: number,
   retention: number,
-  dedupeHorizonSeq?: number
+  retainLogSequences?: number
 ): Promise<string[]> {
   const warnings: string[] = [];
 
   try {
     await pruneCoveredLogSegments(bucket, workspaceId, baseSeq, {
-      dedupeHorizonSeq,
+      retainLogSequences,
     });
   } catch (cause) {
     warnings.push(
@@ -389,14 +412,26 @@ export async function snapshotWorkspace(
   const flushState = readFlushState(sql);
 
   markSnapshotRunning(sql, now);
-
+  const sources = [...namespaceTables(), ENGINE_TABLES.files, ENGINE_TABLES.txReceipts];
+  const staged: string[] = [];
   try {
+    // No await between reading baseSeq and copying every table: another
+    // request cannot change the checkpoint halfway through its R2 upload.
+    for (const table of sources) {
+      const copy = `_tapedb_snapshot_${table}`;
+      if (!SAFE_TABLE.test(table) || sources.includes(copy)) throw new Error("Snapshot staging table conflicts with an application table.");
+      sql.exec(`DROP TABLE IF EXISTS "${copy}"`);
+      sql.exec(`CREATE TABLE "${copy}" AS SELECT * FROM "${table}"`);
+      staged.push(copy);
+    }
     const tables: ManifestTable[] = [];
     let totalRows = 0;
     let totalBytes = 0;
     let totalChunks = 0;
 
-    for (const table of namespaceTables()) {
+    // The file index is part of the workspace's state like any table: without
+    // it a restore keeps only files written after the snapshot.
+    for (const table of sources) {
       const snapshot = await snapshotTable(
         bucket,
         sql,
@@ -404,7 +439,8 @@ export async function snapshotWorkspace(
         baseSeq,
         table,
         chunkRows,
-        chunkBytes
+        chunkBytes,
+        `_tapedb_snapshot_${table}`
       );
       tables.push({ name: table, chunks: snapshot.chunks });
       totalRows += snapshot.rows;
@@ -424,6 +460,7 @@ export async function snapshotWorkspace(
         logSeq: Math.max(logSeq, current?.logSeq ?? 0),
         createdAt: current?.createdAt ?? manifestCreatedAt(now),
         engineVersion: readEngineVersion(sql),
+        schemaVersion: readSchemaVersion(sql),
         tables,
         totalRows,
         totalBytes,
@@ -437,8 +474,16 @@ export async function snapshotWorkspace(
       workspaceId,
       baseSeq,
       retention,
-      options.dedupeHorizonSeq
+      options.retainLogSequences
     );
+
+    // The snapshot and its manifest are durable; the local log can shrink to
+    // the same window R2 keeps.
+    try {
+      trimLocalLog(sql, baseSeq, { retainLogSequences: options.retainLogSequences });
+    } catch (cause) {
+      warnings.push(`trim_local_log_failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
 
     return {
       snapshotted: true,
@@ -458,5 +503,7 @@ export async function snapshotWorkspace(
       baseSeq,
       error: cause instanceof Error ? cause.message : String(cause),
     };
+  } finally {
+    for (const table of staged) sql.exec(`DROP TABLE IF EXISTS "${table}"`);
   }
 }

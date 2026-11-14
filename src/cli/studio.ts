@@ -80,7 +80,7 @@ async function forward(response: ServerResponse, upstream: Response): Promise<vo
   sendJson(response, upstream.status, parsed);
 }
 
-async function mintToken(base: string, workspace: string): Promise<string> {
+export async function mintToken(base: string, workspace: string): Promise<string> {
   const response = await fetch(`${base}/_tapedb/claim`, {
     method: "POST",
     headers: { "content-type": "application/json" },

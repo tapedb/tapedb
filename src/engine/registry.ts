@@ -1,5 +1,5 @@
 /**
- * Registry mapping InstantDB-style API names to workspace SQLite tables.
+ * Registry mapping model names to workspace SQLite tables.
  *
  * The registry is the runtime contract shared by query compilation, envelope
  * validation, permissions and durability. It is *not* a hardcoded schema: the
@@ -31,6 +31,12 @@ export interface AttributeReference {
 export interface AttributeDefinition {
   type: AttributeType;
   optional?: boolean;
+  /**
+   * Column default, as stored (booleans 0/1, dates epoch ms, json as text).
+   * Fills the field for rows written before it existed: replayed inserts and,
+   * through the migration, rows already in the table.
+   */
+  default?: string | number | null;
   indexed?: boolean;
   unique?: boolean;
   references?: AttributeReference;
@@ -61,18 +67,19 @@ export interface OneToOneLink {
 export type LinkDefinition = OneToManyLink | OneToOneLink;
 
 /**
- * Engine-owned tables. `$files` holds file metadata; the rest hold migration
+ * Engine-owned tables. `_files` holds file metadata; the rest hold migration
  * state, the transaction log, flush and snapshot bookkeeping, and engine
  * metadata.
  */
 export const ENGINE_TABLES = {
   migrations: "_migrations",
   txLog: "_tx_log",
+  txReceipts: "_tx_receipts",
   txState: "_tx_state",
   flushState: "_flush_state",
   snapshotState: "_snapshot_state",
   engineMeta: "_engine_meta",
-  files: "$files",
+  files: "_files",
 } as const;
 
 /** Configured namespaces, keyed by API name. Mutated by `configureRegistry`. */

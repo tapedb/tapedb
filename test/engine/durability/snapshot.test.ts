@@ -1,5 +1,5 @@
-import { useNdexFixture } from "../../fixtures/registry";
-useNdexFixture();
+import { useLegacyFixture } from "../../fixtures/registry";
+useLegacyFixture();
 
 import { createHash } from "node:crypto";
 import { gunzipSync } from "node:zlib";
@@ -76,7 +76,7 @@ describe("snapshotWorkspace", () => {
     expect(manifest.logSeq).toBe(5);
     expect(
       manifest.tables.map((table: { name: string }) => table.name)
-    ).toEqual(namespaceTables());
+    ).toEqual([...namespaceTables(), "_files", "_tx_receipts"]);
     expect(manifest.totalRows).toBe(5);
 
     const folderTable = manifest.tables.find(
@@ -181,7 +181,7 @@ describe("snapshotWorkspace", () => {
     // Horizon 0 isolates the pruning contract from the idempotency retention
     // policy, which the next test covers.
     const result = await snapshotWorkspace(bucket, sql, TEST_WORKSPACE, 30, {
-      dedupeHorizonSeq: 0,
+      retainLogSequences: 0,
     });
     expect(result.snapshotted).toBe(true);
 
@@ -230,7 +230,7 @@ describe("snapshotWorkspace", () => {
     // stores rows, not idempotency keys, so those segments are the only copy of
     // the keys for a retry that crosses the snapshot.
     await snapshotWorkspace(bucket, sql, TEST_WORKSPACE, 30, {
-      dedupeHorizonSeq: 10,
+      retainLogSequences: 10,
     });
 
     for (const [from, to] of logs) {
@@ -252,7 +252,7 @@ describe("snapshotWorkspace", () => {
     bucket.seed(`ws/${TEST_WORKSPACE}/snapshots/2/folders/0.ndjson.gz`, "old");
 
     const result = await snapshotWorkspace(bucket, sql, TEST_WORKSPACE, 10, {
-      dedupeHorizonSeq: 0,
+      retainLogSequences: 0,
     });
     expect(result.snapshotted).toBe(true);
     expect(result.warnings?.length).toBe(2);
