@@ -44,7 +44,9 @@ fix and disclosure. There is no bug bounty.
   claim.
 - **Files.** Uploads go to the workspace's R2 prefix. Reads require at least
   member, writes and deletes require at least editor. There is no per-file ACL
-  beyond that workspace role, and uploads are capped at 25 MB.
+  beyond that workspace role. One request carries at most 25 MiB; larger files
+  are R2 multipart uploads on the same route and role, tied to their file
+  path, and listed only once complete.
 - **Transport.** HTTP uses `Authorization: Bearer`; WebSocket upgrades carry the
   claim in `Sec-WebSocket-Protocol`, never in the URL. Claims should be kept out
   of request-header logging.

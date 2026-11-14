@@ -82,7 +82,7 @@ On the client itself:
 | Member | |
 | --- | --- |
 | `$transaction(writes)` | several writes, applied atomically → `Promise<WriteResult[]>` |
-| `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject`, `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` |
+| `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject` (any size: past 16 MiB it goes up as a multipart upload of 16 MiB parts, abandoned if a part fails), `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` |
 | `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `subscribe(listener)` with `PresencePeer[]`, `leave()` |
 | `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean` (false, and dropped, when the socket is not open), `subscribe((message, from) => …, { onError? })`, which never hears your own messages; never stored, never delivered late |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
@@ -125,7 +125,7 @@ ttlSeconds? }, now?)` → `{ token, expiresAt, expiresIn }` and
 `verifyRoleClaim(token, env, expectedWorkspaceId)` → `RoleClaim`, for minting
 and checking claims outside the claim route (for example a backend that calls
 export or erase), `ClaimError`,
-`MAX_UPLOAD_BYTES` (25 MiB), `WORKSPACE_ROLE_LEVELS`, and the types
+`MAX_UPLOAD_BYTES` (25 MiB, the most one upload request carries; files of any size go up in parts), `WORKSPACE_ROLE_LEVELS`, and the types
 `DefineTapeDBOptions`, `TapeDBWorker`, `AppMigration`, `ClaimIdentity`,
 `Env`, and **experimental** `TopicAction` and `TopicAuthorizer`.
 
@@ -159,7 +159,11 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2 |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
 | `DELETE /engine/workspaces/:id` | erase the workspace; owner only; answers 410 afterwards |
-| `GET`/`HEAD`/`PUT`/`DELETE /engine/workspaces/:id/files/:path` | file bytes |
+| `GET`/`HEAD`/`PUT`/`DELETE /engine/workspaces/:id/files/:path` | file bytes; a `PUT` carries at most `MAX_UPLOAD_BYTES` |
+| `POST /engine/workspaces/:id/files/:path?uploads` | start a multipart upload (the request's `content-type` is the file's) → `{ uploadId }`; EDITOR or higher, like every write below |
+| `PUT …/files/:path?uploadId=…&partNumber=n` | store part n (1–10000, at most `MAX_UPLOAD_BYTES`; all but the last the same size, at least 5 MiB) → `{ partNumber, etag }` |
+| `POST …/files/:path?uploadId=…` | `{ parts: [{ partNumber, etag }] }` completes it and records the file, like a `PUT` → 201 `{ key, size }` |
+| `DELETE …/files/:path?uploadId=…` | abandon it (R2 also drops unfinished uploads after 7 days). Nothing is listed or readable before completion |
 | `GET /engine/workspaces/:id/files` | the file index; MEMBER or higher. The index changes only through the byte routes (other methods: 405) |
 | `GET /engine/workspaces/:id/websocket` | the live socket (below) |
 
