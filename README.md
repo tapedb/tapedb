@@ -461,7 +461,9 @@ in `Sec-WebSocket-Protocol` as `tapedb.claim.<token>` next to `tapedb`, which
 the room selects. A token is never read from the URL, so it stays out of
 request logs and browser history. In development, `tapedb dev` enables a dev claim route so the
 client needs no session at all; `ENVIRONMENT=production` refuses that route,
-and `tapedb deploy` refuses to ship the flag.
+and `tapedb deploy` refuses to ship the flag. A deployed test Worker that
+needs the route sets a random `TAPEDB_DEV_CLAIMS_TOKEN` secret first; the route
+then mints only for requests carrying it in `x-tapedb-dev-token`.
 
 ## Architecture
 

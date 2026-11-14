@@ -165,6 +165,28 @@ describe("dev claims", () => {
     expect(response.status).toBe(501);
   });
 
+  test("with TAPEDB_DEV_CLAIMS_TOKEN set, mint only for requests carrying that token", async () => {
+    const gated = { ENVIRONMENT: "staging", TAPEDB_CLAIM_SECRET: SECRET, TAPEDB_DEV_CLAIMS: "true", TAPEDB_DEV_CLAIMS_TOKEN: "run-token-1234" };
+    const ask = (headers: Record<string, string>) =>
+      handleClaimRequest(
+        new Request("https://x/_tapedb/claim", { method: "POST", headers, body: JSON.stringify({ workspaceId: WORKSPACE }) }),
+        { env: gated, devClaims: true }
+      );
+
+    for (const headers of [{}, { "x-tapedb-dev-token": "wrong" }, { "x-tapedb-dev-token": "run-token-123" }, { "x-tapedb-dev-token": "run-token-12345" }]) {
+      const refused = await ask(headers);
+      expect(refused.status).toBe(401);
+      const body = (await refused.json()) as { error: { code: string }; token?: string };
+      expect(body.error.code).toBe("dev_token_required");
+      expect(body.token).toBeUndefined();
+    }
+
+    const allowed = await ask({ "x-tapedb-dev-token": "run-token-1234" });
+    expect(allowed.status).toBe(200);
+    const claim = await verifyRoleClaim(((await allowed.json()) as { token: string }).token, env, WORKSPACE);
+    expect(claim.role).toBe(WORKSPACE_ROLE_LEVELS.OWNER);
+  });
+
   test("reject a malformed workspace id", async () => {
     const response = await handleClaimRequest(
       new Request("https://x/_tapedb/claim", {

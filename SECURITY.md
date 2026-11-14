@@ -61,9 +61,12 @@ The library cannot enforce these for you:
   Rotate it if it is exposed; all existing claims become invalid.
 - Implement `getSubject` and `getRole` correctly. A role returned by
   `getRole` is trusted by the engine.
-- Do not set `TAPEDB_DEV_CLAIMS` in production or staging that is reachable by
-  untrusted users. `tapedb deploy` refuses it, but a manual `wrangler deploy`
-  can still ship it.
+- Do not set `TAPEDB_DEV_CLAIMS` in production. On a deployed test Worker
+  that untrusted users can reach, set it only together with a random
+  `TAPEDB_DEV_CLAIMS_TOKEN` secret: the dev claim route then mints only for
+  requests carrying that token in `x-tapedb-dev-token`, and answers 401
+  otherwise. Set the token before turning dev claims on. `tapedb deploy`
+  refuses `TAPEDB_DEV_CLAIMS`, but a manual `wrangler deploy` can still ship it.
 - Add rate limiting to the public claim route with `allowRequest` if needed,
   and protect session-bearing identity lookups against CSRF according to your
   auth system.

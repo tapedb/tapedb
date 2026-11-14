@@ -41,4 +41,6 @@ export interface Env {
    * `wrangler deploy` has no dev claim route.
    */
   TAPEDB_DEV_CLAIMS?: string;
+  /** Requires this token (x-tapedb-dev-token) on the development claim route; for deployed test Workers. */
+  TAPEDB_DEV_CLAIMS_TOKEN?: string;
 }
