@@ -24,9 +24,6 @@ export interface Env {
    * R2 buckets are declared in the same jurisdiction.
    */
   TAPEDB_JURISDICTION?: string;
-  SERVICE_VERSION?: string;
-  ENABLE_SMOKE?: string;
-  ALLOWED_ORIGINS?: string;
 
   /** Shared HS256 secret used to verify role claims. */
   TAPEDB_CLAIM_SECRET: string;

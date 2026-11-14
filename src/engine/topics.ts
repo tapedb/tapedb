@@ -21,11 +21,14 @@ export function isTopic(value: unknown): value is string {
   return typeof value === "string" && TOPIC_PATTERN.test(value);
 }
 
+/** @experimental May change in a minor release; see API.md. */
 export type TopicAction = "join" | "send";
 
 /**
  * Decides whether a caller may join a topic or send to it. Return false (or
  * throw) to refuse; the socket gets a `topic:error` and nothing else happens.
+ *
+ * @experimental May change in a minor release; see API.md.
  */
 export type TopicAuthorizer = (context: {
   auth: { sub: string; role: number; workspaceId: string };

@@ -423,7 +423,11 @@ export type ServerMessage =
   | { type: "topic:error"; topic: string | null; code: string; message: string }
   | { type: "error"; code: string; message?: string };
 
-/** Who sent a broadcast message. */
+/**
+ * Who sent a broadcast message.
+ *
+ * @experimental May change in a minor release; see API.md.
+ */
 export interface TopicSender {
   /** The sending socket's client id: one per open client. */
   clientId: string;

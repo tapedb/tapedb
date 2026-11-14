@@ -63,6 +63,8 @@ export interface DefineTapeDBOptions {
    * Broadcast topics. `authorize` decides whether a caller may join a topic
    * or send to it; without it any member of the workspace may, as with
    * presence.
+   *
+   * @experimental May change in a minor release; see API.md.
    */
   topics?: { authorize?: TopicAuthorizer };
   /**
@@ -403,17 +405,13 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   return { WorkspaceRoom, worker };
 }
 
-export {
-  authenticateEngineRequest,
-  ClaimError,
-  encodeTrustedRoleClaim,
-  extractClaimToken,
-  TRUSTED_CLAIM_HEADER,
-  verifyRoleClaim,
-};
-export { mintClaim, mintDevClaim, signRoleClaim } from "../mint";
-export type { ClaimIdentity, MintClaimDependencies } from "../mint";
+// The public surface of `tapedb/worker`; see API.md. Everything else in this
+// module (trusted-claim plumbing, dev claims, the room class itself) is
+// internal: the Durable Object class reaches the Worker as
+// `defineTapeDB(...).WorkspaceRoom`.
+export { ClaimError, verifyRoleClaim };
+export { signRoleClaim } from "../mint";
+export type { ClaimIdentity } from "../mint";
 export type { TopicAction, TopicAuthorizer } from "../engine/topics";
-export { WorkspaceRoom };
 export { WORKSPACE_ROLE_LEVELS };
 export type { Env };
