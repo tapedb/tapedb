@@ -15,7 +15,16 @@ export interface ClaimRouteEnv {
   TAPEDB_CLAIM_ISSUER?: string;
   TAPEDB_CLAIM_AUDIENCE?: string;
   TAPEDB_DEV_CLAIMS?: string;
+  /**
+   * When set, the development route mints only for requests that carry it in
+   * `x-tapedb-dev-token`. For a deployed test Worker reachable by anyone:
+   * without it, the route hands an owner claim for any workspace to anyone.
+   */
+  TAPEDB_DEV_CLAIMS_TOKEN?: string;
 }
+
+/** Header a gated development route expects TAPEDB_DEV_CLAIMS_TOKEN in. */
+export const DEV_TOKEN_HEADER = "x-tapedb-dev-token";
 
 export interface ClaimRouteOptions {
   env: ClaimRouteEnv;
@@ -31,6 +40,10 @@ export interface ClaimRouteOptions {
  *   2. the deployment opted in (`TAPEDB_DEV_CLAIMS=true`), and
  *   3. `ENVIRONMENT` is not `production`.
  *
+ * With `TAPEDB_DEV_CLAIMS_TOKEN` set, the request must also carry that token
+ * (compared in constant time); without it the route answers 401 and mints
+ * nothing.
+ *
  * The env-var condition is the one that makes a plain `wrangler deploy` safe:
  * `tapedb dev` passes the var on the command line, so a deployed Worker never
  * has it, even if `ENVIRONMENT` is left at the generated default.
@@ -44,6 +57,11 @@ export async function handleClaimRequest(
   const devEnabled = devClaims && env.TAPEDB_DEV_CLAIMS === "true";
 
   if (devEnabled && !isProduction) {
+    const required = env.TAPEDB_DEV_CLAIMS_TOKEN;
+    if (required && !sameToken(request.headers.get(DEV_TOKEN_HEADER) ?? "", required)) {
+      await discardBody(request);
+      return apiError(401, "dev_token_required", `This development claim route needs the ${DEV_TOKEN_HEADER} header.`);
+    }
     if (request.method !== "POST") {
       await discardBody(request);
       return apiError(405, "method_not_allowed", "Use POST.");
@@ -88,4 +106,13 @@ export async function handleClaimRequest(
     issuer: env.TAPEDB_CLAIM_ISSUER,
     audience: env.TAPEDB_CLAIM_AUDIENCE,
   });
+}
+
+/** Constant-time comparison, so the token cannot be guessed byte by byte from timing. */
+function sameToken(given: string, expected: string): boolean {
+  const a = new TextEncoder().encode(given);
+  const b = new TextEncoder().encode(expected);
+  let diff = a.length ^ b.length;
+  for (let i = 0; i < b.length; i += 1) diff |= (a[i] ?? 0) ^ b[i];
+  return diff === 0;
 }

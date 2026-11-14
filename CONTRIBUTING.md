@@ -69,7 +69,7 @@ Object's (32,766 bound parameters against 100, expression depth 1000 against
 ```bash
 node scripts/e2e.mjs                    # pack, fresh project, tapedb dev, every scenario + drills
 node scripts/e2e.mjs --only select,bulk
-node scripts/e2e.mjs --url https://<staging worker>   # a deployed Worker with dev claims on
+TAPEDB_DEV_CLAIMS_TOKEN=<token> node scripts/e2e.mjs --url https://<staging worker>   # a deployed Worker with gated dev claims
 ```
 
 It packs this checkout, installs the tarball and wrangler into an empty

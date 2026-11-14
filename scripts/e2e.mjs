@@ -25,7 +25,10 @@ import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+
+// Before useDevToken adds the run's token to claim requests.
+const plainFetch = globalThis.fetch;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const suite = join(root, "scripts", "e2e");
@@ -203,6 +206,15 @@ async function waitForClaimSecret(url) {
     streak = status === 200 ? streak + 1 : 0;
     await sleep(1000);
   }
+  // And the route refuses anyone without the token, on the live Worker.
+  if (process.env.TAPEDB_DEV_CLAIMS_TOKEN) {
+    for (const headers of [{}, { "x-tapedb-dev-token": "guess" }]) {
+      const refused = await plainFetch(`${url}/_tapedb/claim`, { method: "POST", headers: { "content-type": "application/json", ...headers }, body: JSON.stringify({ workspaceId: probe }) });
+      const body = await refused.json().catch(() => null);
+      if (refused.status !== 401 || body?.token) throw new Error(`${url}/_tapedb/claim answered ${refused.status} without the dev token`);
+    }
+    console.log("  dev claim route refuses requests without this run's token");
+  }
 }
 
 let stagingConfig = null;
@@ -229,7 +241,9 @@ async function deployStaging(name) {
   const config = JSON.parse(readFileSync(join(project, "wrangler.jsonc"), "utf8").replace(/^\s*\/\/.*$/gm, ""));
   config.migrations = migrationsFrom(await currentMigrationTag(name));
   config.name = name;
-  config.vars = { ENVIRONMENT: "staging", TAPEDB_DEV_CLAIMS: "true", ...(jurisdiction ? { TAPEDB_JURISDICTION: jurisdiction } : {}) };
+  // TAPEDB_DEV_CLAIMS is not a var: it is set as a secret after the token
+  // that gates it, so the deployed Worker never has an open claim route.
+  config.vars = { ENVIRONMENT: "staging", ...(jurisdiction ? { TAPEDB_JURISDICTION: jurisdiction } : {}) };
   if (domain) {
     // A Workers custom domain: Cloudflare creates the DNS record and certificate.
     config.routes = [{ pattern: domain, custom_domain: true }];
@@ -254,9 +268,15 @@ async function deployStaging(name) {
 
   // The claim secret init generated for this project, shared with the load test.
   const secret = /^TAPEDB_CLAIM_SECRET=(.*)$/m.exec(readFileSync(join(project, ".dev.vars"), "utf8"))?.[1];
-  const put = wrangler(["secret", "put", "TAPEDB_CLAIM_SECRET"], `${secret}\n`);
-  if (!put.ok) throw new Error(`setting TAPEDB_CLAIM_SECRET failed:\n${put.output}`);
+  // A deployed test Worker is reachable by anyone, so its dev claim route
+  // mints only for this run's token: set it first, then turn the route on.
+  const devToken = `${randomUUID()}${randomUUID()}`.replaceAll("-", "");
+  for (const [secretName, value] of [["TAPEDB_CLAIM_SECRET", secret], ["TAPEDB_DEV_CLAIMS_TOKEN", devToken], ["TAPEDB_DEV_CLAIMS", "true"]]) {
+    const put = wrangler(["secret", "put", secretName], `${value}\n`);
+    if (!put.ok) throw new Error(`setting ${secretName} failed:\n${put.output}`);
+  }
   process.env.TAPEDB_CLAIM_SECRET = secret;
+  await useDevToken(devToken);
 
   // A new version takes a few seconds to answer everywhere; a new custom
   // domain also waits on its certificate.
@@ -266,6 +286,32 @@ async function deployStaging(name) {
   stagingConfig = config;
   stagingUrl = url;
   return url;
+}
+
+/**
+ * Sends the run's dev token with every request to the claim route, from this
+ * process and (through a preload) from every scenario and CLI it starts.
+ */
+async function useDevToken(token) {
+  const preload = join(project, "dev-token-preload.mjs");
+  writeFileSync(
+    preload,
+    `const token = process.env.TAPEDB_DEV_CLAIMS_TOKEN;
+if (token) {
+  const original = globalThis.fetch;
+  globalThis.fetch = (input, init = {}) => {
+    const url = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+    if (!url.includes("/_tapedb/claim")) return original(input, init);
+    const headers = new Headers(init.headers ?? (input instanceof Request ? input.headers : undefined));
+    headers.set("x-tapedb-dev-token", token);
+    return original(input, { ...init, headers });
+  };
+}
+`
+  );
+  process.env.TAPEDB_DEV_CLAIMS_TOKEN = token;
+  process.env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ""} --import=${pathToFileURL(preload).href}`.trim();
+  await import(pathToFileURL(preload).href);
 }
 
 /** Redeploys staging as the project now stands (after a migration). */
@@ -489,6 +535,9 @@ try {
     base = remote = await deployStaging(deployName);
   } else if (!remote) {
     await startDev();
+  } else if (process.env.TAPEDB_DEV_CLAIMS_TOKEN) {
+    // A Worker deployed with a gated dev claim route.
+    await useDevToken(process.env.TAPEDB_DEV_CLAIMS_TOKEN);
   }
   console.log(`against ${base}`);
   for (const name of scenarios) {
