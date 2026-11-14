@@ -22,7 +22,7 @@
     "offline-first",
     "sync"
   ],
-  "files": ["dist", "README.md", "LICENSE"],
+  "files": ["dist", "README.md", "PRIVACY.md", "LICENSE"],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
