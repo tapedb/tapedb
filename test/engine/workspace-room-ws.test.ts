@@ -100,12 +100,20 @@ interface SqlCursor<T> {
   rowsWritten: number;
 }
 
+/**
+ * Every statement the room ran, for tests that count work. On globalThis:
+ * the module's top-level awaits let the room run before a const here exists.
+ */
+const statementLog = (): string[] =>
+  ((globalThis as { __roomStatements?: string[] }).__roomStatements ??= []);
+
 function createSqlStorage(db: Database) {
   return {
     exec<T extends Record<string, unknown>>(
       query: string,
       ...params: unknown[]
     ): SqlCursor<T> {
+      statementLog().push(query);
       const trimmed = query.trim();
       const lower = trimmed.toLowerCase();
       const isRead =
@@ -182,10 +190,10 @@ class FakeContext {
   }
 }
 
-function claim(role: number): RoleClaim {
+function claim(role: number, sub = "user-1"): RoleClaim {
   const now = Math.floor(Date.now() / 1000);
   return {
-    sub: "user-1",
+    sub,
     workspaceId: WORKSPACE,
     role: role as RoleClaim["role"],
     exp: now + 60,
@@ -230,12 +238,13 @@ describe("WorkspaceRoom live queries", () => {
   });
 
   async function connect(
-    role: number | null = WORKSPACE_ROLE_LEVELS.MEMBER
+    role: number | null = WORKSPACE_ROLE_LEVELS.MEMBER,
+    sub = "user-1"
   ): Promise<FakeWebSocket> {
     const before = context.sockets.length;
     const headers: Record<string, string> = { upgrade: "websocket" };
     if (role !== null) {
-      headers["x-tapedb-claims"] = encodeTrustedRoleClaim(claim(role));
+      headers["x-tapedb-claims"] = encodeTrustedRoleClaim(claim(role, sub));
     }
 
     const response = await room.fetch(
@@ -758,6 +767,70 @@ describe("WorkspaceRoom live queries", () => {
       const socket = await connect();
       room.webSocketClose(socket as unknown as WebSocket, code, "bye");
       expect(socket.closeInfo?.code).toBe(code === 1005 || code === 1006 ? 1000 : code);
+    }
+  });
+
+  test("runs identical subscriptions once per flush, and separately per claim", async () => {
+    const query = { kanbanBoards: { $: { order: { name: "asc" } } } };
+    const first = await connect(WORKSPACE_ROLE_LEVELS.MEMBER);
+    const second = await connect(WORKSPACE_ROLE_LEVELS.MEMBER);
+    const admin = await connect(WORKSPACE_ROLE_LEVELS.ADMIN);
+    for (const socket of [first, second, admin]) {
+      await send(socket, { type: "query:subscribe", id: "boards", query });
+      socket.clear();
+    }
+
+    await transact([{ op: "update", namespace: "kanbanBoards", id: "board1", values: { name: "Renamed" } }], "t1");
+    statementLog().length = 0;
+    await delay(100);
+
+    const reads = statementLog().filter((statement) => /SELECT .* FROM "kanban_boards"/s.test(statement));
+    // The two members share one run; the admin's claim gets its own.
+    expect(reads).toHaveLength(2);
+    for (const socket of [first, second, admin]) {
+      expect(queryMessages(socket)).toEqual([
+        expect.objectContaining({ type: "query:diff", updated: [expect.objectContaining({ name: "Renamed" })] }),
+      ]);
+    }
+  });
+
+  test("shares a run across users unless a row rule reads who they are", async () => {
+    const query = { kanbanBoards: { $: { order: { name: "asc" } } } };
+    const run = async (users: string[]) => {
+      const sockets = [];
+      for (const sub of users) {
+        const socket = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, sub);
+        await send(socket, { type: "query:subscribe", id: "boards", query });
+        socket.clear();
+        sockets.push(socket);
+      }
+      await transact([{ op: "update", namespace: "kanbanBoards", id: "board1", values: { name: `n${Math.random()}` } }], `t${Math.random()}`);
+      statementLog().length = 0;
+      await delay(100);
+      const reads = statementLog().filter((statement) => /SELECT .* FROM "kanban_boards"/s.test(statement)).length;
+      const pushed = sockets.map((socket) => queryMessages(socket));
+      for (const socket of sockets) socket.close();
+      context.sockets.length = 0;
+      return { reads, pushed };
+    };
+
+    // Role rules only: three users, one run, everyone told.
+    const open = await run(["ann", "bob", "cy"]);
+    expect(open.reads).toBe(1);
+    for (const messages of open.pushed) expect(messages).toEqual([expect.objectContaining({ type: "query:diff" })]);
+
+    // A where rule sees the subject: only ann may read the board. One run
+    // each, and nobody else is sent ann's row.
+    const { configurePermissions } = await import("../../src/engine/tx-permissions");
+    configurePermissions({ overrides: { kanbanBoards: { view: { where: ({ sub }) => ({ id: sub === "ann" ? "board1" : "none" }) } } } });
+    try {
+      const ruled = await run(["ann", "bob", "cy"]);
+      expect(ruled.reads).toBe(3);
+      expect(ruled.pushed[0]).toEqual([expect.objectContaining({ type: "query:diff", updated: [expect.objectContaining({ id: "board1" })] })]);
+      expect(ruled.pushed[1]).toEqual([]);
+      expect(ruled.pushed[2]).toEqual([]);
+    } finally {
+      useLegacyFixture();
     }
   });
 

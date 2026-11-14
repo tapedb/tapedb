@@ -233,7 +233,8 @@ async function drills() {
 const scenarios = readdirSync(suite)
   .filter((file) => file.endsWith(".mjs") && file !== "common.mjs")
   .map((file) => file.replace(/\.mjs$/, ""))
-  .filter((name) => only === undefined || only.includes(name))
+  // The load run measures rather than checks, and takes a while: only on request.
+  .filter((name) => (only === undefined ? name !== "load" : only.includes(name)))
   .sort();
 
 let failed = 0;
@@ -243,6 +244,7 @@ try {
   for (const name of scenarios) {
     const result = await scenario(`${name}.mjs`);
     console.log(`${result.ok ? "ok  " : "FAIL"} ${name} (${result.ms} ms)`);
+    if (result.ok && name === "load") console.log(result.output.split("\n").map((line) => `     ${line}`).join("\n"));
     if (!result.ok) {
       failed += 1;
       console.log(result.output.split("\n").map((line) => `     ${line}`).join("\n"));

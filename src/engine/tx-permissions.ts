@@ -141,6 +141,17 @@ function decisionFor(
 }
 
 /**
+ * True when what a caller may read of the namespace depends on who they are,
+ * not only on their role: a function rule or a `where` rule, both of which
+ * see the caller's subject. Role levels and the defaults depend on the role
+ * alone, so two callers with the same role read the same rows.
+ */
+export function viewDependsOnSubject(namespace: string): boolean {
+  const decision = decisionFor(namespace, "view");
+  return typeof decision === "function" || isViewWhereRule(decision);
+}
+
+/**
  * True when the namespace's `view` decision is a function rule, which runs
  * after fetch. A count over such a namespace would include rows the rule
  * hides, so the executor refuses one.
