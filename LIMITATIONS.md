@@ -18,10 +18,6 @@ public release. None of these are claims that the implementation is bug-free.
   of Durable Object point-in-time recovery. Erasure cannot shorten that window.
 - **Jurisdiction is chosen before the first deploy.** Changing it later means
   exporting and moving existing workspaces. Local workerd has no jurisdictions.
-- **Query boundaries.** A function-based read rule cannot be a
-  relation-filter target. `select` and `include` cannot be combined at one
-  level, and deep `create` types follow one level while the engine checks the
-  rest at runtime.
 - **Bulk writes.** Up to 1000 matching rows commit in one transaction; larger
   calls continue in 1000-row transactions. They are neither atomic across
   batches nor queued offline.

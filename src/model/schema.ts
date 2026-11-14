@@ -171,26 +171,28 @@ type RequiredScalarKeys<F> = {
 type OptionalScalarKeys<F> = Exclude<ScalarKeys<F>, RequiredScalarKeys<F>>;
 
 /**
- * Rows a write may create alongside the row it addresses.
- *
- * Typed one level deep, for the same reason relation filters are: resolving
- * the model graph into itself for every key exhausts the type checker on
- * models that point at each other. A `create` nested inside a `create` is
- * accepted here and checked by the engine, which validates every op.
+ * Rows a write may create alongside the row it addresses, typed at every
+ * depth. Relation keys resolve lazily (as property types of a mapped object),
+ * so models that point at each other do not expand the graph up front. The
+ * key that links a nested row to the row creating it is filled in by the
+ * write, so every relation is optional here; the engine still validates
+ * every op.
  */
-type NestedCreate<F> = { id?: string } & {
+type NestedCreate<F, M extends Models> = { id?: string } & {
   [K in RequiredScalarKeys<F>]: InputOf<F[K]>;
 } & {
   [K in OptionalScalarKeys<F>]?: InputOf<F[K]>;
 } & {
-  [K in RelationKeys<F>]?: unknown;
+  [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>;
+} & {
+  [K in HasManyKeys<F>]?: HasManyInput<F[K], M>;
 } & {
   [K in BelongsToKeys<F> as `${K}Id`]?: string | null;
 };
 
 type BelongsToInput<F, M extends Models> =
   | { connect: string }
-  | { create: NestedCreate<TargetFieldsOf<F, M>> }
+  | { create: NestedCreate<TargetFieldsOf<F, M>, M> }
   | { disconnect: true }
   | null;
 
@@ -226,7 +228,7 @@ type HasManyInput<F, M extends Models> = {
   connect?: string[];
   disconnect?: string[];
   /** Rows created with this one, carrying its key. */
-  create?: NestedCreate<TargetFieldsOf<F, M>> | NestedCreate<TargetFieldsOf<F, M>>[];
+  create?: NestedCreate<TargetFieldsOf<F, M>, M> | NestedCreate<TargetFieldsOf<F, M>, M>[];
 };
 
 export type CreateData<F, M extends Models = Models> = { id?: string } & RequiredParents<F> & {
@@ -286,10 +288,10 @@ export type Select<M extends Models, F extends Fields> = {
   [K in RelationKeys<F>]?: boolean | IncludeArgs<M, TargetFields<F[K], M>>;
 };
 
-type Included<M extends Models, S, A> = A extends { select: infer Sel }
+type Included<M extends Models, S, A> = (A extends { select: infer Sel }
   ? Selected<M, TargetFields<S, M>, Sel>
-  : Row<TargetFields<S, M>> &
-      (A extends { include: infer I } ? WithInclude<M, TargetFields<S, M>, I> : unknown);
+  : Row<TargetFields<S, M>>) &
+  (A extends { include: infer I } ? WithInclude<M, TargetFields<S, M>, I> : unknown);
 
 type RelationOutput<M extends Models, S, A> = S extends HasMany
   ? Included<M, S, A>[]

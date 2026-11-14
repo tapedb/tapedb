@@ -81,10 +81,12 @@ export function viewAccess(claim: RoleClaim): ViewAccess {
           ? error.message
           : `Cannot filter on "${namespace}".`;
       }
-      return hasFunctionViewRule(namespace)
-        ? `Cannot filter on "${namespace}" through a link: its read rule is a function, which runs after fetch, so the filter would match rows the rule hides. Use a { where } read rule.`
-        : null;
+      return null;
     },
+    rowRule: (namespace) =>
+      hasFunctionViewRule(namespace)
+        ? (row) => allowRowView(claim, namespace, rowToApi({ namespace, row } as HydratedEntity))
+        : null,
   };
 }
 
