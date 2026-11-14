@@ -137,25 +137,33 @@ async function uploadParts(
     httpMetadata: { contentType: "application/x-ndjson; charset=utf-8" },
   });
   const uploaded: R2UploadedPart[] = [];
-  let buffer: string[] = [];
-  let size = 0;
-  const send = async () => {
-    uploaded.push(await upload.uploadPart(uploaded.length + 1, buffer.join("")));
-    buffer = [];
-    size = 0;
+  // R2 wants every part but the last exactly the same size, so lines are cut
+  // at byte boundaries into MIN_UPLOAD_PART-sized parts, not closed at a line.
+  const encoder = new TextEncoder();
+  const part = new Uint8Array(MIN_UPLOAD_PART);
+  let filled = 0;
+  const send = async (bytes: Uint8Array) => {
+    uploaded.push(await upload.uploadPart(uploaded.length + 1, bytes.slice()));
   };
   try {
     const parts = (function* () {
       yield first;
       yield* storedParts(sql, seq);
     })();
-    for (const part of parts) {
-      const line = `${part}\n`;
-      buffer.push(line);
-      size += line.length;
-      if (size >= MIN_UPLOAD_PART) await send();
+    for (const text of parts) {
+      const line = encoder.encode(`${text}\n`);
+      for (let offset = 0; offset < line.byteLength; ) {
+        const take = Math.min(MIN_UPLOAD_PART - filled, line.byteLength - offset);
+        part.set(line.subarray(offset, offset + take), filled);
+        filled += take;
+        offset += take;
+        if (filled === MIN_UPLOAD_PART) {
+          await send(part);
+          filled = 0;
+        }
+      }
     }
-    if (buffer.length > 0 || uploaded.length === 0) await send();
+    if (filled > 0 || uploaded.length === 0) await send(part.subarray(0, filled));
     await upload.complete(uploaded);
   } catch (error) {
     await upload.abort().catch(() => undefined);

@@ -644,6 +644,35 @@ describe("recoverWorkspace", () => {
     }
   });
 
+  test("uploads a log over 25 MB in equal parts, measured in bytes", async () => {
+    // R2 refuses a multipart upload whose parts (but the last) differ in size.
+    // Multibyte text makes string length and byte length disagree.
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+
+    const name = "é".repeat(15_000) + "x".repeat(7_777);
+    const big = run(source, {
+      txId: "big",
+      ops: Array.from({ length: 800 }, (_, index) => ({
+        op: "update",
+        namespace: "folders",
+        id: `big-${String(index).padStart(4, "0")}`,
+        values: { name: `${index}${name}` },
+      })),
+    });
+    const flushed = await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+    expect(flushed.error).toBeUndefined();
+    expect(bucket.objects.has(logOpsKey(TEST_WORKSPACE, big.seq))).toBe(true);
+    expect((bucket.objects.get(logOpsKey(TEST_WORKSPACE, big.seq)) as { body: Uint8Array }).body.byteLength).toBeGreaterThan(25 * 1024 * 1024);
+    expect(bucket.multipartUploads).toBeGreaterThan(0);
+
+    const target = createSource();
+    await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now: NOW + 20 });
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+  });
+
   test("keeps clientTxId dedupe across a cold start", async () => {
     const source = createSource();
     seedWorkspace(source);
