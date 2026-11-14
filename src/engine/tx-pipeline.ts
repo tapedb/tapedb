@@ -101,8 +101,7 @@ export function runTransaction(
       // retrying later cannot suddenly match newly-created rows.
       const state = sql.one<TxStateRow>(`SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`);
       const seq = tx.clientTxId === undefined ? (state?.high_water_seq ?? 0) : appendLogEntry(sql, {
-        clientTxId: tx.clientTxId, ops: "[]", opsHash: hash,
-        userId: claim.sub, role: claim.role, at: Date.now(),
+        clientTxId: tx.clientTxId, ops: "[]", opsHash: hash, at: Date.now(),
       });
       return { txId: tx.txId, seq, applied: 0, ...matched };
     }
@@ -117,8 +116,6 @@ export function runTransaction(
       clientTxId: tx.clientTxId ?? null,
       ops: stableStringify(expanded.rawOps),
       opsHash: hash,
-      userId: claim.sub,
-      role: claim.role,
       at: now,
     });
 
@@ -133,8 +130,6 @@ export interface LogEntry {
   /** Canonical JSON of the ops, exactly as replay will read them. */
   ops: string;
   opsHash: string;
-  userId: string | null;
-  role: number | null;
   at: number;
 }
 
@@ -176,8 +171,12 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
     entry.clientTxId,
     entry.ops,
     entry.opsHash,
-    entry.userId,
-    entry.role,
+    // Who wrote what is not recorded: nothing reads it (replay does not
+    // re-authorize), so keeping the writer's identity for the retention
+    // period would be personal data without a purpose. The columns stay for
+    // the frozen baseline schema.
+    null,
+    null,
     entry.at,
     readSchemaVersion(sql)
   );

@@ -109,8 +109,6 @@ function commitFileOps(
       clientTxId: null,
       ops: stableStringify(ops),
       opsHash: opsHash(ops),
-      userId: actor.sub,
-      role: actor.role,
       at,
     });
     return applyFileOps(sql, ops, at);

@@ -10,7 +10,7 @@ processor. This page describes tapedb's behaviour; it is not legal advice.
 | Where | What | How long |
 | --- | --- | --- |
 | Durable Object SQLite, one per workspace | Your models' rows | Until deleted |
-| | `_tx_log`: each write's operations (with values), the writer's claim `sub` and role, and the time | Covered rows deleted once older than half the retention (15 days by default) |
+| | `_tx_log`: each write's operations (with values) and the time. Who made the write is not recorded | Covered rows deleted once older than half the retention (15 days by default) |
 | | `_tx_receipts`: client transaction id, sequence, a hash of the operations, and the time | Half the retention (15 days by default) |
 | | `_files`: path, size and content type of each upload | Until the file is deleted |
 | R2 `DATA` bucket | Log segments (the `_tx_log` lines), snapshots of every table, a manifest | Superseded copies deleted within the retention (30 days by default) |
@@ -23,8 +23,10 @@ Claim tokens are never put in a URL. HTTP requests carry them in
 `Authorization`, and WebSocket upgrades in `Sec-WebSocket-Protocol`. If you
 turn on request-header logging in Cloudflare, exclude those two headers.
 
-Use an opaque user id as the claim's `sub`, not an email address: it is
-recorded with every write for the retention period.
+tapedb does not record who made each write: nothing in the engine reads it.
+If your app needs an audit trail, keep it in your own model, where it is
+covered by your read rules, export and erasure like any other data. Use an
+opaque user id as the claim's `sub` either way, not an email address.
 
 ## Retention
 
@@ -60,9 +62,8 @@ history within the retention.
 
 **Erasure of a person (Art. 17).** Delete or overwrite the rows about them,
 and delete their files with `db.$files.delete(path)`, which removes the bytes
-from R2 at once. The deleted values, and the person's `sub` on the writes
-they made, leave the history within the retention, and Cloudflare's
-point-in-time recovery within 30 days. Tell the person about that window.
+from R2 at once. The deleted values leave the history within the
+retention, and Cloudflare's point-in-time recovery within 30 days. Tell the person about that window.
 
 **Erasure of a workspace (a whole tenant).** `tapedb erase --workspace <id>
 --confirm <id>`, or `DELETE /engine/workspaces/:id` with an owner's claim,
