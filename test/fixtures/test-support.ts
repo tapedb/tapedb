@@ -196,6 +196,35 @@ export class FakeR2Bucket {
     return this.objectFor(key);
   }
 
+  /** Like R2: parts are joined in part-number order on complete; nothing is visible before. */
+  async createMultipartUpload(key: string, options?: { httpMetadata?: { contentType?: string } }) {
+    if (this.failPuts) throw new Error("R2 write failed.");
+    const parts = new Map<number, Uint8Array>();
+    this.multipartUploads += 1;
+    return {
+      uploadPart: async (partNumber: number, value: unknown) => {
+        if (this.failPuts) throw new Error("R2 write failed.");
+        parts.set(partNumber, await toBytes(value));
+        return { partNumber, etag: `part-${partNumber}` };
+      },
+      complete: async (uploaded: Array<{ partNumber: number }>) => {
+        const chunks = uploaded.map((part) => parts.get(part.partNumber)!);
+        const body = new Uint8Array(chunks.reduce((total, chunk) => total + chunk.byteLength, 0));
+        let offset = 0;
+        for (const chunk of chunks) {
+          body.set(chunk, offset);
+          offset += chunk.byteLength;
+        }
+        this.objects.set(key, { body, etag: this.nextEtag(), contentType: options?.httpMetadata?.contentType, uploaded: this.clock });
+        this.puts.push({ key, options });
+        return this.objectFor(key);
+      },
+      abort: async () => undefined,
+    };
+  }
+
+  multipartUploads = 0;
+
   async get(key: string): Promise<unknown> {
     const stored = this.objects.get(key);
     if (!stored) return null;
@@ -204,6 +233,9 @@ export class FakeR2Bucket {
       json: async () =>
         JSON.parse(new TextDecoder().decode(stored.body)) as unknown,
       text: async () => new TextDecoder().decode(stored.body),
+      get body() {
+        return new Blob([stored.body]).stream();
+      },
       arrayBuffer: async () => stored.body.slice().buffer,
     };
   }

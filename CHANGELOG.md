@@ -14,8 +14,28 @@ published.
 - Release gates and a documented list of product limitations.
 - `homepage`, `packageManager` and provenance publishing metadata.
 
+### Fixed
+
+- The durability pass flushed one ~1 MB log segment per alarm, every 30
+  seconds, so a workspace writing faster than that fell further behind R2
+  with every write and could lose its newest writes in a wipe. A pass now
+  drains the backlog (up to 20 seconds), and a failed flush is logged as
+  `workspace_flush_failed` instead of being retried silently.
+- The scratch table that staged queries use is recreated after an erase or a
+  recovery reset, which drop every table while the room keeps running.
+
 ### Changed
 
+- **Breaking:** `updateMany` and `deleteMany` write every matching row in one
+  transaction, however many match: they commit whole or not at all. Before,
+  past 1000 rows they committed in separate 1000-row transactions and a
+  failure left the earlier batches written. `BulkWriteError` is gone; a failed
+  bulk write rejects like any write. The filter is resolved once, before the
+  write; rows are checked, applied and logged a chunk at a time, and the log
+  stores them compactly (ids and values once), in parts when an entry is
+  larger than a Durable Object row holds, flushed to R2 as their own object.
+- Any transaction, not only a bulk write, can be larger than one Durable
+  Object row: its log entry is stored in parts.
 - A model whose read rule is a function can be the target of a relation
   filter: the linked rows are read, the rule applied, and only the rows it
   shows count. Before, such a filter was refused.

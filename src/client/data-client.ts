@@ -151,26 +151,6 @@ export class ServerError extends Error {
   }
 }
 
-/**
- * A bulk write that failed after some of its batches committed. `written`
- * rows are already changed; `cause` is the error that stopped the next batch.
- * Rerunning the same filter continues where it stopped.
- */
-export class BulkWriteError extends Error {
-  readonly code: string;
-
-  constructor(
-    readonly written: number,
-    readonly cause: unknown
-  ) {
-    super(
-      `tapedb: bulk write stopped after ${written} rows: ${cause instanceof Error ? cause.message : String(cause)}`
-    );
-    this.name = "BulkWriteError";
-    this.code = isServerError(cause) ? cause.code : "bulk_write_failed";
-  }
-}
-
 function isServerError(error: unknown): error is ServerError {
   return error instanceof ServerError;
 }
@@ -463,47 +443,22 @@ class DataClientImpl {
 
   /**
    * A bulk write: sent straight to the engine, which resolves the rows it
-   * matches. Not optimistic and not queued — the cache cannot know what the
-   * filter matches, and an offline queue would replay it against a different
-   * database than the one the caller was looking at.
-   *
-   * The engine writes one batch of rows per transaction, in id order, and
-   * returns a cursor while rows remain; this sends batch after batch until
-   * none do. A failure stops at a batch boundary: the batches before it are
-   * committed, and the error says how many rows they wrote.
+   * matches and writes them all in one transaction, however many there are.
+   * It either commits whole or not at all.
    */
   async bulk(op: TxOp): Promise<{ count: number }> {
     const problem = this.configProblem();
     if (problem) throw new Error(problem);
-
-    let count = 0;
-    let after: string | undefined;
-    for (;;) {
-      const entry: OutboxEntry = {
-        clientTxId: id(),
-        txId: id(),
-        workspaceId: this.config.workspaceId,
-        ops: [after === undefined ? op : ({ ...op, after } as TxOp)],
-        createdAt: this.now(),
-      };
-      let result: Awaited<ReturnType<DataClientImpl["sendTransaction"]>>;
-      try {
-        result = await this.sendTransaction(entry);
-      } catch (error) {
-        if (count === 0) throw error;
-        throw new BulkWriteError(count, error);
-      }
-      // Live queries refresh through the engine's invalidation; a one-shot
-      // read after this call sees the new rows because it goes to the engine.
-      count += result?.matched?.[0] ?? 0;
-      const next = result?.more?.[0];
-      if (typeof next !== "string") return { count };
-      // Ids only grow along the batches; a cursor that does not would loop.
-      if (after !== undefined && next <= after) {
-        throw new BulkWriteError(count, new Error(`The engine returned a cursor (${next}) that does not advance.`));
-      }
-      after = next;
-    }
+    const result = await this.sendTransaction({
+      clientTxId: id(),
+      txId: id(),
+      workspaceId: this.config.workspaceId,
+      ops: [op],
+      createdAt: this.now(),
+    });
+    // Live queries refresh through the engine's invalidation; a one-shot read
+    // after this call sees the new rows because it goes to the engine.
+    return { count: result?.matched?.[0] ?? 0 };
   }
 
   /**

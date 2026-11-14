@@ -22,6 +22,7 @@ import {
   type SchemaChange,
 } from "../schema-evolution";
 import {
+  logOpsKey,
   manifestKey,
   readManifest,
   workspacePrefix,
@@ -40,6 +41,7 @@ import {
 } from "../registry";
 import { applyOps, quoteIdentifier } from "../tx-apply";
 import { opsHash, stableStringify } from "../tx-hash";
+import { expandLogOps } from "../tx-log";
 import type {
   SqlExecutor as TxSqlExecutor,
   SqlRow as TxSqlRow,
@@ -96,6 +98,8 @@ interface LogLine {
   /** The idempotency key. Present when the client supplied one. */
   clientTxId?: string;
   schemaVersion?: string;
+  /** Present when the entry's ops are in their own object, in this many parts. */
+  opsParts?: number;
 }
 
 interface LogSegmentRef {
@@ -709,7 +713,9 @@ function parseLogLines(text: string, source: string): LogLine[] {
         `Log line in ${source} at line ${index + 1} has an invalid timestamp.`
       );
     }
-    if (!Array.isArray(ops) || (ops.length === 0 && !(typeof parsed.clientTxId === "string" && parsed.clientTxId.length > 0 && typeof parsed.opsHash === "string" && parsed.opsHash.length > 0))) {
+    const opsParts = parsed.opsParts;
+    const inParts = typeof opsParts === "number" && Number.isSafeInteger(opsParts) && opsParts > 0;
+    if (!Array.isArray(ops) || (ops.length === 0 && !inParts && !(typeof parsed.clientTxId === "string" && parsed.clientTxId.length > 0 && typeof parsed.opsHash === "string" && parsed.opsHash.length > 0))) {
       throw new Error(`Log line in ${source} at line ${index + 1} has no ops.`);
     }
 
@@ -732,6 +738,7 @@ function parseLogLines(text: string, source: string): LogLine[] {
         : {}),
       schemaVersion:
         typeof schemaVersion === "string" ? schemaVersion : "unknown",
+      ...(inParts ? { opsParts: opsParts as number } : {}),
     });
   }
 
@@ -819,7 +826,7 @@ function replayLine(
     return true;
   }
 
-  const ops = evolveOps(line.ops, changesAfter(line.schemaVersion));
+  const ops = evolveOps(expandLogOps(line.ops), changesAfter(line.schemaVersion));
   // Receipts survive even when a migration removed every referenced model.
   if (ops.length === 0) {
     recordReplayedLine(sql, line);
@@ -930,8 +937,11 @@ async function replayLogs(
 
     const lines = parseLogLines(await object.text(), segment.key);
 
-    sql.transactionSync(() => {
-      for (const line of lines) {
+    let pending: LogLine[] = [];
+    const applyPending = () => sql.transactionSync(() => {
+      const batch = pending;
+      pending = [];
+      for (const line of batch) {
         // The snapshot already reflects everything at or below its base, so
         // those ops must not be applied again (a delete-then-insert history
         // would resurrect rows the snapshot correctly omits). Their
@@ -953,9 +963,74 @@ async function replayLogs(
         else if (replayLine(sql, txSql, line)) replayed += 1;
       }
     });
+
+    for (const line of lines) {
+      if (line.opsParts === undefined) {
+        pending.push(line);
+        continue;
+      }
+      applyPending();
+      if (await replayParts(bucket, sql, txSql, workspaceId, line, baseSeq)) replayed += 1;
+      if (line.seq > baseSeq) maxSeq = Math.max(maxSeq, line.seq);
+    }
+    applyPending();
   }
 
   return { replayed, maxSeq };
+}
+
+/**
+ * Replays an entry whose ops are in their own object, a part at a time: each
+ * part is read from the stream, recorded in the local log (part 0 in the log
+ * row, the rest in `_tx_log_parts`) and, above the snapshot base, applied, in
+ * its own transaction. Applying a row is idempotent, so a recovery cut off
+ * between parts finishes them on the next attempt.
+ */
+async function replayParts(
+  bucket: R2Bucket,
+  sql: RecoverySqlExecutor,
+  txSql: TxSqlExecutor,
+  workspaceId: string,
+  line: LogLine,
+  baseSeq: number
+): Promise<boolean> {
+  const object = await bucket.get(logOpsKey(workspaceId, line.seq));
+  if (!object) throw new Error(`The ops of log entry ${line.seq} are missing from R2.`);
+  let part = 0;
+  let applied = false;
+  for await (const text of objectLines(object)) {
+    const ops = JSON.parse(text) as unknown[];
+    const current = part;
+    sql.transactionSync(() => {
+      if (current === 0) recordReplayedLine(sql, { ...line, ops });
+      else sql.exec(`INSERT OR IGNORE INTO "_tx_log_parts" (seq, part, ops) VALUES (?, ?, ?)`, line.seq, current, text);
+      if (line.seq > baseSeq && ops.length > 0 && replayLine(sql, txSql, { ...line, ops })) applied = true;
+    });
+    part += 1;
+  }
+  if (part !== line.opsParts) {
+    throw new Error(`Log entry ${line.seq} has ${part} parts in R2; its segment says ${line.opsParts}.`);
+  }
+  return applied;
+}
+
+/** An object's lines, read from its body stream without holding it whole. */
+async function* objectLines(object: R2ObjectBody): AsyncGenerator<string> {
+  const reader = object.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffered = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffered += value;
+    let newline = buffered.indexOf("\n");
+    while (newline !== -1) {
+      const lineText = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      if (lineText.length > 0) yield lineText;
+      newline = buffered.indexOf("\n");
+    }
+  }
+  if (buffered.length > 0) yield buffered;
 }
 
 function writeFinalState(
@@ -1062,6 +1137,7 @@ export async function recoverWorkspace(
     // `_tx_log` from the durable segments, so a row here belongs to a database
     // that is about to be replaced.
     sql.exec(`DELETE FROM "_tx_log"`);
+    sql.exec(`DELETE FROM "_tx_log_parts"`);
     sql.exec(`DELETE FROM "_tx_receipts"`);
 
     // Foreign keys are disabled for the restore so chunk order cannot break

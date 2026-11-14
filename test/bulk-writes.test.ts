@@ -10,12 +10,12 @@
  */
 
 import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { MemoryOutbox } from "../src/client/outbox";
-import { BulkWriteError } from "../src/client/data-client";
 import { BULK_BATCH_ROWS } from "../src/engine/tx-bulk";
+import { setLogPartBytesForTests } from "../src/engine/tx-log";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { executeQueryWithPageInfo } from "../src/engine/query-execute";
 import { configureRegistry } from "../src/engine/registry";
@@ -107,9 +107,11 @@ function seed(count: number, owner = (index: number) => (index % 2 === 0 ? "alic
   });
 }
 
+/** A log entry's ops, every part, as stored (compact bulk ops unexpanded). */
 function logged(seq: number): Array<Record<string, unknown>> {
   const row = db.query(`SELECT ops FROM "_tx_log" WHERE seq = ?`).get(seq) as { ops: string };
-  return JSON.parse(row.ops) as Array<Record<string, unknown>>;
+  const parts = db.query(`SELECT ops FROM "_tx_log_parts" WHERE seq = ? ORDER BY part`).all(seq) as Array<{ ops: string }>;
+  return [row.ops, ...parts.map((part) => part.ops)].flatMap((text) => JSON.parse(text) as Array<Record<string, unknown>>);
 }
 
 beforeEach(() => build());
@@ -128,11 +130,9 @@ describe("updateMany", () => {
 
     // A replay must change the same rows as the original. Re-running the
     // filter later cannot promise that, so the filter is not what is stored.
+    // Compactly: the ids, and the values once.
     const ops = logged(2);
-    expect(ops).toEqual([
-      { op: "patch", namespace: "task", id: "t0000", values: { done: true } },
-      { op: "patch", namespace: "task", id: "t0002", values: { done: true } },
-    ]);
+    expect(ops).toEqual([{ op: "patchIds", namespace: "task", ids: ["t0000", "t0002"], values: { done: true } }]);
     expect(JSON.stringify(ops)).not.toContain("ownerId");
   });
 
@@ -156,7 +156,7 @@ describe("deleteMany", () => {
     seed(6);
     expect(await client().task.deleteMany({ where: { ownerId: "bob" } })).toEqual({ count: 3 });
     expect(db.query(`SELECT COUNT(*) AS n FROM "task"`).get()).toEqual({ n: 3 });
-    expect(logged(2).every((op) => op.op === "delete")).toBe(true);
+    expect(logged(2)).toEqual([{ op: "deleteIds", namespace: "task", ids: ["t0001", "t0003", "t0005"] }]);
   });
 
   test("an empty filter matches everything the caller can read", async () => {
@@ -226,29 +226,24 @@ describe("filters through a relation", () => {
   });
 });
 
-describe("batching", () => {
+describe("any size, one transaction", () => {
   const count = (where = "1 = 1") =>
     (db.query(`SELECT COUNT(*) AS n FROM "task" WHERE ${where}`).get() as { n: number }).n;
-  const batches = () =>
-    (db.query(`SELECT COUNT(*) AS n FROM "_tx_log" WHERE ops LIKE '%"patch"%' OR ops LIKE '%"delete"%'`).get() as { n: number }).n;
+  const writes = () =>
+    (db.query(`SELECT COUNT(*) AS n FROM "_tx_log" WHERE ops LIKE '%Ids"%'`).get() as { n: number }).n;
+  afterEach(() => setLogPartBytesForTests(null));
 
-  test("up to one batch is one transaction", async () => {
-    seed(BULK_BATCH_ROWS, () => "alice");
-    expect(await client().task.updateMany({ where: {}, data: { done: true } })).toEqual({ count: BULK_BATCH_ROWS });
-    expect(batches()).toBe(1);
-  });
-
-  test("more rows are written in batches, every row exactly once", async () => {
+  test("thousands of rows are one transaction, every row exactly once", async () => {
     const total = BULK_BATCH_ROWS * 2 + 500;
     seed(total, () => "alice");
 
-    // The patch leaves every row matching the filter: resuming by id is what
-    // stops the second batch from writing the first one's rows again.
+    // The patch leaves every row matching the filter; the filter is resolved
+    // once, before anything is written, so no row is written twice.
     expect(await client().task.updateMany({ where: { ownerId: "alice" }, data: { weight: 7 } })).toEqual({ count: total });
     expect(count(`"weight" = 7`)).toBe(total);
-    expect(batches()).toBe(3);
-    const writes = db.query(`SELECT ops FROM "_tx_log" WHERE ops LIKE '%"patch"%'`).all() as Array<{ ops: string }>;
-    const ids = writes.flatMap((row) => (JSON.parse(row.ops) as Array<{ id: string }>).map((op) => op.id));
+    expect(writes()).toBe(1);
+    const ids = logged(2).flatMap((op) => op.ids as string[]);
+    expect(ids.length).toBe(total);
     expect(new Set(ids).size).toBe(total);
 
     // The patch takes rows out of the filter.
@@ -259,45 +254,75 @@ describe("batching", () => {
     expect(count()).toBe(0);
   });
 
-  test("a function read rule is applied across batches", async () => {
+  test("a function read rule is applied to every row", async () => {
     build({ task: { view: ({ auth, data }) => data?.ownerId === auth.sub } });
     seed(BULK_BATCH_ROWS * 3, (index) => (index % 3 === 0 ? "bob" : "alice"));
     expect(await client("alice").task.updateMany({ where: {}, data: { done: true } })).toEqual({ count: BULK_BATCH_ROWS * 2 });
     expect(count(`"done" = 1 AND "owner_id" = 'bob'`)).toBe(0);
   });
 
-  test("a failed batch stops the write and reports what committed", async () => {
-    // The row rule refuses one row in the second batch.
-    build({ task: { update: ({ data }) => data?.title !== "task 1500" } });
-    seed(BULK_BATCH_ROWS * 2, () => "alice");
+  test("one refused row anywhere rolls the whole write back", async () => {
+    // The row rule refuses one row far past the first thousand.
+    build({ task: { update: ({ data }) => data?.title !== "task 2400" } });
+    seed(BULK_BATCH_ROWS * 3, () => "alice");
 
     const error = await client().task.updateMany({ where: {}, data: { done: true } }).catch((caught) => caught);
-    expect(error).toBeInstanceOf(BulkWriteError);
-    expect(error).toMatchObject({ written: BULK_BATCH_ROWS, code: "permission_denied" });
-    expect(count(`"done" = 1`)).toBe(BULK_BATCH_ROWS);
+    expect(error).toMatchObject({ code: "permission_denied" });
+    expect(count(`"done" = 1`)).toBe(0);
+    expect(writes()).toBe(0);
   });
 
-  test("the engine returns a cursor instead of refusing", () => {
+  test("the engine writes it all at once and returns no cursor", () => {
     seed(BULK_BATCH_ROWS + 1, () => "alice");
     const claim = claimFor("alice", WORKSPACE_ROLE_LEVELS.MODERATOR);
-    const first = runTransaction(sql, WORKSPACE, claim, {
+    const result = runTransaction(sql, WORKSPACE, claim, {
       txId: "b1",
       ops: [{ op: "patchMany", namespace: "task", where: {}, values: { done: true } }],
     });
-    expect(first.matched).toEqual({ 0: BULK_BATCH_ROWS });
-    expect(first.more).toEqual({ 0: `t${String(BULK_BATCH_ROWS - 1).padStart(4, "0")}` });
-
-    const second = runTransaction(sql, WORKSPACE, claim, {
+    expect(result.matched).toEqual({ 0: BULK_BATCH_ROWS + 1 });
+    expect(result.more).toBeUndefined();
+    expect(count(`"done" = 1`)).toBe(BULK_BATCH_ROWS + 1);
+    // An older client's cursor still resumes, and a bad one is still refused.
+    const resumed = runTransaction(sql, WORKSPACE, claim, {
       txId: "b2",
-      ops: [{ op: "patchMany", namespace: "task", where: {}, values: { done: true }, after: first.more![0] }],
+      ops: [{ op: "deleteMany", namespace: "task", where: {}, after: "t0999" }],
     });
-    expect(second.matched).toEqual({ 0: 1 });
-    expect(second.more).toBeUndefined();
+    expect(resumed.matched).toEqual({ 0: 1 });
     expect(() =>
       runTransaction(sql, WORKSPACE, claim, {
         txId: "b3",
         ops: [{ op: "deleteMany", namespace: "task", where: {}, after: "not an id!" }],
       })
-    ).toThrow(/"after" must be a row id/);
+    ).toThrow();
+  });
+
+  test("a log entry larger than a row is stored in parts", async () => {
+    // A part holds at least one whole op; one op here (1000 short ids) is about 9 KB.
+    setLogPartBytesForTests(20_000);
+    seed(BULK_BATCH_ROWS * 3, () => "alice");
+    await client().task.updateMany({ where: {}, data: { done: true } });
+    const parts = (db.query(`SELECT COUNT(*) AS n FROM "_tx_log_parts" WHERE seq = 2`).get() as { n: number }).n;
+    expect(parts).toBeGreaterThan(0);
+    for (const row of db.query(`SELECT ops FROM "_tx_log" UNION ALL SELECT ops FROM "_tx_log_parts"`).all() as Array<{ ops: string }>) {
+      expect(row.ops.length).toBeLessThanOrEqual(20_000);
+    }
+    const ids = logged(2).flatMap((op) => op.ids as string[]);
+    expect(new Set(ids).size).toBe(BULK_BATCH_ROWS * 3);
+  });
+
+  test("a create and a bulk write in one transaction: the filter sees the database before it", () => {
+    seed(3, () => "alice");
+    const claim = claimFor("alice", WORKSPACE_ROLE_LEVELS.MODERATOR);
+    const result = runTransaction(sql, WORKSPACE, claim, {
+      txId: "mix",
+      ops: [
+        { op: "insert", namespace: "task", id: "t9999", values: { title: "new", done: false, ownerId: "alice" } },
+        { op: "patchMany", namespace: "task", where: {}, values: { weight: 3 } },
+      ],
+    });
+    expect(result.matched).toEqual({ 1: 3 });
+    expect(count(`"weight" = 3`)).toBe(3);
+    expect(count(`"id" = 't9999' AND "weight" = 3`)).toBe(0);
   });
 });
+

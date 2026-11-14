@@ -268,13 +268,14 @@ changed, and re-running a filter later cannot promise that. A bulk write
 reaches only rows the caller may read, and still runs the row rules for
 `update` and `delete` on each one.
 
-Up to 1000 matching rows commit as one transaction. Beyond that the client
-writes batches of 1000 in id order, each its own transaction, until the filter
-is exhausted; `count` is the total. If a batch fails, `BulkWriteError.written`
-says how many rows the earlier batches changed, and running the same call
-again carries on with what still matches. Unlike single-row
-writes it is not applied optimistically and not queued offline: which rows
-match is the engine's answer, not the cache's.
+Every matching row is written in one transaction, however many match: the
+write commits whole or not at all, and one row refused by a rule rolls it all
+back. The engine resolves the filter once, against the database before the
+write, then checks, applies and logs the rows a chunk at a time, so memory
+stays flat however large the write is; a log entry larger than a Durable
+Object row holds is stored in parts. Unlike single-row writes it is not applied
+optimistically and not queued offline: which rows match is the engine's answer,
+not the cache's.
 
 ## Access rules
 

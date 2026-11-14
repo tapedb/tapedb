@@ -55,6 +55,22 @@ describe("durabilityTick", () => {
     });
   });
 
+  test("one pass drains a backlog larger than a segment, instead of one segment per pass", async () => {
+    const { sql } = openTestDb();
+    // Each entry is ~200 KB, so a 1 MB segment holds about five of them.
+    const big = Array.from({ length: 1500 }, (_, index) => ({ op: "update", namespace: "folders", id: `f${index}`, values: { name: "x".repeat(120) } }));
+    for (let seq = 1; seq <= 40; seq += 1) insertTxLog(sql, { seq, ops: big });
+    setHighWater(sql, 40);
+
+    const bucket = new FakeR2Bucket();
+    const result = await durabilityTick(bucket, sql, TEST_WORKSPACE, 5000);
+
+    expect(result.flushed).toBe(true);
+    expect(readFlushState(sql).lastSeq).toBe(40);
+    const segments = [...bucket.objects.keys()].filter((key) => /\/log\/\d+-\d+\.ndjson$/.test(key));
+    expect(segments.length).toBeGreaterThan(1);
+  });
+
   test("does not retry a failed flush before next_attempt_at", async () => {
     const { sql } = openTestDb();
     insertTxLog(sql, { seq: 1, ops: [] });

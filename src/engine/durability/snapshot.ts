@@ -273,6 +273,16 @@ async function snapshotTable(
 }
 
 const LOG_SEGMENT_NAME = /^(\d+)-(\d+)\.ndjson$/;
+/** A log entry's ops, kept apart from its segment (`logOpsKey`). */
+const LOG_OPS_NAME = /^ops\/(\d+)\.ndjson$/;
+
+/** The last sequence a log object holds: a segment's `toSeq`, or an ops object's seq. */
+function logObjectEnd(name: string): number | null {
+  const segment = LOG_SEGMENT_NAME.exec(name);
+  if (segment) return Number(segment[2]);
+  const ops = LOG_OPS_NAME.exec(name);
+  return ops ? Number(ops[1]) : null;
+}
 
 /** Replay-log retention is independent of permanent transaction receipts. */
 export const LOG_RETENTION_SEQ = 2 * SNAPSHOT_SEQ_THRESHOLD;
@@ -298,6 +308,7 @@ export function trimLocalLog(
   if (removable === 0) return 0;
 
   sql.exec(`DELETE FROM "_tx_log" WHERE seq <= ?`, cut);
+  sql.exec(`DELETE FROM "_tx_log_parts" WHERE seq <= ?`, cut);
   // Receipts are independent of the replay log and are never trimmed here.
   return Number(removable);
 }
@@ -319,11 +330,11 @@ export async function pruneCoveredLogSegments(
   const retainFrom = baseSeq - horizon;
 
   for (const object of objects) {
-    const match = LOG_SEGMENT_NAME.exec(object.key.slice(prefix.length));
-    if (!match) continue;
+    const end = logObjectEnd(object.key.slice(prefix.length));
+    if (end === null) continue;
     // A segment that overlaps the horizon stays: its lines below the snapshot
     // base are the only remaining copy of their idempotency keys.
-    if (Number(match[2]) <= retainFrom) keys.push(object.key);
+    if (end <= retainFrom) keys.push(object.key);
   }
 
   await deleteR2Keys(bucket, keys);
@@ -576,8 +587,8 @@ export async function pruneHistory(
 
   const logPrefix = `${workspacePrefix(workspaceId)}/log/`;
   for (const object of await listAllR2(bucket, logPrefix)) {
-    const match = LOG_SEGMENT_NAME.exec(object.key.slice(logPrefix.length));
-    if (!match || Number(match[2]) > state.baseSeq) continue;
+    const end = logObjectEnd(object.key.slice(logPrefix.length));
+    if (end === null || end > state.baseSeq) continue;
     const due = Math.max(uploadedAt(object) + age, graceEnds);
     if (due <= now) keys.push(object.key);
     else later(due);
@@ -611,7 +622,10 @@ export async function pruneHistory(
     sql
       .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_log" WHERE seq <= ? AND at <= ?`, cut, now - age)
       .toArray()[0]?.n ?? 0;
-  if (localRows > 0) sql.exec(`DELETE FROM "_tx_log" WHERE seq <= ? AND at <= ?`, cut, now - age);
+  if (localRows > 0) {
+    sql.exec(`DELETE FROM "_tx_log" WHERE seq <= ? AND at <= ?`, cut, now - age);
+    sql.exec(`DELETE FROM "_tx_log_parts" WHERE seq NOT IN (SELECT seq FROM "_tx_log")`);
+  }
   const oldest = sql
     .exec<{ at: number | null }>(`SELECT MIN(at) AS at FROM "_tx_log" WHERE seq <= ?`, cut)
     .toArray()[0]?.at;

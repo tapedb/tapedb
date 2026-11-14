@@ -28,6 +28,29 @@ function assertPositiveInteger(value: number, label: string): number {
   return value;
 }
 
+/** How many continuation parts a log entry has beyond part 0. */
+function extraParts(sql: SqlExecutor, seq: number): number {
+  const row = sql.exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_log_parts" WHERE seq = ?`, seq).toArray()[0];
+  return row?.n ?? 0;
+}
+
+/** The stored continuation parts of a log entry, as JSON text, in order. */
+export function* storedParts(sql: SqlExecutor, seq: number): Generator<string> {
+  let part = 0;
+  for (;;) {
+    const row = sql
+      .exec<{ part: number; ops: string }>(
+        `SELECT part, ops FROM "_tx_log_parts" WHERE seq = ? AND part > ? ORDER BY part LIMIT 1`,
+        seq,
+        part
+      )
+      .toArray()[0];
+    if (row === undefined) return;
+    part = row.part;
+    yield row.ops;
+  }
+}
+
 function parseOps(raw: string): unknown {
   try {
     return JSON.parse(raw) as unknown;
@@ -71,15 +94,19 @@ export function buildLogSegment(
     .toArray();
 
   const lines: string[] = [];
+  const refs: Array<{ seq: number; first: string }> = [];
   let bytes = 0;
 
   for (const row of rows) {
     if (lines.length >= maxRows) break;
 
+    const parts = extraParts(sql, row.seq);
     const entry = {
       seq: row.seq,
       ...(row.client_tx_id === null ? {} : { clientTxId: row.client_tx_id }),
-      ops: parseOps(row.ops),
+      // An entry in parts keeps its ops in their own object, written part by
+      // part, so neither the segment nor a later replay holds them at once.
+      ...(parts > 0 ? { ops: [], opsParts: parts + 1 } : { ops: parseOps(row.ops) }),
       // The hash of what the client sent, which is not always the hash of the
       // ops stored beside it: a bulk write logs the rows it resolved. Carried
       // so a retry after a restore is still recognised.
@@ -93,6 +120,7 @@ export function buildLogSegment(
     if (lines.length > 0 && bytes + lineBytes > maxBytes) break;
 
     lines.push(line);
+    if (parts > 0) refs.push({ seq: row.seq, first: row.ops });
     bytes += lineBytes;
   }
 
@@ -103,5 +131,6 @@ export function buildLogSegment(
     toSeq: rows[lines.length - 1].seq,
     rows: lines.length,
     ndjson: lines.join(""),
+    refs,
   };
 }
