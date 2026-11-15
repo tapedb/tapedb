@@ -159,7 +159,7 @@ describe("history retention", () => {
     expect(readSnapshotState(sql).status).toBe("completed");
   });
 
-  test("deletes receipts past the retry window and schedules the next", async () => {
+  test("removes old hashes while retaining receipts and schedules only remaining hashes", async () => {
     const { sql } = openTestDb();
     insertFolder(sql, "a", "a");
     setHighWater(sql, 1);
@@ -169,8 +169,16 @@ describe("history retention", () => {
 
     const result = await pruneHistory(new FakeR2Bucket(), sql, TEST_WORKSPACE, DAY_MS + R / 2);
     expect(result.receipts).toBe(1);
-    expect(sql.exec<{ id: string }>(`SELECT id FROM "_tx_receipts"`).toArray().map((row) => row.id)).toEqual(["new"]);
+    expect(sql.exec(`SELECT id, seq, ops_hash, at FROM "_tx_receipts" ORDER BY at`).toArray()).toEqual([
+      { id: "old", seq: 1, ops_hash: null, at: DAY_MS },
+      { id: "new", seq: 1, ops_hash: "h", at: 5 * DAY_MS },
+    ]);
     expect(result.nextAt).toBe(5 * DAY_MS + R / 2);
+    const again = await pruneHistory(new FakeR2Bucket(), sql, TEST_WORKSPACE, 400 * DAY_MS);
+    expect(again.receipts).toBe(1);
+    expect(again.nextAt).toBeNull();
+    expect(sql.exec(`SELECT COUNT(*) AS n FROM "_tx_receipts" WHERE ops_hash IS NULL`).toArray()).toEqual([{ n: 2 }]);
+    expect((await pruneHistory(new FakeR2Bucket(), sql, TEST_WORKSPACE, 401 * DAY_MS)).receipts).toBe(0);
   });
 
   test("refuses a retention under two days", () => {

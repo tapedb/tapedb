@@ -176,11 +176,16 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `GET /engine/workspaces/:id/files` | the file index; MEMBER or higher, or with file rules any claim, filtered to readable files. The index changes only through the byte routes (other methods: 405) |
 | `GET /engine/workspaces/:id/websocket` | the live socket (below) |
 
-**Retries.** A transaction with `clientTxId` is applied at most once: a retry
-with the same id is answered from its receipt. Receipts are kept for half the
-history retention (15 days by default). A retry with `issuedAt` before that,
-whose receipt may be gone, is refused with `retry_expired` (410). The client
-sends `issuedAt` for you.
+**Retries.** A transaction with `clientTxId` is applied at most once, without
+an age limit. The receipt keeps its id, sequence and time permanently; its
+operation hash is removed after half the history retention (15 days by
+default). While the hash exists, different operations under the same id return
+`conflict`; after its removal, the id acknowledges the original transaction
+without applying the submitted operations. The client sends `issuedAt` for you.
+An upgrade or restore from state with missing receipts preserves a fixed
+boundary: unknown retries with `issuedAt` at or before it return
+`retry_expired` (410). Known receipts are acknowledged even before that boundary.
+
 
 **Export format, version 1.** One JSON object per line: a
 `{"type":"header","format":"tapedb-export","version":1,…}` line, then `row`
@@ -240,7 +245,7 @@ usually handles:
 | `rate_limited` | 429 | a claim limit or `identity.allowRequest` refused a claim request; built-in limits send `Retry-After` |
 | `unique_violation`, `foreign_key_violation` | 409 | a constraint refused the write |
 | `conflict` | 409 | a `clientTxId` reused with different operations |
-| `retry_expired` | 410 | a retry too old to deduplicate safely; send it again as a new write if it still applies |
+| `retry_expired` | 410 | an unknown retry before the fixed receipt boundary of a legacy upgrade or restore; send it as a new write if it still applies |
 | `workspace_erased` | 410 | the workspace was erased |
 | `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |

@@ -90,7 +90,7 @@ export interface HistoryPruneResult {
   objects: number;
   /** Local replay-log rows deleted. */
   localRows: number;
-  /** Transaction receipts past the retry window, deleted. */
+  /** Transaction receipts whose operation hash was removed; their IDs remain. */
   receipts: number;
   /** When the oldest remaining history becomes due, or null. */
   nextAt: number | null;

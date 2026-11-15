@@ -4,6 +4,7 @@ import {
   commitManifest,
   manifestCreatedAt,
   readEngineVersion,
+  readReceiptFloor,
 } from "./manifest";
 import type { SqlExecutor, SqlValue } from "./sql";
 import type { FlushOptions, FlushResult, FlushState } from "./types";
@@ -221,6 +222,7 @@ export async function flushPending(
       createdAt: current?.createdAt ?? manifestCreatedAt(now),
       engineVersion: readEngineVersion(sql),
       schemaVersion: current?.schemaVersion,
+      receiptFloor: current && current.baseSeq > 0 ? current.receiptFloor : readReceiptFloor(sql),
       tables: current?.tables ?? [],
       totalRows: current?.totalRows ?? 0,
       totalBytes: current?.totalBytes ?? 0,

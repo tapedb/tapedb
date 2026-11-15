@@ -125,8 +125,8 @@ export interface TxEnvelope {
   clientTxId?: string;
   /**
    * When the client first issued the transaction (ms), resent unchanged on
-   * every retry. A retry issued before the retry window is refused with
-   * `retry_expired`, since its receipt may be gone.
+   * every retry. Unknown writes older than a legacy receipt boundary are
+   * refused with `retry_expired`; retained receipts have no age limit.
    */
   issuedAt?: number;
   ops: TxOp[];

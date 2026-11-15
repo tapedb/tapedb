@@ -16,7 +16,7 @@ import { opsHash } from "../../src/engine/tx-hash";
 import { runTransaction } from "../../src/engine/tx-pipeline";
 import type { SqlExecutor, SqlRow } from "../../src/engine/tx-sql";
 import { TxError, type TxEnvelope } from "../../src/engine/tx-types";
-import { retryWindowMs } from "../../src/engine/durability/retention";
+import { DAY_MS } from "../../src/engine/durability/retention";
 
 const WORKSPACE = "workspace-1";
 const MIGRATIONS_DIR = resolve(
@@ -251,28 +251,51 @@ describe("transaction pipeline", () => {
     expect(rows[1].at).toBeGreaterThanOrEqual(before);
   });
 
-  test("records when each receipt was written, and refuses a retry older than the retry window", () => {
+  test("a 400-day-old first attempt applies and a hashless receipt deduplicates it forever", () => {
+    const issuedAt = Date.now() - 400 * DAY_MS;
     const op = { op: "update", namespace: "folders", id: "f1", values: { name: "Inbox" } };
+    const tx = { txId: "t1", clientTxId: "client-w", issuedAt, ops: [op] } as TxEnvelope;
     const before = Date.now();
-    run(store, { txId: "t1", clientTxId: "client-w", issuedAt: before, ops: [op] } as TxEnvelope);
-    const receipt = one<{ at: number }>(store, `SELECT at FROM "_tx_receipts" WHERE id = 'client-w'`);
-    expect(receipt!.at).toBeGreaterThanOrEqual(before);
+    expect(run(store, tx)).toMatchObject({ seq: 1, applied: 1 });
+    expect(one<{ at: number }>(store, `SELECT at FROM "_tx_receipts" WHERE id = 'client-w'`)!.at).toBeGreaterThanOrEqual(before);
+    expectCode(() => run(store, { ...tx, ops: [{ ...op, values: { name: "Different" } }] } as TxEnvelope), "conflict");
+    store.db.exec(`UPDATE "_tx_receipts" SET ops_hash = NULL, at = ? WHERE id = 'client-w'`, issuedAt);
+    store.db.exec(`DELETE FROM "_tx_log"`);
+    store.db.exec(`UPDATE folders SET name = 'Latest' WHERE id = 'f1'`);
+    expect(run(store, { ...tx, txId: "retry" })).toMatchObject({ seq: 1, applied: 0 });
+    // After the hash is removed, every reuse of the key acknowledges the
+    // original transaction, including a changed body; none can mutate rows.
+    expect(run(store, { ...tx, ops: [{ ...op, values: { name: "Different" } }] } as TxEnvelope)).toMatchObject({ seq: 1, applied: 0 });
+    expect(one<{ name: string }>(store, `SELECT name FROM folders WHERE id = 'f1'`)!.name).toBe("Latest");
+    expectCode(() => run(store, { ...tx, issuedAt: "yesterday" } as unknown as TxEnvelope), "invalid_envelope");
+  });
 
-    // Inside the window: deduplicated, receipt or not in question.
-    expect(run(store, { txId: "t1-r", clientTxId: "client-w", issuedAt: before, ops: [op] } as TxEnvelope)).toMatchObject({ seq: 1, applied: 0 });
-
-    // A retry whose receipt has expired, first issued before the window.
-    const window = retryWindowMs();
-    store.db.exec(`DELETE FROM "_tx_receipts"`);
-    expectCode(
-      () => run(store, { txId: "t2", clientTxId: "client-old", issuedAt: Date.now() - window - 1, ops: [op] } as TxEnvelope),
-      "retry_expired"
-    );
+  test("a fixed legacy receipt boundary refuses only unknown earlier writes", () => {
+    const floor = Date.now() - 400 * DAY_MS;
+    store.db.exec(`INSERT INTO "_engine_meta" ("key", value) VALUES ('receipts_since', ?)`, String(floor));
+    const tx = { txId: "t1", clientTxId: "known", issuedAt: floor + 1, ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "Once" } }] } as TxEnvelope;
+    expect(run(store, tx)).toMatchObject({ seq: 1, applied: 1 });
+    expect(run(store, { ...tx, issuedAt: floor - 1 })).toMatchObject({ seq: 1, applied: 0 });
+    expectCode(() => run(store, { ...tx, clientTxId: "unknown", issuedAt: floor }), "retry_expired");
     expect(all(store, `SELECT * FROM "_tx_log"`)).toHaveLength(1);
+  });
 
-    // A recent first attempt with no receipt is new, and applies.
-    expect(run(store, { txId: "t3", clientTxId: "client-new", issuedAt: Date.now() - 1000, ops: [op] } as TxEnvelope)).toMatchObject({ seq: 2, applied: 1 });
-    expectCode(() => run(store, { txId: "t4", clientTxId: "client-x", issuedAt: "yesterday", ops: [op] } as unknown as TxEnvelope), "invalid_envelope");
+  test("upgrading preserves known receipts and fences off keys an older engine may have deleted", () => {
+    const db = new Database(":memory:");
+    db.exec(SCHEMA);
+    const index = ENGINE_MIGRATIONS.findIndex((migration) => migration.id === "tapedb_0008_permanent_receipts");
+    for (const migration of ENGINE_MIGRATIONS.slice(0, index)) db.exec(migration.sql);
+    db.exec(`UPDATE "_tx_state" SET high_water_seq = 7 WHERE id = 1`);
+    db.exec(`INSERT INTO "_tx_receipts" (id, seq, ops_hash, at) VALUES ('kept', 7, 'hash', 1234)`);
+    const before = Date.now();
+    db.exec(ENGINE_MIGRATIONS[index].sql);
+    expect(db.query(`SELECT * FROM "_tx_receipts"`).all()).toEqual([{ id: "kept", seq: 7, ops_hash: "hash", at: 1234 }]);
+    const floor = Number((db.query(`SELECT value FROM "_engine_meta" WHERE "key" = 'receipts_since'`).get() as { value: string }).value);
+    expect(floor).toBeGreaterThanOrEqual(before);
+    expect(floor).toBeLessThanOrEqual(Date.now());
+    db.exec(`UPDATE "_tx_receipts" SET ops_hash = NULL`);
+    expect(db.query(`SELECT ops_hash FROM "_tx_receipts"`).get()).toEqual({ ops_hash: null });
+    db.close();
   });
 
   test("deduplicates clientTxId with an order-independent ops hash", () => {
