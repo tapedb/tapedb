@@ -4,7 +4,6 @@ import type { SqlExecutor, SqlRow } from "./tx-sql";
 import { validateEnvelope, isLinkOp } from "./tx-validate";
 import { authorizeOps, assertRowPermissions } from "./tx-permissions";
 import { appendLogEntry } from "./tx-pipeline";
-import { opsHash } from "./tx-hash";
 import { applyOps } from "./tx-apply";
 import { stageBulkOps, isBulk, bulkChunk, stagedIds, releaseStaged } from "./tx-bulk";
 import { LogWriter } from "./tx-log";
@@ -25,7 +24,8 @@ export function installPersonalCapture(sql: SqlExecutor): void {
 export async function runPersonalTransaction(sql: SqlExecutor, personal: PersonalRuntime, workspace: string, claim: RoleClaim, envelope: unknown): Promise<TxResult> {
   if (claim.workspaceId !== workspace) throw new TxError("permission_denied", "The claim belongs to another workspace.");
   const tx = validateEnvelope(envelope); authorizeOps(claim, tx.ops);
-  const hash = opsHash(tx.rawOps);
+  // Keyed: the raw ops carry plaintext personal values.
+  const hash = await personal.receiptHash(tx.rawOps);
   if (tx.clientTxId !== undefined) {
     const prior = sql.one<{ seq: number; ops_hash: string | null }>(`SELECT seq, ops_hash FROM "_tx_receipts" WHERE id = ?`, tx.clientTxId);
     if (prior) {

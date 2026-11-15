@@ -54,6 +54,14 @@ published.
 
 ### Fixed
 
+- Personal fields: `aggregate`/`groupBy` accepted them, returning ciphertext
+  envelopes (with the subject's pseudonymous hash) as group keys and min/max;
+  they are refused like filters and ordering. The decrypted-value cache had no
+  bound and could exhaust a Durable Object's memory; it is now capped (8 M
+  UTF-16 units, least recently used out), and a read larger than the cap still
+  completes. Receipt and log hashes of transactions carrying personal values
+  were a plain hash of the plaintext, guessable for short values after the
+  subject's erasure; they are an HMAC under `TAPEDB_KEY_SECRET`.
 - A workspace whose restore from R2 took longer than 30 seconds could never
   recover, and could be served half restored: recovery ran inside the Durable
   Object's boot, which Cloudflare resets after 30 seconds, and the reset left
