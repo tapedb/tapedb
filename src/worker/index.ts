@@ -13,7 +13,7 @@
 import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
-import { configureTopics, type TopicAuthorizer } from "../engine/topics";
+import { configureTopics, type TopicOptions } from "../engine/topics";
 import { configureFileAccess, fileRulesConfigured } from "../engine/file-access";
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
 import { filesPrefix, isWorkspaceId } from "../engine/r2-keys";
@@ -71,11 +71,12 @@ export interface DefineTapeDBOptions {
   /**
    * Broadcast topics. `authorize` decides whether a caller may join a topic
    * or send to it; without it any member of the workspace may, as with
-   * presence.
+   * presence. `replaySeconds` (default 60) is how much of each topic the
+   * room keeps for clients that reconnect.
    *
    * @experimental May change in a minor release.
    */
-  topics?: { authorize?: TopicAuthorizer };
+  topics?: TopicOptions;
   /**
    * How long deleted or overwritten values may remain in the workspace's
    * history (R2 log segments, older snapshots, the local replay log).
@@ -629,6 +630,6 @@ export { ClaimError, verifyRoleClaim };
 export { signRoleClaim } from "../mint";
 export type { ClaimIdentity } from "../mint";
 export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
-export type { TopicAction, TopicAuthorizer } from "../engine/topics";
+export type { TopicAction, TopicAuthorizer, TopicOptions } from "../engine/topics";
 export { WORKSPACE_ROLE_LEVELS };
 export type { Env };

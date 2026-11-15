@@ -7,6 +7,9 @@ published.
 
 ### Changed
 
+- `$broadcast(topic).send()` and `useBroadcast`'s `send` return
+  `boolean | "queued"`: a send while disconnected is queued, not dropped
+  (experimental API).
 - Offline retries have no age limit. Transaction receipt ids, sequences and
   times remain for the workspace lifetime; operation hashes are removed after
   half the history retention. Reusing an id with a different body conflicts
@@ -16,6 +19,12 @@ published.
 
 ### Added
 
+- Broadcasts survive a dropped connection: sends made while the socket is
+  down wait (100 per topic, 60 s) and go out after reconnecting, and the
+  workspace keeps the last `topics.replaySeconds` (default 60, at most 1,000
+  messages) of each topic, replayed in order to a listener that rejoins.
+  Messages carry a per-topic `seq`; `topic:join { since }` answers
+  `topic:joined { seq }`. Engine migration `tapedb_0009_topic_buffer`.
 - Personal string and JSON fields with per-subject encryption, owner key
   erasure, nullable erased reads, live refresh and resumable encryption of
   existing rows. Queries and exports decrypt; durable history holds ciphertext.

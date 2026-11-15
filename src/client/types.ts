@@ -381,10 +381,10 @@ export type ClientMessage =
   | { type: "cursor:set"; target: string; cursor: unknown }
   | { type: "drag:set"; target: string; drag: unknown }
   | { type: "drag:clear"; target: string }
-  | { type: "topic:join"; topic: string }
+  | { type: "topic:join"; topic: string; since?: number }
   | { type: "topic:leave"; topic: string }
-  | { type: "topic:send"; topic: string; message: unknown }
-  | { type: "topic:send"; topic: string; part: { id: string; index: number; last: boolean }; data: string }
+  | { type: "topic:send"; topic: string; message: unknown; origin?: string }
+  | { type: "topic:send"; topic: string; part: { id: string; index: number; last: boolean }; data: string; origin?: string }
   | { type: "part"; id: string; index: number; last: boolean; data: string }
   | { type: "ping"; at?: unknown };
 
@@ -421,14 +421,17 @@ export type ServerMessage =
       cursor: unknown;
     }
   | { type: "drag:update"; target: string; clientId: string; drag: unknown }
-  | { type: "topic:message"; topic: string; message: unknown; from: { clientId: string; sub: string } }
+  | { type: "topic:message"; topic: string; message: unknown; from: { clientId: string; sub: string }; seq?: number; origin?: string }
   | {
       type: "topic:message";
       topic: string;
       part: { id: string; index: number; last: boolean };
       data: string;
       from: { clientId: string; sub: string };
+      seq?: number;
+      origin?: string;
     }
+  | { type: "topic:joined"; topic: string; seq: number }
   | { type: "topic:error"; topic: string | null; code: string; message: string }
   | { type: "error"; code: string; message?: string };
 

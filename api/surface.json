@@ -23,7 +23,7 @@
         "kind": "interface",
         "experimental": true,
         "shape": {
-          "send": "(message: T) => boolean",
+          "send": "(message: T) => boolean | \"queued\"",
           "subscribe": "(listener: (message: T, from: TopicSender) => void, options?: { onError?: (error: QueryError) => void; }) => () => void",
           "(declaration)": "<T = unknown>"
         }
@@ -358,7 +358,7 @@
         "kind": "interface",
         "shape": {
           "id": "string",
-          "status": "\"applied\" | \"queued\""
+          "status": "\"queued\" | \"applied\""
         }
       }
     },
@@ -524,7 +524,7 @@
       "useBroadcast": {
         "kind": "function",
         "experimental": true,
-        "shape": "<T = unknown>(db: { $broadcast<M>(topic: string): BroadcastTopic<M>; }, topic: string, onMessage?: (message: T, from: TopicSender) => void) => (message: T) => boolean"
+        "shape": "<T = unknown>(db: { $broadcast<M>(topic: string): BroadcastTopic<M>; }, topic: string, onMessage?: (message: T, from: TopicSender) => void) => (message: T) => boolean | \"queued\""
       },
       "useLive": {
         "kind": "function",
@@ -589,7 +589,7 @@
           "migrations": "readonly BundledWorkspaceMigration[] | undefined",
           "identity": "ClaimIdentity | undefined",
           "devClaims": "boolean | undefined",
-          "topics": "{ authorize?: TopicAuthorizer; } | undefined @experimental",
+          "topics": "TopicOptions | undefined @experimental",
           "retention": "RetentionOptions | undefined"
         }
       },
@@ -637,6 +637,14 @@
         "kind": "type",
         "experimental": true,
         "shape": "(context: { auth: { sub: string; role: number; workspaceId: string }; topic: string; action: TopicAction; }) => boolean"
+      },
+      "TopicOptions": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "authorize": "TopicAuthorizer | undefined",
+          "replaySeconds": "number | undefined"
+        }
       },
       "verifyRoleClaim": {
         "kind": "function",

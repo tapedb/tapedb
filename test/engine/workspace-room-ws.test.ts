@@ -686,8 +686,9 @@ describe("WorkspaceRoom live queries", () => {
   });
 
   describe("broadcast topics", () => {
+    // Join acknowledgements (topic:joined) are covered by the replay tests.
     const topicMessages = (ws: FakeWebSocket) =>
-      ws.messages().filter((message) => String(message.type).startsWith("topic:"));
+      ws.messages().filter((message) => String(message.type).startsWith("topic:") && message.type !== "topic:joined");
 
     test("a message reaches every other joined socket, not the sender or the unjoined", async () => {
       const sender = await connect();
@@ -703,6 +704,7 @@ describe("WorkspaceRoom live queries", () => {
       expect(topicMessages(joined)).toEqual([
         {
           type: "topic:message",
+          seq: 1,
           topic: "board:1",
           message: { ping: 1 },
           from: { clientId: (sender.attachment as { clientId: string }).clientId, sub: "user-1" },
@@ -950,6 +952,78 @@ describe("WorkspaceRoom live queries", () => {
     );
 
     expect(response.status).toBe(426);
+  });
+
+  describe("broadcast replay", () => {
+    const frames = (ws: FakeWebSocket) => ws.messages().filter((message) => String(message.type).startsWith("topic:"));
+
+    test("a rejoin with the last sequence seen gets what it missed, in order, parts included", async () => {
+      const sender = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "sender");
+      const listener = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "listener");
+      await send(listener, { type: "topic:join", topic: "board:1" });
+      expect(frames(listener)).toEqual([{ type: "topic:joined", topic: "board:1", seq: 0 }]);
+
+      await send(sender, { type: "topic:send", topic: "board:1", message: "one", origin: "app-a" });
+      expect(frames(listener).at(-1)).toMatchObject({ type: "topic:message", seq: 1, message: "one", origin: "app-a" });
+
+      // The listener drops off; three messages go out, one of them in parts.
+      room.webSocketClose(listener as unknown as WebSocket, 1006, "gone");
+      await send(sender, { type: "topic:send", topic: "board:1", message: "two" });
+      const big = "x".repeat(700_000);
+      for (const frame of framesFor({ type: "topic:send", topic: "board:1", message: big } as never)) {
+        await room.webSocketMessage(sender as unknown as WebSocket, frame);
+      }
+      await send(sender, { type: "topic:send", topic: "board:1", message: "four" });
+
+      const back = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "listener");
+      await send(back, { type: "topic:join", topic: "board:1", since: 1 });
+      const replayed = frames(back);
+      expect(replayed.at(-1)).toEqual({ type: "topic:joined", topic: "board:1", seq: replayed.length });
+      const parts = new TopicParts();
+      const joined = replayed.slice(0, -1).map((frame) => parts.take(frame as never)).filter((value) => value !== null);
+      expect(joined.map((message) => (message as { message: unknown }).message)).toEqual(["two", big, "four"]);
+      // Sequence numbers only grow.
+      const seqs = replayed.slice(0, -1).map((frame) => frame.seq as number);
+      expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+      expect(seqs[0]).toBe(2);
+    });
+
+    test("keeps a bounded window, by count and by age, and nothing when replay is off", async () => {
+      const { REPLAY_MESSAGES } = await import("../../src/engine/topics");
+      const sender = await connect();
+      for (let n = 0; n < REPLAY_MESSAGES + 25; n += 1) {
+        await send(sender, { type: "topic:send", topic: "busy", message: n });
+      }
+      const kept = db.query(`SELECT COUNT(*) AS n, MIN(seq) AS low FROM "_topic_buffer" WHERE topic = 'busy'`).get() as { n: number; low: number };
+      expect(kept).toEqual({ n: REPLAY_MESSAGES, low: 26 });
+
+      // Older than the window: not replayed.
+      db.exec(`UPDATE "_topic_buffer" SET at = at - 120000 WHERE topic = 'busy'`);
+      const late = await connect();
+      await send(late, { type: "topic:join", topic: "busy", since: 0 });
+      expect(frames(late)).toEqual([{ type: "topic:joined", topic: "busy", seq: REPLAY_MESSAGES + 25 }]);
+
+      configureTopics({ replaySeconds: 0 });
+      try {
+        await send(sender, { type: "topic:send", topic: "quiet", message: "x" });
+        expect(db.query(`SELECT COUNT(*) AS n FROM "_topic_buffer" WHERE topic = 'quiet'`).get()).toEqual({ n: 0 });
+      } finally {
+        configureTopics(undefined);
+      }
+    });
+
+    test("replays nothing to a socket the authorize hook refuses", async () => {
+      const sender = await connect(WORKSPACE_ROLE_LEVELS.ADMIN, "admin");
+      await send(sender, { type: "topic:send", topic: "admin:alerts", message: "secret" });
+      configureTopics({ authorize: ({ auth, topic }) => !topic.startsWith("admin:") || auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN });
+      try {
+        const member = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "member");
+        await send(member, { type: "topic:join", topic: "admin:alerts", since: 0 });
+        expect(frames(member)).toEqual([expect.objectContaining({ type: "topic:error", code: "permission_denied" })]);
+      } finally {
+        configureTopics(undefined);
+      }
+    });
   });
 
   describe("socket state and messages of any size", () => {

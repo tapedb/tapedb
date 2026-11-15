@@ -15,7 +15,6 @@ The boundaries TapeDB has by design, and the gates before a public release.
   ciphertext unreadable in SQL, logs, snapshots and recovery copies. Ordinary
   plaintext and copies from before encryption follow the history retention
   and Cloudflare's 30-day recovery window.
-- **Ephemeral channels.** Broadcast messages and presence are ephemeral; messages sent while the socket is down are dropped.
 - **Migrations are forward operations.** Destructive changes need
   `--accept-data-loss`; renames need an explicit rename; new required fields
   need a default or must be optional. Review generated SQL before deploying.
