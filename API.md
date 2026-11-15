@@ -48,7 +48,7 @@ then records the new surface with `bun run api:update`.
 `schema(models, { files? })`: `files` is `{ read?, write?, delete? }`, each a
 `role(...)`, `fileCheck(({ auth, file, existing }) => boolean)` or
 `attachedTo(model, (path) => id | null)`. `file` is a `FileInfo`
-(`{ path, size, contentType, uploadedBy }`; for a write, the incoming file,
+(`{ path, size, contentType, uploadedBy }`, `uploadedBy` the uploader's claim subject; for a write, the incoming file,
 and `existing` the one it replaces). `attachedTo` reads need the row readable
 by the caller; writes and deletes need the caller allowed to update it. Defaults:
 read `member`, write and delete `editor`. A rule that throws denies.

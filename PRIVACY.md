@@ -3,7 +3,7 @@
 What tapedb stores about the people using your app, where, for how long, and
 how to answer their requests. You are the controller of that data. tapedb is
 a library running in your Cloudflare account, and Cloudflare is your
-processor. This page describes tapedb's behaviour; it is not legal advice.
+processor.
 
 ## What is stored, and where
 
@@ -12,10 +12,10 @@ processor. This page describes tapedb's behaviour; it is not legal advice.
 | Durable Object SQLite, one per workspace | Your models' rows | Until deleted |
 | | `_tx_log`: each write's operations (with values) and the time. Who made the write is not recorded | Covered rows deleted once older than half the retention (15 days by default) |
 | | `_tx_receipts`: client transaction id, sequence, a hash of the operations, and the time | Half the retention (15 days by default) |
-| | `_files`: path, size and content type of each upload | Until the file is deleted |
+| | `_files`: path, size, content type and uploader (the claim's `sub`) of each upload | Until the file is deleted |
 | R2 `DATA` bucket | Log segments (the `_tx_log` lines), snapshots of every table, a manifest | Superseded copies deleted within the retention (30 days by default) |
 | R2 `FILES` bucket | Uploaded bytes | Deleted with the file, at once |
-| Socket attachments (memory) | A connected client's `sub`, role, subscriptions, presence state and joined topics | While the socket is open |
+| Socket attachments, and `_socket_state` / `_socket_parts` past 12 KiB | A connected client's `sub`, role, subscriptions, presence state and joined topics; a message arriving in parts until its last part | While the socket is open |
 | Broadcast topics | Messages | Not stored: delivered to connected sockets only |
 | Worker logs | Workspace ids, counts, error messages. No row values, claim tokens or user ids | Your Workers Logs or Logpush settings |
 
@@ -23,7 +23,8 @@ Claim tokens are never put in a URL. HTTP requests carry them in
 `Authorization`, and WebSocket upgrades in `Sec-WebSocket-Protocol`. If you
 turn on request-header logging in Cloudflare, exclude those two headers.
 
-tapedb does not record who made each write: nothing in the engine reads it.
+tapedb does not record who made each row write: nothing in the engine reads
+it. Files are the exception: their uploader is kept for file rules.
 If your app needs an audit trail, keep it in your own model, where it is
 covered by your read rules, export and erasure like any other data. Use an
 opaque user id as the claim's `sub` either way, not an email address.

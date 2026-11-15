@@ -25,7 +25,7 @@ export interface FilePutOp {
   key: string;
   size: number;
   contentType: string | null;
-  /** The uploader's claim subject. Absent in entries logged before 0.1. */
+  /** The uploader's claim subject. */
   uploadedBy?: string | null;
 }
 

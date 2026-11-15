@@ -6,10 +6,6 @@
  * it for live results over the workspace socket. Writes return a `Write`:
  * await it to send it alone, or pass several to `$transaction` to send them as
  * one log entry. Both are lazy, so building one costs nothing.
- *
- * Everything below translates into the engine's query documents and ops; the
- * socket, cache, outbox and retry logic are the same ones the engine client
- * has always used.
  */
 
 import {
@@ -139,13 +135,13 @@ export interface ModelClient<M extends Models, F extends Fields> {
    * Count, sum, average, minimum and maximum over the rows matching `where`,
    * as the caller's read rules see them. Await it or subscribe to it.
    *
-   * @experimental The result shape may change in a minor release; see API.md.
+   * @experimental The result shape may change in a minor release.
    */
   aggregate<A extends AggregateArgs<M, F>>(args: A): Query<AggregateOutput<F, A>>;
   /**
    * The same measures, one row per distinct value of the `by` fields.
    *
-   * @experimental The result shape may change in a minor release; see API.md.
+   * @experimental The result shape may change in a minor release.
    */
   groupBy<A extends GroupByArgs<M, F>>(args: A): Query<GroupRow<F, A>[]>;
 
@@ -184,7 +180,7 @@ export interface PresenceRoom {
 /**
  * A broadcast topic: fire-and-forget messages between clients of a workspace.
  *
- * @experimental May change in a minor release; see API.md.
+ * @experimental May change in a minor release.
  */
 export interface BroadcastTopic<T = unknown> {
   /**
@@ -244,7 +240,7 @@ export interface ClientExtras {
   /**
    * A broadcast topic on the workspace socket. Topics are 1-128 of A-Z a-z 0-9 : _ . -
    *
-   * @experimental May change in a minor release; see API.md.
+   * @experimental May change in a minor release.
    */
   $broadcast<T = unknown>(topic: string): BroadcastTopic<T>;
   /**
