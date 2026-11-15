@@ -1081,9 +1081,11 @@ async function replayLogs(
     const markLine = (seq: number) => setMeta(sql, "recovery_lines_done", `${index}:${seq}`);
 
     let pending: LogLine[] = [];
+    let worked = false;
     const applyPending = () => sql.transactionSync(() => {
       const batch = pending;
       pending = [];
+      if (batch.length > 0) worked = true;
       if (batch.length > 0) markLine(batch[batch.length - 1].seq);
       for (const line of batch) {
         // The snapshot already reflects everything at or below its base, so
@@ -1108,28 +1110,56 @@ async function replayLogs(
       }
     });
 
+    // Entries that write whole rows (imports, and every write to a model
+    // with personal fields) are applied with foreign keys off, then checked.
+    // Consecutive ones share one switch and one check: per entry, the two
+    // storage syncs and a full check made a segment of them take minutes.
+    let rowRun: LogLine[] = [];
+    const applyRowRun = async () => {
+      if (rowRun.length === 0) return;
+      const run = rowRun;
+      rowRun = [];
+      worked = true;
+      await importForeignKeys(sql, false);
+      try {
+        sql.transactionSync(() => {
+          for (const line of run) replayLine(sql, txSql, line);
+          markLine(run[run.length - 1].seq);
+        });
+        foreignKeyCheck(sql);
+      } finally {
+        await importForeignKeys(sql, true);
+      }
+      for (const line of run) maxSeq = Math.max(maxSeq, line.seq);
+      replayed += run.length;
+    };
+
     for (const line of lines) {
       if (line.seq <= skipTo) continue;
-      if (line.opsParts === undefined && startsImport(line.ops)) {
+      // At or below the base there is nothing to apply, only the line to
+      // record, which needs no switch.
+      if (line.opsParts === undefined && line.seq > baseSeq && startsImport(line.ops)) {
         applyPending();
-        await importForeignKeys(sql, false);
-        try {
-          sql.transactionSync(() => { if (line.seq > baseSeq) replayLine(sql, txSql, line); else recordReplayedLine(sql, line); markLine(line.seq); });
-          foreignKeyCheck(sql);
-        } finally { await importForeignKeys(sql, true); }
-        maxSeq = Math.max(maxSeq, line.seq); replayed++;
+        rowRun.push(line);
         continue;
       }
       if (line.opsParts === undefined) {
+        await applyRowRun();
         pending.push(line);
         continue;
       }
       applyPending();
+      await applyRowRun();
+      // Each entry stored in parts is read from R2 on its own: a unit, once
+      // this step applied something (or a resumed step could not move on).
+      if (worked) pause(`entry ${line.seq}`);
+      worked = true;
       if (await replayParts(bucket, sql, txSql, workspaceId, line, baseSeq, pause)) replayed += 1;
       markLine(line.seq);
       if (line.seq > baseSeq) maxSeq = Math.max(maxSeq, line.seq);
     }
     applyPending();
+    await applyRowRun();
     setMeta(sql, "recovery_segments_done", String(index + 1));
   }
 
@@ -1163,19 +1193,21 @@ async function replayParts(
   let importing = false;
   if (done > 0) {
     const first = sql.exec<{ ops: string }>(`SELECT ops FROM "_tx_log" WHERE seq = ?`, line.seq).toArray()[0];
-    if (first && startsImport(JSON.parse(first.ops) as unknown[])) { importing = true; await importForeignKeys(sql, false); }
+    if (first && line.seq > baseSeq && startsImport(JSON.parse(first.ops) as unknown[])) { importing = true; await importForeignKeys(sql, false); }
   }
   try {
   for await (const text of objectLines(object)) {
     const current = part;
     part += 1;
     if (current < done) continue;
-    // Between parts a step may stop, once it applied one here; an import
-    // keeps its foreign keys off until its last part, so it runs to the end.
-    if (appliedHere > 0 && !importing) pause(`entry ${line.seq} part ${current}`);
+    // Between parts a step may stop, once it applied one here. A whole-row
+    // entry switches its foreign keys back on when it stops and off again
+    // when it resumes; its check runs once, after its last part. Nothing is
+    // served in between: the workspace answers 503 until the restore ends.
+    if (appliedHere > 0) pause(`entry ${line.seq} part ${current}`);
     appliedHere += 1;
     const ops = JSON.parse(text) as unknown[];
-    if (current === 0 && startsImport(ops)) { importing = true; await importForeignKeys(sql, false); }
+    if (current === 0 && line.seq > baseSeq && startsImport(ops)) { importing = true; await importForeignKeys(sql, false); }
     sql.transactionSync(() => {
       if (current === 0) recordReplayedLine(sql, { ...line, ops });
       else sql.exec(`INSERT OR IGNORE INTO "_tx_log_parts" (seq, part, ops) VALUES (?, ?, ?)`, line.seq, current, text);

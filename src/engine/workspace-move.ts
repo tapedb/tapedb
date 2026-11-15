@@ -10,6 +10,17 @@ export async function readMove(bucket: R2Bucket, id: string): Promise<MoveState 
   const object = await bucket.get(moveKey(id));
   return object ? object.json<MoveState>() : null;
 }
+/** `readMove` with two more tries, for a read that fails in passing. */
+export async function readMoveWithRetries(bucket: R2Bucket, id: string): Promise<MoveState | null> {
+  for (let attempt = 0; ; attempt += 1) {
+    try {
+      return await readMove(bucket, id);
+    } catch (error) {
+      if (attempt >= 2) throw error;
+      await new Promise((resolve) => setTimeout(resolve, 100 * 4 ** attempt));
+    }
+  }
+}
 export async function writeMove(bucket: R2Bucket, id: string, state: MoveState): Promise<void> {
   await bucket.put(moveKey(id), JSON.stringify(state));
 }

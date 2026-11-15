@@ -266,7 +266,7 @@ usually handles:
 | `workspace_importing` | 409 | an import is in progress |
 | `audit_disabled` | 409 | `$history` on a Worker without `audit: true` |
 | `workspace_erased` | 410 | the workspace was erased |
-| `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds |
+| `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds. The client retries on its own for up to a minute |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |
 | `jurisdiction_mismatch` | 500 | the Worker reached a room outside `TAPEDB_JURISDICTION` |
 

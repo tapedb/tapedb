@@ -7,8 +7,22 @@ published.
 
 ### Changed
 
+- Requests made while a workspace is being restored from R2 (503
+  `workspace_recovering`) wait it out: the client retries reads, writes and
+  file requests as `Retry-After` says, for up to a minute.
+- A workspace whose move state R2 cannot read at boot (after three tries)
+  answers 503 `workspace_recovering` and boots again on the next request,
+  instead of resetting with an exception.
 - The ops hash of each write (FNV-1a 64) is computed without a BigInt step
   per byte; digests are unchanged.
+- Recovery reads each log entry stored in parts as its own unit and may
+  stop before it, so a segment holding many large writes is no longer one
+  long step.
+- Recovery applies consecutive whole-row log entries (imports, and every
+  write to a model with personal fields) under one foreign-key switch and
+  one check, and none for entries the snapshot already holds. Before, each
+  entry synced storage twice and checked every table. A whole-row entry in
+  parts may stop between its parts like any other.
 - Recovery applies a large log entry a part at a time, with its progress
   kept between steps, and new log entries store their ops in parts of
   256 KiB (was 1 MiB). A restore under way continues on alarms rather than in
