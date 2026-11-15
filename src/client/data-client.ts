@@ -306,6 +306,11 @@ function resolveConfig(config: InitConfig): ResolvedConfig {
   };
 }
 
+/** Broadcast sends kept per topic while the socket is down. */
+export const TOPIC_QUEUE_MESSAGES = 100;
+/** How long a queued broadcast send stays worth sending. */
+export const TOPIC_QUEUE_MS = 60_000;
+
 class DataClientImpl {
 
   private readonly config: ResolvedConfig;
@@ -334,6 +339,12 @@ class DataClientImpl {
   private readonly pendingOps = new Map<string, readonly TxOp[]>();
   private readonly presencePeers = new Map<string, PresencePeer[]>();
   private readonly topicListeners = new Map<string, Set<TopicListener>>();
+  /** Last sequence seen per joined topic; a rejoin asks for what came after. */
+  private readonly topicSeq = new Map<string, number>();
+  /** Sends made while the socket was down, sent after reconnecting. */
+  private readonly topicQueue = new Map<string, Array<{ message: unknown; at: number }>>();
+  /** This client's id across connections: replay skips its own messages. */
+  private readonly topicOrigin = crypto.randomUUID();
   private readonly presenceListeners = new Map<
     string,
     Set<(peers: PresencePeer[]) => void>
@@ -727,18 +738,41 @@ class DataClientImpl {
       const current = this.topicListeners.get(topic);
       if (!current?.delete(listener) || current.size > 0) return;
       this.topicListeners.delete(topic);
+      this.topicSeq.delete(topic);
       this.socket?.send({ type: "topic:leave", topic });
     };
   }
 
   /**
-   * Sends to everyone else joined to `topic`. Fire-and-forget: returns false
-   * when the socket is not open, and the message is dropped rather than
-   * delivered late.
+   * Sends to everyone else joined to `topic`. While the socket is down the
+   * message waits (up to `TOPIC_QUEUE_MESSAGES` per topic, for
+   * `TOPIC_QUEUE_MS`) and goes out after reconnecting: `"queued"`. False
+   * only when that queue is full.
    */
-  sendTopic(topic: string, message: unknown): boolean {
+  sendTopic(topic: string, message: unknown): boolean | "queued" {
     this.ensureSocket();
-    return this.socket?.send({ type: "topic:send", topic, message }) ?? false;
+    if (this.socket?.send({ type: "topic:send", topic, message, origin: this.topicOrigin })) return true;
+    const queue = (this.topicQueue.get(topic) ?? []).filter((item) => Date.now() - item.at < TOPIC_QUEUE_MS);
+    if (queue.length >= TOPIC_QUEUE_MESSAGES) {
+      this.topicQueue.set(topic, queue);
+      return false;
+    }
+    queue.push({ message, at: Date.now() });
+    this.topicQueue.set(topic, queue);
+    return "queued";
+  }
+
+  private flushTopicQueue(): void {
+    const now = Date.now();
+    for (const [topic, queue] of [...this.topicQueue]) {
+      const fresh = queue.filter((item) => now - item.at < TOPIC_QUEUE_MS);
+      while (fresh.length > 0) {
+        if (!this.socket?.send({ type: "topic:send", topic, message: fresh[0].message, origin: this.topicOrigin })) break;
+        fresh.shift();
+      }
+      if (fresh.length > 0) this.topicQueue.set(topic, fresh);
+      else this.topicQueue.delete(topic);
+    }
   }
 
   async connect(): Promise<void> {
@@ -1034,8 +1068,11 @@ class DataClientImpl {
         this.resubscribeAll();
         this.republishPresence();
         for (const topic of this.topicListeners.keys()) {
-          this.socket?.send({ type: "topic:join", topic });
+          const since = this.topicSeq.get(topic);
+          this.socket?.send({ type: "topic:join", topic, ...(since !== undefined ? { since } : {}) });
         }
+        // After the rejoins, so a listener's own topic is joined first.
+        this.flushTopicQueue();
         void this.flushOutbox();
       },
       onMessage: (message) => this.handleServerMessage(message),
@@ -1088,9 +1125,24 @@ class DataClientImpl {
 
   private handleServerMessage(message: ServerMessage): void {
     switch (message.type) {
+      case "topic:joined": {
+        // Where the topic stands. A room that restarted from scratch counts
+        // from its own number, lower than ours.
+        const seen = this.topicSeq.get(message.topic);
+        if (seen === undefined || message.seq < seen) this.topicSeq.set(message.topic, message.seq);
+        return;
+      }
       case "topic:message": {
         // The socket joins parts; one that reaches here was incomplete.
         if ("part" in message) return;
+        if (message.seq !== undefined) {
+          const seen = this.topicSeq.get(message.topic);
+          // A replay can overlap what arrived live: each sequence once.
+          if (seen !== undefined && message.seq <= seen) return;
+          this.topicSeq.set(message.topic, message.seq);
+        }
+        // This client's own messages, replayed to it on a later connection.
+        if (message.origin === this.topicOrigin) return;
         const from: TopicSender = { clientId: message.from.clientId, userId: message.from.sub };
         for (const listener of [...(this.topicListeners.get(message.topic) ?? [])]) {
           try {

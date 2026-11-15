@@ -77,7 +77,13 @@ export function framesFor(message: ClientMessage, size = FRAME_PART_CHARS): stri
   if (message.type === "topic:send" && "message" in message) {
     const parts = splitText(JSON.stringify(message.message), size);
     return parts.map((data, index) =>
-      JSON.stringify({ type: "topic:send", topic: message.topic, part: { id, index, last: index === parts.length - 1 }, data })
+      JSON.stringify({
+        type: "topic:send",
+        topic: message.topic,
+        part: { id, index, last: index === parts.length - 1 },
+        data,
+        ...(message.origin !== undefined ? { origin: message.origin } : {}),
+      })
     );
   }
   const parts = splitText(text, size);
@@ -107,7 +113,15 @@ export class TopicParts {
     }
     this.pending.delete(key);
     try {
-      return { type: "topic:message", topic: message.topic, message: JSON.parse(entry.parts.join("")), from: message.from };
+      return {
+        type: "topic:message",
+        topic: message.topic,
+        message: JSON.parse(entry.parts.join("")),
+        from: message.from,
+        // The last part's sequence stands for the whole message.
+        ...(message.seq !== undefined ? { seq: message.seq } : {}),
+        ...(message.origin !== undefined ? { origin: message.origin } : {}),
+      };
     } catch {
       return null;
     }

@@ -184,11 +184,12 @@ export interface PresenceRoom {
  */
 export interface BroadcastTopic<T = unknown> {
   /**
-   * Sends to every other client listening on the topic. Returns false, and
-   * drops the message, when the socket is not open: a broadcast is never
-   * delivered late.
+   * Sends to every other client listening on the topic: `true`. While the
+   * socket is down the message waits and goes out after reconnecting:
+   * `"queued"` (up to 100 per topic, for 60 seconds). `false` when that
+   * queue is full.
    */
-  send(message: T): boolean;
+  send(message: T): boolean | "queued";
   /**
    * Listens until the returned function is called. Your own messages are not
    * delivered back to you. `onError` hears refusals, such as an `authorize`

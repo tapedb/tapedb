@@ -6,7 +6,7 @@
  */
 
 import { Database } from "bun:sqlite";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, setSystemTime, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { MemoryOutbox } from "../src/client/outbox";
@@ -636,8 +636,8 @@ describe("live reads", () => {
   test("broadcast topics join, rejoin, deliver and leave on the workspace socket", async () => {
     const { db, socket } = await live();
     const topic = db.$broadcast<{ x: number }>("board:1");
-    // Not open yet: the message is dropped, not delivered late.
-    expect(topic.send({ x: 0 })).toBe(false);
+    // Not open yet: the message waits for the socket.
+    expect(topic.send({ x: 0 })).toBe("queued");
 
     const heard: unknown[] = [];
     const errors: unknown[] = [];
@@ -648,9 +648,12 @@ describe("live reads", () => {
     socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
     await tick();
     expect(socket.sent.filter((message) => message.type === "topic:join")).toEqual([{ type: "topic:join", topic: "board:1" }]);
+    // The queued message went out once the topic was joined.
+    const sends = () => socket.sent.filter((message) => message.type === "topic:send");
+    expect(sends()).toEqual([{ type: "topic:send", topic: "board:1", message: { x: 0 }, origin: expect.any(String) }]);
 
     expect(topic.send({ x: 1 })).toBe(true);
-    expect(socket.sent.at(-1)).toEqual({ type: "topic:send", topic: "board:1", message: { x: 1 } });
+    expect(socket.sent.at(-1)).toEqual({ type: "topic:send", topic: "board:1", message: { x: 1 }, origin: expect.any(String) });
 
     socket.push({ type: "topic:message", topic: "board:1", message: { x: 2 }, from: { clientId: "c2", sub: "bob" } });
     expect(heard).toEqual([[{ x: 2 }, { clientId: "c2", userId: "bob" }]]);
@@ -670,6 +673,53 @@ describe("live reads", () => {
     expect(heard).toHaveLength(1);
 
     expect(() => db.$broadcast("no spaces")).toThrow(/not a topic name/);
+  });
+
+  test("a broadcast listener rejoins with the last sequence, hears each message once, and skips its own", async () => {
+    const { db, socket } = await live();
+    const topic = db.$broadcast<string>("board:1");
+    const heard: string[] = [];
+    topic.subscribe((message) => heard.push(message));
+    await tick();
+    socket.onopen?.({});
+    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    await tick();
+    socket.push({ type: "topic:joined", topic: "board:1", seq: 4 });
+    socket.push({ type: "topic:message", topic: "board:1", seq: 5, message: "five", from: { clientId: "c2", sub: "bob" } });
+    expect(topic.send("mine")).toBe(true);
+    const origin = (socket.sent.at(-1) as { origin: string }).origin;
+
+    // Reconnect: the rejoin asks for what came after 5.
+    socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+    expect(socket.sent.filter((message) => message.type === "topic:join").at(-1)).toEqual({ type: "topic:join", topic: "board:1", since: 5 });
+    // The replay overlaps: 5 again, our own 6, then 7.
+    socket.push({ type: "topic:message", topic: "board:1", seq: 5, message: "five", from: { clientId: "c2", sub: "bob" } });
+    socket.push({ type: "topic:message", topic: "board:1", seq: 6, message: "mine", origin, from: { clientId: "old", sub: "me" } });
+    socket.push({ type: "topic:message", topic: "board:1", seq: 7, message: "seven", from: { clientId: "c3", sub: "carol" } });
+    socket.push({ type: "topic:joined", topic: "board:1", seq: 7 });
+    expect(heard).toEqual(["five", "seven"]);
+  });
+
+  test("broadcast sends wait while disconnected, within a bound", async () => {
+    const { db, socket } = await live();
+    const { TOPIC_QUEUE_MESSAGES, TOPIC_QUEUE_MS } = await import("../src/client/data-client");
+    const topic = db.$broadcast<number>("busy");
+    const now = Date.now();
+    setSystemTime(new Date(now));
+    try {
+      for (let n = 0; n < TOPIC_QUEUE_MESSAGES; n += 1) expect(topic.send(n)).toBe("queued");
+      expect(topic.send(-1)).toBe(false);
+      // Old enough to be stale, they make room and are never sent.
+      setSystemTime(new Date(now + TOPIC_QUEUE_MS + 1));
+      expect(topic.send(100)).toBe("queued");
+      await tick();
+      socket.onopen?.({});
+      socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
+      await tick();
+      expect(socket.sent.filter((message) => message.type === "topic:send").map((message) => (message as { message: number }).message)).toEqual([100]);
+    } finally {
+      setSystemTime();
+    }
   });
 
   test("a live count reads pageInfo", async () => {

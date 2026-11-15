@@ -106,6 +106,22 @@ export const ENGINE_MIGRATIONS: readonly BundledWorkspaceMigration[] = [
         CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)
       ) AS TEXT) WHERE EXISTS (SELECT 1 FROM "_tx_state" WHERE high_water_seq > 0);`,
   },
+  {
+    // Recent topic messages, for clients rejoining after a reconnect.
+    // Ephemeral like the sockets: never logged, snapshotted or exported.
+    id: "tapedb_0009_topic_buffer",
+    sql: `CREATE TABLE "_topic_buffer" (
+      topic TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      at INTEGER NOT NULL,
+      frame TEXT NOT NULL,
+      PRIMARY KEY (topic, seq)
+    ) WITHOUT ROWID;
+    CREATE TABLE "_topic_seq" (
+      topic TEXT PRIMARY KEY NOT NULL,
+      seq INTEGER NOT NULL
+    ) WITHOUT ROWID;`,
+  },
 ];
 
 /** Configured migrations, applied in order on Durable Object boot. */

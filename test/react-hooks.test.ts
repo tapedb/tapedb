@@ -315,7 +315,7 @@ describe("useBroadcast", () => {
     expect(socket.sent.filter((sent) => sent.type === "topic:join")).toHaveLength(1);
 
     expect(send("hi")).toBe(true);
-    expect(socket.sent.at(-1)).toEqual({ type: "topic:send", topic: "board:1", message: "hi" });
+    expect(socket.sent.at(-1)).toEqual({ type: "topic:send", topic: "board:1", message: "hi", origin: expect.any(String) });
 
     unmount();
     expect(socket.sent.at(-1)).toEqual({ type: "topic:leave", topic: "board:1" });

@@ -93,7 +93,7 @@ On the client itself:
 | `$transaction(writes)` | several writes, applied atomically → `Promise<WriteResult[]>` |
 | `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject` (any size: past 16 MiB it goes up as a multipart upload of 16 MiB parts, abandoned if a part fails), `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` (the files the caller may read, each with `uploadedBy`) |
 | `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `subscribe(listener)` with `PresencePeer[]`, `leave()` |
-| `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean` (false, and dropped, when the socket is not open), `subscribe((message, from) => …, { onError? })`, which never hears your own messages; never stored, never delivered late |
+| `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean | "queued"` (`"queued"` while the socket is down: sent after reconnecting, up to 100 per topic for 60 s; `false` when that queue is full), `subscribe((message, from) => …, { onError? })`, which never hears your own messages; never stored, never delivered late |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
 | `$flush()` | waits until queued writes are acknowledged |
 | `$close()` | closes the socket |
@@ -113,7 +113,7 @@ types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 | `useLive(query)` | `LiveState`: `{ data, isLoading, error }` |
 | `useLivePage(pageQuery)` | `LivePage`: `{ rows, hasMore, isLoading, error, loadMore }` |
 | `usePresence(db, room, presence?)` | `PresencePeer[]`; publishes `presence` while mounted |
-| `useBroadcast(db, topic, onMessage?)` | **experimental**: a `send(message) => boolean` function |
+| `useBroadcast(db, topic, onMessage?)` | **experimental**: a `send(message) => boolean \| "queued"` function |
 
 ## `tapedb/worker`
 
@@ -127,7 +127,7 @@ the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
 | `identity` | `ClaimIdentity`: `getSubject(headers)` → `{ sub } \| null`, `getRole(workspaceId, sub)` → role or `null`, optional `limits` (`ClaimLimits`: `{ ip?, subject? }`, each `{ requests, perSeconds }` or `false`; defaults `{ requests: 300, perSeconds: 60 }` per IP before the session lookup and `{ requests: 30, perSeconds: 60 }` per subject after it; `false` turns both off), and optional `allowRequest(key)` → `boolean`, checked after the IP limit with `key` = `claim:<cf-connecting-ip>` (false → 429 `rate_limited`) |
 | `devClaims` | serve the development claim route; refused in production |
 | `retention` | `{ days }`: how long deleted or overwritten values may stay in history; default 30, at least 2 |
-| `topics` | **experimental**: `{ authorize }`, a `TopicAuthorizer` for broadcast topics |
+| `topics` | **experimental**: `TopicOptions` `{ authorize?, replaySeconds? }`: a `TopicAuthorizer` for broadcast topics, and the seconds of each topic kept for listeners that reconnect (default 60, `0` keeps none) |
 
 Also exported: `signRoleClaim(secret, { sub, workspaceId, role, iss?, aud?,
 ttlSeconds? }, now?)` → `{ token, expiresAt, expiresIn }` and
@@ -218,6 +218,14 @@ characters as frames of that size:
   data }`: slices of the topic message's JSON, relayed to listeners as
   `topic:message` with the same `part` and `data` and joined by the
   receiving client. The workspace never holds the whole message.
+
+Topics (**experimental**): every `topic:message` carries the topic's `seq`,
+and `origin` when the sender gave one (`topic:send { origin }`, a stable id
+of the sending client, so it can skip its own messages when they are
+replayed). `topic:join { topic, since? }` answers `topic:joined { topic, seq }`
+after replaying the kept messages with a sequence above `since` (the last
+`topics.replaySeconds`, default 60, at most 1,000 per topic; engine
+migration `tapedb_0009_topic_buffer`).
 
 A socket's live queries, presence and topics are kept in its attachment
 while they fit (12 KiB) and in the workspace's storage past that (engine
