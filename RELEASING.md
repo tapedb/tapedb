@@ -22,7 +22,7 @@ All gates must be true before the repository or package becomes public:
    writing.
 4. A clean consumer project installs the packed artifact and exercises writes,
    live queries, an upload, a migration and erasure through the packaged CLI.
-5. The changelog and README describe the release and its known limitations.
+5. The changelog and README describe the release and its design boundaries.
 6. An independent review and sustained production dogfooding have either
    happened or the maintainer has accepted the remaining risk in writing.
 7. The GitHub repository is made public only after the npm package is ready,

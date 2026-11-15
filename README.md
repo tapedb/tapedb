@@ -18,8 +18,8 @@ and how to answer GDPR access and erasure requests.
 
 TapeDB is a **private preview**. It has no public npm release and is not ready
 for production use. The repository and package stay private until every gate in
-[RELEASING.md](RELEASING.md) is satisfied. The design boundaries and known
-limitations are listed in [LIMITATIONS.md](LIMITATIONS.md). The packaged CLI
+[RELEASING.md](RELEASING.md) is satisfied. The design boundaries are listed
+in [LIMITATIONS.md](LIMITATIONS.md). The packaged CLI
 requires Node 22.18 or newer; the library itself runs in Cloudflare Workers.
 
 ```bash
