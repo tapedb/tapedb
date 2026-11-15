@@ -96,7 +96,19 @@ const RECOVERY_R2_RETRY_MS = 5_000;
 /** Recovery work a boot may do; Cloudflare resets a boot past 30 s. */
 let RECOVERY_BOOT_BUDGET_MS = 15_000;
 /** Recovery work per alarm while a large restore continues. */
-let RECOVERY_STEP_BUDGET_MS = 20_000;
+let RECOVERY_STEP_BUDGET_MS = 10_000;
+
+/** A restore was started and has not finished or failed. */
+function recoveryInProgress(sql: SqlStorage): boolean {
+  try {
+    return (
+      sql.exec<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = 'recovery_status'`).toArray()[0]?.value ===
+      "running"
+    );
+  } catch {
+    return false;
+  }
+}
 
 /** Test hook: recovery budgets (0 = one chunk or segment per step). */
 export function setRecoveryBudgetsForTests(boot: number, step: number): void {
@@ -187,7 +199,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // Recovery gets a budget well inside the 30 s Cloudflare allows a
       // boot; a larger restore continues from alarms (see recoverStep).
       try {
-        await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
+        if (recoveryInProgress(ctx.storage.sql)) {
+          // A restore an earlier boot or alarm started continues on alarms,
+          // outside the boot's 30 s, so a slow unit cannot reset the object
+          // at every boot.
+          this.recovering = true;
+          await ctx.storage.setAlarm(Date.now());
+        } else {
+          await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
+        }
       } catch (error) {
         // A failed boot would reset the object and fail every request with
         // an exception. The workspace answers 503 instead, and alarms retry.
@@ -213,12 +233,34 @@ export class WorkspaceRoom extends DurableObject<Env> {
    */
   private async recoverStep(budgetMs: number): Promise<void> {
     const started = Date.now();
+    let last = started;
+    let slowest = 0;
+    let unit = "start";
+    let slowestUnit = unit;
     const recovery = await recoverWorkspace(
       this.roomEnv.DATA,
       durableObjectRecoverySqlExecutor(this.ctx.storage),
       this.workspaceId,
-      { deadline: Date.now() + budgetMs }
+      {
+        // Called between chunks, segments and the parts of a large log
+        // entry. A unit as slow as the slowest so far must still fit: a step
+        // that runs past Cloudflare's 30 s of CPU resets the object.
+        shouldPause: () => Date.now() + slowest >= started + budgetMs,
+        onUnit: (next) => {
+          const now = Date.now();
+          if (now - last > slowest) {
+            slowest = now - last;
+            slowestUnit = unit;
+          }
+          unit = next;
+          last = now;
+        },
+      }
     );
+    if (Date.now() - last > slowest) {
+      slowest = Date.now() - last;
+      slowestUnit = unit;
+    }
     // Recovery may toggle foreign keys while restoring; make sure the
     // connection is back in enforcing mode before serving writes.
     this.ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
@@ -230,7 +272,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
     if (!recovery.recovered && recovery.reason === "paused") {
-      console.log("workspace_recovering", { workspaceId: this.workspaceId, stepMs: Date.now() - started });
+      console.log("workspace_recovering", { workspaceId: this.workspaceId, stepMs: Date.now() - started, slowestMs: slowest, slowestUnit });
       this.recovering = true;
       await this.ctx.storage.setAlarm(Date.now());
       return;
@@ -249,6 +291,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
         logSeq: recovery.logSeq,
         rows: recovery.rows,
         replayed: recovery.replayed,
+        stepMs: Date.now() - started,
+        slowestMs: slowest,
+        slowestUnit,
       });
     }
     if (wasRecovering) await this.scheduleNextDurabilityAlarm(Date.now());

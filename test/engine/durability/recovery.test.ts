@@ -593,6 +593,56 @@ describe("recoverWorkspace", () => {
     expect(entityRows(target.db)).toEqual(entityRows(source.db));
   });
 
+  test("a large entry is restored a part per step, and no step repeats finished lines or parts", async () => {
+    setLogPartBytesForTests(20_000);
+    try {
+      const source = createSource();
+      seedWorkspace(source);
+      const bucket = new FakeR2Bucket();
+      await publish(source, bucket, NOW);
+      run(source, {
+        txId: "many",
+        ops: Array.from({ length: 3000 }, (_, index) => ({
+          op: "update",
+          namespace: "folders",
+          id: `bulk-${String(index).padStart(5, "0")}`,
+          values: { name: `F${index}` },
+        })),
+      });
+      // Two large entries in the same segment.
+      for (const [txId, color] of [["green", "green"], ["blue", "blue"]]) {
+        run(source, { txId, ops: [{ op: "patchMany", namespace: "folders", where: { name: { $ne: "keep" } }, values: { color } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.MODERATOR);
+      }
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+      const parts = Number(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log_parts"`));
+      expect(parts).toBeGreaterThan(4);
+
+      // Every call stops at the first chance: one unit per call.
+      const target = createSource();
+      const executor = recoveryExecutor(target.db, target.sql);
+      let calls = 0;
+      let sawPartial = false;
+      for (;;) {
+        calls += 1;
+        expect(calls).toBeLessThan(200);
+        const result = await recoverWorkspace(bucket as unknown as R2Bucket, executor, TEST_WORKSPACE, { now: NOW + 20, shouldPause: () => true });
+        if (result.recovered) break;
+        const green = Number(scalar(target.db, `SELECT COUNT(*) FROM "folders" WHERE "color" = 'green'`));
+        if (green > 0 && green < 3000) sawPartial = true;
+      }
+      // The first entry was stopped between its parts at least once.
+      expect(sawPartial).toBe(true);
+      // Units: snapshot chunks, segments, parts. Repeating finished lines or
+      // parts would take more calls (or never finish).
+      const chunks = (await manifestOf(bucket)).tables.reduce((sum, table) => sum + table.chunks.length, 0);
+      const segments = [...bucket.objects.keys()].filter((key) => /\/log\/\d+-\d+\.ndjson$/.test(key)).length;
+      expect(calls).toBeLessThanOrEqual(chunks + segments + parts + 2);
+      expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    } finally {
+      setLogPartBytesForTests(null);
+    }
+  });
+
   test("replays a bulk write stored in parts, a part at a time", async () => {
     setLogPartBytesForTests(20_000);
     try {

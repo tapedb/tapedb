@@ -74,8 +74,10 @@ export interface RecoverWorkspaceOptions {
    * so the room recovers in budgeted steps.
    */
   deadline?: number;
-  /** Test hook: checked where `deadline` is; true pauses. */
+  /** Checked where `deadline` is; true pauses. */
   shouldPause?: () => boolean;
+  /** Called as each unit (a chunk, a segment, a part of an entry) starts, with its name. */
+  onUnit?: (unit: string) => void;
 }
 
 /** Thrown between steps when the time budget is spent; never escapes. */
@@ -300,7 +302,14 @@ function getMeta(sql: RecoverySqlExecutor, key: string): string | undefined {
   }
 }
 
-const PROGRESS_KEYS = ["recovery_manifest", "recovery_phase", "recovery_chunks_done", "recovery_segments_done"];
+const PROGRESS_KEYS = [
+  "recovery_manifest",
+  "recovery_phase",
+  "recovery_chunks_done",
+  "recovery_segments_done",
+  "recovery_lines_done",
+  "recovery_entry_parts",
+];
 
 function deleteMeta(sql: RecoverySqlExecutor, key: string): void {
   sql.exec(`DELETE FROM "_engine_meta" WHERE "key" = ?`, key);
@@ -644,7 +653,7 @@ async function restoreTable(
   table: ManifestTable & { sourceName?: string },
   allowedColumns: Set<string>,
   changes: SchemaChange[],
-  progress: { index: number; done: number; pause: () => void }
+  progress: { index: number; done: number; pause: (unit: string) => void }
 ): Promise<number> {
   let inserted = 0;
 
@@ -653,7 +662,7 @@ async function restoreTable(
     const index = progress.index;
     progress.index += 1;
     if (index < progress.done) continue;
-    progress.pause();
+    progress.pause(`chunk ${table.name} ${index}`);
     const object = await bucket.get(chunk.key);
     if (!object) {
       throw new Error(`Snapshot chunk ${chunk.key} is missing from R2.`);
@@ -705,7 +714,7 @@ async function restoreSnapshot(
   bucket: R2Bucket,
   sql: RecoverySqlExecutor,
   manifest: WorkspaceManifest,
-  pause: () => void
+  pause: (unit: string) => void
 ): Promise<{ tables: number; rows: number }> {
   const changes = changesAfter(manifest.schemaVersion);
   const tables = orderedTables(manifest);
@@ -1032,7 +1041,7 @@ async function replayLogs(
   baseSeq: number,
   logSeq: number,
   snapshotHasFiles: boolean,
-  pause: () => void
+  pause: (unit: string) => void
 ): Promise<{ replayed: number; maxSeq: number }> {
   const segments = await listLogSegments(bucket, workspaceId);
   let replayed = 0;
@@ -1053,7 +1062,7 @@ async function replayLogs(
     // be harmless (rows carry their seq), only slower.
     if (index < done) continue;
     if (segment.fromSeq > durableToSeq) continue;
-    pause();
+    pause(`segment ${segment.fromSeq}-${segment.toSeq}`);
 
     const object = await bucket.get(segment.key);
     if (!object) {
@@ -1065,11 +1074,17 @@ async function replayLogs(
     }
 
     const lines = parseLogLines(await object.text(), segment.key);
+    // Lines of this segment an earlier step finished, when it stopped
+    // between the parts of a large entry.
+    const linesDone = getMeta(sql, "recovery_lines_done")?.split(":").map(Number);
+    const skipTo = linesDone !== undefined && linesDone[0] === index ? linesDone[1] : 0;
+    const markLine = (seq: number) => setMeta(sql, "recovery_lines_done", `${index}:${seq}`);
 
     let pending: LogLine[] = [];
     const applyPending = () => sql.transactionSync(() => {
       const batch = pending;
       pending = [];
+      if (batch.length > 0) markLine(batch[batch.length - 1].seq);
       for (const line of batch) {
         // The snapshot already reflects everything at or below its base, so
         // those ops must not be applied again (a delete-then-insert history
@@ -1094,11 +1109,12 @@ async function replayLogs(
     });
 
     for (const line of lines) {
+      if (line.seq <= skipTo) continue;
       if (line.opsParts === undefined && startsImport(line.ops)) {
         applyPending();
         await importForeignKeys(sql, false);
         try {
-          sql.transactionSync(() => { if (line.seq > baseSeq) replayLine(sql, txSql, line); else recordReplayedLine(sql, line); });
+          sql.transactionSync(() => { if (line.seq > baseSeq) replayLine(sql, txSql, line); else recordReplayedLine(sql, line); markLine(line.seq); });
           foreignKeyCheck(sql);
         } finally { await importForeignKeys(sql, true); }
         maxSeq = Math.max(maxSeq, line.seq); replayed++;
@@ -1109,7 +1125,8 @@ async function replayLogs(
         continue;
       }
       applyPending();
-      if (await replayParts(bucket, sql, txSql, workspaceId, line, baseSeq)) replayed += 1;
+      if (await replayParts(bucket, sql, txSql, workspaceId, line, baseSeq, pause)) replayed += 1;
+      markLine(line.seq);
       if (line.seq > baseSeq) maxSeq = Math.max(maxSeq, line.seq);
     }
     applyPending();
@@ -1132,24 +1149,39 @@ async function replayParts(
   txSql: TxSqlExecutor,
   workspaceId: string,
   line: LogLine,
-  baseSeq: number
+  baseSeq: number,
+  pause: (unit: string) => void
 ): Promise<boolean> {
   const object = await bucket.get(logOpsKey(workspaceId, line.seq));
   if (!object) throw new Error(`The ops of log entry ${line.seq} are missing from R2.`);
+  // Parts an earlier step applied: each commits with its progress.
+  const progress = getMeta(sql, "recovery_entry_parts")?.split(":").map(Number);
+  const done = progress !== undefined && progress[0] === line.seq ? progress[1] : 0;
   let part = 0;
+  let appliedHere = 0;
   let applied = false;
   let importing = false;
+  if (done > 0) {
+    const first = sql.exec<{ ops: string }>(`SELECT ops FROM "_tx_log" WHERE seq = ?`, line.seq).toArray()[0];
+    if (first && startsImport(JSON.parse(first.ops) as unknown[])) { importing = true; await importForeignKeys(sql, false); }
+  }
   try {
   for await (const text of objectLines(object)) {
-    const ops = JSON.parse(text) as unknown[];
     const current = part;
-    if (part === 0 && startsImport(ops)) { importing = true; await importForeignKeys(sql, false); }
+    part += 1;
+    if (current < done) continue;
+    // Between parts a step may stop, once it applied one here; an import
+    // keeps its foreign keys off until its last part, so it runs to the end.
+    if (appliedHere > 0 && !importing) pause(`entry ${line.seq} part ${current}`);
+    appliedHere += 1;
+    const ops = JSON.parse(text) as unknown[];
+    if (current === 0 && startsImport(ops)) { importing = true; await importForeignKeys(sql, false); }
     sql.transactionSync(() => {
       if (current === 0) recordReplayedLine(sql, { ...line, ops });
       else sql.exec(`INSERT OR IGNORE INTO "_tx_log_parts" (seq, part, ops) VALUES (?, ?, ?)`, line.seq, current, text);
       if (line.seq > baseSeq && ops.length > 0 && replayLine(sql, txSql, { ...line, ops })) applied = true;
+      setMeta(sql, "recovery_entry_parts", `${line.seq}:${current + 1}`);
     });
-    part += 1;
   }
   if (importing) foreignKeyCheck(sql);
   } finally { if (importing) await importForeignKeys(sql, true); }
@@ -1163,6 +1195,8 @@ async function replayParts(
 async function* objectLines(object: R2ObjectBody): AsyncGenerator<string> {
   const reader = object.body.pipeThrough(new TextDecoderStream()).getReader();
   let buffered = "";
+  let finished = false;
+  try {
   for (;;) {
     const { value, done } = await reader.read();
     if (done) break;
@@ -1176,6 +1210,11 @@ async function* objectLines(object: R2ObjectBody): AsyncGenerator<string> {
     }
   }
   if (buffered.length > 0) yield buffered;
+  finished = true;
+  } finally {
+    // A step that stops between parts leaves the rest of the body unread.
+    if (!finished) await reader.cancel().catch(() => undefined);
+  }
 }
 
 function writeFinalState(
@@ -1247,7 +1286,8 @@ export async function recoverWorkspace(
   // Every call does at least one chunk or segment, so a slow first read can
   // never keep a recovery from moving forward.
   let started = false;
-  const pause = () => {
+  const pause = (unit: string) => {
+    options.onUnit?.(unit);
     const first = !started;
     started = true;
     if (first) return;
@@ -1332,7 +1372,7 @@ async function runRecovery(
   workspaceId: string,
   manifest: WorkspaceManifest,
   now: number,
-  pause: () => void
+  pause: (unit: string) => void
 ): Promise<RecoveryResult> {
   try {
     // Foreign keys are disabled for the restore so chunk order cannot break
