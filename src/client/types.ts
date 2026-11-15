@@ -435,7 +435,7 @@ export type ServerMessage =
 /**
  * Who sent a broadcast message.
  *
- * @experimental May change in a minor release; see API.md.
+ * @experimental May change in a minor release.
  */
 export interface TopicSender {
   /** The sending socket's client id: one per open client. */

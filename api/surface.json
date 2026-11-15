@@ -301,7 +301,7 @@
           "r2Key": "string",
           "size": "number",
           "contentType": "string | null",
-          "uploadedBy": "string | null",
+          "uploadedBy": "string",
           "createdAt": "number",
           "updatedAt": "number"
         }
@@ -448,7 +448,7 @@
           "path": "string",
           "size": "number | null",
           "contentType": "string | null",
-          "uploadedBy": "string | null"
+          "uploadedBy": "string"
         }
       },
       "filter": {
@@ -854,7 +854,7 @@
           "path": "string",
           "size": "number | null",
           "contentType": "string | null",
-          "uploadedBy": "string | null"
+          "uploadedBy": "string"
         }
       },
       "FileRule (src/engine/file-access.ts)": {
