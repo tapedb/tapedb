@@ -37,7 +37,7 @@ fix and disclosure. There is no bug bounty.
   `getSubject` and `getRole`; the role it returns is signed into the claim.
 - **Workspace isolation.** The Worker verifies the claim against the workspace
   id in the URL, then forwards a trusted, unsigned claim header to that
-  workspace's Durable Object. Client-supplied `x-tapedb-*` headers are removed
+  workspace's Durable Object. The client-supplied `x-tapedb-claims` header is replaced
   before forwarding. The Durable Object binding is not a public route.
 - **Read and write rules.** `role()`, `filter()` and `check()` are applied in
   the engine. A rule that throws denies. Erasing a workspace requires an owner

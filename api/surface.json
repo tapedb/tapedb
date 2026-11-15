@@ -525,6 +525,12 @@
         "kind": "function",
         "shape": "<F extends Fields>(fields: F, options?: ModelOptions) => Model<F>"
       },
+      "ModelOptions": {
+        "kind": "interface",
+        "shape": {
+          "table": "string | undefined"
+        }
+      },
       "OrderBy": {
         "kind": "type",
         "shape": "<F> | Partial<Record<FilterKeys<F>, \"asc\" | \"desc\">> | Partial<Record<FilterKeys<F>, \"asc\" | \"desc\">>[]"
@@ -606,6 +612,14 @@
         "kind": "type",
         "shape": "BundledWorkspaceMigration"
       },
+      "BundledWorkspaceMigration": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "sql": "string",
+          "changes": "SchemaChange[] | undefined"
+        }
+      },
       "ClaimError": {
         "kind": "class",
         "shape": {
@@ -683,6 +697,29 @@
       "signRoleClaim": {
         "kind": "function",
         "shape": "(secret: string, input: MintClaimInput, now?: number) => Promise<MintedClaim>"
+      },
+      "TapeDBRoom": {
+        "kind": "class",
+        "shape": {
+          "fetch": "(request: Request) => Promise<Response>",
+          "webSocketMessage": "(ws: WebSocket, message: string | ArrayBuffer) => Promise<void>",
+          "webSocketClose": "(ws: WebSocket, code: number, reason: string) => void",
+          "webSocketError": "(ws: WebSocket) => void",
+          "alarm": "() => Promise<void>",
+          "connect": "((socket: Socket) => void | Promise<void>) | undefined",
+          "__DURABLE_OBJECT_BRAND": "never",
+          "(declaration)": "extends DurableObject<Env>"
+        }
+      },
+      "TapeDBSchema": {
+        "kind": "interface",
+        "shape": {
+          "registry": "RegistryDefinition",
+          "permissions": "PermissionConfig",
+          "migrations": "BundledWorkspaceMigration[]",
+          "clientSchema": "ClientSchemaDefinition",
+          "files": "FileRules | undefined"
+        }
       },
       "TapeDBWorker": {
         "kind": "interface",
@@ -824,14 +861,6 @@
         "shape": {
           "count": "number",
           "queued": "true | undefined"
-        }
-      },
-      "BundledWorkspaceMigration (src/engine/migrations-bundle.ts)": {
-        "kind": "interface",
-        "shape": {
-          "id": "string",
-          "sql": "string",
-          "changes": "SchemaChange[] | undefined"
         }
       },
       "CheckDecision (src/model/schema.ts)": {
@@ -1142,12 +1171,6 @@
         "kind": "type",
         "shape": "AnyField | BelongsTo | HasMany"
       },
-      "ModelOptions (src/model/schema.ts)": {
-        "kind": "interface",
-        "shape": {
-          "table": "string | undefined"
-        }
-      },
       "Models (src/model/schema.ts)": {
         "kind": "type",
         "shape": "Record<string, Model>"
@@ -1408,16 +1431,6 @@
         "kind": "type",
         "shape": "( input: RequestInfo | URL, init?: RequestInit ) => Promise<Response>"
       },
-      "TapeDBSchema (src/schema.ts)": {
-        "kind": "interface",
-        "shape": {
-          "registry": "RegistryDefinition",
-          "permissions": "PermissionConfig",
-          "migrations": "BundledWorkspaceMigration[]",
-          "clientSchema": "ClientSchemaDefinition",
-          "files": "FileRules | undefined"
-        }
-      },
       "TargetFields (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<S, M extends Models> TargetOf<S> extends keyof M ? FieldsOf<M[TargetOf<S>]> : Fields"
@@ -1579,19 +1592,6 @@
       "WithInclude (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<M extends Models, F extends Fields, I> I extends object ? { [K in keyof I & RelationKeys<F>]: RelationOutput<M, F[K], I[K]>; } : unknown"
-      },
-      "WorkspaceRoom (src/engine/workspace-room.ts)": {
-        "kind": "class",
-        "shape": {
-          "fetch": "(request: Request) => Promise<Response>",
-          "webSocketMessage": "(ws: WebSocket, message: string | ArrayBuffer) => Promise<void>",
-          "webSocketClose": "(ws: WebSocket, code: number, reason: string) => void",
-          "webSocketError": "(ws: WebSocket) => void",
-          "alarm": "() => Promise<void>",
-          "connect": "((socket: Socket) => void | Promise<void>) | undefined",
-          "__DURABLE_OBJECT_BRAND": "never",
-          "(declaration)": "extends DurableObject<Env>"
-        }
       }
     }
   },

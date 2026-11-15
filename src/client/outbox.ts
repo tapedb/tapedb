@@ -89,6 +89,7 @@ export class IndexedDbOutbox implements Outbox {
   async add(entry: OutboxEntry): Promise<void> {
     try {
       await this.request("readwrite", (store) => store.put(entry));
+      await this.fallback.remove(entry.clientTxId);
     } catch {
       await this.fallback.add(entry);
     }
@@ -100,9 +101,10 @@ export class IndexedDbOutbox implements Outbox {
         store.getAll()
       );
       return sortEntries(
-        values
-          .filter(isOutboxEntry)
-          .filter((entry) => entry.workspaceId === workspaceId)
+        [...new Map([
+          ...values.filter(isOutboxEntry).filter((entry) => entry.workspaceId === workspaceId),
+          ...await this.fallback.list(workspaceId),
+        ].map((entry) => [entry.clientTxId, entry])).values()]
       );
     } catch {
       return this.fallback.list(workspaceId);
@@ -110,6 +112,7 @@ export class IndexedDbOutbox implements Outbox {
   }
 
   async remove(clientTxId: string): Promise<void> {
+    await this.fallback.remove(clientTxId);
     try {
       await this.request("readwrite", (store) => store.delete(clientTxId));
     } catch {
@@ -118,6 +121,7 @@ export class IndexedDbOutbox implements Outbox {
   }
 
   async clear(workspaceId?: string): Promise<void> {
+    await this.fallback.clear(workspaceId);
     try {
       if (workspaceId === undefined) {
         await this.request("readwrite", (store) => store.clear());
@@ -184,7 +188,11 @@ export class IndexedDbOutbox implements Outbox {
       }
 
       const request = run(transaction.objectStore(OUTBOX_STORE_NAME));
-      request.onsuccess = () => resolve(request.result);
+      // A successful request is not a committed write. Quota errors or an
+      // explicit abort can still roll the transaction back afterwards.
+      let result: T;
+      request.onsuccess = () => { result = request.result; };
+      transaction.oncomplete = () => resolve(result);
       request.onerror = () =>
         reject(request.error ?? new Error("IndexedDB request failed."));
       transaction.onerror = () =>

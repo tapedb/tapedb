@@ -1,7 +1,7 @@
 /**
  * Reads the role claim the Worker attaches after verifying the client JWT.
  *
- * Client-supplied `x-tapedb-*` headers are stripped before forwarding, so this
+ * The client-supplied `x-tapedb-claims` header is replaced before forwarding, so this
  * header is trusted. Nothing here reads a client header directly, verifies a
  * signature, or logs token material. A missing, malformed, expired or
  * wrong-workspace claim is a permission failure.

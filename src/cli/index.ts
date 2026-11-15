@@ -303,6 +303,7 @@ function wrangler(name: string, jurisdiction?: string): string {
   "compatibility_date": "${new Date().toISOString().slice(0, 10)}",
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
+  "observability": { "enabled": true, "traces": { "enabled": true } },
   "vars": ${vars},
   "durable_objects": {
     "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceRoom" }]
@@ -393,6 +394,7 @@ Next:
   npx wrangler r2 bucket create ${name}-data${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
   npx wrangler r2 bucket create ${name}-files${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
   npx wrangler secret put TAPEDB_CLAIM_SECRET
+  npx wrangler secret put TAPEDB_KEY_SECRET
   npx tapedb dev          # local database
   npx tapedb deploy       # once ENVIRONMENT is "production"
 

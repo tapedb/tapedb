@@ -31,7 +31,9 @@ All gates must be true before the repository or package becomes public:
    free plan, so this is applied at the visibility change; until then the CI
    checks are advisory.
 
-Gates 3 and 6 cannot be proven by CI alone.
+Gates 3 and 6 cannot be proven by CI alone. The scoped source review and
+validation record are in [SECURITY-REVIEW.md](SECURITY-REVIEW.md); that review
+does not claim to satisfy the independent review or production dogfooding gate.
 
 ## Package checks
 
@@ -40,11 +42,18 @@ Run these before a tag, from a clean checkout:
 ```bash
 bun install --frozen-lockfile
 bun run verify
+bun run test:e2e
+bunx playwright install --with-deps chromium
+bun run test:browser
 bun pm pack --destination /tmp/pack
 ```
 
+The CI consumer job exercises a freshly packed artifact in workerd, including
+writes, live queries, files, migrations, owner erasure and an R2 restore. The
+browser job checks IndexedDB persistence across a reload in Chromium.
+
 The package smoke test inside `verify` installs the tarball under Node in
-default npm, CommonJS and ESM projects. It uses Node 22.18 or newer and npm.
+default npm, CommonJS and ESM projects. It uses Node 22.18 or newer and npm, and emits consumer TypeScript declarations.
 
 Exercise the packed product as a consumer would:
 
