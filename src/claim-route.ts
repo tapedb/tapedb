@@ -2,12 +2,14 @@
  * `POST /_tapedb/claim` routing.
  *
  * Kept out of the Worker entry so it can be tested without the Workers runtime:
- * a claim either mints a token or refuses, and never touches a Durable Object.
+ * a claim either mints a token or refuses. The built-in limits come in as a
+ * function, so the route itself never addresses a Durable Object.
  */
 
 import { apiError, discardBody, json } from "./http";
 import { isWorkspaceId } from "./engine/r2-keys";
 import { mintClaim, mintDevClaim, type ClaimIdentity } from "./mint";
+import type { LimitDecision } from "./engine/claim-limits";
 
 export interface ClaimRouteEnv {
   ENVIRONMENT?: string;
@@ -30,6 +32,8 @@ export interface ClaimRouteOptions {
   env: ClaimRouteEnv;
   identity?: ClaimIdentity;
   devClaims?: boolean;
+  /** Takes one token from a built-in limit (claim-limits.ts); absent when limits are off. */
+  limit?: (kind: "ip" | "subject", value: string) => Promise<LimitDecision>;
 }
 
 /**
@@ -52,7 +56,7 @@ export async function handleClaimRequest(
   request: Request,
   options: ClaimRouteOptions
 ): Promise<Response> {
-  const { env, identity, devClaims = false } = options;
+  const { env, identity, devClaims = false, limit } = options;
   const isProduction = env.ENVIRONMENT === "production";
   const devEnabled = devClaims && env.TAPEDB_DEV_CLAIMS === "true";
 
@@ -103,6 +107,7 @@ export async function handleClaimRequest(
   return mintClaim(request, {
     identity,
     ...(identity.allowRequest ? { allowRequest: (key: string) => identity.allowRequest!(key) } : {}),
+    ...(limit ? { limit } : {}),
     secret: env.TAPEDB_CLAIM_SECRET,
     issuer: env.TAPEDB_CLAIM_ISSUER,
     audience: env.TAPEDB_CLAIM_AUDIENCE,

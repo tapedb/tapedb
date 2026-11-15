@@ -479,10 +479,10 @@ const tapedb = defineTapeDB({
       const member = await memberships.get(workspaceId, sub);
       return member ? WORKSPACE_ROLE_LEVELS[member.role] : null;
     },
-    // Optional, checked first: a Cloudflare rate-limit binding (CLAIM_LIMIT
-    // in wrangler.jsonc) per caller IP.
-    async allowRequest(key) {
-      return (await env.CLAIM_LIMIT.limit({ key })).success;
+    // Optional; these are the defaults.
+    limits: {
+      ip: { requests: 300, perSeconds: 60 },
+      subject: { requests: 30, perSeconds: 60 },
     },
   },
 });
@@ -491,9 +491,18 @@ export const WorkspaceRoom = tapedb.WorkspaceRoom;
 export default tapedb.worker;
 ```
 
-`POST /_tapedb/claim` returns `{ token, workspaceId, roleLevel, expiresAt, expiresIn }`
-(429 `rate_limited` when `allowRequest` says no);
-the client sends it as `Authorization: Bearer <token>` and renews on
+`POST /_tapedb/claim` returns `{ token, workspaceId, roleLevel, expiresAt, expiresIn }`.
+The route is rate-limited out of the box: a token bucket per caller IP, checked
+before your session lookup, and one per subject, checked after it. The buckets
+live in Durable Objects, so a count is exact and global rather than per
+location, and they store HMACs of the IP and subject, never the values. Past a
+limit the route answers 429 `rate_limited` with `Retry-After`. Set a limit to
+`false` (or `limits: false`) to turn it off, and add `allowRequest(key)` for a
+check of your own, run after the IP limit with `key` = `claim:<ip>`. If the
+limiter cannot be reached, claims go through and the Worker logs
+`claim_limit_unavailable`.
+The client
+ sends it as `Authorization: Bearer <token>` and renews on
 reconnect. On the WebSocket, where browsers cannot set that header, it rides
 in `Sec-WebSocket-Protocol` as `tapedb.claim.<token>` next to `tapedb`, which
 the room selects. A token is never read from the URL, so it stays out of

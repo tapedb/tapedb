@@ -7,6 +7,12 @@ published.
 
 ### Added
 
+- Built-in claim limits, on by default: `identity.limits` with exact, global
+  token buckets per caller IP (300 per 60 s, before the session lookup) and per
+  subject (30 per 60 s, after it), kept in limiter Durable Objects of the
+  workspace class (no new binding). Buckets are keyed by HMACs, never the IP or
+  subject. Past a limit: 429 `rate_limited` with `Retry-After`. `limits: false`
+  turns them off; `allowRequest` still runs, after the IP limit.
 - Per-file access rules: `schema(models, { files: { read, write, delete } })`
   with `role()`, `fileCheck()` over the caller and the file, or
   `attachedTo(model, path => id)` to make a file follow its row's rules. The

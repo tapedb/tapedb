@@ -20,6 +20,7 @@ import { filesPrefix, isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
 import { apiError, discardBody, json } from "../http";
 import { handleClaimRequest } from "../claim-route";
+import { limiterKey, limiterName, resolveClaimLimits, type ClaimLimits, type LimitDecision } from "../engine/claim-limits";
 import { mintClaim, mintDevClaim, type ClaimIdentity } from "../mint";
 import type { TapeDBSchema } from "../schema";
 import type { BundledWorkspaceMigration } from "../engine/migrations-bundle";
@@ -102,6 +103,34 @@ function roomRequest(request: Request, path: string): Request {
 }
 
 /** The workspace's Durable Object, inside TAPEDB_JURISDICTION when set. */
+/**
+ * One token from a built-in claim limit. A limiter that cannot be reached
+ * lets the request through and logs it: a limiter outage should not lock
+ * every user out of every workspace.
+ */
+async function takeClaimToken(
+  env: Env,
+  limits: Required<ClaimLimits>,
+  kind: "ip" | "subject",
+  value: string
+): Promise<LimitDecision> {
+  const limit = limits[kind];
+  if (!limit || !env.TAPEDB_CLAIM_SECRET) return { allowed: true, retryAfterSeconds: 0 };
+  try {
+    const { key, shard } = await limiterKey(env.TAPEDB_CLAIM_SECRET, `${kind}:${value}`);
+    const response = await workspaceStub(env, limiterName(shard)).fetch("https://tapedb.limits/limit", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ key, requests: limit.requests, perSeconds: limit.perSeconds }),
+    });
+    if (!response.ok) throw new Error(`limiter answered ${response.status}`);
+    return (await response.json()) as LimitDecision;
+  } catch (error) {
+    console.warn(JSON.stringify({ event: "claim_limit_unavailable", kind, message: error instanceof Error ? error.message : String(error) }));
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+}
+
 function workspaceStub(env: Env, workspaceId: string): DurableObjectStub<WorkspaceRoom> {
   let namespace = env.WORKSPACE;
   if (env.TAPEDB_JURISDICTION) {
@@ -453,6 +482,8 @@ async function handleStorage(
 
 export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   const { schema, identity, devClaims = false, migrations } = options;
+  // Validated once, when the Worker is defined.
+  const claimLimits = resolveClaimLimits(identity?.limits);
 
   // One schema per Worker instance. Installed at module evaluation, before any
   // request or Durable Object is constructed.
@@ -482,6 +513,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
           env,
           identity,
           devClaims,
+          ...(claimLimits.ip || claimLimits.subject ? { limit: (kind, value) => takeClaimToken(env, claimLimits, kind, value) } : {}),
         });
       }
 
@@ -564,6 +596,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
 export { ClaimError, verifyRoleClaim };
 export { signRoleClaim } from "../mint";
 export type { ClaimIdentity } from "../mint";
+export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
 export type { TopicAction, TopicAuthorizer } from "../engine/topics";
 export { WORKSPACE_ROLE_LEVELS };
 export type { Env };
