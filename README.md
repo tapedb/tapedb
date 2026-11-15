@@ -1,7 +1,9 @@
 # tapedb
 
 **A typed database for Cloudflare.** Describe your models once; `tapedb init`
-provisions one Durable Object class and two R2 buckets in your own account.
+generates the Worker and configuration for one Durable Object class and two R2
+buckets in your own account. Create the buckets with the commands printed by
+`init`, set the deployment secrets, and deploy the Worker.
 Each workspace gets its own SQLite database inside a Durable Object, every
 write is appended to a transaction log, the log ships to R2, and a cold start
 replays it. Reads can be awaited once or kept live over a WebSocket; writes

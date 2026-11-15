@@ -320,6 +320,7 @@ export { t } from "./model/fields";
 export type { DeleteBehaviour, ScalarKind } from "./model/fields";
 export { schema, model, role, filter, check, fileCheck, attachedTo, Model } from "./model/schema";
 export type {
+  ModelOptions,
   Access,
   AccessAuth,
   FileAccess,

@@ -642,4 +642,7 @@ export type { ClaimIdentity } from "../mint";
 export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
 export type { TopicAction, TopicAuthorizer, TopicOptions } from "../engine/topics";
 export { WORKSPACE_ROLE_LEVELS };
-export type { Env };
+export type { Env, TapeDBSchema, BundledWorkspaceMigration };
+
+// A named type for downstream declaration emission; no runtime room export.
+export type { WorkspaceRoom as TapeDBRoom };
