@@ -33,10 +33,21 @@ function envelope(value: SqlValue): { token: string; value: Envelope } | null {
 
 export function isPersonalCiphertext(value: SqlValue): boolean { return envelope(value) !== null; }
 
+/** Plaintext kept across reads, in UTF-16 units; the oldest goes first. */
+export const PLAINTEXT_CACHE_UNITS = 8 * 1024 * 1024;
+
+function units(key: string, value: SqlValue): number {
+  return key.length + (typeof value === "string" ? value.length : JSON.stringify(value ?? null).length);
+}
+
 /** Per-room keys and plaintext live only in memory. R2 stores wrapped keys. */
 export class PersonalRuntime {
   private readonly keys = new Map<string, Key | null>();
+  /** Bounded, least recently used first; a Durable Object has 128 MB. */
   private readonly clear = new Map<string, SqlValue>();
+  private clearUnits = 0;
+  /** What each read in progress has decrypted, kept until it finishes. */
+  private readonly reading = new Set<Map<string, SqlValue>>();
   private readonly erasing = new Set<string>();
   private readonly pending = new Map<string, Set<Promise<unknown>>>();
   private epoch = 0;
@@ -86,9 +97,36 @@ export class PersonalRuntime {
       const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv: bytes(iv), additionalData: bytes(this.aad(hash, key.id, model.table, id, field)) }, key.key, encoder.encode(JSON.stringify(value)));
       const token = PREFIX + JSON.stringify({ s: hash, k: key.id, n: b64(iv), c: b64(cipher), t: model.table, f: field, v: version } satisfies Envelope);
       // Cache the stored form, not an API projection.
-      this.clear.set(`${model.table}:${id}:${field}:${token}`, value);
+      this.remember(`${model.table}:${id}:${field}:${token}`, value);
       return model.attributes[field].type === "json" ? JSON.stringify(token) : token;
     });
+  }
+  private remember(cache: string, value: SqlValue): void {
+    for (const pinned of this.reading) pinned.set(cache, value);
+    const prior = this.clear.get(cache);
+    if (this.clear.has(cache)) {
+      this.clearUnits -= units(cache, prior!);
+      this.clear.delete(cache);
+    }
+    this.clear.set(cache, value);
+    this.clearUnits += units(cache, value);
+    for (const [key, old] of this.clear) {
+      if (this.clearUnits <= PLAINTEXT_CACHE_UNITS) break;
+      this.clear.delete(key);
+      this.clearUnits -= units(key, old);
+    }
+  }
+  private recall(cache: string): { value: SqlValue } | undefined {
+    for (const pinned of this.reading) if (pinned.has(cache)) return { value: pinned.get(cache)! };
+    if (!this.clear.has(cache)) return undefined;
+    const value = this.clear.get(cache)!;
+    this.clear.delete(cache);
+    this.clear.set(cache, value);
+    return { value };
+  }
+  /** Entries and size of the plaintext cache, for tests. */
+  cacheSize(): { entries: number; units: number } {
+    return { entries: this.clear.size, units: this.clearUnits };
   }
   private async open(model: NamespaceDefinition, id: string, field: string, item: { token: string; value: Envelope }): Promise<void> {
     const { value, token } = item;
@@ -103,7 +141,7 @@ export class PersonalRuntime {
         const raw = await crypto.subtle.decrypt({ name: "AES-GCM", iv: bytes(unb64(value.n)), additionalData: bytes(this.aad(value.s, key.id, value.t, id, value.f)) }, key.key, bytes(unb64(value.c)));
         plain = JSON.parse(decoder.decode(raw)) as SqlValue;
       }
-      if (version === this.epoch) this.clear.set(`${model.table}:${id}:${field}:${token}`, plain);
+      if (version === this.epoch) this.remember(`${model.table}:${id}:${field}:${token}`, plain);
     });
   }
   decodeRows(namespace: string, rows: SqlRow[]): SqlRow[] {
@@ -115,8 +153,9 @@ export class PersonalRuntime {
         const column = toSnakeCase(field); if (!definition.personal || !(column in copy)) continue;
         const item = envelope(copy[column]); if (!item) continue;
         const cache = `${model.table}:${String(row.id)}:${field}:${item.token}`;
-        if (!this.clear.has(cache)) { pending.push(() => this.open(model, String(row.id), field, item)); continue; }
-        copy[column] = this.clear.get(cache)!;
+        const known = this.recall(cache);
+        if (!known) { pending.push(() => this.open(model, String(row.id), field, item)); continue; }
+        copy[column] = known.value;
         if (copy[column] === null) erased.push(field);
       }
       if (erased.length) copy.__tapedb_erased = JSON.stringify(erased);
@@ -126,14 +165,22 @@ export class PersonalRuntime {
     return output;
   }
   async read<T>(fn: () => T): Promise<T> {
-    for (;;) {
-      try { return fn(); }
-      catch (error) {
-        if (!(error instanceof PersonalPending)) throw error;
-        // Bounded concurrent key reads and Web Crypto work.
-        let next = 0;
-        await Promise.all(Array.from({ length: Math.min(8, error.tasks.length) }, async () => { while (next < error.tasks.length) await error.tasks[next++](); }));
+    // Values this read decrypts stay available to it however small the
+    // shared cache is, so a read larger than the cache still finishes.
+    const pinned = new Map<string, SqlValue>();
+    this.reading.add(pinned);
+    try {
+      for (;;) {
+        try { return fn(); }
+        catch (error) {
+          if (!(error instanceof PersonalPending)) throw error;
+          // Bounded concurrent key reads and Web Crypto work.
+          let next = 0;
+          await Promise.all(Array.from({ length: Math.min(8, error.tasks.length) }, async () => { while (next < error.tasks.length) await error.tasks[next++](); }));
+        }
       }
+    } finally {
+      this.reading.delete(pinned);
     }
   }
   sql(base: SqlExecutor): SqlExecutor { return { ...base, decodeRows: (namespace, rows) => this.decodeRows(namespace, rows) }; }
@@ -179,8 +226,21 @@ export class PersonalRuntime {
     try {
       await Promise.allSettled([...(this.pending.get(hash) ?? [])]);
       await this.env.DATA.delete(personalKeyPrefix(this.workspace) + hash);
-      this.keys.delete(hash); this.clear.clear(); this.epoch++;
+      this.keys.delete(hash); this.clearPlaintext(); this.epoch++;
     } finally { this.erasing.delete(hash); }
   }
-  clearPlaintext(): void { this.clear.clear(); }
+  clearPlaintext(): void {
+    this.clear.clear();
+    this.clearUnits = 0;
+    for (const pinned of this.reading) pinned.clear();
+  }
+  /**
+   * The receipt hash of a transaction that may carry personal values: an
+   * HMAC under the key secret, so the hash kept in receipts and log lines
+   * cannot be brute-forced back to a short value (a phone number, a date).
+   */
+  async receiptHash(rawOps: unknown): Promise<string> {
+    const signature = await crypto.subtle.sign("HMAC", await this.naming, encoder.encode(`receipt:${JSON.stringify(rawOps)}`));
+    return Array.from(new Uint8Array(signature), (byte) => byte.toString(16).padStart(2, "0")).join("");
+  }
 }
