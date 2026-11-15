@@ -6,8 +6,10 @@ The boundaries TapeDB has by design, and the gates before a public release.
 
 - **Cloudflare only.** TapeDB is a library for Workers, Durable Objects and R2.
   It has no hosted control plane; you deploy and operate it in your own account.
-- **One writer per workspace.** Each workspace is one Durable Object. There is
-  no cross-workspace query, join or transaction, and no active-active setup.
+- **One writer per workspace.** Each workspace is one Durable Object, so
+  transactions are serializable without locks. A transaction or join stays in
+  one workspace, and there is no active-active setup. Reads span workspaces
+  with `db.$across`.
 - **Identity is yours.** The engine verifies short-lived claims but does not
   manage users, sessions, passwords or memberships.
 - **Personal fields use erasable keys.** Deleting a subject key makes its

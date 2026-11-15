@@ -12,7 +12,12 @@
  */
 
 export { createClient, Query, PageQuery, Write } from "./model/client";
+export { AcrossError } from "./model/across";
+export type { AcrossLiveState, AcrossQuery } from "./model/across";
 export type {
+  Across,
+  AcrossModel,
+  AcrossOptions,
   Client,
   ClientConfig,
   BroadcastTopic,

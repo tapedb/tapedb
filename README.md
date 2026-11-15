@@ -201,6 +201,31 @@ const peers = usePresence(db, "board:" + boardId, { name, color });
 After a commit, only subscriptions whose query touches a changed model re-run,
 batched at 50 ms, and clients receive row-level diffs. Counts and aggregates stay live too.
 
+### Across workspaces
+
+```ts
+const across = db.$across([teamA, teamB, teamC], {
+  getToken: (workspaceId) => fetchClaim(workspaceId),
+});
+
+const due = await across.task.findMany({ where: { done: false }, orderBy: { due: "asc" }, take: 50 });
+// each row carries its workspaceId
+
+const page = await across.task.findPage({ orderBy: { id: "desc" }, take: 50, after });
+const open = await across.task.count({ where: { done: false } });
+
+const { data, errors } = useLive(across.task.findMany({ orderBy: { title: "asc" } }));
+```
+
+`findMany`, `findFirst`, `findPage` and `count` read every listed workspace,
+each with its own claim, and merge the rows in `orderBy` order (the same order
+SQLite uses). Without `orderBy`, rows come workspace by workspace. A page's
+`cursor` keeps a position in each workspace. Live queries hold one socket per
+workspace and update as any of them changes. If a workspace fails, a one-off
+read rejects with `AcrossError`: its `errors` name the failed workspaces and
+`partial` holds the rest. A live state keeps the other workspaces' rows and
+lists the failures in `errors`. Writes and transactions stay in one workspace.
+
 ## Writes
 
 ```ts

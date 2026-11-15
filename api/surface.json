@@ -19,6 +19,58 @@
           "workspaceId": "string"
         }
       },
+      "Across": {
+        "kind": "type",
+        "shape": "<M extends Models> { [K in keyof M & string]: AcrossModel<M, FieldsOf<M[K]>>; }"
+      },
+      "AcrossError": {
+        "kind": "class",
+        "shape": {
+          "errors": "Record<string, unknown>",
+          "partial": "T",
+          "name": "string",
+          "message": "string",
+          "stack": "string | undefined",
+          "cause": "unknown",
+          "(declaration)": "<T = unknown> extends Error"
+        }
+      },
+      "AcrossLiveState": {
+        "kind": "interface",
+        "shape": {
+          "errors": "Record<string, QueryError>",
+          "data": "T | undefined",
+          "isLoading": "boolean",
+          "error": "QueryError | null",
+          "(declaration)": "<T> extends LiveState<T>"
+        }
+      },
+      "AcrossModel": {
+        "kind": "interface",
+        "shape": {
+          "findMany": "<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A) => AcrossQuery<Array<Result<M, F, A> & { workspaceId: string; }>>",
+          "findFirst": "<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A) => AcrossQuery<(Result<M, F, A> & { workspaceId: string; }) | null>",
+          "findPage": "<A extends PageArgs<M, F> = PageArgs<M, F>>(args?: A) => PromiseLike<Page<Result<M, F, A> & { workspaceId: string; }>>",
+          "count": "(args?: { where?: Where<F, M>; }) => AcrossQuery<number>",
+          "(declaration)": "<M extends Models, F extends Fields>"
+        }
+      },
+      "AcrossOptions": {
+        "kind": "interface",
+        "shape": {
+          "getToken": "((workspaceId: string) => Promise<string>) | undefined"
+        }
+      },
+      "AcrossQuery": {
+        "kind": "interface",
+        "shape": {
+          "key": "string",
+          "subscribe": "(listener: (state: AcrossLiveState<T>) => void) => () => void",
+          "snapshot": "() => AcrossLiveState<T>",
+          "then": "<TResult1 = T, TResult2 = never>(onfulfilled?: ((value: T) => TResult1 | PromiseLike<TResult1>) | null | undefined, onrejected?: ((reason: any) => TResult2 | PromiseLike<TResult2>) | null | undefined) => PromiseLike<TResult1 | TResult2>",
+          "(declaration)": "<T> extends PromiseLike<T>"
+        }
+      },
       "BroadcastTopic": {
         "kind": "interface",
         "experimental": true,
@@ -44,7 +96,7 @@
       },
       "Client": {
         "kind": "type",
-        "shape": "<M extends Models> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\" | \"$history\"> & { $export(): AsyncIterable<ExportRecord<M>>; $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>; }"
+        "shape": "<M extends Models> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\" | \"$history\"> & { $export(): AsyncIterable<ExportRecord<M>>; $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>; $across(workspaceIds: string[], options?: AcrossOptions): Across<M>; }"
       },
       "ClientConfig": {
         "kind": "interface",
@@ -538,7 +590,7 @@
       },
       "useLive": {
         "kind": "function",
-        "shape": "<T>(query: Query<T>) => LiveState<T>"
+        "shape": "<T>(query: AcrossQuery<T>) => AcrossLiveState<T> | <T>(query: Query<T>) => LiveState<T>"
       },
       "useLivePage": {
         "kind": "function",
