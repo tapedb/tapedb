@@ -30,6 +30,11 @@ published.
 
 ### Added
 
+- `tapedb migrate rollback [--to <id>]` writes the migration back to an
+  earlier schema: renames undone with their values, additions removed with
+  `--accept-data-loss`, drops refused. It lists the schema edits that make
+  `migrate check` pass. The schema after each migration is kept in
+  `tapedb/snapshots/<id>.json`.
 - Reads over several workspaces: `db.$across(ids, { getToken })` with
   `findMany`, `findFirst`, `findPage` and `count`, merged in `orderBy` order,
   rows tagged with `workspaceId`, page cursors per workspace, live through
