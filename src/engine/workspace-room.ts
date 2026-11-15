@@ -82,6 +82,17 @@ type CountRow = Record<string, SqlStorageValue> & { total: number };
 /** Delay between a write and the first durability pass. */
 const DURABILITY_ALARM_DELAY_MS = 30_000;
 
+/** Recovery work a boot may do; Cloudflare resets a boot past 30 s. */
+let RECOVERY_BOOT_BUDGET_MS = 15_000;
+/** Recovery work per alarm while a large restore continues. */
+let RECOVERY_STEP_BUDGET_MS = 20_000;
+
+/** Test hook: recovery budgets (0 = one chunk or segment per step). */
+export function setRecoveryBudgetsForTests(boot: number, step: number): void {
+  RECOVERY_BOOT_BUDGET_MS = boot;
+  RECOVERY_STEP_BUDGET_MS = step;
+}
+
 /**
  * One workspace engine, addressed by `idFromName(workspaceId)`.
  *
@@ -106,6 +117,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private pendingInvalidationNamespaces = new Set<string>();
 
   private erased = false;
+  /** Restoring from R2 in budgeted steps; requests wait (503). */
+  private recovering = false;
   private misplaced: string | null = null;
   private invalidationTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -132,24 +145,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
       // A wiped DO rebuilds from the R2 manifest before serving traffic. A
       // populated DO returns immediately without touching R2.
-      const recovery = await recoverWorkspace(
-        this.env.DATA,
-        durableObjectRecoverySqlExecutor(this.ctx.storage),
-        this.workspaceId
-      );
-      if (recovery.recovered) {
-        console.log("workspace_recovered", {
-          workspaceId: this.workspaceId,
-          baseSeq: recovery.baseSeq,
-          logSeq: recovery.logSeq,
-          rows: recovery.rows,
-          replayed: recovery.replayed,
-        });
-      }
-
-      // Recovery may toggle foreign keys while restoring; make sure the
-      // connection is back in enforcing mode before serving writes.
-      ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
+      // Recovery gets a budget well inside the 30 s Cloudflare allows a
+      // boot; a larger restore continues from alarms (see recoverStep).
+      await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
 
       // Sockets that closed while the object was evicted left their stored
       // state behind; hibernated sockets still open keep theirs.
@@ -157,8 +155,43 @@ export class WorkspaceRoom extends DurableObject<Env> {
         .map((socket) => (socket.deserializeAttachment() as { clientId?: unknown } | null)?.clientId)
         .filter((clientId): clientId is string => typeof clientId === "string");
       forgetOtherSockets(durableObjectSqlExecutor(ctx.storage), live);
-      await this.scheduleNextDurabilityAlarm(Date.now());
+      if (!this.recovering) await this.scheduleNextDurabilityAlarm(Date.now());
     });
+  }
+
+  /**
+   * One budgeted step of a restore from R2. Progress is committed as it
+   * goes; a step that runs out of budget leaves the workspace recovering,
+   * answering 503, and continues on an alarm right away.
+   */
+  private async recoverStep(budgetMs: number): Promise<void> {
+    const recovery = await recoverWorkspace(
+      this.env.DATA,
+      durableObjectRecoverySqlExecutor(this.ctx.storage),
+      this.workspaceId,
+      { deadline: Date.now() + budgetMs }
+    );
+    // Recovery may toggle foreign keys while restoring; make sure the
+    // connection is back in enforcing mode before serving writes.
+    this.ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
+    if (!recovery.recovered && recovery.reason === "paused") {
+      if (!this.recovering) console.log("workspace_recovering", { workspaceId: this.workspaceId });
+      this.recovering = true;
+      await this.ctx.storage.setAlarm(Date.now());
+      return;
+    }
+    const wasRecovering = this.recovering;
+    this.recovering = false;
+    if (recovery.recovered) {
+      console.log("workspace_recovered", {
+        workspaceId: this.workspaceId,
+        baseSeq: recovery.baseSeq,
+        logSeq: recovery.logSeq,
+        rows: recovery.rows,
+        replayed: recovery.replayed,
+      });
+    }
+    if (wasRecovering) await this.scheduleNextDurabilityAlarm(Date.now());
   }
 
   private get workspaceId(): string {
@@ -252,6 +285,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (this.erased) {
       await discardBody(request);
       return apiError(410, "workspace_erased", "This workspace was erased.");
+    }
+    if (this.recovering) {
+      // Serving a partly restored workspace would show data as missing that
+      // is only not restored yet.
+      await discardBody(request);
+      const response = apiError(503, "workspace_recovering", "The workspace is being restored from storage. Retry shortly.");
+      response.headers.set("retry-after", "2");
+      return response;
     }
     const response = await this.route(request);
     await discardBody(request);
@@ -1315,6 +1356,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
    */
   async alarm(): Promise<void> {
     if (this.erased || this.misplaced !== null) return;
+    if (this.recovering) {
+      try {
+        await this.recoverStep(RECOVERY_STEP_BUDGET_MS);
+      } catch (error) {
+        console.error("workspace_recovery_failed", { workspaceId: this.workspaceId, error: String(error) });
+        await this.ctx.storage.setAlarm(Date.now() + DURABILITY_ALARM_DELAY_MS);
+      }
+      return;
+    }
     const workspaceId = this.workspaceId;
 
     try {

@@ -63,10 +63,22 @@ export interface RecoverWorkspaceOptions {
   force?: boolean;
   /** Clock override for deterministic tests; defaults to `Date.now()`. */
   now?: number;
+  /**
+   * Epoch ms after which recovery stops at the next chunk or segment, keeps
+   * its progress, and returns `{ recovered: false, reason: "paused" }`. The
+   * next call resumes. A Durable Object resets if its boot runs past 30 s,
+   * so the room recovers in budgeted steps.
+   */
+  deadline?: number;
+  /** Test hook: checked where `deadline` is; true pauses. */
+  shouldPause?: () => boolean;
 }
 
+/** Thrown between steps when the time budget is spent; never escapes. */
+class RecoveryPaused extends Error {}
+
 export type RecoveryResult =
-  | { recovered: false; reason: "no_manifest" | "already_populated" }
+  | { recovered: false; reason: "no_manifest" | "already_populated" | "paused" }
   | {
       recovered: true;
       baseSeq: number;
@@ -226,6 +238,17 @@ function setMeta(sql: RecoverySqlExecutor, key: string, value: string): void {
   );
 }
 
+function getMeta(sql: RecoverySqlExecutor, key: string): string | undefined {
+  try {
+    const row = sql.exec<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = ?`, key).toArray()[0];
+    return row?.value;
+  } catch {
+    return undefined;
+  }
+}
+
+const PROGRESS_KEYS = ["recovery_manifest", "recovery_phase", "recovery_chunks_done", "recovery_segments_done"];
+
 function deleteMeta(sql: RecoverySqlExecutor, key: string): void {
   sql.exec(`DELETE FROM "_engine_meta" WHERE "key" = ?`, key);
 }
@@ -244,6 +267,7 @@ function markFailed(
   error: unknown
 ): void {
   setMeta(sql, "recovery_status", "failed");
+  for (const key of PROGRESS_KEYS) deleteMeta(sql, key);
   setMeta(sql, "recovery_error", truncate(messageOf(error)));
   setMeta(sql, "recovery_failed_at", String(now));
   deleteMeta(sql, "recovery_completed_at");
@@ -255,6 +279,7 @@ function markComplete(
   now: number
 ): void {
   setMeta(sql, "recovery_status", "complete");
+  for (const key of PROGRESS_KEYS) deleteMeta(sql, key);
   setMeta(sql, "recovery_completed_at", String(now));
   setMeta(sql, "recovery_base_seq", String(manifest.baseSeq));
   setMeta(sql, "recovery_log_seq", String(manifest.logSeq));
@@ -565,11 +590,17 @@ async function restoreTable(
   sql: RecoverySqlExecutor,
   table: ManifestTable & { sourceName?: string },
   allowedColumns: Set<string>,
-  changes: SchemaChange[]
+  changes: SchemaChange[],
+  progress: { index: number; done: number; pause: () => void }
 ): Promise<number> {
   let inserted = 0;
 
   for (const chunk of table.chunks) {
+    // Chunks committed by an earlier, interrupted attempt stay committed.
+    const index = progress.index;
+    progress.index += 1;
+    if (index < progress.done) continue;
+    progress.pause();
     const object = await bucket.get(chunk.key);
     if (!object) {
       throw new Error(`Snapshot chunk ${chunk.key} is missing from R2.`);
@@ -606,9 +637,12 @@ async function restoreTable(
     const ordered =
       parentColumn === undefined ? rows : orderParentsFirst(rows, parentColumn);
 
-    inserted += sql.transactionSync(() =>
-      insertChunk(sql, table.name, ordered, allowedColumns)
-    );
+    // The chunk and its checkpoint commit together.
+    inserted += sql.transactionSync(() => {
+      const count = insertChunk(sql, table.name, ordered, allowedColumns);
+      setMeta(sql, "recovery_chunks_done", String(index + 1));
+      return count;
+    });
   }
 
   return inserted;
@@ -617,15 +651,17 @@ async function restoreTable(
 async function restoreSnapshot(
   bucket: R2Bucket,
   sql: RecoverySqlExecutor,
-  manifest: WorkspaceManifest
+  manifest: WorkspaceManifest,
+  pause: () => void
 ): Promise<{ tables: number; rows: number }> {
   const changes = changesAfter(manifest.schemaVersion);
   const tables = orderedTables(manifest);
   let rows = 0;
+  const progress = { index: 0, done: Number(getMeta(sql, "recovery_chunks_done") ?? 0), pause };
 
   for (const table of tables) {
     const columns = readColumns(sql, table.name);
-    rows += await restoreTable(bucket, sql, table, columns, changes);
+    rows += await restoreTable(bucket, sql, table, columns, changes, progress);
   }
 
   return { tables: tables.length, rows };
@@ -908,11 +944,13 @@ async function replayLogs(
   workspaceId: string,
   baseSeq: number,
   logSeq: number,
-  snapshotHasFiles: boolean
+  snapshotHasFiles: boolean,
+  pause: () => void
 ): Promise<{ replayed: number; maxSeq: number }> {
   const segments = await listLogSegments(bucket, workspaceId);
   let replayed = 0;
   let maxSeq = 0;
+  const done = Number(getMeta(sql, "recovery_segments_done") ?? 0);
 
   // A segment that is present in R2 is durable even when the manifest write
   // that would have advanced `logSeq` lost the ETag race (crash between the
@@ -923,8 +961,12 @@ async function replayLogs(
     logSeq
   );
 
-  for (const segment of segments) {
+  for (const [index, segment] of segments.entries()) {
+    // Segments an interrupted attempt finished; replaying them again would
+    // be harmless (rows carry their seq), only slower.
+    if (index < done) continue;
     if (segment.fromSeq > durableToSeq) continue;
+    pause();
 
     const object = await bucket.get(segment.key);
     if (!object) {
@@ -974,6 +1016,7 @@ async function replayLogs(
       if (line.seq > baseSeq) maxSeq = Math.max(maxSeq, line.seq);
     }
     applyPending();
+    setMeta(sql, "recovery_segments_done", String(index + 1));
   }
 
   return { replayed, maxSeq };
@@ -1098,12 +1141,36 @@ export async function recoverWorkspace(
   options: RecoverWorkspaceOptions = {}
 ): Promise<RecoveryResult> {
   const now = options.now ?? Date.now();
+  // Every call does at least one chunk or segment, so a slow first read can
+  // never keep a recovery from moving forward.
+  let started = false;
+  const pause = () => {
+    const first = !started;
+    started = true;
+    if (first) return;
+    if (options.shouldPause?.() ?? (options.deadline !== undefined && Date.now() >= options.deadline)) {
+      throw new RecoveryPaused();
+    }
+  };
+
+  // A run that was cut off (a reset past the boot's 30 s, an eviction, a
+  // crash) left "running" behind with its progress: resume it. Its rows are
+  // partial, so they never count as a populated workspace.
+  const interrupted = getMeta(sql, "recovery_status") === "running";
+  const pinned = interrupted ? getMeta(sql, "recovery_manifest") : undefined;
+  if (pinned !== undefined) {
+    return runRecovery(bucket, sql, workspaceId, JSON.parse(pinned) as WorkspaceManifest, now, pause);
+  }
+  if (interrupted) {
+    // Cut off by a version that kept no progress: start over.
+    clearRestoredRows(sql);
+  }
 
   // A normal boot must not touch R2. Only a genuinely fresh DO is a recovery
   // candidate: no entity rows AND no local write history. A workspace that
   // deliberately emptied its tables still owns that state, and restoring it
   // would resurrect deleted rows and rewind `_tx_state`.
-  if (!options.force && (hasEntityRows(sql) || hasWriteHistory(sql))) {
+  if (!options.force && !interrupted && (hasEntityRows(sql) || hasWriteHistory(sql))) {
     return { recovered: false, reason: "already_populated" };
   }
 
@@ -1130,16 +1197,33 @@ export async function recoverWorkspace(
     }),
   };
 
-  markRunning(sql, now);
-
-  try {
-    // Drop any stale log rows before replaying. The replay below rebuilds
-    // `_tx_log` from the durable segments, so a row here belongs to a database
-    // that is about to be replaced.
+  // Drop any stale log rows before replaying. The replay rebuilds `_tx_log`
+  // from the durable segments, so a row here belongs to a database that is
+  // about to be replaced. The manifest is pinned, so every resumed step
+  // restores the same snapshot.
+  sql.transactionSync(() => {
+    markRunning(sql, now);
     sql.exec(`DELETE FROM "_tx_log"`);
     sql.exec(`DELETE FROM "_tx_log_parts"`);
     sql.exec(`DELETE FROM "_tx_receipts"`);
+    setMeta(sql, "recovery_manifest", JSON.stringify(manifest));
+    setMeta(sql, "recovery_phase", "restore");
+    setMeta(sql, "recovery_chunks_done", "0");
+    setMeta(sql, "recovery_segments_done", "0");
+  });
+  return runRecovery(bucket, sql, workspaceId, manifest, now, pause);
+}
 
+/** Restore, then replay, from wherever an earlier attempt got to. */
+async function runRecovery(
+  bucket: R2Bucket,
+  sql: RecoverySqlExecutor,
+  workspaceId: string,
+  manifest: WorkspaceManifest,
+  now: number,
+  pause: () => void
+): Promise<RecoveryResult> {
+  try {
     // Foreign keys are disabled for the restore so chunk order cannot break
     // self-references; `PRAGMA foreign_key_check` below is the safety net.
     // When the pragma cannot change (for example inside an outer transaction)
@@ -1150,10 +1234,13 @@ export async function recoverWorkspace(
       // Fall back to dependency ordering.
     }
 
-    let restored: { tables: number; rows: number };
+    let restored: { tables: number; rows: number } = { tables: manifest.tables.length, rows: 0 };
     try {
-      restored = await restoreSnapshot(bucket, sql, manifest);
-      foreignKeyCheck(sql);
+      if (getMeta(sql, "recovery_phase") !== "replay") {
+        restored = await restoreSnapshot(bucket, sql, manifest, pause);
+        foreignKeyCheck(sql);
+        setMeta(sql, "recovery_phase", "replay");
+      }
     } finally {
       try {
         sql.exec("PRAGMA foreign_keys = ON");
@@ -1170,13 +1257,18 @@ export async function recoverWorkspace(
       workspaceId,
       manifest.baseSeq,
       manifest.logSeq,
-      manifest.tables.some((table) => table.name === ENGINE_TABLES.files)
+      manifest.tables.some((table) => table.name === ENGINE_TABLES.files),
+      pause
+    );
+    // Lines replayed by earlier attempts count too.
+    const replayedTo = Number(
+      sql.exec<{ seq: number | null }>(`SELECT MAX(seq) AS seq FROM "_tx_log" WHERE seq > ?`, manifest.baseSeq).toArray()[0]?.seq ?? 0
     );
 
     // Bookkeeping and the success marker commit together so the workspace can
     // never look caught up while its sequence state is only half written.
     sql.transactionSync(() => {
-      writeFinalState(sql, manifest, replay.maxSeq, now);
+      writeFinalState(sql, manifest, Math.max(replay.maxSeq, replayedTo), now);
       // Receipts from snapshots taken before they recorded a time: their
       // retry window starts now.
       sql.exec(`UPDATE "_tx_receipts" SET at = ? WHERE at = 0`, now);
@@ -1215,6 +1307,10 @@ export async function recoverWorkspace(
         : {}),
     };
   } catch (error) {
+    if (error instanceof RecoveryPaused) {
+      // Progress is committed; the next call resumes.
+      return { recovered: false, reason: "paused" };
+    }
     try {
       markFailed(sql, now, error);
     } catch {

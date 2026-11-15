@@ -24,6 +24,15 @@ published.
 
 ### Fixed
 
+- A workspace whose restore from R2 took longer than 30 seconds could never
+  recover, and could be served half restored: recovery ran inside the Durable
+  Object's boot, which Cloudflare resets after 30 seconds, and the reset left
+  restored rows that the next boot took for a populated workspace (rows
+  present, sequence 0). Recovery now commits its progress per snapshot chunk
+  and log segment, spends at most 15 seconds per boot, continues on alarms,
+  and resumes a run that was cut off. Until it is complete the workspace
+  answers 503 `workspace_recovering`. This was the intermittent export failure
+  in the staging drill after the class wipe.
 - A socket's live queries, presence and topics lived in its attachment,
   which Cloudflare caps at 16 KiB: past that (a few dozen ordinary live
   queries on one client, or one large one) every subscribe failed. They now

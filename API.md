@@ -242,5 +242,6 @@ usually handles:
 | `conflict` | 409 | a `clientTxId` reused with different operations |
 | `retry_expired` | 410 | a retry too old to deduplicate safely; send it again as a new write if it still applies |
 | `workspace_erased` | 410 | the workspace was erased |
+| `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |
 | `jurisdiction_mismatch` | 500 | the Worker reached a room outside `TAPEDB_JURISDICTION` |
