@@ -92,7 +92,7 @@ export function useBroadcast<T = unknown>(
   db: { $broadcast<M>(topic: string): BroadcastTopic<M> },
   topic: string,
   onMessage?: (message: T, from: TopicSender) => void
-): (message: T) => boolean {
+): (message: T) => boolean | "queued" {
   const handle = useMemo(() => db.$broadcast<T>(topic), [db, topic]);
   const listener = useRef(onMessage);
   listener.current = onMessage;

@@ -346,7 +346,7 @@ const stop = room.subscribe((peers) => render(peers));
 
 File bytes live in the `FILES` bucket (any size, uploaded in parts past
 16 MiB); their index, with who uploaded each file, is written through the
-transaction log, so a restore keeps it. Presence is ephemeral and rides the
+transaction log, so a restore keeps it. Presence rides the
 workspace socket.
 
 Who may read, write and delete each file is set in the schema. Without
@@ -386,9 +386,13 @@ const send = useBroadcast(db, "board:" + boardId, (message, from) => flash(from.
 
 A message reaches every other client listening on the topic, with the
 sender's client id and user id; your own messages are not echoed back.
-Nothing is stored or replayed, and a send while the socket is down is dropped
-rather than delivered late. Listening clients rejoin their topics after a
-reconnect. Messages of any size go through: a large one travels in parts the
+A dropped connection loses nothing recent. Sends made while the socket is
+down wait (up to 100 per topic, for 60 seconds; `send` returns `"queued"`)
+and go out after reconnecting. The workspace keeps the last 60 seconds of
+each topic (`topics.replaySeconds`, at most 1,000 messages), and a listener
+that reconnects gets what it missed before new messages, each once, in
+order. Presence converges the same way: after a reconnect the client
+publishes its state again and receives everyone else's. Messages of any size go through: a large one travels in parts the
 workspace relays as they come, and the receiving client joins them. By default any member of the workspace may listen and send; decide
 per topic on the Worker:
 

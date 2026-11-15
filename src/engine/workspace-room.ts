@@ -54,7 +54,7 @@ import { importWorkspace, assertEmpty } from "./import-workspace";
 import { readMove, writeMove, sourceEnvironment, jurisdiction, copyWorkspace, type MoveState } from "./workspace-move";
 import { flushPending, snapshotWorkspace } from "./durability";
 import { viewDependsOnSubject } from "./tx-permissions";
-import { isTopic, topicAllowed } from "./topics";
+import { isTopic, REPLAY_MESSAGES, topicAllowed, topicReplayMs } from "./topics";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
 import { authorizeFile, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
@@ -946,6 +946,51 @@ export class WorkspaceRoom extends DurableObject<Env> {
       attachment.topics = [...topics, topic];
       this.writeSocket(ws, attachment);
     }
+    // What the socket missed while it was away, then where the topic is now.
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const since = payload.since;
+    if (Number.isInteger(since) && (since as number) >= 0 && topicReplayMs() > 0) {
+      const frames = sql.all<{ frame: string }>(
+        `SELECT frame FROM "_topic_buffer" WHERE topic = ? AND seq > ? AND at >= ? ORDER BY seq`,
+        topic,
+        since as number,
+        Date.now() - topicReplayMs()
+      );
+      for (const { frame } of frames) {
+        try {
+          ws.send(frame);
+        } catch {
+          return;
+        }
+      }
+    }
+    const seq = Number(sql.one<{ seq: number }>(`SELECT seq FROM "_topic_seq" WHERE topic = ?`, topic)?.seq ?? 0);
+    this.send(ws, { type: "topic:joined", topic, seq });
+  }
+
+  /**
+   * The next sequence number of a topic, and the frame kept for replay.
+   * Old frames go as new ones arrive, by age and by count.
+   */
+  private sequenceTopicFrame(topic: string, frame: (seq: number) => string): string {
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const now = Date.now();
+    let text = "";
+    sql.transactionSync(() => {
+      const seq = Number(sql.one<{ seq: number }>(`SELECT seq FROM "_topic_seq" WHERE topic = ?`, topic)?.seq ?? 0) + 1;
+      sql.exec(`INSERT INTO "_topic_seq" (topic, seq) VALUES (?, ?) ON CONFLICT(topic) DO UPDATE SET seq = excluded.seq`, topic, seq);
+      text = frame(seq);
+      if (topicReplayMs() > 0) {
+        sql.exec(`INSERT INTO "_topic_buffer" (topic, seq, at, frame) VALUES (?, ?, ?, ?)`, topic, seq, now, text);
+        sql.exec(
+          `DELETE FROM "_topic_buffer" WHERE topic = ? AND (seq <= ? OR at < ?)`,
+          topic,
+          seq - REPLAY_MESSAGES,
+          now - topicReplayMs()
+        );
+      }
+    });
+    return text;
   }
 
   private handleTopicLeave(
@@ -999,10 +1044,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
     const from = { clientId: attachment.clientId, sub: attachment.sub };
-    const delivery = JSON.stringify(
-      isPart
-        ? { type: "topic:message", topic, part: { id: part!.id, index: part!.index, last: part!.last }, data: payload.data, from }
-        : { type: "topic:message", topic, message: payload.message, from }
+    // A client instance's stable id, so it can skip its own messages when they
+    // are replayed to it on a later connection.
+    const origin = typeof payload.origin === "string" && payload.origin.length <= 128 ? payload.origin : undefined;
+    const delivery = this.sequenceTopicFrame(topic, (seq) =>
+      JSON.stringify(
+        isPart
+          ? { type: "topic:message", topic, seq, part: { id: part!.id, index: part!.index, last: part!.last }, data: payload.data, from, ...(origin ? { origin } : {}) }
+          : { type: "topic:message", topic, seq, message: payload.message, from, ...(origin ? { origin } : {}) }
+      )
     );
     const now = Math.floor(Date.now() / 1000);
     for (const other of this.ctx.getWebSockets?.() ?? []) {

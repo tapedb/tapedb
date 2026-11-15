@@ -3,8 +3,10 @@
  * workspace, on the socket they already hold.
  *
  * A socket joins topics; a message sent to a topic reaches every other socket
- * joined to it, with the sender's client id and subject. Nothing is stored or
- * replayed: a socket that is not joined when a message is sent never sees it.
+ * joined to it, with the sender's client id and subject, and a per-topic
+ * sequence number. The room keeps the last `replaySeconds` of each topic
+ * (default 60, at most `REPLAY_MESSAGES`): a client that rejoins after a
+ * reconnect passes the last sequence it saw and gets what it missed first.
  * Joined topics live in the socket attachment, so they survive hibernation,
  * and the client rejoins them after a reconnect.
  *
@@ -37,10 +39,34 @@ export type TopicAuthorizer = (context: {
 }) => boolean;
 
 let authorizer: TopicAuthorizer | null = null;
+let replayMs = 60_000;
 
-/** Installed by `defineTapeDB({ topics: { authorize } })`. */
-export function configureTopics(options: { authorize?: TopicAuthorizer } | undefined): void {
+/** Messages kept per topic for replay, however short their age. */
+export const REPLAY_MESSAGES = 1000;
+
+/**
+ * Topic options for `defineTapeDB({ topics })`.
+ *
+ * @experimental May change in a minor release.
+ */
+export interface TopicOptions {
+  authorize?: TopicAuthorizer;
+  /** Seconds of each topic kept for clients that reconnect; 0 keeps none. Default 60. */
+  replaySeconds?: number;
+}
+
+/** Installed by `defineTapeDB({ topics })`. */
+export function configureTopics(options: TopicOptions | undefined): void {
   authorizer = options?.authorize ?? null;
+  const seconds = options?.replaySeconds ?? 60;
+  if (!(typeof seconds === "number" && seconds >= 0 && Number.isFinite(seconds))) {
+    throw new Error("topics.replaySeconds must be a number of seconds, 0 or more.");
+  }
+  replayMs = seconds * 1000;
+}
+
+export function topicReplayMs(): number {
+  return replayMs;
 }
 
 export function topicAllowed(claim: RoleClaim, topic: string, action: TopicAction): boolean {
