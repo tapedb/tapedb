@@ -11,6 +11,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
 import { stableStringify } from "../client/stable";
+import type { AcrossLiveState, AcrossQuery } from "../model/across";
 import type { PresencePeer } from "../client/types";
 import type { BroadcastTopic, LiveState, Page, PageQuery, PresenceRoom, Query } from "../model/client";
 import type { TopicSender } from "../client/types";
@@ -21,16 +22,18 @@ import type { TopicSender } from "../client/types";
  * A new query object every render is fine: the subscription follows the
  * query's key, not its identity, so equal arguments keep one subscription.
  */
-export function useLive<T>(query: Query<T>): LiveState<T> {
+export function useLive<T>(query: AcrossQuery<T>): AcrossLiveState<T>;
+export function useLive<T>(query: Query<T>): LiveState<T>;
+export function useLive<T>(query: Query<T> | AcrossQuery<T>): LiveState<T> {
   const queryRef = useRef(query);
   queryRef.current = query;
 
   const subscribe = useMemo(
-    () => (onChange: () => void) => queryRef.current.subscribe(onChange),
+    () => (onChange: () => void) => (queryRef.current as Query<T>).subscribe(onChange),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [query.key]
   );
-  const snapshot = () => queryRef.current.snapshot();
+  const snapshot = () => (queryRef.current as Query<T>).snapshot();
   return useSyncExternalStore(subscribe, snapshot, snapshot);
 }
 

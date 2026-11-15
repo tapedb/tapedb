@@ -30,6 +30,11 @@ published.
 
 ### Added
 
+- Reads over several workspaces: `db.$across(ids, { getToken })` with
+  `findMany`, `findFirst`, `findPage` and `count`, merged in `orderBy` order,
+  rows tagged with `workspaceId`, page cursors per workspace, live through
+  `subscribe` and `useLive`, and `AcrossError` with the partial result when a
+  workspace fails.
 - Opt-in write audit: `defineTapeDB({ audit: true })` records each write's
   `sub` and role in the log and its R2 lines, restored by recovery, and a
   per-row history read with `db.$history({ model, id })` (admins and owners,
