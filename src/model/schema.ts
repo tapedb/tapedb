@@ -206,7 +206,7 @@ export type HasManyKeys<F> = Keys<F, HasMany>;
 export type RelationKeys<F> = BelongsToKeys<F> | HasManyKeys<F>;
 
 type OutputOf<S> = S extends Field<infer K, infer O, boolean>
-  ? KindOutput[K] | (O extends true ? null : never)
+  ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never)
   : never;
 
 type ForeignKeyOf<S> = S extends BelongsTo<string, infer O>
@@ -214,7 +214,7 @@ type ForeignKeyOf<S> = S extends BelongsTo<string, infer O>
   : never;
 
 /** A stored row: its fields, the foreign keys of its `belongsTo` relations, and the system fields. */
-export type Row<F> = { id: string; createdAt: number; updatedAt: number } & {
+export type Row<F> = { id: string; createdAt: number; updatedAt: number; $erased?: string[] } & {
   [K in ScalarKeys<F>]: OutputOf<F[K]>;
 } & {
   [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>;
@@ -223,7 +223,7 @@ export type Row<F> = { id: string; createdAt: number; updatedAt: number } & {
 /** Fields filterable and sortable: scalars except json, foreign keys and `id`. */
 export type FilterKeys<F> =
   | "id"
-  | { [K in ScalarKeys<F>]: F[K] extends Field<"json", boolean, boolean> ? never : K }[ScalarKeys<F>]
+  | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string } ? never : F[K] extends Field<"json", boolean, boolean> ? never : K }[ScalarKeys<F>]
   | `${BelongsToKeys<F>}Id`;
 
 type InputOf<S> = S extends Field<infer K, infer O, boolean>
@@ -399,7 +399,7 @@ type Flags<K extends PropertyKey> = { [P in K]?: boolean };
 
 export interface AggregateMeasures<F> {
   /** `true` counts rows; an object counts rows (`_all`) and non-null values per field. */
-  _count?: true | ({ _all?: boolean } & Flags<keyof Row<F>>);
+  _count?: true | ({ _all?: boolean } & Flags<Exclude<keyof Row<F>, { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string } ? K : never }[ScalarKeys<F>] | "$erased">>);
   _sum?: Flags<NumberKeys<F>>;
   _avg?: Flags<NumberKeys<F>>;
   _min?: Flags<OrderedKeys<F>>;
@@ -483,14 +483,24 @@ export function schema<M extends Models>(
         throw new Error(`"${key}.${name}" is a system field and cannot be declared.`);
       }
       if (member instanceof Field) {
+        const subject = "personalSubject" in member ? String(member.personalSubject) : undefined;
+        if (subject && subject !== "self" && !(subject in definition.fields) &&
+          !Object.entries(definition.fields).some(([field, value]) => value instanceof BelongsTo && `${field}Id` === subject))
+          throw new Error(`Personal field ${key}.${name} refers to missing subject ${subject}.`);
+        if (subject && subject !== "self" && subject in definition.fields) {
+          const owner = definition.fields[subject];
+          if (!(owner instanceof Field) || owner.kind !== "string" || "personalSubject" in owner)
+            throw new Error(`Personal field ${key}.${name} requires a non-personal string subject.`);
+        }
         attributes[name] = {
           type: member.kind,
           // A field with a default is filled in by create, so the engine never
           // sees it missing; it stays required for writes that bypass create.
-          optional: member.isOptional,
+          optional: subject ? true : member.isOptional,
+          ...(subject ? { personal: { subject, required: !member.isOptional, ...(member.hasDefault ? { defaultValue: storedDefault(member.kind, member.defaultValue) } : {}) } } : {}),
           indexed: member.isIndexed || undefined,
           unique: member.isUnique || undefined,
-          ...(member.hasDefault ? { default: storedDefault(member.kind, member.defaultValue) } : {}),
+          ...(member.hasDefault && !subject ? { default: storedDefault(member.kind, member.defaultValue) } : {}),
         } as AttributeDefinition;
         info.scalars[name] = {
           kind: member.kind,
@@ -498,7 +508,7 @@ export function schema<M extends Models>(
           hasDefault: member.hasDefault,
           defaultValue: member.defaultValue,
         };
-        if (member.kind !== "json") info.filterable.add(name);
+        if (member.kind !== "json" && !subject) info.filterable.add(name);
       } else if (member instanceof BelongsTo) {
         if (!(member.target in models)) {
           throw new Error(`"${key}.${name}" belongs to "${member.target}", which is not a model.`);

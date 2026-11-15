@@ -30,6 +30,7 @@ export interface AttributeReference {
 
 export interface AttributeDefinition {
   type: AttributeType;
+  personal?: { subject: string; required: boolean; defaultValue?: string | number | null };
   optional?: boolean;
   /**
    * Column default, as stored (booleans 0/1, dates epoch ms, json as text).

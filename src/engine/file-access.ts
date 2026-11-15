@@ -1,3 +1,4 @@
+import { PersonalPending } from "./personal";
 /**
  * Per-file access rules: who may read, write and delete each file.
  *
@@ -128,7 +129,8 @@ function readableRows(sql: SqlExecutor, claim: RoleClaim, model: string, ids: st
         const id = (row as { id?: unknown }).id;
         if (typeof id === "string") visible.add(id);
       }
-    } catch {
+    } catch (error) {
+      if (error instanceof PersonalPending) throw error;
       // A read the caller may not make at all shows nothing.
     }
   }

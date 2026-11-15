@@ -48,6 +48,11 @@ export class FakeRoomContext {
     this.storage = {
       sql: createSqlStorage(db),
       transactionSync: <T>(fn: () => T): T => db.transaction(fn)(),
+      transaction: async <T>(fn: () => Promise<T>): Promise<T> => {
+        db.exec("BEGIN");
+        try { const result = await fn(); db.exec("COMMIT"); return result; }
+        catch (error) { db.exec("ROLLBACK"); throw error; }
+      },
       getAlarm: async () => this.alarm,
       setAlarm: async (at: number) => {
         this.alarm = at;

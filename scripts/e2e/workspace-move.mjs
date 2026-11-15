@@ -13,6 +13,7 @@ assert.equal((await call("transact", tx)).status, 200);
 assert.equal((await call("files/move.txt", "moved file", "PUT")).status, 201);
 const large = new Uint8Array(9 * 1024 * 1024).fill(73);
 assert.equal((await call("files/large.bin", large, "PUT")).status, 201);
+assert.equal((await call("transact", { txId: "personal", ops: [{ op: "insert", namespace: "person", id: "moved-person", values: { name: "Encrypted move" } }] })).status, 200);
 const before = await (await call("export")).text();
 let response;
 for (let i = 0; i < 100; i++) {
@@ -28,5 +29,9 @@ const records = text => text.trim().split("\n").map(line => JSON.parse(line)).fi
 assert.deepEqual(records(await (await call("export")).text()), records(before));
 assert.equal((await (await call("transact", { ...tx, txId: "retry" })).json()).result.applied, 0);
 assert.equal((await call("move", { to: BASE.includes("staging-eu") ? "eu" : "none" })).status, 200);
+assert.equal((await call("subjects/moved-person", undefined, "DELETE")).status, 200);
+const erasedPerson = await (await call("query", { query: { person: {} } })).json();
+assert.equal(erasedPerson.data.person[0].name, null);
+assert.deepEqual(erasedPerson.data.person[0].$erased, ["name"]);
 assert.equal((await call("", undefined, "DELETE")).status, 200);
 console.log("workspace move: data, files, retry receipts and erasure passed");

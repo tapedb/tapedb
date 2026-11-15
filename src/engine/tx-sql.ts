@@ -15,6 +15,7 @@ export type SqlValue = string | number | null | ArrayBuffer;
 export type SqlRow = Record<string, SqlValue>;
 
 export interface SqlExecutor {
+  decodeRows?(namespace: string, rows: SqlRow[]): SqlRow[];
   /** Runs a statement and returns the number of rows it changed. */
   exec(sql: string, ...params: SqlValue[]): number;
   /** Runs a query and returns every row. */

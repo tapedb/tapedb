@@ -23,7 +23,7 @@ for await (const record of db.$export()) {
   if (record.type === "file") assert.equal(record.file.path, "notes/hello.txt");
   if (record.type === "end") end = record;
 }
-assert.deepEqual(header.models, ["board", "column", "task"]);
+assert.deepEqual(header.models, ["person", "board", "column", "task"]);
 assert.deepEqual(counts, { board: 1, column: 200, task: 2400 });
 assert.equal(end.rows, 2601);
 assert.equal(end.consistent, true);

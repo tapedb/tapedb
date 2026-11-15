@@ -16,6 +16,12 @@ published.
 
 ### Added
 
+- Personal string and JSON fields with per-subject encryption, owner key
+  erasure, nullable erased reads, live refresh and resumable encryption of
+  existing rows. Queries and exports decrypt; durable history holds ciphertext.
+- Quiet workspaces replace receipt-bearing snapshots after hash pruning, so
+  old operation hashes leave R2 within retention without another user write.
+
 - `tapedb move --to eu|fedramp|none`: resumable relocation of workspaces,
   durable history, receipt ids and indexed files. Sources freeze writes,
   destinations refuse existing data, and traffic switches before source

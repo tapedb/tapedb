@@ -88,6 +88,7 @@ run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "init",
 const schemaSource = `import { fileCheck, model, schema, t } from "tapedb/schema";
 
 export default schema({
+  person: model({ name: t.string().personal({ subject: "self" }), data: t.json().personal({ subject: "self" }).optional() }),
   board: model({
     name: t.string(),
     columns: t.hasMany("column"),
@@ -111,6 +112,7 @@ export default schema({
 });
 `;
 writeFileSync(join(project, "tapedb.schema.ts"), schemaSource);
+run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "dev", "--name", "personal_fields"], { cwd: project });
 run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "check"], { cwd: project });
 for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(project, file));
 // Two local namespaces exercise the same move protocol without jurisdictions.
@@ -300,7 +302,10 @@ async function deployStaging(name) {
   // A deployed test Worker is reachable by anyone, so its dev claim route
   // mints only for this run's token: set it first, then turn the route on.
   const devToken = `${randomUUID()}${randomUUID()}`.replaceAll("-", "");
-  for (const [secretName, value] of [["TAPEDB_CLAIM_SECRET", secret], ["TAPEDB_DEV_CLAIMS_TOKEN", devToken], ["TAPEDB_DEV_CLAIMS", "true"]]) {
+  const keyPath = join(tmpdir(), "tapedb-e2e-key-secret");
+  if (!existsSync(keyPath)) writeFileSync(keyPath, `${randomUUID()}${randomUUID()}`, { mode: 0o600 });
+  const keySecret = readFileSync(keyPath, "utf8");
+  for (const [secretName, value] of [["TAPEDB_KEY_SECRET", keySecret], ["TAPEDB_CLAIM_SECRET", secret], ["TAPEDB_DEV_CLAIMS_TOKEN", devToken], ["TAPEDB_DEV_CLAIMS", "true"]]) {
     const put = wrangler(["secret", "put", secretName], `${value}\n`);
     if (!put.ok) throw new Error(`setting ${secretName} failed:\n${put.output}`);
   }

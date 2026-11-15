@@ -47,7 +47,7 @@ export interface ManyFilter<W> {
  * columns hold boards) are unfolded only as far as a filter actually goes.
  */
 type Scalars<F extends Fields> = {
-  [K in FilterKeys<F>]?: Scalar | FieldFilter;
+  [K in FilterKeys<F> | { [P in keyof F]: F[P] extends { personalSubject: string } ? P : never }[keyof F]]?: K extends FilterKeys<F> ? Scalar | FieldFilter : never;
 };
 
 export type Where<F extends Fields = Fields, M extends Models = Models> = Scalars<F> & {
