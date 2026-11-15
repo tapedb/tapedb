@@ -35,6 +35,21 @@ try {
     assert.equal(readFileSync(join(dir, "package.json"), "utf8"), installedManifest);
     run("migrate", "check");
 
+    // Compile the installed public types, including declaration emission for
+    // the generated Worker. Source-only typechecks miss private-name leaks in
+    // bundled .d.ts files (TS2742 in a downstream library or Worker).
+    writeFileSync(join(dir, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        target: "ES2022", module: "ESNext", moduleResolution: "Bundler",
+        strict: true, skipLibCheck: true, declaration: true,
+        emitDeclarationOnly: true, outDir: "types",
+        types: [join(root, "node_modules/@cloudflare/workers-types")],
+      },
+      include: ["worker.ts", "tapedb.schema.ts", "tapedb/migrations.gen.ts"],
+    }));
+    command(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", dir], dir);
+    assert.ok(existsSync(join(dir, "types/worker.d.ts")));
+
     // Relative imports must still resolve from beside the original schema.
     const schemaPath = join(dir, "tapedb.schema.ts");
     const original = readFileSync(schemaPath, "utf8");

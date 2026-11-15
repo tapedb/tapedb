@@ -100,6 +100,28 @@
 
 ### Fixed
 
+- The IndexedDB outbox waits for the transaction to commit before acknowledging
+  persistence. If a put succeeds but its transaction aborts, the entry remains
+  in the fallback queue, including after IndexedDB becomes readable again.
+  Removing or clearing entries also clears their fallback copies.
+- Packed consumers can emit TypeScript declarations for the generated schema
+  and Worker. Public type-only names (`ModelOptions`, `TapeDBSchema`,
+  `BundledWorkspaceMigration`, `TapeDBRoom`) keep private names out of inferred
+  consumer exports. The room has no new runtime export.
+- `init` and the starter explain bucket creation and both deployment secrets;
+  generated configurations enable logs and traces.
+
+### Release validation
+
+- CI runs the packed consumer's complete workerd scenarios and migration,
+  workspace-erasure and R2-recovery drills on every pull request and main push.
+- Chromium tests exercise an offline write across a full page reload,
+  transaction replay, workspace isolation and abort-after-success persistence.
+- Package smoke tests compile consumer declarations in default npm, CommonJS
+  and ESM projects. IndexedDB abort and fallback regressions have unit coverage.
+
+### Fixed
+
 - Personal fields: `aggregate`/`groupBy` accepted them, returning ciphertext
   envelopes (with the subject's pseudonymous hash) as group keys and min/max;
   they are refused like filters and ordering. The decrypted-value cache had no

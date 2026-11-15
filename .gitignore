@@ -9,3 +9,7 @@ dist/
 # wrangler local state and example installs
 .wrangler/
 examples/*/package-lock.json
+
+# Browser test output
+test-results/
+playwright-report/

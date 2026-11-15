@@ -139,7 +139,11 @@ and checking claims outside the claim route (for example a backend that calls
 export or erase), `ClaimError`,
 `MAX_UPLOAD_BYTES` (25 MiB, the most one upload request carries; files of any size go up in parts), `WORKSPACE_ROLE_LEVELS`, and the types
 `DefineTapeDBOptions`, `TapeDBWorker`, `AppMigration`, `ClaimIdentity`,
-`Env`, and **experimental** `TopicAction` and `TopicAuthorizer`.
+`Env`, `TapeDBSchema`, `BundledWorkspaceMigration`, and the type-only
+`TapeDBRoom` name for the class returned by `defineTapeDB`. These named types
+allow consumers to emit declarations without leaking private names.
+`ModelOptions` is also exported from `tapedb/schema`.
+`TopicAction` and `TopicAuthorizer` are **experimental**.
 
 ### Bindings and settings (`Env`)
 
@@ -149,6 +153,7 @@ export or erase), `ClaimError`,
 | `DATA` | R2 bucket | log segments and snapshots |
 | `FILES` | R2 bucket, optional | uploads |
 | `TAPEDB_CLAIM_SECRET` | secret | HS256 key for claims |
+| `TAPEDB_KEY_SECRET` | secret | stable wrapping and HMAC key for personal fields; required when the schema has personal fields |
 | `TAPEDB_CLAIM_ISSUER`, `TAPEDB_CLAIM_AUDIENCE` | var, optional | checked when set |
 | `ENVIRONMENT` | var | `production` refuses the development claim route |
 | `TAPEDB_MOVE_FROM` | var, optional | source jurisdiction while moving: `none`, `eu` or `fedramp`; pair with `DATA_FROM` and `FILES_FROM`, and `WORKSPACE_FROM` for a different namespace |

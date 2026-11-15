@@ -6,6 +6,7 @@
 
 export { schema, model, t, role, filter, check, fileCheck, attachedTo } from "./schema";
 export type {
+  ModelOptions,
   Access,
   AccessAuth,
   FileAccess,

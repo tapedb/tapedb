@@ -59,6 +59,9 @@ Each workspace applies new migrations the next time it wakes. A drop needs
 npx wrangler r2 bucket create tapedb-starter-data
 npx wrangler r2 bucket create tapedb-starter-files
 npx wrangler secret put TAPEDB_CLAIM_SECRET
+npx wrangler secret put TAPEDB_KEY_SECRET
+# Keep TAPEDB_KEY_SECRET stable: replacing it makes personal fields unreadable.
+# Configure identity (getSubject/getRole) and remove devClaims before deployment.
 # set "ENVIRONMENT": "production" in wrangler.jsonc (or an env), then
 npm run deploy           # refuses a dev configuration or an unmigrated schema
 ```

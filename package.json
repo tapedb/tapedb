@@ -28,8 +28,16 @@
     "offline-first",
     "sync"
   ],
-  "files": ["dist", "README.md",
-    "API.md", "PRIVACY.md", "SECURITY.md", "LIMITATIONS.md", "RELEASING.md", "LICENSE"],
+  "files": [
+    "dist",
+    "README.md",
+    "API.md",
+    "PRIVACY.md",
+    "SECURITY.md",
+    "LIMITATIONS.md",
+    "RELEASING.md",
+    "LICENSE"
+  ],
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -57,7 +65,9 @@
     "verify": "bun run typecheck && bun test && bun run build && bun run test:package",
     "test:package": "node scripts/package-smoke.mjs",
     "test": "bun test test",
-    "api:update": "bun scripts/api-surface.ts --write"
+    "api:update": "bun scripts/api-surface.ts --write",
+    "test:e2e": "node scripts/e2e.mjs",
+    "test:browser": "playwright test --config scripts/browser/playwright.config.ts"
   },
   "dependencies": {},
   "peerDependencies": {
@@ -71,9 +81,11 @@
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261110.1",
     "@happy-dom/global-registrator": "^21.0.4",
+    "@playwright/test": "1.65.1",
     "@types/node": "^26.6.6",
     "@types/react": "19",
     "@types/react-dom": "19",
+    "fake-indexeddb": "6.2.8",
     "react": "19",
     "react-dom": "19",
     "tsup": "^9.0.0",
