@@ -2,9 +2,6 @@
 
 ## 0.1.0 - Unreleased
 
-TapeDB is still a private preview. No npm package or public repository has been
-published.
-
 ### Changed
 
 - Requests made while a workspace is being restored from R2 (503
