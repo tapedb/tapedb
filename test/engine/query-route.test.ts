@@ -146,7 +146,7 @@ describe("WorkspaceRoom query route", () => {
     context = new FakeContext(db, WORKSPACE);
     room = new WorkspaceRoom(
       context as unknown as DurableObjectState,
-      {} as unknown as Env
+      { DATA: { get: async () => null } } as unknown as Env
     );
     await context.ready;
   });

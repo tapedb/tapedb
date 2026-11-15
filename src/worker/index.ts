@@ -18,6 +18,7 @@ import { configureFileAccess, fileRulesConfigured } from "../engine/file-access"
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
 import { filesPrefix, isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
+import { sourceEnvironment, readMove } from "../engine/workspace-move";
 import { apiError, discardBody, json } from "../http";
 import { handleClaimRequest } from "../claim-route";
 import { limiterKey, limiterName, resolveClaimLimits, type ClaimLimits, type LimitDecision } from "../engine/claim-limits";
@@ -249,6 +250,8 @@ async function recordUpload(
     }
     return apiError(502, "file_index_failed", "Could not record the upload in the workspace index; nothing was stored.");
   }
+  const indexed = await recorded.json() as { previousKey?: string };
+  if (indexed.previousKey && indexed.previousKey !== key) await bucket.delete(indexed.previousKey);
   return json({ key, size }, 201);
 }
 
@@ -279,8 +282,9 @@ async function handleMultipart(
   if (request.method === "POST" && query.has("uploads")) {
     await discardBody(request);
     const contentType = request.headers.get("content-type") ?? "application/octet-stream";
-    const upload = await bucket.createMultipartUpload(key, { httpMetadata: { contentType } });
-    return json({ uploadId: upload.uploadId }, 201);
+    const version = crypto.randomUUID();
+    const upload = await bucket.createMultipartUpload(`${key}/.tapedb/${version}`, { httpMetadata: { contentType } });
+    return json({ uploadId: `${version}:${upload.uploadId}` }, 201);
   }
 
   const uploadId = query.get("uploadId");
@@ -288,7 +292,11 @@ async function handleMultipart(
     await discardBody(request);
     return apiError(400, "invalid_upload", "A multipart request needs ?uploads or ?uploadId=.");
   }
-  const upload = bucket.resumeMultipartUpload(key, uploadId);
+  const separator = uploadId.indexOf(":");
+  if (separator >= 0 && /^[0-9a-f-]{36}$/.test(uploadId.slice(0, separator))) {
+    key = `${key}/.tapedb/${uploadId.slice(0, separator)}`;
+  }
+  const upload = bucket.resumeMultipartUpload(key, separator >= 0 ? uploadId.slice(separator + 1) : uploadId);
 
   try {
     if (request.method === "PUT") {
@@ -389,7 +397,7 @@ async function handleStorage(
     return new Response(decision.body, { status: decision.status, headers: { "content-type": "application/json" } });
   };
 
-  const key = storageKey(workspaceId, objectKey);
+  let key = storageKey(workspaceId, objectKey);
   const query = new URL(request.url).searchParams;
 
   if (query.has("uploads") || query.has("uploadId")) {
@@ -423,6 +431,7 @@ async function handleStorage(
     const contentType =
       request.headers.get("content-type") ?? "application/octet-stream";
 
+    key = `${key}/.tapedb/${crypto.randomUUID()}`;
     await bucket.put(key, body, { httpMetadata: { contentType } });
 
     // Bytes are stored; now record them where the database can see them. A
@@ -431,10 +440,18 @@ async function handleStorage(
     return recordUpload(env, bucket, workspaceId, objectKey, key, body.byteLength, contentType, trustedClaim);
   }
 
+  const locate = async (action: "read" | "delete") => {
+    const response = await callRoom(env, workspaceId, "/files/locate", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path: objectKey, action }) }, trustedClaim);
+    if (!response.ok) return null;
+    const data = await response.json() as { key?: string };
+    return typeof data.key === "string" ? data.key : null;
+  };
   if (request.method === "GET" || request.method === "HEAD") {
     const refused = await authorize("read");
     if (refused) return refused;
-    const object = request.method === "HEAD" ? await bucket.head(key) : await bucket.get(key);
+    const storedKey = await locate("read");
+    if (!storedKey) return apiError(404, "not_found", "No such object.");
+    const object = request.method === "HEAD" ? await bucket.head(storedKey) : await bucket.get(storedKey);
     if (!object) return apiError(404, "not_found", "No such object.");
     const headers = new Headers();
     headers.set("etag", object.httpEtag);
@@ -452,7 +469,7 @@ async function handleStorage(
   if (request.method === "DELETE") {
     const refused = await authorize("delete");
     if (refused) return refused;
-    await bucket.delete(key);
+    const storedKey = await locate("delete");
 
     const forgotten = await callRoom(
       env,
@@ -473,6 +490,7 @@ async function handleStorage(
       );
     }
 
+    if (storedKey) await bucket.delete(storedKey);
     return new Response(null, { status: 204 });
   }
 
@@ -544,6 +562,20 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
           const claim = await authenticateEngineRequest(request, env, workspaceId);
           role = claim.role;
           trustedClaim = encodeTrustedRoleClaim(claim);
+          if (roomPath === "/move") {
+            if (request.method !== "POST") return apiError(405, "method_not_allowed", "Move a workspace with POST.");
+            if (role < WORKSPACE_ROLE_LEVELS.OWNER) return apiError(403, "insufficient_role", "Only an owner can move a workspace.");
+            return callRoom(env, workspaceId, "/move/run", { method: "POST", body: request.body, duplex: "half" } as RequestInit, trustedClaim);
+          }
+
+          if (roomPath.startsWith("/move/")) return apiError(404, "not_found", "No public route.");
+          if (env.TAPEDB_MOVE_FROM !== undefined && (await readMove(env.DATA, workspaceId))?.state !== "ready") {
+            env = sourceEnvironment(env);
+            const state = await readMove(env.DATA, workspaceId);
+            const read = request.method === "GET" || request.method === "HEAD" || roomPath === "/query";
+            if (state?.state === "frozen" && !read) return apiError(409, "workspace_moving", "Writes resume after the move.");
+          }
+
 
           // The file index is written only by the byte routes below, which
           // check roles and keep index and bytes in step. A client may list

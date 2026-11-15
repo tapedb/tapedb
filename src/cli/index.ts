@@ -23,6 +23,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, readMigrations, readSnapshot } from "./migrate";
 import { mintToken, startStudio } from "./studio";
+import { moveWorkspaces } from "./move";
 
 let schemaLoads = 0;
 
@@ -219,11 +220,14 @@ export function checkJurisdiction(
   if (wanted !== undefined && !JURISDICTIONS.includes(wanted)) {
     return `TAPEDB_JURISDICTION is ${JSON.stringify(wanted)}; Cloudflare's jurisdictions are ${JURISDICTIONS.join(" and ")}.`;
   }
-  const outside = buckets.filter((bucket) => bucket.jurisdiction !== wanted);
+  const from = vars.TAPEDB_MOVE_FROM === "none" || vars.TAPEDB_MOVE_FROM === "" ? undefined : vars.TAPEDB_MOVE_FROM;
+  if (vars.TAPEDB_MOVE_FROM !== undefined && from !== undefined && !JURISDICTIONS.includes(from)) return "TAPEDB_MOVE_FROM must be eu, fedramp or none.";
+  if (vars.TAPEDB_MOVE_FROM !== undefined && !buckets.some(bucket => bucket.binding === "DATA_FROM")) return "A move requires the original DATA_FROM bucket.";
+  const outside = buckets.filter(bucket => bucket.jurisdiction !== (bucket.binding?.endsWith("_FROM") ? from : wanted));
   if (outside.length === 0) return null;
   const names = outside.map((bucket) => `${bucket.binding ?? "?"} (${bucket.bucket_name ?? "?"}: ${bucket.jurisdiction ?? "no jurisdiction"})`).join(", ");
   return wanted === undefined
-    ? `R2 buckets ${names} are restricted to a jurisdiction but TAPEDB_JURISDICTION is not set, so the Durable Objects holding the same data are not. Set TAPEDB_JURISDICTION, before the first deploy.`
+    ? `R2 buckets ${names} are restricted to a jurisdiction but TAPEDB_JURISDICTION is not set, so the Durable Objects holding the same data are not. Set TAPEDB_JURISDICTION and use tapedb move for existing workspaces.`
     : `TAPEDB_JURISDICTION is "${wanted}" but R2 buckets ${names} are not. Create them with \`wrangler r2 bucket create <name> --jurisdiction ${wanted}\` and add "jurisdiction": "${wanted}" to each r2_buckets entry.`;
 }
 
@@ -391,6 +395,7 @@ Usage:
   tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
   tapedb export --workspace <uuid> [--url <worker-url>] [--out <file>]
   tapedb erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]
+  tapedb move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]
 
 Commands:
   init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,
@@ -589,6 +594,7 @@ export async function run(argv: string[]): Promise<number> {
   if (command === "studio") return studio(argv.slice(1));
   if (command === "export") return exportWorkspace(argv.slice(1));
   if (command === "erase") return eraseWorkspace(argv.slice(1));
+  if (command === "move") return moveWorkspaces(argv.slice(1));
   if (command === undefined || command === "--help" || command === "-h") {
     return usage();
   }
