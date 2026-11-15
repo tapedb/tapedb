@@ -10,6 +10,7 @@
  */
 
 import { id } from "./id";
+import { retryWhileRecovering, type RecoveringRetryOptions } from "./recovering";
 import { createStorageClient, type StorageFetch } from "./storage-client";
 import { createOutbox, type Outbox } from "./outbox";
 import { applyOptimisticOps, applyQueryDiff, certainMatches } from "./query-cache";
@@ -98,6 +99,8 @@ export interface ClientDeps {
   createWebSocket?: WebSocketFactory;
   outbox?: Outbox;
   now?: () => number;
+  /** Test hook: how requests wait out a restore (`recovering.ts`). */
+  recoveringRetry?: RecoveringRetryOptions;
 }
 
 /** One row of the workspace's file index. */
@@ -371,7 +374,7 @@ class DataClientImpl {
 
   constructor(config: InitConfig, deps: ClientDeps = {}) {
     this.config = resolveConfig(config);
-    this.fetchImpl = deps.fetch ?? ((url, init) => fetch(url, init));
+    this.fetchImpl = retryWhileRecovering(deps.fetch ?? ((url, init) => fetch(url, init)), deps.recoveringRetry);
     this.createWebSocket = deps.createWebSocket;
     this.outbox = deps.outbox ?? createOutbox();
     this.now = deps.now ?? (() => Date.now());
@@ -1513,6 +1516,7 @@ export function createClientParts(
           return provider();
         },
         fetch: deps.storageFetch,
+        ...(deps.recoveringRetry ? { recoveringRetry: deps.recoveringRetry } : {}),
       });
     },
     room: (target) => {
