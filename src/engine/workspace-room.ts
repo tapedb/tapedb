@@ -52,6 +52,7 @@ import {
 import { exportStream } from "./export";
 import { viewDependsOnSubject } from "./tx-permissions";
 import { isTopic, topicAllowed } from "./topics";
+import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
 import { authorizeFile, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
 import { readTrustedRoleClaim } from "./trusted-claim";
@@ -119,6 +120,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private erased = false;
   /** Restoring from R2 in budgeted steps; requests wait (503). */
   private recovering = false;
+  private limiter = false;
   private misplaced: string | null = null;
   private invalidationTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -129,6 +131,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const expected = env.TAPEDB_JURISDICTION;
       if (expected && ctx.id.jurisdiction !== expected) {
         this.misplaced = `This workspace's Durable Object is in jurisdiction ${JSON.stringify(ctx.id.jurisdiction ?? null)}, not ${JSON.stringify(expected)}; it serves nothing.`;
+        return;
+      }
+
+      // A claim-limiter object (see claim-limits.ts) holds buckets only.
+      if (isLimiterName(ctx.id.name)) {
+        this.limiter = true;
         return;
       }
 
@@ -286,6 +294,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       await discardBody(request);
       return apiError(410, "workspace_erased", "This workspace was erased.");
     }
+    if (this.limiter) return handleLimitRequest(request, durableObjectSqlExecutor(this.ctx.storage));
     if (this.recovering) {
       // Serving a partly restored workspace would show data as missing that
       // is only not restored yet.
@@ -1355,6 +1364,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * accumulate into fewer, larger log segments.
    */
   async alarm(): Promise<void> {
+    if (this.limiter) return;
     if (this.erased || this.misplaced !== null) return;
     if (this.recovering) {
       try {
