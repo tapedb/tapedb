@@ -186,4 +186,41 @@ describe("a room restoring from R2", () => {
     const served = (await (await query()).json()) as { data: { task: Array<{ id: string }> } };
     expect(served.data.task.map((row) => row.id)).toEqual(["task-0"]);
   });
+
+  test("a restore under way continues on alarms, not in a later boot", async () => {
+    const tapedb = defineTapeDB({ schema: schema({ task: model({ title: t.string() }) }) });
+    const bucket = new FakeR2Bucket();
+    const env = { FILES: new FakeR2Bucket(), DATA: bucket, TAPEDB_CLAIM_SECRET: SECRET, ENVIRONMENT: "development" };
+    const now = Math.floor(Date.now() / 1000);
+    const claim = { sub: "u1", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.OWNER, exp: now + 600, iat: now };
+    const headers = { [TRUSTED_CLAIM_HEADER]: encodeTrustedRoleClaim(claim as never), "content-type": "application/json" } as Record<string, string>;
+    const original = new FakeRoomContext(new Database(":memory:"), WORKSPACE);
+    const first = new tapedb.WorkspaceRoom(original as never, env as never);
+    await original.ready;
+    for (let n = 0; n < 4; n += 1) {
+      await first.fetch(new Request("https://room/transact", { method: "POST", headers, body: JSON.stringify({ txId: `t${n}`, ops: [{ op: "insert", namespace: "task", id: `task-${n}`, values: { title: "T" } }] }) }));
+      await flushPending(bucket as never, original.storage.sql as never, WORKSPACE, Date.now());
+      if (n === 0) await snapshotWorkspace(bucket as never, original.storage.sql as never, WORKSPACE, Date.now());
+    }
+
+    // A boot that gets one unit done, then a reset.
+    setRecoveryBudgetsForTests(0, 0);
+    const db = new Database(":memory:");
+    const one = new FakeRoomContext(db, WORKSPACE);
+    new tapedb.WorkspaceRoom(one as never, env as never);
+    await one.ready;
+    expect(db.query(`SELECT value FROM "_engine_meta" WHERE "key" = 'recovery_status'`).get()).toEqual({ value: "running" });
+
+    // The next boot has budget to spare, and still leaves the work to alarms.
+    setRecoveryBudgetsForTests(60_000, 60_000);
+    const again = new FakeRoomContext(db, WORKSPACE);
+    const room = new tapedb.WorkspaceRoom(again as never, env as never);
+    await again.ready;
+    const query = () => room.fetch(new Request("https://room/query", { method: "POST", headers, body: JSON.stringify({ query: { task: {} } }) }));
+    expect((await query()).status).toBe(503);
+    expect(again.alarm).not.toBeNull();
+    await room.alarm();
+    const served = (await (await query()).json()) as { data: { task: Array<{ id: string }> } };
+    expect(served.data.task.map((row) => row.id).sort()).toEqual(["task-0", "task-1", "task-2", "task-3"]);
+  });
 });

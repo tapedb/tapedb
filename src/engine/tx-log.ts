@@ -18,8 +18,12 @@
 import { stableStringify } from "./tx-hash";
 import type { SqlExecutor, SqlValue } from "./tx-sql";
 
-/** The most a stored part holds, leaving room under the 8 MB row limit. */
-export const LOG_PART_BYTES = 1024 * 1024;
+/**
+ * The most a stored part holds. Well under the 8 MB row limit, and small
+ * enough that recovery applies one part (a few thousand rows) well inside a
+ * Durable Object's 30 s of CPU, pausing between parts.
+ */
+export const LOG_PART_BYTES = 256 * 1024;
 let logPartBytes = LOG_PART_BYTES;
 
 /** Tests only: a smaller part size, so a multi-part entry needs few rows. */
