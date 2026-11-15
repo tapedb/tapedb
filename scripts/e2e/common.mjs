@@ -5,6 +5,7 @@ import { fileCheck, model, schema, t } from "tapedb/schema";
 export const BASE = (process.env.TAPEDB_URL ?? "http://127.0.0.1:8787").replace(/\/+$/, "");
 
 export const s = schema({
+  person: model({ name: t.string().personal({ subject: "self" }), data: t.json().personal({ subject: "self" }).optional() }),
   board: model({ name: t.string(), columns: t.hasMany("column") }),
   column: model({
     name: t.string(),

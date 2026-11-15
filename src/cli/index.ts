@@ -348,7 +348,7 @@ async function init(argv: string[]): Promise<number> {
     ["wrangler.jsonc", write(join(target, "wrangler.jsonc"), wrangler(name, jurisdiction), force)],
     [
       ".dev.vars",
-      write(devVarsPath, `TAPEDB_CLAIM_SECRET=${secret}\n`, force),
+      write(devVarsPath, `TAPEDB_CLAIM_SECRET=${secret}\nTAPEDB_KEY_SECRET=${randomBytes(32).toString("base64url")}\n`, force),
     ],
   ];
 

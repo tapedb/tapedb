@@ -260,7 +260,7 @@
       },
       "Row": {
         "kind": "type",
-        "shape": "<F> { id: string; createdAt: number; updatedAt: number } & { [K in ScalarKeys<F>]: OutputOf<F[K]>; } & { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }"
+        "shape": "<F> { id: string; createdAt: number; updatedAt: number; $erased?: string[] } & { [K in ScalarKeys<F>]: OutputOf<F[K]>; } & { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }"
       },
       "ScalarKind": {
         "kind": "type",
@@ -473,7 +473,7 @@
       },
       "Row": {
         "kind": "type",
-        "shape": "<F> { id: string; createdAt: number; updatedAt: number } & { [K in ScalarKeys<F>]: OutputOf<F[K]>; } & { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }"
+        "shape": "<F> { id: string; createdAt: number; updatedAt: number; $erased?: string[] } & { [K in ScalarKeys<F>]: OutputOf<F[K]>; } & { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }"
       },
       "ScalarKind": {
         "kind": "type",
@@ -606,6 +606,7 @@
           "ENVIRONMENT": "string | undefined",
           "TAPEDB_JURISDICTION": "string | undefined",
           "TAPEDB_CLAIM_SECRET": "string",
+          "TAPEDB_KEY_SECRET": "string | undefined",
           "TAPEDB_CLAIM_ISSUER": "string | undefined",
           "TAPEDB_CLAIM_AUDIENCE": "string | undefined",
           "TAPEDB_DEV_CLAIMS": "string | undefined",
@@ -651,22 +652,22 @@
         "kind": "interface",
         "shape": {
           "where": "Where<F, M> | undefined",
-          "_count": "true | ({ _all?: boolean; } & { [P in \"id\" | \"createdAt\" | \"updatedAt\" | import(\"src/model/schema\").ScalarKeys<F> | keyof { [K in import(\"src/model/schema\").BelongsToKeys<F> as `${K}Id`]: F[K] extends import(\"src/model/fields\").BelongsTo<string, infer O extends boolean> ? string | (O extends true ? null : never) : never; }]?: boolean | undefined; }) | undefined",
+          "_count": "true | ({ _all?: boolean; } & { [P in Exclude<\"id\", \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"createdAt\", \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"$erased\", \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<import(\"src/model/schema\").ScalarKeys<F>, \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<keyof { [K in import(\"src/model/schema\").BelongsToKeys<F> as `${K}Id`]: F[K] extends import(\"src/model/fields\").BelongsTo<string, infer O extends boolean> ? string | (O extends true ? null : never) : never; }, \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; }) | undefined",
           "_sum": "{ [P in { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"number\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]]?: boolean | undefined; } | undefined",
           "_avg": "{ [P in { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"number\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]]?: boolean | undefined; } | undefined",
-          "_min": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
-          "_max": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
+          "_min": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? never : F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
+          "_max": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? never : F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
           "(declaration)": "<M extends Models, F extends Fields> extends AggregateMeasures<F>"
         }
       },
       "AggregateMeasures (src/model/schema.ts)": {
         "kind": "interface",
         "shape": {
-          "_count": "true | ({ _all?: boolean; } & Flags<\"id\" | \"createdAt\" | \"updatedAt\" | ScalarKeys<F> | keyof { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }>) | undefined",
+          "_count": "true | ({ _all?: boolean; } & Flags<Exclude<\"id\", \"$erased\" | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[ScalarKeys<F>]> | Exclude<\"createdAt\", \"$erased\" | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[ScalarKeys<F>]> | Exclude<\"updatedAt\", \"$erased\" | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[ScalarKeys<F>]> | Exclude<\"$erased\", \"$erased\" | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[ScalarKeys<F>]> | Exclude<ScalarKeys<F>, \"$erased\" | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[ScalarKeys<F>]> | Exclude<keyof { [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>; }, \"$erased\" | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[ScalarKeys<F>]>>) | undefined",
           "_sum": "Flags<NumberKeys<F>> | undefined",
           "_avg": "Flags<NumberKeys<F>> | undefined",
-          "_min": "Flags<Exclude<\"createdAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"id\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<{ [K in ScalarKeys<F>]: F[K] extends Field<\"json\", boolean, boolean> ? never : K; }[ScalarKeys<F>], { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<`${BelongsToKeys<F>}Id`, { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]>> | undefined",
-          "_max": "Flags<Exclude<\"createdAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"id\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<{ [K in ScalarKeys<F>]: F[K] extends Field<\"json\", boolean, boolean> ? never : K; }[ScalarKeys<F>], { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<`${BelongsToKeys<F>}Id`, { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]>> | undefined",
+          "_min": "Flags<Exclude<\"createdAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"id\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<{ [K in ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? never : F[K] extends Field<\"json\", boolean, boolean> ? never : K; }[ScalarKeys<F>], { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<`${BelongsToKeys<F>}Id`, { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]>> | undefined",
+          "_max": "Flags<Exclude<\"createdAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<\"id\", { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<{ [K in ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? never : F[K] extends Field<\"json\", boolean, boolean> ? never : K; }[ScalarKeys<F>], { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]> | Exclude<`${BelongsToKeys<F>}Id`, { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never; }[ScalarKeys<F>]>> | undefined",
           "(declaration)": "<F>"
         }
       },
@@ -704,6 +705,7 @@
         "kind": "interface",
         "shape": {
           "type": "AttributeType",
+          "personal": "{ subject: string; required: boolean; defaultValue?: string | number | null; } | undefined",
           "optional": "boolean | undefined",
           "default": "string | number | null | undefined",
           "indexed": "boolean | undefined",
@@ -799,6 +801,7 @@
           "$presence": "(room: string) => PresenceRoom",
           "$broadcast": "<T = unknown>(topic: string) => BroadcastTopic<T> @experimental",
           "$export": "() => AsyncIterable<ExportRecord<Models>>",
+          "$erasePerson": "(subject: string) => Promise<void>",
           "$flush": "() => Promise<void>",
           "$close": "() => void"
         }
@@ -837,6 +840,7 @@
           "defaultValue": "unknown",
           "isIndexed": "boolean",
           "isUnique": "boolean",
+          "personal": "(this: Field<K, O, D> & (K extends \"string\" | \"json\" ? unknown : never), options: { subject: string; }) => PersonalField<Extract<K, \"string\" | \"json\">, O, D>",
           "optional": "() => Field<K, true, D>",
           "default": "(value: KindInput[K]) => Field<K, O, true>",
           "index": "() => Field<K, O, D>",
@@ -902,7 +906,7 @@
       },
       "FilterKeys (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<F> | \"id\" | { [K in ScalarKeys<F>]: F[K] extends Field<\"json\", boolean, boolean> ? never : K }[ScalarKeys<F>] | `${BelongsToKeys<F>}Id`"
+        "shape": "<F> | \"id\" | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string } ? never : F[K] extends Field<\"json\", boolean, boolean> ? never : K }[ScalarKeys<F>] | `${BelongsToKeys<F>}Id`"
       },
       "Flags (src/model/schema.ts)": {
         "kind": "type",
@@ -919,11 +923,11 @@
           "where": "Where<F, M> | undefined",
           "orderBy": "Partial<Record<GroupKeys<F>, \"asc\" | \"desc\">> | undefined",
           "take": "number | undefined",
-          "_count": "true | ({ _all?: boolean; } & { [P in \"id\" | \"createdAt\" | \"updatedAt\" | import(\"src/model/schema\").ScalarKeys<F> | keyof { [K in import(\"src/model/schema\").BelongsToKeys<F> as `${K}Id`]: F[K] extends import(\"src/model/fields\").BelongsTo<string, infer O extends boolean> ? string | (O extends true ? null : never) : never; }]?: boolean | undefined; }) | undefined",
+          "_count": "true | ({ _all?: boolean; } & { [P in Exclude<\"id\", \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"createdAt\", \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"$erased\", \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<import(\"src/model/schema\").ScalarKeys<F>, \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<keyof { [K in import(\"src/model/schema\").BelongsToKeys<F> as `${K}Id`]: F[K] extends import(\"src/model/fields\").BelongsTo<string, infer O extends boolean> ? string | (O extends true ? null : never) : never; }, \"$erased\" | { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; }) | undefined",
           "_sum": "{ [P in { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"number\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]]?: boolean | undefined; } | undefined",
           "_avg": "{ [P in { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"number\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]]?: boolean | undefined; } | undefined",
-          "_min": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
-          "_max": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
+          "_min": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? never : F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
+          "_max": "{ [P in Exclude<\"createdAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"updatedAt\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<\"id\", { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<{ [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends { personalSubject: string; } ? never : F[K] extends import(\"src/model/fields\").Field<\"json\", boolean, boolean> ? never : K; }[import(\"src/model/schema\").ScalarKeys<F>], { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]> | Exclude<`${import(\"src/model/schema\").BelongsToKeys<F>}Id`, { [K in import(\"src/model/schema\").ScalarKeys<F>]: F[K] extends import(\"src/model/fields\").Field<\"boolean\", boolean, boolean> ? K : never; }[import(\"src/model/schema\").ScalarKeys<F>]>]?: boolean | undefined; } | undefined",
           "(declaration)": "<M extends Models, F extends Fields> extends AggregateMeasures<F>"
         }
       },
@@ -1145,7 +1149,7 @@
       },
       "OutputOf (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<S> S extends Field<infer K, infer O, boolean> ? KindOutput[K] | (O extends true ? null : never) : never"
+        "shape": "<S> S extends Field<infer K, infer O, boolean> ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never) : never"
       },
       "PermissionAction (src/engine/tx-permissions.ts)": {
         "kind": "type",
@@ -1291,7 +1295,7 @@
       },
       "Scalars (src/model/where.ts)": {
         "kind": "type",
-        "shape": "<F extends Fields> { [K in FilterKeys<F>]?: Scalar | FieldFilter; }"
+        "shape": "<F extends Fields> { [K in FilterKeys<F> | { [P in keyof F]: F[P] extends { personalSubject: string } ? P : never }[keyof F]]?: K extends FilterKeys<F> ? Scalar | FieldFilter : never; }"
       },
       "SchemaChange (src/engine/schema-evolution.ts)": {
         "kind": "type",
@@ -1543,6 +1547,7 @@
     "invalid_query",
     "invalid_signature",
     "invalid_size",
+    "invalid_subject",
     "invalid_subscription_id",
     "invalid_target",
     "invalid_upload",

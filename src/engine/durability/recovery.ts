@@ -865,11 +865,17 @@ function replayLine(
     return true;
   }
 
-  if (line.ops.some(op => isPlainRecord(op) && (op.op === "import:row" || op.op === "import:begin" || op.op === "import:end"))) {
+  if (line.ops.some(op => isPlainRecord(op) && (op.op === "import:row" || typeof op.op === "string" && op.op.startsWith("state:") || op.op === "import:begin" || op.op === "import:end"))) {
     recordReplayedLine(sql, line);
-    for (const raw of line.ops as Array<{ op: string; table: string; row: RestorableRow }>) {
+    for (const raw of line.ops as Array<{ op: string; table: string; row: RestorableRow; id?: string }>) {
       if (raw.op === "file:put" || raw.op === "file:forget") { applyFileOps(txSql, [raw as never], line.at); continue; }
-      if (raw.op !== "import:row") continue;
+      if (raw.op === "state:delete") {
+        const changes = changesAfter(line.schemaVersion), table = evolveTable(raw.table, changes);
+        if (typeof raw.id !== "string") throw new Error("Invalid state deletion.");
+        if (table && namespaceTables().includes(table)) txSql.exec(`DELETE FROM "${table}" WHERE id = ? AND updated_seq <= ?`, raw.id, line.seq);
+        continue;
+      }
+      if (raw.op !== "import:row" && raw.op !== "state:row") continue;
       const changes = changesAfter(line.schemaVersion);
       const table = evolveTable(raw.table, changes);
       if (table === null || !namespaceTables().includes(table)) continue;
@@ -958,7 +964,7 @@ function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
 }
 
 function startsImport(ops: unknown[]): boolean {
-  return isPlainRecord(ops[0]) && ops[0].op === "import:begin";
+  return isPlainRecord(ops[0]) && (ops[0].op === "import:begin" || ops[0].op === "state:begin");
 }
 async function importForeignKeys(sql: RecoverySqlExecutor, enabled: boolean): Promise<void> {
   await sql.settle?.();

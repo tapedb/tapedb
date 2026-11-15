@@ -423,6 +423,38 @@ Writes keep landing during an export; `end.consistent` is true when none did,
 and the export is then the workspace exactly at `end.seq`. An export that
 stops early ends with an `error` line instead of `end` (the CLI exits 1).
 
+## Personal fields
+
+```ts
+const person = model({
+  email: t.string().personal({ subject: "self" }),
+  details: t.json().personal({ subject: "self" }).optional(),
+});
+// Or use an ordinary string field such as userId as the subject.
+await db.$erasePerson(personId); // owner only
+```
+
+Personal string and JSON values use AES-GCM with one key per subject. Set
+`TAPEDB_KEY_SECRET` to a stable random secret of at least 32 characters with
+`wrangler secret put TAPEDB_KEY_SECRET`; `tapedb init` generates a local key.
+Wrapped subject keys live in R2 `DATA` under `keys/<workspace>/`; their names
+are HMACs of the subject. SQL, snapshots and transaction logs store ciphertext.
+Queries and exports decrypt values after applying the caller's access rules.
+Personal fields cannot be indexed, filtered, ordered or aggregated.
+
+`$erasePerson(subject)` deletes the subject key. Existing ciphertext becomes
+unreadable in current storage, old snapshots, logs and Durable Object recovery
+copies. Reads return `null` and list affected fields in `$erased`. Writing new
+data for that subject creates a new key that cannot decrypt the erased data.
+Files and ordinary fields are removed separately. Keep the wrapping secret
+stable across deployments and workspace moves; losing it loses access to all
+personal values. Copies of subject keys outside TapeDB can undo erasure.
+
+Enabling `.personal()` encrypts existing rows in resumable batches before the
+workspace serves requests. Older plaintext logs, snapshots and Cloudflare
+recovery copies still follow their original retention windows; encryption
+cannot erase plaintext already held in those copies.
+
 ## Erasing a workspace
 
 ```bash
@@ -437,8 +469,8 @@ finished by calling it again. Afterwards the workspace answers
 `410 workspace_erased` to every request, so a client reconnecting with
 queued writes cannot recreate it under the same id. Cloudflare keeps 30 days
 of point-in-time recovery for every SQLite-backed Durable Object; tapedb never
-restores from it, but until it ages out an erased (or deleted) value can still
-be restored by code running in your account. That is why the default history
+restores from it. Ordinary plaintext values remain restorable until that
+history ages out. Personal ciphertext loses its key during workspace erasure. That is why the default history
 retention is also 30 days.
 
 ## Data residency

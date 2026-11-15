@@ -888,7 +888,7 @@ function resolveAttribute(
   const definition: AttributeDefinition | undefined =
     namespace.attributes[attribute];
   if (!definition) return undefined;
-
+  if (definition.personal) throw invalidValue(`Personal field "${attribute}" cannot be filtered, ordered or aggregated.`);
   return { column: toSnakeCase(attribute), type: definition.type };
 }
 

@@ -1,3 +1,4 @@
+import { opsHash } from "../tx-hash";
 import {
   MANIFEST_VERSION,
   manifestKey,
@@ -115,6 +116,7 @@ function markSnapshotCompleted(
   baseSeq: number,
   now: number
 ): void {
+  sql.exec(`DELETE FROM "_engine_meta" WHERE "key" = 'retention_snapshot_pending'`);
   sql.exec(
     `UPDATE "_snapshot_state"
         SET base_seq = ?, status = 'completed', completed_at = ?, manifest_key = ?
@@ -150,6 +152,7 @@ export function snapshotDueAt(sql: SqlExecutor, retentionMs: number = historyRet
   if (highWater <= 0) return null;
 
   const state = readSnapshotState(sql);
+  if (sql.exec(`SELECT value FROM "_engine_meta" WHERE "key" = 'retention_snapshot_pending'`).toArray().length) return Number.NEGATIVE_INFINITY;
   if (state.status !== "completed") return Number.NEGATIVE_INFINITY;
   if (highWater - state.baseSeq >= SNAPSHOT_SEQ_THRESHOLD) return Number.NEGATIVE_INFINITY;
   if (highWater > state.baseSeq) return (state.completedAt ?? 0) + historyAgeLimit(retentionMs);
@@ -640,7 +643,15 @@ export async function pruneHistory(
     sql
       .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_receipts" WHERE ops_hash IS NOT NULL AND at <= ?`, now - age)
       .toArray()[0]?.n ?? 0;
-  if (receipts > 0) sql.exec(`UPDATE "_tx_receipts" SET ops_hash = NULL WHERE ops_hash IS NOT NULL AND at <= ?`, now - age);
+  if (receipts > 0) {
+    sql.exec(`UPDATE "_tx_receipts" SET ops_hash = NULL WHERE ops_hash IS NOT NULL AND at <= ?`, now - age);
+    // A new sequence gives the scrubbed snapshot a new immutable R2 prefix.
+    // Otherwise the newest snapshot of a quiet workspace keeps hashes forever.
+    const seq = Math.max(readHighWater(sql), Number(sql.exec<{ seq: number | null }>(`SELECT MAX(seq) AS seq FROM "_tx_log"`).toArray()[0]?.seq ?? 0)) + 1;
+    sql.exec(`INSERT INTO "_tx_log" (seq, client_tx_id, ops, ops_hash, user_id, role, at, schema_version) VALUES (?, NULL, '[]', ?, NULL, NULL, ?, ?)`, seq, opsHash([]), now, readSchemaVersion(sql) ?? "unknown");
+    sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE id = 1`, seq);
+    sql.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('retention_snapshot_pending', '1')`);
+  }
   const oldestReceipt = sql.exec<{ at: number | null }>(`SELECT MIN(at) AS at FROM "_tx_receipts" WHERE ops_hash IS NOT NULL`).toArray()[0]?.at;
   if (oldestReceipt !== null && oldestReceipt !== undefined) later(oldestReceipt + age);
 
