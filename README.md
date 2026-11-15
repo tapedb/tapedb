@@ -521,7 +521,12 @@ client ──HTTP /transact──▶ Worker ──claim──▶ WorkspaceRoom (
 Durability is tested by deleting the Durable Object's entire SQLite and
 rebuilding from R2: rows, sequence numbers, idempotency keys and the file
 index all survive, including across schema migrations made since the
-snapshot.
+snapshot. Recovery runs in steps that commit their progress (a snapshot chunk
+or a log segment at a time): a boot spends at most 15 seconds on it, well
+inside the 30 seconds Cloudflare allows, and alarms carry on from there, so a
+workspace of any size recovers, and a recovery cut off by a reset resumes
+rather than starting over. Until it is complete the workspace answers 503
+`workspace_recovering` with `Retry-After`, never a partial result.
 
 ### History retention
 

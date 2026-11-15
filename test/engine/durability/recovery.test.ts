@@ -1532,3 +1532,91 @@ describe("the writer's identity", () => {
     expect(restored.every((row) => row.user_id === null && row.role === null)).toBe(true);
   });
 });
+
+describe("a recovery cut off part way", () => {
+  /** A bucket whose reads stop answering after `budget` of them: a reset mid-recovery. */
+  function hangAfter(bucket: FakeR2Bucket, budget: number): R2Bucket {
+    let reads = 0;
+    return new Proxy(bucket as unknown as R2Bucket, {
+      get(target, property, receiver) {
+        if (property === "get") {
+          return (...args: unknown[]) =>
+            ++reads > budget ? new Promise(() => {}) : (target.get as (...a: unknown[]) => unknown).apply(target, args);
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  /** A workspace with a snapshot and several log segments after it. */
+  async function durableWorkspace() {
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+    for (let index = 0; index < 4; index += 1) {
+      run(source, {
+        txId: `after-${index}`,
+        ops: [{ op: "update", namespace: "folders", id: `late-${index}`, values: { name: `Late ${index}` } }],
+      });
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10 + index);
+    }
+    return { source, bucket };
+  }
+
+  const highWater = (db: Database) => scalar(db, `SELECT high_water_seq FROM "_tx_state"`);
+
+  test("is resumed, not served as a finished workspace", async () => {
+    // Without progress kept, the next boot saw restored rows, called the
+    // workspace populated, and served it partly restored at seq 0.
+    const { source, bucket } = await durableWorkspace();
+    for (const budget of [1, 2, 3, 4, 5, 6]) {
+      const target = createSource();
+      const executor = recoveryExecutor(target.db, target.sql);
+      void recoverWorkspace(hangAfter(bucket, budget), executor, TEST_WORKSPACE, { now: NOW + 100 });
+      await Bun.sleep(5);
+
+      const resumed = await recoverWorkspace(bucket as unknown as R2Bucket, executor, TEST_WORKSPACE, { now: NOW + 200 });
+      expect(resumed.recovered).toBe(true);
+      expect(entityRows(target.db)).toEqual(entityRows(source.db));
+      expect(highWater(target.db)).toBe(highWater(source.db));
+    }
+  });
+
+  test("continues in budgeted steps to the same result", async () => {
+    const { source, bucket } = await durableWorkspace();
+    const target = createSource();
+    const executor = recoveryExecutor(target.db, target.sql);
+    let attempts = 0;
+    for (;;) {
+      attempts += 1;
+      let steps = 0;
+      const result = await recoverWorkspace(bucket as unknown as R2Bucket, executor, TEST_WORKSPACE, {
+        now: NOW + 100,
+        shouldPause: () => ++steps > 1,
+      });
+      if (result.recovered) break;
+      expect(result).toEqual({ recovered: false, reason: "paused" });
+      // Partly restored is not populated: the next call carries on.
+      expect(attempts).toBeLessThan(200);
+    }
+    expect(attempts).toBeGreaterThan(3);
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    expect(highWater(target.db)).toBe(highWater(source.db));
+    expect(scalar(target.db, `SELECT COUNT(*) FROM "_engine_meta" WHERE "key" LIKE 'recovery_%' AND "key" IN ('recovery_manifest','recovery_phase','recovery_chunks_done','recovery_segments_done')`)).toBe(0);
+  });
+
+  test("started by a version that kept no progress, starts over", async () => {
+    const { source, bucket } = await durableWorkspace();
+    const target = createSource();
+    const executor = recoveryExecutor(target.db, target.sql);
+    void recoverWorkspace(hangAfter(bucket, 3), executor, TEST_WORKSPACE, { now: NOW + 100 });
+    await Bun.sleep(5);
+    target.db.exec(`DELETE FROM "_engine_meta" WHERE "key" IN ('recovery_manifest','recovery_phase','recovery_chunks_done','recovery_segments_done')`);
+
+    expect((await recoverWorkspace(bucket as unknown as R2Bucket, executor, TEST_WORKSPACE, { now: NOW + 200 })).recovered).toBe(true);
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    expect(highWater(target.db)).toBe(highWater(source.db));
+  });
+});
