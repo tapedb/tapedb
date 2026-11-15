@@ -11,9 +11,6 @@
  * deduplication keys (it is not used for authentication).
  */
 
-const FNV_OFFSET_BASIS = 0xcbf29ce484222325n;
-const FNV_PRIME = 0x100000001b3n;
-const MASK_64 = 0xffffffffffffffffn;
 
 /** Stable JSON with recursively sorted object keys. */
 export function stableStringify(value: unknown): string {
@@ -78,13 +75,27 @@ function serialise(value: unknown, seen: Set<object>): string | undefined {
 }
 
 function fnv1a64(input: string): string {
-  let hash = FNV_OFFSET_BASIS;
+  // 64-bit FNV-1a in four 16-bit limbs: the same digest as BigInt arithmetic,
+  // without a BigInt multiply per byte (a bulk write hashes megabytes).
   const bytes = new TextEncoder().encode(input);
-
-  for (const byte of bytes) {
-    hash ^= BigInt(byte);
-    hash = (hash * FNV_PRIME) & MASK_64;
+  let h0 = 0x2325;
+  let h1 = 0x8422;
+  let h2 = 0x9ce4;
+  let h3 = 0xcbf2;
+  for (let index = 0; index < bytes.length; index += 1) {
+    h0 ^= bytes[index];
+    // Multiply by the prime 2^40 + 0x1b3: 0x1b3 per limb, plus the 2^40 part
+    // shifted into limbs 2 and 3.
+    const t0 = h0 * 0x1b3;
+    const t1 = h1 * 0x1b3;
+    const t2 = h2 * 0x1b3 + (h0 << 8);
+    const t3 = h3 * 0x1b3 + (h1 << 8);
+    h1 = t1 + (t0 >>> 16);
+    h0 = t0 & 0xffff;
+    h2 = t2 + (h1 >>> 16);
+    h1 &= 0xffff;
+    h3 = (t3 + (h2 >>> 16)) & 0xffff;
+    h2 &= 0xffff;
   }
-
-  return hash.toString(16).padStart(16, "0");
+  return [h3, h2, h1, h0].map((limb) => limb.toString(16).padStart(4, "0")).join("");
 }

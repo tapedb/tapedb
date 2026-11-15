@@ -7,6 +7,13 @@ published.
 
 ### Changed
 
+- The ops hash of each write (FNV-1a 64) is computed without a BigInt step
+  per byte; digests are unchanged.
+- Recovery applies a large log entry a part at a time, with its progress
+  kept between steps, and new log entries store their ops in parts of
+  256 KiB (was 1 MiB). A restore under way continues on alarms rather than in
+  a later boot, and each step stops before a unit as slow as the slowest so
+  far would overrun Cloudflare's 30 s of CPU.
 - A restore from R2 keeps its progress when an R2 read fails and resumes
   5 seconds later. A restore that fails at boot leaves the workspace answering
   503 `workspace_recovering` while alarms retry, instead of an exception on
