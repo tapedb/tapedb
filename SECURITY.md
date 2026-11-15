@@ -86,12 +86,13 @@ The library cannot enforce these for you:
 - Account for Cloudflare's 30-day Durable Object point-in-time recovery when
   making erasure promises.
 
-## Known limitations
+## Design boundaries
 
 The design boundaries and release gates are listed in
-[LIMITATIONS.md](LIMITATIONS.md). In particular, TapeDB does not record who
-made each write and its erasure cannot reach
-Cloudflare's point-in-time recovery window.
+[LIMITATIONS.md](LIMITATIONS.md). Who made each write is recorded only with
+`defineTapeDB({ audit: true })`. Deleting a subject key makes personal fields
+unreadable everywhere, Cloudflare's point-in-time recovery copies included;
+ordinary plaintext stays in those copies for up to 30 days.
 
 ## Workspace moves and imports
 
