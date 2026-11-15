@@ -11,7 +11,7 @@ processor.
 | --- | --- | --- |
 | Durable Object SQLite, one per workspace | Your models' rows | Until deleted |
 | | `_tx_log`: each write's operations (with values) and the time. Who made the write is not recorded | Covered rows deleted once older than half the retention (15 days by default) |
-| | `_tx_receipts`: random client transaction id, sequence and time; an operation hash while recent | Id, sequence and time for the workspace lifetime; hash removed after half the retention (15 days by default). Superseded R2 copies leave within the full retention |
+| | `_tx_receipts`: random client transaction id, sequence and time; an operation hash while recent (an HMAC under `TAPEDB_KEY_SECRET` when the schema has personal fields) | Id, sequence and time for the workspace lifetime; hash removed after half the retention (15 days by default). Superseded R2 copies leave within the full retention |
 | | `_files`: path, size, content type and uploader (the claim's `sub`) of each upload | Until the file is deleted |
 | R2 `DATA` bucket | Log segments (the `_tx_log` lines), snapshots of every table, a manifest | Superseded copies deleted within the retention (30 days by default) |
 | R2 `DATA` key prefix | Per-subject AES-GCM keys wrapped with `TAPEDB_KEY_SECRET`, named by subject HMAC | Until subject or workspace erasure |

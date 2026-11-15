@@ -162,6 +162,9 @@ function resolve(namespace: NamespaceDefinition, name: string): AggregateField {
       `Unknown attribute "${name}" on namespace "${namespace.apiName}".`
     );
   }
+  if (definition.personal) {
+    throw new TxError("invalid_value", `Personal field "${name}" cannot be filtered, ordered or aggregated.`);
+  }
   return { name, column: toSnakeCase(name), type: definition.type };
 }
 
