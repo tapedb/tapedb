@@ -19,7 +19,7 @@ import {
   type RecoveryResult,
   type RecoverySqlExecutor,
 } from "../../../src/engine/durability/recovery";
-import { pruneCoveredLogSegments, snapshotWorkspace, trimLocalLog } from "../../../src/engine/durability/snapshot";
+import { pruneHistory, pruneCoveredLogSegments, snapshotWorkspace, trimLocalLog } from "../../../src/engine/durability/snapshot";
 import { forgetFileEntry, recordFileEntry } from "../../../src/engine/file-index";
 import type { SqlExecutor as DurabilitySql, SqlValue } from "../../../src/engine/durability/sql";
 import { FakeR2Bucket, openTestDb, TEST_WORKSPACE } from "../../fixtures/test-support";
@@ -1428,6 +1428,78 @@ describe("bulk writes through a restore", () => {
 
 
 describe("durable transaction receipts", () => {
+  test("a 400-day retry stays deduplicated with a null hash through pruning and two restores", async () => {
+    const day = 86_400_000;
+    const start = Date.now();
+    const bucket = new FakeR2Bucket();
+    let source = createSource();
+    const tx = { txId: "original", clientTxId: "permanent", issuedAt: start, ops: [
+      { op: "update", namespace: "folders", id: "permanent-folder", values: { name: "Original" } },
+    ] } as TxEnvelope;
+    expect(run(source, tx)).toMatchObject({ seq: 1, applied: 1 });
+    source.db.exec(`UPDATE "_tx_log" SET at = ?`, start);
+    source.db.exec(`UPDATE "_tx_receipts" SET at = ?`, start);
+    run(source, { txId: "later", ops: [{ op: "update", namespace: "folders", id: "permanent-folder", values: { name: "Latest" } }] } as TxEnvelope);
+    bucket.clock = start;
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, start);
+    await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, start, { retainLogSequences: 0 });
+    await pruneHistory(bucket, source.sql, TEST_WORKSPACE, start + 16 * day);
+    expect(source.db.query(`SELECT id, seq, ops_hash, at FROM "_tx_receipts"`).all()).toEqual([
+      { id: "permanent", seq: 1, ops_hash: null, at: start },
+    ]);
+    for (let generation = 0; generation < 2; generation++) {
+      const now = start + (400 + generation) * day;
+      bucket.clock = now;
+      await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, now, { retainLogSequences: 0 });
+      const target = createSource();
+      expect(await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now })).toMatchObject({ recovered: true });
+      expect(target.db.query(`SELECT ops_hash FROM "_tx_receipts" WHERE id = 'permanent'`).get()).toEqual({ ops_hash: null });
+      expect(run(target, { ...tx, txId: "retry" })).toMatchObject({ seq: 1, applied: 0 });
+      expect(scalar(target.db, `SELECT name FROM folders WHERE id = 'permanent-folder'`)).toBe("Latest");
+      source = target;
+    }
+  });
+
+  test("old log-only recovery drops aged hashes without losing retry keys", async () => {
+    const start = Date.now();
+    const source = createSource(), bucket = new FakeR2Bucket();
+    const tx = { txId: "original", clientTxId: "log-only", issuedAt: start, ops: [
+      { op: "update", namespace: "folders", id: "log-only-folder", values: { name: "Once" } },
+    ] } as TxEnvelope;
+    run(source, tx);
+    source.db.exec(`UPDATE "_tx_log" SET at = ?`, start);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, start);
+    const target = createSource();
+    expect(await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now: start + 400 * 86_400_000 })).toMatchObject({ recovered: true });
+    expect(target.db.query(`SELECT ops_hash FROM "_tx_receipts" WHERE id = 'log-only'`).get()).toEqual({ ops_hash: null });
+    expect(run(target, tx)).toMatchObject({ seq: 1, applied: 0 });
+  });
+
+  test("a legacy receipt boundary survives snapshots, intervening flushes and repeated recovery", async () => {
+    const now = Date.now();
+    let source = createSource();
+    const bucket = new FakeR2Bucket();
+    seedWorkspace(source);
+    await publish(source, bucket, now);
+    const key = manifestKey(TEST_WORKSPACE);
+    const legacy = JSON.parse(new TextDecoder().decode(bucket.bodyOf(key)!));
+    delete legacy.receiptFloor;
+    bucket.seed(key, JSON.stringify(legacy));
+    for (let generation = 0; generation < 2; generation++) {
+      const target = createSource();
+      expect(await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now: now + generation })).toMatchObject({ recovered: true });
+      const tx = { txId: "unknown", clientTxId: "lost-key", issuedAt: now - 1, ops: [
+        { op: "update", namespace: "folders", id: "f1", values: { name: "Duplicate" } },
+      ] } as TxEnvelope;
+      expect(() => run(target, tx)).toThrow(/issued before/);
+      await snapshotWorkspace(bucket, target.sql, TEST_WORKSPACE, now + generation + 10);
+      run(target, { ...tx, txId: "new", clientTxId: "new-" + generation, issuedAt: now + 100 } as TxEnvelope);
+      await flushPending(bucket, target.sql, TEST_WORKSPACE, now + generation + 20);
+      expect((await readManifest(bucket as unknown as R2Bucket, TEST_WORKSPACE))!.manifest.receiptFloor).toBe(now);
+      source = target;
+    }
+  });
+
   test("retries survive complete log pruning, two recoveries and changed-op conflicts", async () => {
     let source = createSource();
     const bucket = new FakeR2Bucket();

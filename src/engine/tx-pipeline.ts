@@ -16,13 +16,12 @@ import { assertRowPermissions, authorizeOps } from "./tx-permissions";
 import type { SqlExecutor } from "./tx-sql";
 import { TxError, type TxResult } from "./tx-types";
 import { validateEnvelope } from "./tx-validate";
-import { retryWindowMs } from "./durability/retention";
 
 const FALLBACK_SCHEMA_VERSION = "0001_baseline";
 
 type TxLogRow = {
   seq: number;
-  ops_hash: string;
+  ops_hash: string | null;
 };
 
 type TxStateRow = {
@@ -66,7 +65,7 @@ export function runTransaction(
       );
 
       if (prior !== undefined) {
-        if (prior.ops_hash === hash) {
+        if (prior.ops_hash === null || prior.ops_hash === hash) {
           return { txId: tx.txId, seq: prior.seq, applied: 0 };
         }
         throw new TxError(
@@ -75,14 +74,13 @@ export function runTransaction(
           { txId: tx.txId }
         );
       }
-      // A receipt is kept for the retry window (half the history retention),
-      // through log pruning, snapshots and recovery. Inside it an unknown key
-      // is a write that was never applied. A retry first issued before the
-      // window may have lost its receipt; applying it could apply it twice.
-      if (tx.issuedAt !== undefined && tx.issuedAt <= Math.max(Date.now() - retryWindowMs(), receiptsSince(sql))) {
+      // Receipts no longer expire. An older engine or snapshot may already
+      // have discarded some: keep that fixed boundary, never a moving window.
+      const since = receiptsSince(sql);
+      if (since > 0 && tx.issuedAt !== undefined && tx.issuedAt <= since) {
         throw new TxError(
           "retry_expired",
-          `clientTxId "${tx.clientTxId}" was issued before this workspace can recognise a retry (more than ${Math.round(retryWindowMs() / 86_400_000)} days ago, or before a restore that lost receipts), so it is not applied: it may already have been. Send the write again as a new transaction if it still applies.`,
+          `clientTxId "${tx.clientTxId}" was issued before this workspace can recognise a retry because an earlier engine or snapshot did not retain every receipt, so it is not applied: it may already have been. Send the write again as a new transaction if it still applies.`,
           { txId: tx.txId }
         );
       }
@@ -223,7 +221,8 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
 
 /**
  * Receipts are complete only from this time: set when a workspace was
- * restored from a snapshot that predates receipts. 0 when complete.
+ * upgraded or restored from state that did not retain every receipt.
+ * 0 when complete.
  */
 function receiptsSince(sql: SqlExecutor): number {
   const row = sql.one<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = 'receipts_since'`);

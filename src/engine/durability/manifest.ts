@@ -71,3 +71,9 @@ export function manifestCreatedAt(now: number): string {
 export function utf8Bytes(value: string): number {
   return textEncoder.encode(value).byteLength;
 }
+
+/** Fixed boundary for receipts already lost before an upgrade or restore. */
+export function readReceiptFloor(sql: SqlExecutor): number {
+  const row = sql.exec<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = 'receipts_since'`).toArray()[0];
+  return row === undefined ? 0 : Number(row.value);
+}

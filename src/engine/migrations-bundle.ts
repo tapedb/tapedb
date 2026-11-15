@@ -86,6 +86,26 @@ export const ENGINE_MIGRATIONS: readonly BundledWorkspaceMigration[] = [
       PRIMARY KEY (client_id, id, idx)
     ) WITHOUT ROWID;`,
   },
+  {
+    // Old engines may have deleted receipts. Preserve known keys and set a
+    // fixed safety boundary for unknown pre-upgrade requests in used rooms.
+    id: "tapedb_0008_permanent_receipts",
+    sql: `ALTER TABLE "_tx_receipts" RENAME TO "_tx_receipts_old";
+    CREATE TABLE "_tx_receipts" (
+      id TEXT PRIMARY KEY NOT NULL,
+      seq INTEGER NOT NULL,
+      ops_hash TEXT,
+      at INTEGER NOT NULL
+    );
+    INSERT INTO "_tx_receipts" SELECT id, seq, ops_hash, at FROM "_tx_receipts_old";
+    DROP TABLE "_tx_receipts_old";
+    CREATE INDEX "_tx_receipts_hash_age" ON "_tx_receipts" (at) WHERE ops_hash IS NOT NULL;
+    INSERT OR REPLACE INTO "_engine_meta" ("key", value)
+      SELECT 'receipts_since', CAST(MAX(
+        COALESCE((SELECT CAST(value AS INTEGER) FROM "_engine_meta" WHERE "key" = 'receipts_since'), 0),
+        CAST(strftime('%s', 'now') AS INTEGER) * 1000 + CAST(substr(strftime('%f', 'now'), 4, 3) AS INTEGER)
+      ) AS TEXT) WHERE EXISTS (SELECT 1 FROM "_tx_state" WHERE high_water_seq > 0);`,
+  },
 ];
 
 /** Configured migrations, applied in order on Durable Object boot. */

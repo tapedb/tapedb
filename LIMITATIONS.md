@@ -20,9 +20,7 @@ The boundaries TapeDB has by design, and the gates before a public release.
 - **Migrations are forward operations.** Destructive changes need
   `--accept-data-loss`; renames need an explicit rename; new required fields
   need a default or must be optional. Review generated SQL before deploying.
-- **Offline writes expire.** Transaction receipts live for half the history
-  retention, 15 days by default. A retry older than that is refused rather than
-  risking a duplicate application.
+
 
 ## Release gates
 

@@ -230,14 +230,20 @@ apply optimistically, queue in an IndexedDB outbox while offline, and resolve
 to `{ id, status: "applied" | "queued" }`. A write the engine refuses for
 good during a background flush reaches `onWriteRejected`.
 
-Retries are deduplicated by client transaction id. Transaction receipts
-survive snapshots, replay-log pruning and recovery from R2, so a previously
-applied request is acknowledged without applying it again. Reusing an id with
-different operations is rejected. Receipts expire with the rest of the history
-(half the [retention](#history-retention), 15 days by default). The client
-sends when it first issued each write, and a retry issued before that window
-is refused with `retry_expired` (HTTP 410) rather than risk applying it twice:
-it reaches `onWriteRejected`, and the app can send it again as a new write.
+Retries are deduplicated by client transaction id without an age limit.
+Receipts survive snapshots, replay-log pruning and recovery from R2. Each
+transaction keeps a small row containing its random id, sequence and time for
+the workspace's lifetime. Its operation hash is removed after half the
+[retention](#history-retention), 15 days by default. Until then, reusing an id
+with different operations is rejected; afterwards, the id acknowledges the
+original write regardless of its body and never applies another write.
+
+An upgrade or restore from an engine that discarded receipts keeps a fixed
+boundary for missing receipts. An unknown retry first issued before that
+boundary is refused with `retry_expired` (HTTP 410) and reaches
+`onWriteRejected`; the app can send it again as a new write. The boundary does
+not advance with time. The client sends each write's original `issuedAt`.
+
 
 Related rows can be created with the row that needs them:
 
