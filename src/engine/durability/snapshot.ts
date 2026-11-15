@@ -1,3 +1,4 @@
+import { auditEnabled } from "../audit";
 import { opsHash } from "../tx-hash";
 import {
   MANIFEST_VERSION,
@@ -441,7 +442,12 @@ export async function snapshotWorkspace(
   const flushState = readFlushState(sql);
 
   markSnapshotRunning(sql, now);
-  const sources = [...namespaceTables(), ENGINE_TABLES.files, ENGINE_TABLES.txReceipts];
+  const sources = [
+    ...namespaceTables(),
+    ENGINE_TABLES.files,
+    ENGINE_TABLES.txReceipts,
+    ...(auditEnabled() ? [ENGINE_TABLES.txAudit] : []),
+  ];
   const staged: string[] = [];
   try {
     // No await between reading baseSeq and copying every table: another
@@ -630,6 +636,8 @@ export async function pruneHistory(
       .toArray()[0]?.n ?? 0;
   if (localRows > 0) {
     sql.exec(`DELETE FROM "_tx_log" WHERE seq <= ? AND at <= ?`, cut, now - age);
+    // The audit's writer identities leave with the rest of the history.
+    sql.exec(`DELETE FROM "_tx_audit" WHERE seq <= ? AND at <= ?`, cut, now - age);
     sql.exec(`DELETE FROM "_tx_log_parts" WHERE seq NOT IN (SELECT seq FROM "_tx_log")`);
   }
   const oldest = sql

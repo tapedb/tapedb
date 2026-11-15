@@ -7,6 +7,10 @@ published.
 
 ### Changed
 
+- A restore from R2 keeps its progress when an R2 read fails and resumes
+  5 seconds later. A restore that fails at boot leaves the workspace answering
+  503 `workspace_recovering` while alarms retry, instead of an exception on
+  every request.
 - `$broadcast(topic).send()` and `useBroadcast`'s `send` return
   `boolean | "queued"`: a send while disconnected is queued, not dropped
   (experimental API).
@@ -19,6 +23,11 @@ published.
 
 ### Added
 
+- Opt-in write audit: `defineTapeDB({ audit: true })` records each write's
+  `sub` and role in the log and its R2 lines, restored by recovery, and a
+  per-row history read with `db.$history({ model, id })` (admins and owners,
+  `GET /engine/workspaces/:id/history`), pruned with the history retention.
+  Engine migration `tapedb_0010_tx_audit`; error code `audit_disabled`.
 - Broadcasts survive a dropped connection: sends made while the socket is
   down wait (100 per topic, 60 s) and go out after reconnecting, and the
   workspace keeps the last `topics.replaySeconds` (default 60, at most 1,000

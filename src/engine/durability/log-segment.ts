@@ -1,3 +1,4 @@
+import { auditEnabled } from "../audit";
 import type { SqlExecutor, SqlValue } from "./sql";
 import type { LogSegment } from "./types";
 
@@ -111,6 +112,9 @@ export function buildLogSegment(
       // ops stored beside it: a bulk write logs the rows it resolved. Carried
       // so a retry after a restore is still recognised.
       opsHash: row.ops_hash,
+      // Present only when the deployment records an audit.
+      ...(auditEnabled() && row.user_id !== null ? { userId: row.user_id } : {}),
+      ...(auditEnabled() && row.role !== null ? { role: row.role } : {}),
       at: row.at,
       schemaVersion: row.schema_version,
     };

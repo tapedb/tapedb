@@ -20,5 +20,10 @@ export async function personalTypes() {
   // @ts-expect-error Personal ciphertext cannot be indexed.
   t.string().personal({ subject: "self" }).index();
   await db.$erasePerson("user");
+  const history = await db.$history({ model: "person", id: "p1" });
+  const writer: string | null = history[0].sub;
+  // @ts-expect-error Not a model of this schema.
+  await db.$history({ model: "nope", id: "p1" });
+  void writer;
   return value;
 }

@@ -46,7 +46,7 @@ export type {
 } from "./schema";
 
 export { id } from "./client/id";
-export type { StoredFile } from "./client/data-client";
+export type { HistoryEntry, StoredFile } from "./client/data-client";
 export type { PresencePeer, QueryError, TopicSender, WriteRejection } from "./client/types";
 export type { StorageObject } from "./client/storage-client";
 

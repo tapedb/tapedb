@@ -55,6 +55,8 @@ import { readMove, writeMove, sourceEnvironment, jurisdiction, copyWorkspace, ty
 import { flushPending, snapshotWorkspace } from "./durability";
 import { viewDependsOnSubject } from "./tx-permissions";
 import { isTopic, REPLAY_MESSAGES, topicAllowed, topicReplayMs } from "./topics";
+import { auditEnabled, dropAuditCapture, rowHistory, syncAuditCapture } from "./audit";
+import { findNamespace } from "./registry";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
 import { authorizeFile, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
@@ -88,6 +90,8 @@ type CountRow = Record<string, SqlStorageValue> & { total: number };
 
 /** Delay between a write and the first durability pass. */
 const DURABILITY_ALARM_DELAY_MS = 30_000;
+/** How long a recovery waits after R2 failed to answer. */
+const RECOVERY_R2_RETRY_MS = 5_000;
 
 /** Recovery work a boot may do; Cloudflare resets a boot past 30 s. */
 let RECOVERY_BOOT_BUDGET_MS = 15_000;
@@ -170,7 +174,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // Foreign-key enforcement is per connection and off by default in
       // SQLite. Set it before migrations so every request sees it.
       ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
+      dropAuditCapture(durableObjectSqlExecutor(ctx.storage));
       await this.applyMigrations();
+      syncAuditCapture(durableObjectSqlExecutor(ctx.storage));
       if (hasPersonalFields()) {
         this.personal = new PersonalRuntime(env, this.workspaceId);
         installPersonalCapture(durableObjectSqlExecutor(ctx.storage));
@@ -180,7 +186,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // populated DO returns immediately without touching R2.
       // Recovery gets a budget well inside the 30 s Cloudflare allows a
       // boot; a larger restore continues from alarms (see recoverStep).
-      await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
+      try {
+        await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
+      } catch (error) {
+        // A failed boot would reset the object and fail every request with
+        // an exception. The workspace answers 503 instead, and alarms retry.
+        console.error("workspace_recovery_failed", { workspaceId: this.workspaceId, error: String(error) });
+        this.recovering = true;
+        await ctx.storage.setAlarm(Date.now() + DURABILITY_ALARM_DELAY_MS);
+      }
 
       // Sockets that closed while the object was evicted left their stored
       // state behind; hibernated sockets still open keep theirs.
@@ -198,6 +212,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * answering 503, and continues on an alarm right away.
    */
   private async recoverStep(budgetMs: number): Promise<void> {
+    const started = Date.now();
     const recovery = await recoverWorkspace(
       this.roomEnv.DATA,
       durableObjectRecoverySqlExecutor(this.ctx.storage),
@@ -207,8 +222,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // Recovery may toggle foreign keys while restoring; make sure the
     // connection is back in enforcing mode before serving writes.
     this.ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
+    if (!recovery.recovered && recovery.reason === "unavailable") {
+      // R2 did not answer. The progress is kept; try again shortly.
+      console.error("workspace_recovery_r2_unavailable", { workspaceId: this.workspaceId, error: recovery.error });
+      this.recovering = true;
+      await this.ctx.storage.setAlarm(Date.now() + RECOVERY_R2_RETRY_MS);
+      return;
+    }
     if (!recovery.recovered && recovery.reason === "paused") {
-      if (!this.recovering) console.log("workspace_recovering", { workspaceId: this.workspaceId });
+      console.log("workspace_recovering", { workspaceId: this.workspaceId, stepMs: Date.now() - started });
       this.recovering = true;
       await this.ctx.storage.setAlarm(Date.now());
       return;
@@ -447,6 +469,31 @@ export class WorkspaceRoom extends DurableObject<Env> {
         );
       }
       return this.query(request);
+    }
+
+    // Who changed one row, and when (audit.ts). Admins and owners only: it
+    // names other users.
+    if (url.pathname === "/history") {
+      if (request.method !== "GET") {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+        throw error;
+      }
+      if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
+        return apiError(403, "insufficient_role", "Reading the history needs an admin or owner.");
+      }
+      if (!auditEnabled()) {
+        return apiError(409, "audit_disabled", "This deployment does not record an audit; set defineTapeDB({ audit: true }).");
+      }
+      const model = findNamespace(url.searchParams.get("model") ?? "");
+      const id = url.searchParams.get("id");
+      if (!model || !id) return apiError(400, "invalid_history", "History needs ?model=<model>&id=<row id>.");
+      return json({ ok: true, data: rowHistory(durableObjectSqlExecutor(this.ctx.storage), model.table, id) });
     }
 
     // Every row the caller may read, as NDJSON, streamed a chunk at a time.

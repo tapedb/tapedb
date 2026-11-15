@@ -44,7 +44,7 @@
       },
       "Client": {
         "kind": "type",
-        "shape": "<M extends Models> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\"> & { $export(): AsyncIterable<ExportRecord<M>>; }"
+        "shape": "<M extends Models> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\" | \"$history\"> & { $export(): AsyncIterable<ExportRecord<M>>; $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>; }"
       },
       "ClientConfig": {
         "kind": "interface",
@@ -118,6 +118,16 @@
       "hasRoleLevel": {
         "kind": "function",
         "shape": "(role: WorkspaceRole, minimum: WorkspaceRole) => boolean"
+      },
+      "HistoryEntry": {
+        "kind": "interface",
+        "shape": {
+          "seq": "number",
+          "at": "number",
+          "sub": "string | null",
+          "role": "number | null",
+          "action": "\"insert\" | \"update\" | \"delete\""
+        }
       },
       "id": {
         "kind": "function",
@@ -590,6 +600,7 @@
           "identity": "ClaimIdentity | undefined",
           "devClaims": "boolean | undefined",
           "topics": "TopicOptions | undefined @experimental",
+          "audit": "boolean | undefined",
           "retention": "RetentionOptions | undefined"
         }
       },
@@ -810,6 +821,7 @@
           "$broadcast": "<T = unknown>(topic: string) => BroadcastTopic<T> @experimental",
           "$export": "() => AsyncIterable<ExportRecord<Models>>",
           "$erasePerson": "(subject: string) => Promise<void>",
+          "$history": "(target: { model: keyof Models & string; id: string; }) => Promise<HistoryEntry[]>",
           "$flush": "() => Promise<void>",
           "$close": "() => void"
         }
@@ -1524,6 +1536,7 @@
   },
   "cli": "tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out\n\nUsage:\n  tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--force]\n  tapedb migrate dev|status|check [--dir <path>] [--schema <file>]\n  tapedb deploy [--dir <path>] [--env <name>]\n  tapedb dev  [--dir <path>] [--port <port>]\n  tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]\n  tapedb export --workspace <uuid> [--url <worker-url>] [--out <file>]\n  tapedb erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]\n  tapedb move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]\n\nCommands:\n  init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,\n          and the first migration. Existing files are kept unless --force.\n          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.\n  migrate dev --name <name> [--rename old=new] [--accept-data-loss]\n          Diff the schema against the last migration and write the next one.\n  migrate status | check\n          List migrations; check fails if the schema has unmigrated changes.\n  deploy  [--env <name>]  Check ENVIRONMENT, dev claims, data residency and migrations, then wrangler deploy.\n  dev     Run the local database with wrangler dev on port 8787.\n  studio  Open a local table browser against a running Worker.\n  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).\n  erase   Delete a workspace for good: its data, history and files (owner claim).\n          --confirm must repeat the workspace id. The id answers 410 afterwards.",
   "errorCodes": [
+    "audit_disabled",
     "claim_expired",
     "claim_secret_missing",
     "conflict",
@@ -1543,6 +1556,7 @@
     "invalid_drag",
     "invalid_envelope",
     "invalid_format",
+    "invalid_history",
     "invalid_json",
     "invalid_key",
     "invalid_limit",

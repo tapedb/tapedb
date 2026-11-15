@@ -12,6 +12,7 @@
  * therefore safe.
  */
 
+import { auditEnabled } from "../audit";
 import { applyFileOps, isFileOpList } from "../file-index";
 import {
   changesAfter,
@@ -80,8 +81,54 @@ export interface RecoverWorkspaceOptions {
 /** Thrown between steps when the time budget is spent; never escapes. */
 class RecoveryPaused extends Error {}
 
+/** R2 could not be read. Nothing was applied from the failed read. */
+class R2Unavailable extends Error {}
+
+/**
+ * The bucket as recovery reads it: a failed get, list or whole-object read
+ * becomes `R2Unavailable`, which keeps the progress made so far instead of
+ * starting over. Streamed bodies are not wrapped: a parted entry applies
+ * while it streams, so a failure there is not safe to resume from.
+ */
+function resumableReads(bucket: R2Bucket): R2Bucket {
+  const guard = async <T>(read: () => Promise<T>): Promise<T> => {
+    try {
+      return await read();
+    } catch (error) {
+      throw new R2Unavailable(messageOf(error));
+    }
+  };
+  const wrapObject = (object: R2ObjectBody | null): R2ObjectBody | null =>
+    object === null
+      ? null
+      : (new Proxy(object, {
+          get(target, key) {
+            if (key === "arrayBuffer" || key === "text" || key === "json") {
+              const read = Reflect.get(target, key, target) as () => Promise<unknown>;
+              return () => guard(() => read.call(target));
+            }
+            // Native getters (body, etag) need the object itself as `this`.
+            const value = Reflect.get(target, key, target) as unknown;
+            return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+          },
+        }) as R2ObjectBody);
+  return new Proxy(bucket, {
+    get(target, key) {
+      if (key === "get") {
+        return (...args: Parameters<R2Bucket["get"]>) =>
+          guard(() => target.get(...args)).then((object) => wrapObject(object as R2ObjectBody | null));
+      }
+      if (key === "list") return (...args: Parameters<R2Bucket["list"]>) => guard(() => target.list(...args));
+      const value = Reflect.get(target, key, target) as unknown;
+      return typeof value === "function" ? (value as (...args: unknown[]) => unknown).bind(target) : value;
+    },
+  });
+}
+
 export type RecoveryResult =
   | { recovered: false; reason: "no_manifest" | "already_populated" | "paused" }
+  /** R2 could not be read; progress is kept and a later call resumes. */
+  | { recovered: false; reason: "unavailable"; error: string }
   | {
       recovered: true;
       baseSeq: number;
@@ -115,6 +162,9 @@ interface LogLine {
   schemaVersion?: string;
   /** Present when the entry's ops are in their own object, in this many parts. */
   opsParts?: number;
+  /** The writer, when the deployment records an audit. */
+  userId?: string;
+  role?: number;
 }
 
 interface LogSegmentRef {
@@ -166,7 +216,7 @@ export function restoreOrder(): string[] {
     remaining = remaining.filter((namespace) => !done.has(namespace.table));
   }
 
-  emitted.push(ENGINE_TABLES.files, ENGINE_TABLES.txReceipts);
+  emitted.push(ENGINE_TABLES.files, ENGINE_TABLES.txReceipts, ENGINE_TABLES.txAudit);
   return emitted;
 }
 
@@ -199,7 +249,7 @@ export function allowedTables(): Set<string> {
   if (allowedTableCache === null || allowedTableCache.generation !== generation) {
     allowedTableCache = {
       generation,
-      tables: new Set<string>([...namespaceTables(), ENGINE_TABLES.files, ENGINE_TABLES.txReceipts]),
+      tables: new Set<string>([...namespaceTables(), ENGINE_TABLES.files, ENGINE_TABLES.txReceipts, ENGINE_TABLES.txAudit]),
     };
   }
   return allowedTableCache.tables;
@@ -760,7 +810,8 @@ function parseLogLines(text: string, source: string): LogLine[] {
 
     // The segment carries the idempotency key too, so recovery rebuilds
     // `_tx_log` instead of forgetting every transaction it restored. The
-    // writer's identity, which older segments carry, is not restored.
+    // writer's identity is restored only when the deployment records an
+    // audit (recordReplayedLine).
     const clientTxId = parsed.clientTxId;
     const opsHashValue = parsed.opsHash;
     const schemaVersion = parsed.schemaVersion;
@@ -778,6 +829,8 @@ function parseLogLines(text: string, source: string): LogLine[] {
       schemaVersion:
         typeof schemaVersion === "string" ? schemaVersion : "unknown",
       ...(inParts ? { opsParts: opsParts as number } : {}),
+      ...(typeof parsed.userId === "string" ? { userId: parsed.userId } : {}),
+      ...(typeof parsed.role === "number" ? { role: parsed.role } : {}),
     });
   }
 
@@ -956,8 +1009,8 @@ function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
     // write's stored ops are the rows it resolved, whose hash is not the
     // client's, which is why newer segments carry the original.
     line.opsHash ?? opsHash(ops),
-    null,
-    null,
+    auditEnabled() && typeof line.userId === "string" ? line.userId : null,
+    auditEnabled() && typeof line.role === "number" ? line.role : null,
     line.at,
     line.schemaVersion ?? "unknown"
   );
@@ -1190,6 +1243,7 @@ export async function recoverWorkspace(
   options: RecoverWorkspaceOptions = {}
 ): Promise<RecoveryResult> {
   const now = options.now ?? Date.now();
+  bucket = resumableReads(bucket);
   // Every call does at least one chunk or segment, so a slow first read can
   // never keep a recovery from moving forward.
   let started = false;
@@ -1204,14 +1258,21 @@ export async function recoverWorkspace(
 
   // A run that was cut off (a reset past the boot's 30 s, an eviction, a
   // crash) left "running" behind with its progress: resume it. Its rows are
-  // partial, so they never count as a populated workspace.
-  const interrupted = getMeta(sql, "recovery_status") === "running";
+  // partial, so they never count as a populated workspace. Neither do the
+  // rows of a run that failed: the workspace never served them.
+  const status = getMeta(sql, "recovery_status");
+  const interrupted = status === "running" || status === "failed";
   const pinned = interrupted ? getMeta(sql, "recovery_manifest") : undefined;
   if (pinned !== undefined) {
     return runRecovery(bucket, sql, workspaceId, JSON.parse(pinned) as WorkspaceManifest, now, pause);
   }
   if (interrupted) {
-    // Cut off by a version that kept no progress: start over.
+    // Failed, or cut off by a version that kept no progress: start over.
+    try {
+      sql.exec("PRAGMA foreign_keys = OFF");
+    } catch {
+      // Children are deleted first either way.
+    }
     clearRestoredRows(sql);
   }
 
@@ -1255,6 +1316,7 @@ export async function recoverWorkspace(
     sql.exec(`DELETE FROM "_tx_log"`);
     sql.exec(`DELETE FROM "_tx_log_parts"`);
     sql.exec(`DELETE FROM "_tx_receipts"`);
+    sql.exec(`DELETE FROM "_tx_audit"`);
     setMeta(sql, "recovery_manifest", JSON.stringify(manifest));
     setMeta(sql, "recovery_phase", "restore");
     setMeta(sql, "recovery_chunks_done", "0");
@@ -1358,6 +1420,9 @@ async function runRecovery(
     if (error instanceof RecoveryPaused) {
       // Progress is committed; the next call resumes.
       return { recovered: false, reason: "paused" };
+    }
+    if (error instanceof R2Unavailable) {
+      return { recovered: false, reason: "unavailable", error: error.message };
     }
     try {
       markFailed(sql, now, error);

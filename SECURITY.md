@@ -41,7 +41,9 @@ fix and disclosure. There is no bug bounty.
   before forwarding. The Durable Object binding is not a public route.
 - **Read and write rules.** `role()`, `filter()` and `check()` are applied in
   the engine. A rule that throws denies. Erasing a workspace requires an owner
-  claim.
+  claim. With `audit: true`, a row's history (writers, roles, times and
+  actions, never values) is readable by admins and owners regardless of read
+  rules.
 - **Files.** Uploads go to the workspace's R2 prefix. Without file rules,
   reads require at least member, writes and deletes at least editor. With
   rules (`schema(models, { files })`), the workspace's Durable Object decides

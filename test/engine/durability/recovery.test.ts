@@ -11,6 +11,7 @@ import { logOpsKey, manifestKey, readManifest } from "../../../src/engine/r2-key
 import { setLogPartBytesForTests } from "../../../src/engine/tx-log";
 import { namespaceTables } from "../../fixtures/registry";
 import { runTransaction } from "../../../src/engine/tx-pipeline";
+import { configureAudit, rowHistory, syncAuditCapture } from "../../../src/engine/audit";
 import type { SqlRow as TxRow, SqlExecutor as TxSql } from "../../../src/engine/tx-sql";
 import type { TxEnvelope } from "../../../src/engine/tx-types";
 import { flushPending } from "../../../src/engine/durability/flusher";
@@ -837,6 +838,28 @@ describe("recoverWorkspace", () => {
     expect(meta(target.db, "recovery_status")).toBe("complete");
   });
 
+  test("rows a failed run left behind are not served: the next run starts over", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+    const manifest = await manifestOf(bucket);
+    const folders = manifest.tables.find((table) => table.name === "folders")!;
+    const good = new Uint8Array(bucket.objects.get(folders.chunks[0].key)!.body);
+    await corruptChunk(bucket, folders.chunks[0].key);
+
+    const target = createSource();
+    const executor = recoveryExecutor(target.db, target.sql);
+    await expectFailure(recoverWorkspace(bucket as unknown as R2Bucket, executor, TEST_WORKSPACE, { now: NOW + 5 }), /checksum/i);
+    // A failed run whose cleanup did not finish: some restored rows remain.
+    target.db.exec(`INSERT INTO "folders" (id, name, created_at, updated_at, updated_seq) VALUES ('left-behind', 'X', 1, 1, 1)`);
+
+    bucket.objects.get(folders.chunks[0].key)!.body = good;
+    const second = await recoverWorkspace(bucket as unknown as R2Bucket, executor, TEST_WORKSPACE, { now: NOW + 6 });
+    expect(second.recovered).toBe(true);
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+  });
+
   test("fails closed on a checksum mismatch and records the failed marker", async () => {
     const source = createSource();
     seedWorkspace(source);
@@ -1605,6 +1628,91 @@ describe("the writer's identity", () => {
   });
 });
 
+describe("with audit on", () => {
+  function auditSource(): Source {
+    const source = createSource();
+    syncAuditCapture(txExecutor(source.db));
+    return source;
+  }
+  function history(db: Database, table: string, id: string) {
+    return rowHistory(txExecutor(db), table, id).map(({ sub, role, action }) => ({ sub, role, action }));
+  }
+
+  test("records who changed each row, carries it in R2, and recovery restores it", async () => {
+    configureAudit(true);
+    try {
+      const source = auditSource();
+      run(source, { txId: "a", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "One" } }] } as TxEnvelope);
+      run(source, { txId: "b", ops: [{ op: "merge", namespace: "folders", id: "f1", values: { name: "Uno" } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.ADMIN);
+      expect(history(source.db, "folders", "f1")).toEqual([
+        { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.EDITOR, action: "insert" },
+        { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.ADMIN, action: "update" },
+      ]);
+      const logged = source.db.query(`SELECT user_id, role FROM "_tx_log" ORDER BY seq`).all();
+      expect(logged).toEqual([
+        { user_id: "user-1", role: WORKSPACE_ROLE_LEVELS.EDITOR },
+        { user_id: "user-1", role: WORKSPACE_ROLE_LEVELS.ADMIN },
+      ]);
+
+      const bucket = new FakeR2Bucket();
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
+      const lines = [...bucket.objects.entries()].filter(([key]) => key.includes("/log/"))
+        .flatMap(([, stored]) => new TextDecoder().decode(stored.body).trim().split("\n").map((line) => JSON.parse(line)));
+      expect(lines.map((line) => [line.userId, line.role])).toEqual([
+        ["user-1", WORKSPACE_ROLE_LEVELS.EDITOR],
+        ["user-1", WORKSPACE_ROLE_LEVELS.ADMIN],
+      ]);
+
+      // Replayed from the log alone.
+      const fromLog = auditSource();
+      await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(fromLog.db, fromLog.sql), TEST_WORKSPACE, { now: NOW + 1 });
+      expect(fromLog.db.query(`SELECT user_id, role FROM "_tx_log" ORDER BY seq`).all()).toEqual(logged);
+      expect(history(fromLog.db, "folders", "f1")).toEqual(history(source.db, "folders", "f1"));
+
+      // Restored from a snapshot, then one more change replayed on top.
+      expect(await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 2)).toMatchObject({ snapshotted: true });
+      run(source, { txId: "c", ops: [{ op: "delete", namespace: "folders", id: "f1" }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.OWNER);
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 3);
+      const fromSnapshot = auditSource();
+      await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(fromSnapshot.db, fromSnapshot.sql), TEST_WORKSPACE, { now: NOW + 4 });
+      expect(history(fromSnapshot.db, "folders", "f1")).toEqual([
+        { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.EDITOR, action: "insert" },
+        { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.ADMIN, action: "update" },
+        { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.OWNER, action: "delete" },
+      ]);
+    } finally {
+      configureAudit(false);
+    }
+  });
+
+  test("the history leaves with the rest of the log after the retention", async () => {
+    configureAudit(true);
+    try {
+      const source = auditSource();
+      run(source, { txId: "a", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "One" } }] } as TxEnvelope);
+      const bucket = new FakeR2Bucket();
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
+      await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW);
+      expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_audit"`)).toBe(1);
+      await pruneHistory(bucket as unknown as R2Bucket, source.sql, TEST_WORKSPACE, Date.now() + 400 * 86_400_000);
+      expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(0);
+      expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_audit"`)).toBe(0);
+    } finally {
+      configureAudit(false);
+    }
+  });
+
+  test("turning it off stops recording", () => {
+    configureAudit(true);
+    const source = auditSource();
+    configureAudit(false);
+    syncAuditCapture(txExecutor(source.db));
+    run(source, { txId: "a", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "One" } }] } as TxEnvelope);
+    expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_audit"`)).toBe(0);
+    expect(source.db.query(`SELECT user_id, role FROM "_tx_log"`).all()).toEqual([{ user_id: null, role: null }]);
+  });
+});
+
 describe("a recovery cut off part way", () => {
   /** A bucket whose reads stop answering after `budget` of them: a reset mid-recovery. */
   function hangAfter(bucket: FakeR2Bucket, budget: number): R2Bucket {
@@ -1638,6 +1746,49 @@ describe("a recovery cut off part way", () => {
   }
 
   const highWater = (db: Database) => scalar(db, `SELECT high_water_seq FROM "_tx_state"`);
+
+  /** A bucket whose `get` fails (throws) on the reads numbered in `failing`. */
+  function failOn(bucket: FakeR2Bucket, failing: Set<number>, counted: { reads: number; started: number[] }): R2Bucket {
+    return new Proxy(bucket as unknown as R2Bucket, {
+      get(target, property, receiver) {
+        if (property === "get") {
+          return async (...args: unknown[]) => {
+            counted.reads += 1;
+            if (failing.has(counted.reads)) throw new Error("R2 get failed.");
+            return (target.get as (...a: unknown[]) => unknown).apply(target, args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+  }
+
+  test("an R2 read that fails keeps the progress, and the next call resumes from it", async () => {
+    const { source, bucket } = await durableWorkspace();
+    const counted = { reads: 0, started: [] as number[] };
+    const reference = createSource();
+    await recoverWorkspace(failOn(bucket, new Set(), counted) as R2Bucket, recoveryExecutor(reference.db, reference.sql), TEST_WORKSPACE, { now: NOW + 100 });
+    const total = counted.reads;
+    expect(total).toBeGreaterThan(4);
+
+    // Fail the last read: everything before it was applied and must stay.
+    const target = createSource();
+    const executor = recoveryExecutor(target.db, target.sql);
+    const flaky = { reads: 0, started: [] as number[] };
+    const failed = await recoverWorkspace(failOn(bucket, new Set([total]), flaky), executor, TEST_WORKSPACE, { now: NOW + 100 });
+    expect(failed).toMatchObject({ recovered: false, reason: "unavailable" });
+    expect(scalar(target.db, `SELECT value FROM "_engine_meta" WHERE "key" = 'recovery_status'`)).toBe("running");
+    expect(Object.values(entityRows(target.db)).flat().length).toBeGreaterThan(0);
+
+    // The retry reads only what is left.
+    const retry = { reads: 0, started: [] as number[] };
+    const resumed = await recoverWorkspace(failOn(bucket, new Set(), retry), executor, TEST_WORKSPACE, { now: NOW + 200 });
+    expect(resumed.recovered).toBe(true);
+    expect(retry.reads).toBeLessThan(total);
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    expect(highWater(target.db)).toBe(highWater(source.db));
+  });
 
   test("is resumed, not served as a finished workspace", async () => {
     // Without progress kept, the next boot saw restored rows, called the
