@@ -51,6 +51,7 @@ import type {
   UpdateData,
   WithInclude,
 } from "./schema";
+import { acrossModel, type AcrossQuery, type WorkspaceClients } from "./across";
 import { shapeFor, toEngineNode, toEngineWhere, type NodeArgs, type Where } from "./where";
 
 // ---- Public types ----------------------------------------------------------
@@ -264,11 +265,38 @@ export interface ClientExtras {
   $close(): void;
 }
 
+/** One model's reads over several workspaces; every row carries its `workspaceId`. */
+export interface AcrossModel<M extends Models, F extends Fields> {
+  findMany<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A): AcrossQuery<Array<Result<M, F, A> & { workspaceId: string }>>;
+  findFirst<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A): AcrossQuery<(Result<M, F, A> & { workspaceId: string }) | null>;
+  findPage<A extends PageArgs<M, F> = PageArgs<M, F>>(args?: A): PromiseLike<Page<Result<M, F, A> & { workspaceId: string }>>;
+  count(args?: { where?: Where<F, M> }): AcrossQuery<number>;
+}
+
+export type Across<M extends Models> = {
+  [K in keyof M & string]: AcrossModel<M, FieldsOf<M[K]>>;
+};
+
+export interface AcrossOptions {
+  /**
+   * A claim for one workspace. Required unless the client uses the
+   * development claim route (no `getToken`).
+   */
+  getToken?: (workspaceId: string) => Promise<string>;
+}
+
 export type Client<M extends Models> = {
   [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>;
 } & Omit<ClientExtras, "$export" | "$history"> & {
   $export(): AsyncIterable<ExportRecord<M>>;
   $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>;
+  /**
+   * Reads over several workspaces: one request (or live socket) per
+   * workspace with that workspace's claim, merged in `orderBy` order.
+   * A workspace that fails rejects a one-off read with `AcrossError`
+   * (the others' rows in `partial`) and shows in a live state's `errors`.
+   */
+  $across(workspaceIds: string[], options?: AcrossOptions): Across<M>;
 };
 
 export interface ClientConfig<M extends Models> {
@@ -853,10 +881,55 @@ export function createClient<M extends Models>(
     $history: ({ model, id }) => impl.history(model, id),
     $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),
-    $close: () => impl.close(),
+    $close: () => {
+      impl.close();
+      for (const other of acrossClients.values()) other.$close();
+      acrossClients.clear();
+    },
   };
 
-  const client: Record<string, unknown> = { ...extras };
+  // Workspace clients for `$across`, one per workspace and token source.
+  const acrossClients = new Map<string, Client<M>>();
+  const acrossTokens = new Map<string, (workspaceId: string) => Promise<string>>();
+  const across = (workspaceIds: string[], options: AcrossOptions = {}): Across<M> => {
+    if (!Array.isArray(workspaceIds) || workspaceIds.length === 0) {
+      throw new Error("$across needs at least one workspace id.");
+    }
+    const ids = [...new Set(workspaceIds)];
+    if (config.getToken && !options.getToken) {
+      throw new Error("$across needs getToken(workspaceId): each workspace has its own claim.");
+    }
+    const clients = ids.map((workspaceId) => {
+      if (workspaceId === config.workspace) return { workspaceId, client: client as unknown as Client<M> };
+      // The latest getToken given for a workspace is the one its client uses.
+      if (options.getToken) acrossTokens.set(workspaceId, options.getToken);
+      let other = acrossClients.get(workspaceId);
+      if (!other) {
+        other = createClient(
+          {
+            ...config,
+            workspace: workspaceId,
+            ...(options.getToken ? { getToken: () => acrossTokens.get(workspaceId)!(workspaceId) } : {}),
+          },
+          deps
+        );
+        acrossClients.set(workspaceId, other);
+      }
+      return { workspaceId, client: other };
+    });
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(config.schema.graph)) {
+      out[key] = acrossModel(
+        clients.map(({ workspaceId, client: one }) => ({
+          workspaceId,
+          model: (one as unknown as Record<string, unknown>)[key] as WorkspaceClients[number]["model"],
+        }))
+      );
+    }
+    return out as Across<M>;
+  };
+
+  const client: Record<string, unknown> = { ...extras, $across: across };
   for (const [key, info] of Object.entries(config.schema.graph)) {
     client[key] = modelClient(runtime, info);
   }

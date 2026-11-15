@@ -94,6 +94,7 @@ On the client itself:
 | `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject` (any size: past 16 MiB it goes up as a multipart upload of 16 MiB parts, abandoned if a part fails), `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` (the files the caller may read, each with `uploadedBy`) |
 | `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `subscribe(listener)` with `PresencePeer[]`, `leave()` |
 | `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean | "queued"` (`"queued"` while the socket is down: sent after reconnecting, up to 100 per topic for 60 s; `false` when that queue is full), `subscribe((message, from) => …, { onError? })`, which never hears your own messages; never stored, never delivered late |
+| `$across(workspaceIds, { getToken? })` | `Across`: per model `findMany`, `findFirst`, `findPage` and `count` over those workspaces, each with its own claim (`getToken(workspaceId)`, required unless the client uses the development claim route), merged in `orderBy` order; rows carry `workspaceId`; a page `cursor` holds a position per workspace. Results are `AcrossQuery` (awaitable, `subscribe`, `snapshot`, usable with `useLive`); live states add `errors` by workspace. A failed workspace rejects a one-off read with `AcrossError` (`errors`, `partial`) |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
 | `$history({ model, id })` | `Promise<HistoryEntry[]>`: each recorded change to the row, oldest first, as `{ seq, at, sub, role, action }` with `action` `"insert"`, `"update"` or `"delete"`; ADMIN or higher; needs `audit: true` on the Worker |
 | `$flush()` | waits until queued writes are acknowledged |
@@ -102,7 +103,7 @@ On the client itself:
 Also exported: `id()` (time-ordered ids), `Query`, `PageQuery`, `Write`,
 `WORKSPACE_ROLE_LEVELS`, `hasRole`, `hasRoleLevel`, and the
 types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
-`Page`, `Result`, `LiveState`, `WriteResult`, `HistoryEntry`, `QueryError`,
+`Page`, `Result`, `LiveState`, `WriteResult`, `HistoryEntry`, `Across`, `AcrossModel`, `AcrossOptions`, `AcrossQuery`, `AcrossLiveState`, `AcrossError`, `QueryError`,
 `WriteRejection`, `PresenceRoom`, `PresencePeer`, `RoleClaim`,
 `WorkspaceRole`, `ExportRecord`, and **experimental** `BroadcastTopic` and
 `TopicSender`.
@@ -111,7 +112,7 @@ types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 
 | Hook | Returns |
 | --- | --- |
-| `useLive(query)` | `LiveState`: `{ data, isLoading, error }` |
+| `useLive(query)` | `LiveState`: `{ data, isLoading, error }`; for an `AcrossQuery`, `AcrossLiveState` with `errors` too |
 | `useLivePage(pageQuery)` | `LivePage`: `{ rows, hasMore, isLoading, error, loadMore }` |
 | `usePresence(db, room, presence?)` | `PresencePeer[]`; publishes `presence` while mounted |
 | `useBroadcast(db, topic, onMessage?)` | **experimental**: a `send(message) => boolean \| "queued"` function |
