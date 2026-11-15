@@ -49,6 +49,7 @@ import { TxError as PermissionError } from "./tx-types";
 import { quoteIdentifier } from "./tx-apply";
 import type { SqlExecutor, SqlValue } from "./tx-sql";
 import { TxError } from "./tx-types";
+import { PersonalPending } from "./personal";
 
 type PhysicalRow = Record<string, SqlValue>;
 
@@ -104,7 +105,7 @@ export function executeQuery(
     // The claim applies its read rules; without it every matching row comes back.
     return executeCompiledQuery(sql, compiled, claim);
   } catch (error) {
-    if (error instanceof TxError) throw error;
+    if (error instanceof TxError || error instanceof PersonalPending) throw error;
     throw new TxError("storage_error", errorMessage(error));
   }
 }
@@ -123,7 +124,7 @@ export function executeQueryWithPageInfo(
   try {
     return executeCompiledQueryWithPageInfo(sql, compiled, claim);
   } catch (error) {
-    if (error instanceof TxError) throw error;
+    if (error instanceof TxError || error instanceof PersonalPending) throw error;
     throw new TxError("storage_error", errorMessage(error));
   }
 }
@@ -524,6 +525,7 @@ function rowToApi(entity: HydratedEntity): Record<string, unknown> {
   if (!namespace) return { id: entity.row.id };
 
   const output: Record<string, unknown> = { id: entity.row.id };
+  if (typeof entity.row.__tapedb_erased === "string") output.$erased = JSON.parse(entity.row.__tapedb_erased);
   for (const [attribute, definition] of Object.entries(namespace.attributes)) {
     // Rules see the same values a client would: booleans as booleans, JSON
     // parsed, dates as epoch millis. Handing them raw SQLite integers would
@@ -571,7 +573,8 @@ function hydrateNode(
   extra?: { column: string; ids: string[] }
 ): HydratedEntity[] {
   const { sql: statement, params, stages } = buildSelectSql(node, extra);
-  const rows = runStaged(sql, stages, params, (bound) => sql.all<PhysicalRow>(statement, ...bound));
+  const stored = runStaged(sql, stages, params, (bound) => sql.all<PhysicalRow>(statement, ...bound));
+  const rows = sql.decodeRows?.(node.namespace, stored) ?? stored;
   const entities: HydratedEntity[] = rows.map((row) => ({
     namespace: node.namespace,
     row,
@@ -713,6 +716,7 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
   }
 
   const output: Record<string, unknown> = { id: entity.row.id };
+  if (typeof entity.row.__tapedb_erased === "string") output.$erased = JSON.parse(entity.row.__tapedb_erased);
   if (entity.select !== null) {
     for (const name of entity.select) {
       if (name === "id") continue;

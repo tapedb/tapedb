@@ -19,6 +19,8 @@
  * with an `error` line and no `end`.
  */
 
+import type { PersonalRuntime } from "./personal";
+import type { QueryPageInfo, QueryResult } from "./query-types";
 import type { RoleClaim } from "../claims";
 import { compileQuery } from "./query-compile";
 import { authorizeQuery, executeCompiledQueryWithPageInfo, viewAccess } from "./query-execute";
@@ -59,12 +61,12 @@ function plan(claim: RoleClaim): { models: string[]; skipped: Array<{ model: str
  * Lines of the export, produced lazily. Each `next()` reads at most one
  * chunk from SQLite.
  */
-export function* exportLines(
+function* exportSteps(
   sql: SqlExecutor,
   claim: RoleClaim,
   workspaceId: string,
   now: () => number = Date.now
-): Generator<string> {
+): Generator<string | (() => { data: QueryResult; pageInfo: QueryPageInfo }), void, { data: QueryResult; pageInfo: QueryPageInfo }> {
   const startSeq = highWater(sql);
   const { models, skipped } = plan(claim);
   yield JSON.stringify({
@@ -94,7 +96,7 @@ export function* exportLines(
           },
           viewAccess(claim)
         );
-        const { data, pageInfo } = executeCompiledQueryWithPageInfo(sql, compiled, claim);
+        const { data, pageInfo } = yield () => executeCompiledQueryWithPageInfo(sql, compiled, claim);
         for (const row of data[model] ?? []) {
           yield JSON.stringify({ type: "row", model, data: row });
           counts[model] += 1;
@@ -141,21 +143,49 @@ export function* exportLines(
   });
 }
 
+/** Synchronous export for engines without encrypted fields. */
+export function* exportLines(sql: SqlExecutor, claim: RoleClaim, workspaceId: string, now: () => number = Date.now): Generator<string> {
+  const steps = exportSteps(sql, claim, workspaceId, now);
+  let next = steps.next();
+  try {
+    while (!next.done) {
+      if (typeof next.value === "string") { yield next.value; next = steps.next(); }
+      else {
+        try { next = steps.next(next.value()); } catch (error) { next = steps.throw(error); }
+      }
+    }
+  } finally { steps.return(); }
+}
+
+async function* personalExportLines(sql: SqlExecutor, claim: RoleClaim, workspaceId: string, personal: PersonalRuntime): AsyncGenerator<string> {
+  const steps = exportSteps(personal.sql(sql), claim, workspaceId);
+  let next = steps.next();
+  try {
+    while (!next.done) {
+      if (typeof next.value === "string") { yield next.value; next = steps.next(); }
+      else {
+        try { const result = await personal.read(next.value); personal.clearPlaintext(); next = steps.next(result); } catch (error) { next = steps.throw(error); }
+      }
+    }
+  } finally { steps.return(); }
+}
+
 /** The export as a byte stream that reads one chunk per pull. */
 export function exportStream(
   sql: SqlExecutor,
   claim: RoleClaim,
-  workspaceId: string
+  workspaceId: string,
+  personal?: PersonalRuntime
 ): ReadableStream<Uint8Array> {
-  const lines = exportLines(sql, claim, workspaceId);
+  const lines = personal ? personalExportLines(sql, claim, workspaceId, personal) : exportLines(sql, claim, workspaceId);
   const encoder = new TextEncoder();
   return new ReadableStream<Uint8Array>({
-    pull(controller) {
+    async pull(controller) {
       // A few lines per pull keeps the stream moving without reading ahead
       // more than one chunk of rows.
       let text = "";
       for (let count = 0; count < 256; count += 1) {
-        const next = lines.next();
+        const next = await lines.next();
         if (next.done) {
           if (text) controller.enqueue(encoder.encode(text));
           controller.close();

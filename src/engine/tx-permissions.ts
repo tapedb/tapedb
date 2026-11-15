@@ -353,11 +353,12 @@ function readRow(
   const definition = findNamespace(namespace);
   if (!definition) return undefined;
 
-  const row = sql.one<SqlRow>(
+  let row = sql.one<SqlRow>(
     `SELECT * FROM "${definition.table}" WHERE "id" = ?`,
     id
   );
   if (row === undefined) return undefined;
+  row = sql.decodeRows?.(namespace, [row])[0] ?? row;
 
   const output: Record<string, unknown> = { id };
   for (const attribute of Object.keys(definition.attributes)) {

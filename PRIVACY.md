@@ -14,6 +14,7 @@ processor.
 | | `_tx_receipts`: random client transaction id, sequence and time; an operation hash while recent | Id, sequence and time for the workspace lifetime; hash removed after half the retention (15 days by default). Superseded R2 copies leave within the full retention |
 | | `_files`: path, size, content type and uploader (the claim's `sub`) of each upload | Until the file is deleted |
 | R2 `DATA` bucket | Log segments (the `_tx_log` lines), snapshots of every table, a manifest | Superseded copies deleted within the retention (30 days by default) |
+| R2 `DATA` key prefix | Per-subject AES-GCM keys wrapped with `TAPEDB_KEY_SECRET`, named by subject HMAC | Until subject or workspace erasure |
 | R2 `FILES` bucket | Uploaded bytes | Deleted with the file, at once |
 | Socket attachments, and `_socket_state` / `_socket_parts` past 12 KiB | A connected client's `sub`, role, subscriptions, presence state and joined topics; a message arriving in parts until its last part | While the socket is open |
 | Broadcast topics | Messages | Not stored: delivered to connected sockets only |
@@ -50,7 +51,7 @@ Two things sit outside tapedb's control:
 - **Durable Object point-in-time recovery.** Cloudflare keeps 30 days of
   restorable history for every SQLite-backed Durable Object. tapedb never
   restores from it, but until it ages out, code running in your account could.
-  So the effective bound is the greater of the retention and 30 days, and the
+  For ordinary plaintext the effective bound is the greater of retention and 30 days; personal ciphertext becomes unreadable when its R2 subject key is deleted. The
   default retention is 30 days to match.
 - **R2 bucket lock rules.** A lock rule on the `DATA` or `FILES` bucket stops
   tapedb from deleting anything it covers. Don't add one to tapedb's buckets.
@@ -66,10 +67,16 @@ filter to the rows about them.
 **Rectification (Art. 16).** Update the rows. The old values leave the
 history within the retention.
 
-**Erasure of a person (Art. 17).** Delete or overwrite the rows about them,
-and delete their files with `db.$files.delete(path)`, which removes the bytes
-from R2 at once. The deleted values leave the history within the
-retention, and Cloudflare's point-in-time recovery within 30 days. Tell the person about that window.
+**Erasure of a person (Art. 17).** Mark personal string and JSON fields with
+`.personal({ subject: "self" })` or a string subject field. An owner calls
+`db.$erasePerson(subject)` to delete the subject key from R2. SQL, transaction
+logs, snapshots and Cloudflare recovery copies hold ciphertext that can no
+longer be decrypted; reads return `null` with `$erased` field names. Delete
+ordinary fields and files separately. Plaintext stored before encryption was
+enabled still follows the history retention and Cloudflare's 30-day window.
+Exports contain decrypted values: their copies and any external key backups
+need their own erasure. The wrapping secret must stay stable, including moves;
+losing it loses access to every personal field.
 
 **Erasure of a workspace (a whole tenant).** `tapedb erase --workspace <id>
 --confirm <id>`, or `DELETE /engine/workspaces/:id` with an owner's claim,

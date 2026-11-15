@@ -11,9 +11,10 @@ The boundaries TapeDB has by design, and the gates before a public release.
 - **Identity is yours.** The engine verifies short-lived claims but does not
   manage users, sessions, passwords or memberships, and it does not record who
   made each write.
-- **Retention has a floor outside TapeDB.** Deleted and overwritten values leave
-  TapeDB's copies within the configured retention, but Cloudflare keeps 30 days
-  of Durable Object point-in-time recovery. Erasure cannot shorten that window.
+- **Personal fields use erasable keys.** Deleting a subject key makes its
+  ciphertext unreadable in SQL, logs, snapshots and recovery copies. Ordinary
+  plaintext and copies from before encryption follow the history retention
+  and Cloudflare's 30-day recovery window.
 - **Ephemeral channels.** Broadcast messages and presence are ephemeral; messages sent while the socket is down are dropped.
 - **Migrations are forward operations.** Destructive changes need
   `--accept-data-loss`; renames need an explicit rename; new required fields

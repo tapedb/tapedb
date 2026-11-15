@@ -59,6 +59,9 @@ import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
 import { authorizeFile, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
 import { readTrustedRoleClaim } from "./trusted-claim";
+import { migratePersonal } from "./personal-migrate";
+import { PersonalRuntime, hasPersonalFields, personalKeyPrefix } from "./personal";
+import { installPersonalCapture, runPersonalTransaction } from "./personal-write";
 import { runTransaction } from "./tx-pipeline";
 import { durableObjectSqlExecutor, type SqlValue } from "./tx-sql";
 import { TxError, type TxErrorCode } from "./tx-types";
@@ -120,6 +123,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   /** Namespaces touched since the current debounce window opened. */
   private pendingInvalidationNamespaces = new Set<string>();
 
+  private personal?: PersonalRuntime;
   private erased = false;
   private importing = false;
   private moving = false;
@@ -167,6 +171,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // SQLite. Set it before migrations so every request sees it.
       ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
       await this.applyMigrations();
+      if (hasPersonalFields()) {
+        this.personal = new PersonalRuntime(env, this.workspaceId);
+        installPersonalCapture(durableObjectSqlExecutor(ctx.storage));
+      }
 
       // A wiped DO rebuilds from the R2 manifest before serving traffic. A
       // populated DO returns immediately without touching R2.
@@ -207,6 +215,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
     const wasRecovering = this.recovering;
     this.recovering = false;
+    if (this.personal && !await migratePersonal(durableObjectSqlExecutor(this.ctx.storage), this.personal, fn => this.ctx.storage.transaction(fn), Date.now() + Math.min(budgetMs, 4000))) {
+      this.recovering = true;
+      await this.ctx.storage.setAlarm(Date.now());
+      return;
+    }
     if (recovery.recovered) {
       console.log("workspace_recovered", {
         workspaceId: this.workspaceId,
@@ -324,9 +337,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
       response.headers.set("retry-after", "2");
       return response;
     }
-    const response = await this.route(request);
-    await discardBody(request);
-    return response;
+    try { return await this.route(request); }
+    finally {
+      this.personal?.clearPlaintext();
+      await discardBody(request);
+    }
   }
 
   private async route(request: Request): Promise<Response> {
@@ -339,7 +354,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       if (request.method !== "POST") return apiError(405, "method_not_allowed", "Import uses POST.");
       this.importing = true;
       try {
-        const rows = await importWorkspace(durableObjectSqlExecutor(this.ctx.storage), request, claim, this.workspaceId);
+        const rows = await importWorkspace(durableObjectSqlExecutor(this.ctx.storage), request, claim, this.workspaceId, this.personal);
         await this.scheduleNextDurabilityAlarm(Date.now());
         return json({ ok: true, imported: { rows } });
       } catch (error) { return apiError(error instanceof TxError && error.code === "conflict" ? 409 : 400, "import_failed", errorMessage(error)); }
@@ -382,6 +397,21 @@ export class WorkspaceRoom extends DurableObject<Env> {
         throw error;
       }
       return this.status();
+    }
+
+    if (url.pathname.startsWith("/subjects/")) {
+      if (request.method !== "DELETE") return apiError(405, "method_not_allowed", "Erase a subject with DELETE.");
+      const claim = readTrustedRoleClaim(request, this.workspaceId);
+      if (claim.role < WORKSPACE_ROLE_LEVELS.OWNER) return apiError(403, "insufficient_role", "Only an owner can erase personal data.");
+      if (!this.personal) return apiError(400, "invalid_op", "This schema has no personal fields.");
+      let subject: string;
+      try { subject = decodeURIComponent(url.pathname.slice("/subjects/".length)); }
+      catch { return apiError(400, "invalid_subject", "The subject must be URL encoded."); }
+      if (!subject) return apiError(400, "invalid_subject", "A subject is required.");
+      await this.ctx.storage.transaction(() => this.personal!.erase(subject));
+      this.subscriptionResults.clear();
+      this.scheduleInvalidation(Object.keys(NAMESPACES));
+      return json({ ok: true });
     }
 
     if (url.pathname === "/transact") {
@@ -434,7 +464,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         throw error;
       }
       return new Response(
-        exportStream(durableObjectSqlExecutor(this.ctx.storage), claim, this.workspaceId),
+        exportStream(durableObjectSqlExecutor(this.ctx.storage), claim, this.workspaceId, this.personal),
         { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } }
       );
     }
@@ -458,7 +488,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         const action = body.action === "delete" ? "delete" : "read";
         const sql = durableObjectSqlExecutor(this.ctx.storage);
         const stored = typeof body.path === "string" ? this.storedFile(sql, body.path) : undefined;
-        const allowed = stored && (fileRulesConfigured() ? authorizeFile(sql, claim, action, stored) : claim.role >= (action === "read" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR));
+        const allowed = stored && (fileRulesConfigured() ? await this.readPersonal(view => authorizeFile(view, claim, action, stored)) : claim.role >= (action === "read" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR));
         if (!allowed) return apiError(404, "not_found", "No such file.");
         return json(sql.one<{ key: string }>(`SELECT r2_key AS key FROM "_files" WHERE path = ?`, body.path!) ?? {});
       }
@@ -579,12 +609,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
       await writeMove(this.roomEnv.DATA, this.workspaceId, this.moveState);
       const history = await listAllR2(this.roomEnv.DATA, `${workspacePrefix(this.workspaceId)}/`);
       await deleteR2Keys(this.roomEnv.DATA, history.map(object => object.key));
+      await deleteR2Keys(this.roomEnv.DATA, (await listAllR2(this.roomEnv.DATA, personalKeyPrefix(this.workspaceId))).map(object => object.key));
       if (this.roomEnv.FILES) await deleteR2Keys(this.roomEnv.FILES, (await listAllR2(this.roomEnv.FILES, filesPrefix(this.workspaceId))).map(object => object.key));
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
       return json({ ok: true });
     }
     return apiError(404, "not_found", "Unknown move operation.");
+  }
+
+  private readPersonal<T>(fn: (sql: ReturnType<typeof durableObjectSqlExecutor>) => T): Promise<T> {
+    const raw = durableObjectSqlExecutor(this.ctx.storage);
+    const run = () => fn(this.personal?.sql(raw) ?? raw);
+    return this.personal ? this.personal.read(run) : Promise.resolve(run());
   }
 
   private async transact(request: Request): Promise<Response> {
@@ -607,12 +644,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
     try {
       const workspaceId = this.workspaceId;
       const claim = readTrustedRoleClaim(request, workspaceId);
-      const result = runTransaction(
-        durableObjectSqlExecutor(this.ctx.storage),
-        workspaceId,
-        claim,
-        envelope
-      );
+      const sql = durableObjectSqlExecutor(this.ctx.storage);
+      const result = this.personal
+        ? await this.ctx.storage.transaction(() => runPersonalTransaction(sql, this.personal!, workspaceId, claim, envelope))
+        : runTransaction(sql, workspaceId, claim, envelope);
       try {
         await this.scheduleNextDurabilityAlarm(Date.now());
       } catch (error) {
@@ -667,11 +702,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     try {
       const workspaceId = this.workspaceId;
       const claim = readTrustedRoleClaim(request, workspaceId);
-      const { data, pageInfo } = executeQueryWithPageInfo(
-        durableObjectSqlExecutor(this.ctx.storage),
-        claim,
-        envelope
-      );
+      const raw = durableObjectSqlExecutor(this.ctx.storage);
+      const run = () => executeQueryWithPageInfo(this.personal?.sql(raw) ?? raw, claim, envelope);
+      const { data, pageInfo } = this.personal ? await this.personal.read(run) : run();
       return json({ ok: true, data, pageInfo });
     } catch (error) {
       if (error instanceof TxError) {
@@ -747,7 +780,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     const text =
       typeof message === "string" ? message : new TextDecoder().decode(message);
-    this.handleText(ws, attachment, text, false);
+    await this.handleText(ws, attachment, text, false);
   }
 
   /**
@@ -755,7 +788,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * message comes as `part` frames, stored until the last (see
    * socket-state.ts), and then runs here like any other.
    */
-  private handleText(ws: WebSocket, attachment: SocketAttachment, text: string, reassembled: boolean): void {
+  private async handleText(ws: WebSocket, attachment: SocketAttachment, text: string, reassembled: boolean): Promise<void> {
     let payload: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(text);
@@ -793,7 +826,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         if ("error" in outcome) {
           this.send(ws, { type: "error", code: outcome.error, message: `Part ${index} of message ${id} arrived out of order; the message was dropped.` });
         } else if ("text" in outcome) {
-          this.handleText(ws, attachment, outcome.text, true);
+          await this.handleText(ws, attachment, outcome.text, true);
         }
         return;
       }
@@ -801,7 +834,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         this.handlePing(ws, payload);
         return;
       case "query:subscribe":
-        this.handleSubscribe(ws, attachment, payload);
+        await this.handleSubscribe(ws, attachment, payload);
         return;
       case "query:unsubscribe":
         this.handleUnsubscribe(ws, attachment, payload);
@@ -1173,11 +1206,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
     this.broadcastPresence(attachment.presence.target, attachment.clientId);
   }
 
-  private handleSubscribe(
+  private async handleSubscribe(
     ws: WebSocket,
     attachment: SocketAttachment,
     payload: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
     const id = payload.id;
     if (typeof id !== "string" || id.length === 0 || id.length > 128) {
       this.send(ws, {
@@ -1207,11 +1240,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const socketClaim = claimFromAttachment(attachment, this.workspaceId);
       const compiled = compileQuery(query, viewAccess(socketClaim));
       authorizeQuery(socketClaim, compiled);
-      ({ data, pageInfo } = executeCompiledQueryWithPageInfo(
-        durableObjectSqlExecutor(this.ctx.storage),
-        compiled,
-        claimFromAttachment(attachment, this.workspaceId)
-      ));
+      const raw = durableObjectSqlExecutor(this.ctx.storage);
+      const run = () => executeCompiledQueryWithPageInfo(this.personal?.sql(raw) ?? raw, compiled, socketClaim);
+      ({ data, pageInfo } = this.personal ? await this.personal.read(run) : run());
     } catch (error) {
       const txError = error instanceof TxError ? error : null;
       this.send(ws, {
@@ -1292,6 +1323,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       await this.roomEnv.DATA.delete(manifestKey(workspaceId));
       const history = (await listAllR2(this.roomEnv.DATA, `${workspacePrefix(workspaceId)}/`)).map((object) => object.key);
       await deleteR2Keys(this.roomEnv.DATA, history);
+      await deleteR2Keys(this.roomEnv.DATA, (await listAllR2(this.roomEnv.DATA, personalKeyPrefix(workspaceId))).map(object => object.key));
       const files = this.roomEnv.FILES ? (await listAllR2(this.roomEnv.FILES, filesPrefix(workspaceId))).map((object) => object.key) : [];
       if (this.roomEnv.FILES) await deleteR2Keys(this.roomEnv.FILES, files);
 
@@ -1355,11 +1387,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
       this.invalidationTimer = null;
       const touched = this.pendingInvalidationNamespaces;
       this.pendingInvalidationNamespaces = new Set();
-      this.flushInvalidations(touched);
+      const work = this.flushInvalidations(touched).catch(error => console.error("workspace_invalidation_failed", error));
+      this.ctx.waitUntil?.(work);
     }, DEFAULT_INVALIDATION_DEBOUNCE_MS);
   }
 
-  private flushInvalidations(touched: ReadonlySet<string>): void {
+  private async flushInvalidations(touched: ReadonlySet<string>): Promise<void> {
     // `getWebSockets` is part of the Durable Object runtime. Guard the call so
     // non-WebSocket harnesses (and older test doubles) do not crash a deferred
     // invalidation pass.
@@ -1409,7 +1442,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         const key = `${bySubject ? attachment.sub : ""}\u0000${attachment.role}\u0000${stableStringify(subscription.query)}`;
         let run = runs.get(key);
         if (run === undefined) {
-          run = this.runSubscription(sql, compiled, claim);
+          run = await this.runSubscription(sql, compiled, claim);
           runs.set(key, run);
         }
         if (run.kind === "error") {
@@ -1492,13 +1525,16 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   /** One subscription's re-run for this flush: its result, or why it failed. */
-  private runSubscription(
+  private async runSubscription(
     sql: ReturnType<typeof durableObjectSqlExecutor>,
     compiled: CompiledQuery,
     claim: RoleClaim
-  ): SubscriptionRun {
+  ): Promise<SubscriptionRun> {
     try {
-      return { kind: "result", ...executeCompiledQueryWithPageInfo(sql, compiled, claim) };
+      const run = () => executeCompiledQueryWithPageInfo(this.personal?.sql(sql) ?? sql, compiled, claim);
+      const result = this.personal ? await this.personal.read(run) : run();
+      this.personal?.clearPlaintext();
+      return { kind: "result", ...result };
     } catch (error) {
       const txError = error instanceof TxError ? error : null;
       return {
@@ -1596,7 +1632,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * File metadata rows. Bytes live in R2 and never enter the transaction log;
    * this table is the queryable index over them.
    */
-  private listFiles(claim: RoleClaim): Response {
+  private async listFiles(claim: RoleClaim): Promise<Response> {
     const sql = durableObjectSqlExecutor(this.ctx.storage);
     const rows = sql.all<Record<string, SqlValue>>(
       `SELECT "id", "path", "r2_key" AS "r2Key", "size",
@@ -1605,7 +1641,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
          FROM "${ENGINE_TABLES.files}"
         ORDER BY "path"`
     ) as unknown as Array<FileInfo & Record<string, SqlValue>>;
-    return json({ ok: true, data: fileRulesConfigured() ? readableFiles(sql, claim, rows) : rows });
+    return json({ ok: true, data: fileRulesConfigured() ? await this.readPersonal(view => readableFiles(view, claim, rows)) : rows });
   }
 
   /** The stored file at `path`, as file rules see it. */
@@ -1640,12 +1676,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
         contentType: typeof body?.contentType === "string" ? body.contentType : null,
         uploadedBy: claim.sub,
       };
-      return authorizeFile(sql, claim, "write", incoming, stored)
+      return await this.readPersonal(view => authorizeFile(view, claim, "write", incoming, stored))
         ? json({ ok: true })
         : apiError(403, "file_access_denied", "The file rules do not allow this write.");
     }
-    if (stored === undefined || !authorizeFile(sql, claim, action, stored)) {
-      return stored === undefined || action === "read" || !authorizeFile(sql, claim, "read", stored)
+    if (stored === undefined || !await this.readPersonal(view => authorizeFile(view, claim, action, stored))) {
+      return stored === undefined || action === "read" || !await this.readPersonal(view => authorizeFile(view, claim, "read", stored))
         ? apiError(404, "not_found", "No such file.")
         : apiError(403, "file_access_denied", "The file rules do not allow this delete.");
     }

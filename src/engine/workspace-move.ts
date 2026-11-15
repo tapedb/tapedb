@@ -1,3 +1,4 @@
+import { personalKeyPrefix } from "./personal";
 import type { Env } from "../types";
 import { filesPrefix, manifestKey, workspacePrefix } from "./r2-keys";
 import { listAllR2 } from "./r2-list";
@@ -47,7 +48,7 @@ export async function copyObject(from: R2Bucket, to: R2Bucket, key: string): Pro
 
 export async function copyWorkspace(source: Env, target: Env, id: string, fileKeys: ReadableStream<Uint8Array>): Promise<void> {
   const manifest = manifestKey(id);
-  const objects = await listAllR2(source.DATA, `${workspacePrefix(id)}/`);
+  const objects = [...await listAllR2(source.DATA, `${workspacePrefix(id)}/`), ...await listAllR2(source.DATA, personalKeyPrefix(id))];
   for (const object of objects) if (object.key !== manifest) await copyObject(source.DATA, target.DATA, object.key);
   const reader = fileKeys.getReader();
   const decoder = new TextDecoder();

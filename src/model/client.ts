@@ -249,6 +249,8 @@ export interface ClientExtras {
    * `error` if the export stopped).
    */
   $export(): AsyncIterable<ExportRecord<Models>>;
+  /** Deletes a subject key so its personal fields become unreadable. Owners only. */
+  $erasePerson(subject: string): Promise<void>;
   /** Retries queued writes now (also runs on reconnect and when back online). */
   $flush(): Promise<void>;
   /** Closes the socket. */
@@ -839,6 +841,7 @@ export function createClient<M extends Models>(
           }),
       };
     },
+    $erasePerson: (subject) => impl.erasePerson(subject),
     $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),
     $close: () => impl.close(),

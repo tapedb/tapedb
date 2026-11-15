@@ -482,6 +482,19 @@ class DataClientImpl {
    * The workspace export, one parsed NDJSON record at a time, read from the
    * response stream as it arrives rather than buffered.
    */
+  async erasePerson(subject: string): Promise<void> {
+    if (!subject) throw new Error("A subject is required.");
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/subjects/${encodeURIComponent(subject)}`,
+      { method: "DELETE", headers: { authorization: `Bearer ${token}` } }
+    );
+    if (!response.ok) {
+      const error = readServerError(await response.json().catch(() => null));
+      throw new ServerError(error?.code ?? "http_error", error?.message ?? `Erasure failed with HTTP ${response.status}.`, response.status);
+    }
+  }
+
   async *exportRecords(): AsyncGenerator<Record<string, unknown>> {
     const problem = this.configProblem();
     if (problem) throw new Error(problem);

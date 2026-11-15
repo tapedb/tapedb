@@ -31,6 +31,8 @@ export interface Env {
 
   /** Shared HS256 secret used to verify role claims. */
   TAPEDB_CLAIM_SECRET: string;
+  /** Wraps erasable subject keys; at least 32 characters when personal fields exist. */
+  TAPEDB_KEY_SECRET?: string;
   /** Optional expected `iss` claim; checked only when set. */
   TAPEDB_CLAIM_ISSUER?: string;
   /** Optional expected `aud` claim; checked only when set. */

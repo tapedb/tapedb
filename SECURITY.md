@@ -100,3 +100,14 @@ controls accept only Worker-forwarded claims and have no public route.
 Concurrent move requests are serialized by the destination room. Uploads use
 separate byte objects and commit their index pointers afterwards, so a write
 refused during a move cannot overwrite a file already being transferred.
+
+## Personal-field keys
+
+Personal string and JSON values use AES-GCM with random per-subject keys.
+`TAPEDB_KEY_SECRET` wraps those keys; it also derives opaque R2 key names by
+HMAC. Ciphertext authenticates its workspace, subject key, table, row and field.
+Only an owner may delete a subject key. Erasure clears room plaintext caches
+and refreshes live queries. Keep the wrapping secret stable and restrict R2
+access: copying a wrapped subject key preserves the ability to decrypt it.
+A plaintext export is a separate copy. Enabling encryption does not remove
+plaintext from historical storage predating that change.

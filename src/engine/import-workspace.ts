@@ -1,3 +1,4 @@
+import type { PersonalRuntime } from "./personal";
 import type { RoleClaim } from "../claims";
 import { NAMESPACES } from "./registry";
 import { filesPrefix } from "./r2-keys";
@@ -18,12 +19,12 @@ export function assertEmpty(sql: SqlExecutor): void {
 }
 
 /** A checked stream is staged in SQLite, then applied and logged atomically. */
-export async function importWorkspace(sql: SqlExecutor, request: Request, claim: RoleClaim, workspaceId: string): Promise<number> {
+export async function importWorkspace(sql: SqlExecutor, request: Request, claim: RoleClaim, workspaceId: string, personal?: PersonalRuntime): Promise<number> {
   assertEmpty(sql);
   sql.exec(`CREATE TABLE IF NOT EXISTS "_tapedb_import" (n INTEGER PRIMARY KEY, data TEXT NOT NULL)`);
   sql.exec(`DELETE FROM "_tapedb_import"`);
   let n = 0, rows = 0, header: Record<string, unknown> | null = null, end: Record<string, unknown> | null = null;
-  const stage = (text: string) => {
+  const stage = async (text: string) => {
     if (!text.trim()) return;
     const value = JSON.parse(text) as Record<string, unknown>;
     if (end) throw new Error("The export has data after its end line.");
@@ -34,7 +35,20 @@ export async function importWorkspace(sql: SqlExecutor, request: Request, claim:
     }
     if (value.type === "end") { end = value; return; }
     if (value.type !== "row" && value.type !== "file") throw new Error("Unexpected export line.");
-    if (value.type === "row") rows++;
+    if (value.type === "row") {
+      rows++;
+      if (personal) {
+        const record = value.data as Record<string, unknown>;
+        const namespace = NAMESPACES[String(value.model)];
+        if (!namespace || !record || typeof record.id !== "string") throw new Error("Invalid exported model row.");
+        const { id, createdAt, updatedAt, updatedSeq, $erased, ...values } = record;
+        const parsed = validateEnvelope({ txId: "import", ops: [{ op: "insert", namespace: value.model, id, values }] }).ops[0];
+        if (parsed.kind !== "insert") throw new Error("Invalid import operation.");
+        const encoded = await personal.prepare(sql, namespace, id, parsed.values, true, Array.isArray($erased) && $erased.every(field => typeof field === "string") ? $erased : []);
+        const row = { id, ...encoded, created_at: createdAt ? new Date(createdAt as string).getTime() : Date.now(), updated_at: updatedAt ? new Date(updatedAt as string).getTime() : Date.now(), updated_seq: updatedSeq ?? 0 };
+        text = JSON.stringify({ type: "stored", table: namespace.table, row });
+      }
+    }
     sql.exec(`INSERT INTO "_tapedb_import" (n, data) VALUES (?, ?)`, ++n, text);
   };
   try {
@@ -45,10 +59,10 @@ export async function importWorkspace(sql: SqlExecutor, request: Request, claim:
       for (;;) {
         const { value, done } = await reader.read(); if (done) break;
         tail += value;
-        for (let at = tail.indexOf("\n"); at >= 0; at = tail.indexOf("\n")) { stage(tail.slice(0, at)); tail = tail.slice(at + 1); }
+        for (let at = tail.indexOf("\n"); at >= 0; at = tail.indexOf("\n")) { await stage(tail.slice(0, at)); tail = tail.slice(at + 1); }
       }
     } finally { await reader.cancel().catch(() => undefined); reader.releaseLock(); }
-    if (tail.trim()) stage(tail);
+    if (tail.trim()) await stage(tail);
     const finish = end as Record<string, unknown> | null;
     const start = header as Record<string, unknown> | null;
     if (!start || !finish || finish.consistent !== true || finish.rows !== rows || finish.startSeq !== start.seq || finish.seq !== start.seq)
@@ -78,9 +92,15 @@ export async function importWorkspace(sql: SqlExecutor, request: Request, claim:
             sql.exec(`UPDATE "_files" SET updated_at = ? WHERE id = ?`, file.updatedAt ?? now, file.id);
             continue;
           }
+          if (line.type === "stored") {
+            const columns = Object.keys(line.row);
+            log.push({ op: "import:row", table: line.table, row: line.row });
+            sql.exec(`INSERT INTO "${line.table}" (${columns.map(column => '"' + column + '"').join(',')}) VALUES (${columns.map(() => '?').join(',')})`, ...columns.map(column => line.row[column]));
+            continue;
+          }
           const namespace = NAMESPACES[line.model];
           if (!namespace || !line.data || typeof line.data.id !== "string") throw new Error("Invalid exported model row.");
-          const { id, createdAt, updatedAt, updatedSeq, ...values } = line.data;
+          const { id, createdAt, updatedAt, updatedSeq, $erased, ...values } = line.data;
           const parsed = validateEnvelope({ txId: "import", ops: [{ op: "insert", namespace: line.model, id, values }] }).ops[0];
           if (parsed.kind !== "insert") throw new Error("Invalid import operation.");
           const row: SqlRow = { id, ...parsed.values, created_at: createdAt ? new Date(createdAt).getTime() : now,

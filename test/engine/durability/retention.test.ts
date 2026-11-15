@@ -44,6 +44,23 @@ function localLog(sql: SqlExecutor): string {
 }
 
 describe("history retention", () => {
+  test("a quiet workspace removes receipt hashes from every R2 copy within retention", async () => {
+    const { sql } = openTestDb();
+    const bucket = new FakeR2Bucket();
+    const start = 10 * DAY_MS;
+    insertFolder(sql, "quiet", "kept");
+    insertTxLog(sql, { seq: 1, ops: [], at: start }); setHighWater(sql, 1);
+    sql.exec(`INSERT INTO "_tx_receipts" (id, seq, ops_hash, at) VALUES ('quiet-id', 1, 'sensitive-hash', ?)`, start);
+    for (let day = 0; day <= 30; day++) {
+      const now = start + day * DAY_MS; bucket.clock = now;
+      await durabilityTick(bucket, sql, TEST_WORKSPACE, now);
+      if (day === 0) expect(everyCopy(bucket)).toContain("sensitive-hash");
+    }
+    expect(everyCopy(bucket)).not.toContain("sensitive-hash");
+    expect(sql.exec(`SELECT id, ops_hash FROM "_tx_receipts"`).toArray()).toEqual([{ id: "quiet-id", ops_hash: null }]);
+    expect(everyCopy(bucket)).toContain("quiet-id");
+  });
+
   test("a value deleted at T is gone from R2 and the local log by T + retention", async () => {
     const { sql } = openTestDb();
     const bucket = new FakeR2Bucket();

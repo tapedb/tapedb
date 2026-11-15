@@ -256,3 +256,22 @@ usually handles:
 | `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |
 | `jurisdiction_mismatch` | 500 | the Worker reached a room outside `TAPEDB_JURISDICTION` |
+
+## Personal data
+
+`t.string().personal({ subject: "self" | "<string field>" })` and
+`t.json().personal(...)` encrypt values under a subject key. Personal output
+fields are nullable and erased fields appear in the row's `$erased: string[]`.
+Personal fields support selection and access rules; filters, ordering,
+aggregates, indexes and uniqueness are refused.
+
+`db.$erasePerson(subject): Promise<void>` uses
+`DELETE /engine/workspaces/:id/subjects/:subject` with an owner claim. URL-encode
+the subject. Success is `{ ok: true }`; repeated erasure succeeds. The key is
+removed from R2, making existing ciphertext unreadable. Later writes create a
+new independent key. Ordinary fields and files are unchanged.
+
+Workers with personal fields require `TAPEDB_KEY_SECRET`, a stable random secret
+of at least 32 characters. Moves require the same secret at both destinations.
+Existing plaintext rows are encrypted in resumable batches before reads resume.
+Historical plaintext copies retain their original retention windows.
