@@ -3,6 +3,8 @@
  * size uploads: up to `UPLOAD_PART_BYTES` in one request, larger as a
  * multipart upload of parts that size (R2 objects reach 5 TB).
  */
+import { retryWhileRecovering, type RecoveringRetryOptions } from "./recovering";
+
 export const UPLOAD_PART_BYTES = 16 * 1024 * 1024;
 
 export interface StorageObject {
@@ -36,6 +38,8 @@ export interface StorageClientConfig {
   workspaceId?: string;
   getToken: () => Promise<string>;
   fetch?: StorageFetch;
+  /** Test hook: how requests wait out a restore. */
+  recoveringRetry?: RecoveringRetryOptions;
 }
 
 export class StorageError extends Error {
@@ -69,7 +73,11 @@ export function createStorageClient(
     throw new Error(
       "Storage requires an HTTP(S) API URL without credentials, query or fragment."
     );
-  const fetcher = config.fetch ?? globalThis.fetch;
+  // A workspace being restored answers 503 until its file index is back.
+  const fetcher = retryWhileRecovering(
+    (input: string, init: RequestInit) => (config.fetch ?? globalThis.fetch)(input, init),
+    config.recoveringRetry
+  );
 
   const url = (path: string) => {
     if (

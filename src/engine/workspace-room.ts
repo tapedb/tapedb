@@ -51,7 +51,7 @@ import {
 } from "./subscriptions";
 import { exportStream } from "./export";
 import { importWorkspace, assertEmpty } from "./import-workspace";
-import { readMove, writeMove, sourceEnvironment, jurisdiction, copyWorkspace, type MoveState } from "./workspace-move";
+import { readMove, readMoveWithRetries, writeMove, sourceEnvironment, jurisdiction, copyWorkspace, type MoveState } from "./workspace-move";
 import { flushPending, snapshotWorkspace } from "./durability";
 import { viewDependsOnSubject } from "./tx-permissions";
 import { isTopic, REPLAY_MESSAGES, topicAllowed, topicReplayMs } from "./topics";
@@ -144,6 +144,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private importing = false;
   private moving = false;
   private moveState: MoveState | null = null;
+  /** Boot stopped on a storage read that failed; the next request boots again. */
+  private bootDeferred = false;
   private readonly roomEnv: Env;
   /** Restoring from R2 in budgeted steps; requests wait (503). */
   private recovering = false;
@@ -157,73 +159,96 @@ export class WorkspaceRoom extends DurableObject<Env> {
       (ctx.id.jurisdiction ?? undefined) === jurisdiction(env.TAPEDB_MOVE_FROM) &&
       jurisdiction(env.TAPEDB_MOVE_FROM) !== jurisdiction(env.TAPEDB_JURISDICTION)
       ? sourceEnvironment(env) : env;
-    env = this.roomEnv;
-    void ctx.blockConcurrencyWhile(async () => {
-      // A room reached outside the configured jurisdiction stores nothing.
-      const expected = env.TAPEDB_JURISDICTION;
-      if (expected && ctx.id.jurisdiction !== expected) {
-        this.misplaced = `This workspace's Durable Object is in jurisdiction ${JSON.stringify(ctx.id.jurisdiction ?? null)}, not ${JSON.stringify(expected)}; it serves nothing.`;
-        return;
-      }
+    void ctx.blockConcurrencyWhile(() => this.boot());
+  }
 
-      // A claim-limiter object (see claim-limits.ts) holds buckets only.
-      if (isLimiterName(ctx.id.name)) {
-        this.limiter = true;
-        return;
-      }
+  /** Readiness, migrations and recovery before the first request. */
+  private async boot(): Promise<void> {
+    const ctx = this.ctx;
+    const env = this.roomEnv;
+    // A room reached outside the configured jurisdiction stores nothing.
+    const expected = env.TAPEDB_JURISDICTION;
+    if (expected && ctx.id.jurisdiction !== expected) {
+      this.misplaced = `This workspace's Durable Object is in jurisdiction ${JSON.stringify(ctx.id.jurisdiction ?? null)}, not ${JSON.stringify(expected)}; it serves nothing.`;
+      return;
+    }
 
-      // An erased workspace stays erased: no migrations, no recovery, no alarm.
-      if (ctx.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ERASED_TABLE}'`).toArray().length > 0) {
-        this.erased = true;
-        return;
-      }
+    // A claim-limiter object (see claim-limits.ts) holds buckets only.
+    if (isLimiterName(ctx.id.name)) {
+      this.limiter = true;
+      return;
+    }
 
-      if (isWorkspaceId(ctx.id.name ?? "")) {
-        this.moveState = await readMove(env.DATA, ctx.id.name!);
-        if (this.moveState?.state === "moved") return;
-      }
+    // An erased workspace stays erased: no migrations, no recovery, no alarm.
+    if (ctx.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ERASED_TABLE}'`).toArray().length > 0) {
+      this.erased = true;
+      return;
+    }
 
-      // Foreign-key enforcement is per connection and off by default in
-      // SQLite. Set it before migrations so every request sees it.
-      ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
-      dropAuditCapture(durableObjectSqlExecutor(ctx.storage));
-      await this.applyMigrations();
-      syncAuditCapture(durableObjectSqlExecutor(ctx.storage));
-      if (hasPersonalFields()) {
-        this.personal = new PersonalRuntime(env, this.workspaceId);
-        installPersonalCapture(durableObjectSqlExecutor(ctx.storage));
-      }
-
-      // A wiped DO rebuilds from the R2 manifest before serving traffic. A
-      // populated DO returns immediately without touching R2.
-      // Recovery gets a budget well inside the 30 s Cloudflare allows a
-      // boot; a larger restore continues from alarms (see recoverStep).
+    if (isWorkspaceId(ctx.id.name ?? "")) {
       try {
-        if (recoveryInProgress(ctx.storage.sql)) {
-          // A restore an earlier boot or alarm started continues on alarms,
-          // outside the boot's 30 s, so a slow unit cannot reset the object
-          // at every boot.
-          this.recovering = true;
-          await ctx.storage.setAlarm(Date.now());
-        } else {
-          await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
-        }
+        this.moveState = await readMoveWithRetries(env.DATA, ctx.id.name!);
       } catch (error) {
-        // A failed boot would reset the object and fail every request with
-        // an exception. The workspace answers 503 instead, and alarms retry.
-        console.error("workspace_recovery_failed", { workspaceId: this.workspaceId, error: String(error) });
-        this.recovering = true;
-        await ctx.storage.setAlarm(Date.now() + DURABILITY_ALARM_DELAY_MS);
+        // Whether the workspace moved is unknown, so nothing is served:
+        // requests answer 503 and the next one boots again.
+        console.error("workspace_boot_deferred", { workspaceId: this.workspaceId, error: String(error) });
+        this.bootDeferred = true;
+        return;
       }
+      if (this.moveState?.state === "moved") return;
+    }
 
-      // Sockets that closed while the object was evicted left their stored
-      // state behind; hibernated sockets still open keep theirs.
-      const live = (ctx.getWebSockets?.() ?? [])
-        .map((socket) => (socket.deserializeAttachment() as { clientId?: unknown } | null)?.clientId)
-        .filter((clientId): clientId is string => typeof clientId === "string");
-      forgetOtherSockets(durableObjectSqlExecutor(ctx.storage), live);
-      if (!this.recovering) await this.scheduleNextDurabilityAlarm(Date.now());
+    // Foreign-key enforcement is per connection and off by default in
+    // SQLite. Set it before migrations so every request sees it.
+    ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
+    dropAuditCapture(durableObjectSqlExecutor(ctx.storage));
+    await this.applyMigrations();
+    syncAuditCapture(durableObjectSqlExecutor(ctx.storage));
+    if (hasPersonalFields()) {
+      this.personal = new PersonalRuntime(env, this.workspaceId);
+      installPersonalCapture(durableObjectSqlExecutor(ctx.storage));
+    }
+
+    // A wiped DO rebuilds from the R2 manifest before serving traffic. A
+    // populated DO returns immediately without touching R2.
+    // Recovery gets a budget well inside the 30 s Cloudflare allows a
+    // boot; a larger restore continues from alarms (see recoverStep).
+    try {
+      if (recoveryInProgress(ctx.storage.sql)) {
+        // A restore an earlier boot or alarm started continues on alarms,
+        // outside the boot's 30 s, so a slow unit cannot reset the object
+        // at every boot.
+        this.recovering = true;
+        await ctx.storage.setAlarm(Date.now());
+      } else {
+        await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
+      }
+    } catch (error) {
+      // A failed boot would reset the object and fail every request with
+      // an exception. The workspace answers 503 instead, and alarms retry.
+      console.error("workspace_recovery_failed", { workspaceId: this.workspaceId, error: String(error) });
+      this.recovering = true;
+      await ctx.storage.setAlarm(Date.now() + DURABILITY_ALARM_DELAY_MS);
+    }
+
+    // Sockets that closed while the object was evicted left their stored
+    // state behind; hibernated sockets still open keep theirs.
+    const live = (ctx.getWebSockets?.() ?? [])
+      .map((socket) => (socket.deserializeAttachment() as { clientId?: unknown } | null)?.clientId)
+      .filter((clientId): clientId is string => typeof clientId === "string");
+    forgetOtherSockets(durableObjectSqlExecutor(ctx.storage), live);
+    if (!this.recovering) await this.scheduleNextDurabilityAlarm(Date.now());
+  }
+
+  /** Boots again after a deferred boot; false while it still cannot. */
+  private async bootAgain(): Promise<boolean> {
+    if (!this.bootDeferred) return true;
+    await this.ctx.blockConcurrencyWhile(async () => {
+      if (!this.bootDeferred) return;
+      this.bootDeferred = false;
+      await this.boot();
     });
+    return !this.bootDeferred;
   }
 
   /**
@@ -383,6 +408,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   async fetch(request: Request): Promise<Response> {
+    if (!(await this.bootAgain())) {
+      await discardBody(request);
+      const response = apiError(503, "workspace_recovering", "The workspace could not read its state from storage. Retry shortly.");
+      response.headers.set("retry-after", "1");
+      return response;
+    }
     if (this.misplaced !== null) {
       await discardBody(request);
       return apiError(500, "jurisdiction_mismatch", this.misplaced);
@@ -1693,6 +1724,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * accumulate into fewer, larger log segments.
    */
   async alarm(): Promise<void> {
+    if (!(await this.bootAgain())) return;
     if (this.limiter) return;
     if (this.erased || this.misplaced !== null) return;
     if (this.recovering) {

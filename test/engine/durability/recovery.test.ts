@@ -10,7 +10,8 @@ import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../../../src/claims";
 import { logOpsKey, manifestKey, readManifest } from "../../../src/engine/r2-keys";
 import { setLogPartBytesForTests } from "../../../src/engine/tx-log";
 import { namespaceTables } from "../../fixtures/registry";
-import { runTransaction } from "../../../src/engine/tx-pipeline";
+import { appendLogEntry, runTransaction } from "../../../src/engine/tx-pipeline";
+import { LogWriter } from "../../../src/engine/tx-log";
 import { configureAudit, rowHistory, syncAuditCapture } from "../../../src/engine/audit";
 import type { SqlRow as TxRow, SqlExecutor as TxSql } from "../../../src/engine/tx-sql";
 import type { TxEnvelope } from "../../../src/engine/tx-types";
@@ -636,11 +637,152 @@ describe("recoverWorkspace", () => {
       // parts would take more calls (or never finish).
       const chunks = (await manifestOf(bucket)).tables.reduce((sum, table) => sum + table.chunks.length, 0);
       const segments = [...bucket.objects.keys()].filter((key) => /\/log\/\d+-\d+\.ndjson$/.test(key)).length;
-      expect(calls).toBeLessThanOrEqual(chunks + segments + parts + 2);
+      const entries = Number(scalar(source.db, `SELECT COUNT(DISTINCT seq) FROM "_tx_log_parts"`));
+      expect(calls).toBeLessThanOrEqual(chunks + segments + entries + parts + 2);
       expect(entityRows(target.db)).toEqual(entityRows(source.db));
     } finally {
       setLogPartBytesForTests(null);
     }
+  });
+
+  test("each entry stored in parts is its own unit, also below the snapshot", async () => {
+    setLogPartBytesForTests(20_000);
+    try {
+      const source = createSource();
+      seedWorkspace(source);
+      for (let entry = 0; entry < 4; entry += 1) {
+        run(source, {
+          txId: `parted-${entry}`,
+          ops: Array.from({ length: 400 }, (_, index) => ({
+            op: "update",
+            namespace: "folders",
+            id: `parted-${entry}-${index}`,
+            values: { name: `F${index}` },
+          })),
+        });
+      }
+      const bucket = new FakeR2Bucket();
+      // The entries are folded into the snapshot: restoring only records them.
+      await publish(source, bucket, NOW);
+      const entries = Number(scalar(source.db, `SELECT COUNT(DISTINCT seq) FROM "_tx_log_parts"`));
+      expect(entries).toBe(4);
+
+      const target = createSource();
+      const executor = recoveryExecutor(target.db, target.sql);
+      const units: string[] = [];
+      let stoppedBetween = false;
+      for (let calls = 0; ; calls += 1) {
+        expect(calls).toBeLessThan(200);
+        const result = await recoverWorkspace(bucket as unknown as R2Bucket, executor, TEST_WORKSPACE, {
+          now: NOW + 20,
+          shouldPause: () => true,
+          onUnit: (unit) => units.push(unit),
+        });
+        if (result.recovered) break;
+        const recorded = Number(scalar(target.db, `SELECT COUNT(DISTINCT seq) FROM "_tx_log_parts"`));
+        if (recorded > 0 && recorded < entries) stoppedBetween = true;
+      }
+      expect(stoppedBetween).toBe(true);
+      expect(units.filter((unit) => /^entry \d+$/.test(unit)).length).toBeGreaterThanOrEqual(entries - 1);
+      expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    } finally {
+      setLogPartBytesForTests(null);
+    }
+  });
+
+  test("entries that write whole rows share one foreign-key switch and check, and none below the base", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    // Whole-row entries, as personal-field writes and imports log them.
+    const rowEntry = (index: number) => {
+      const row = { id: `whole-${index}`, name: `W${index}`, created_at: 1, updated_at: 1 };
+      return source.db.transaction(() => {
+        const seq = appendLogEntry(txExecutor(source.db), {
+          clientTxId: `whole-${index}`,
+          ops: JSON.stringify([{ op: "state:begin" }, { op: "state:row", table: "folders", row: { ...row, updated_seq: 0 } }, { op: "state:end" }]),
+          opsHash: `hash-${index}`,
+          at: NOW,
+        });
+        source.db.query(`INSERT INTO "folders" (id, name, created_at, updated_at, updated_seq) VALUES (?, ?, 1, 1, ?)`).run(row.id, row.name, seq);
+        // The logged row carries the seq it was written at.
+        source.db.query(`UPDATE "_tx_log" SET ops = replace(ops, '"updated_seq":0', '"updated_seq":' || seq) WHERE seq = ?`).run(seq);
+        return seq;
+      })();
+    };
+    for (let index = 0; index < 20; index += 1) rowEntry(index);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW); // these 20 are below the base
+    for (let index = 20; index < 50; index += 1) rowEntry(index);
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+
+    const target = createSource();
+    const base = recoveryExecutor(target.db, target.sql);
+    let switches = 0;
+    let checks = 0;
+    const counting: RecoverySqlExecutor = {
+      ...base,
+      exec(query, ...bindings) {
+        if (/PRAGMA foreign_keys = OFF/.test(query)) switches += 1;
+        if (/PRAGMA foreign_key_check/.test(query)) checks += 1;
+        return base.exec(query, ...bindings);
+      },
+    };
+    const result = await recoverWorkspace(bucket as unknown as R2Bucket, counting, TEST_WORKSPACE, { now: NOW + 20 });
+    expect(result.recovered).toBe(true);
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
+    expect(Number(scalar(target.db, `SELECT COUNT(*) FROM "_tx_log" WHERE client_tx_id LIKE 'whole-%'`))).toBe(50);
+    // One run of 30 above the base: one switch for it (plus the snapshot
+    // restore's own), not one per entry.
+    expect(switches).toBeLessThanOrEqual(2);
+    expect(checks).toBeLessThanOrEqual(3);
+  });
+
+  test("a whole-row entry in parts is applied a part per step too, checked once at its end", async () => {
+    const source = createSource();
+    seedWorkspace(source);
+    const bucket = new FakeR2Bucket();
+    await publish(source, bucket, NOW);
+    // One entry of 300 whole rows, written as personal-field writes are, in parts.
+    source.db.transaction(() => {
+      const sql = txExecutor(source.db);
+      const seq = appendLogEntry(sql, { clientTxId: "whole-entry", ops: "[]", opsHash: "hash-whole", at: NOW });
+      const log = new LogWriter(sql, seq, 4_000);
+      log.push({ op: "state:begin" });
+      for (let index = 0; index < 300; index += 1) {
+        const row = { id: `whole-${index}`, name: `W${index}`, created_at: 1, updated_at: 1, updated_seq: seq };
+        source.db.query(`INSERT INTO "folders" (id, name, created_at, updated_at, updated_seq) VALUES (?, ?, 1, 1, ?)`).run(row.id, row.name, seq);
+        log.push({ op: "state:row", table: "folders", row });
+      }
+      log.push({ op: "state:end" });
+      log.close();
+    })();
+    await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+    const parts = 1 + Number(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log_parts"`));
+    expect(parts).toBeGreaterThan(5);
+
+    const target = createSource();
+    const base = recoveryExecutor(target.db, target.sql);
+    let checks = 0;
+    const counting: RecoverySqlExecutor = {
+      ...base,
+      exec(query, ...bindings) {
+        if (/PRAGMA foreign_key_check/.test(query)) checks += 1;
+        return base.exec(query, ...bindings);
+      },
+    };
+    let stoppedInside = false;
+    for (let calls = 0; ; calls += 1) {
+      expect(calls).toBeLessThan(200);
+      const result = await recoverWorkspace(bucket as unknown as R2Bucket, counting, TEST_WORKSPACE, { now: NOW + 20, shouldPause: () => true });
+      if (result.recovered) break;
+      const restored = Number(scalar(target.db, `SELECT COUNT(*) FROM "folders" WHERE id LIKE 'whole-%'`));
+      if (restored > 0 && restored < 300) stoppedInside = true;
+      // Foreign keys are on whenever a step has stopped.
+      expect(target.db.query("PRAGMA foreign_keys").get()).toEqual({ foreign_keys: 1 });
+    }
+    expect(stoppedInside).toBe(true);
+    expect(checks).toBeLessThanOrEqual(2); // the snapshot's, and this entry's
+    expect(entityRows(target.db)).toEqual(entityRows(source.db));
   });
 
   test("replays a bulk write stored in parts, a part at a time", async () => {

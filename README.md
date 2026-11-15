@@ -669,7 +669,9 @@ allows; alarms carry on in steps of about 10 seconds, each stopping before a
 unit as slow as the slowest so far would overrun it. So a workspace of any
 size recovers, and a recovery cut off by a reset or by an R2 read that fails
 resumes rather than starting over. Until it is complete the workspace answers
-503 `workspace_recovering` with `Retry-After`, never a partial result.
+503 `workspace_recovering` with `Retry-After`, never a partial result. The
+client waits it out: reads, writes and file requests retry as `Retry-After`
+says for up to a minute, and live queries reconnect once it is done.
 
 ### History retention
 

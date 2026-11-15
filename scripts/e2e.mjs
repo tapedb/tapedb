@@ -120,7 +120,40 @@ for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(proj
   const path = join(project, "worker.ts");
   const source = readFileSync(path, "utf8");
   if (!source.includes("devClaims: true,")) throw new Error("worker.ts template changed: cannot turn the audit on.");
-  writeFileSync(path, source.replace("devClaims: true,", "devClaims: true,\n  audit: true,"));
+  let worker = source.replace("devClaims: true,", "devClaims: true,\n  audit: true,");
+  // A second instance on /_e2e/claim serves claims the way a production
+  // deployment does: through an identity adapter, under the built-in claim
+  // limits (claim-limits.mjs). The subject comes from a header, which mints
+  // no more than the development route next to it already does.
+  if (!worker.includes("export default tapedb.worker;")) throw new Error("worker.ts template changed: cannot add the identity route.");
+  worker = worker.replace(
+    "export default tapedb.worker;",
+    `const identified = defineTapeDB({
+  schema,
+  migrations,
+  audit: true,
+  identity: {
+    async getSubject(headers) {
+      const sub = headers.get("x-e2e-user");
+      return sub ? { sub } : null;
+    },
+    async getRole() {
+      return 1;
+    },
+    limits: { ip: { requests: 1000, perSeconds: 60 }, subject: { requests: 3, perSeconds: 60 } },
+  },
+});
+
+export default {
+  fetch(request, env, ctx) {
+    const url = new URL(request.url);
+    if (url.pathname !== "/_e2e/claim") return tapedb.worker.fetch(request, env, ctx);
+    url.pathname = "/_tapedb/claim";
+    return identified.worker.fetch(new Request(url, request), { ...env, TAPEDB_DEV_CLAIMS: "false" }, ctx);
+  },
+};`
+  );
+  writeFileSync(path, worker);
 }
 // Two local namespaces exercise the same move protocol without jurisdictions.
 if (!deployName && !remote) {

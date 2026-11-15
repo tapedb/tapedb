@@ -223,4 +223,35 @@ describe("a room restoring from R2", () => {
     const served = (await (await query()).json()) as { data: { task: Array<{ id: string }> } };
     expect(served.data.task.map((row) => row.id).sort()).toEqual(["task-0", "task-1", "task-2", "task-3"]);
   });
+
+  test("a move state R2 cannot read at boot answers 503, and the next request boots", async () => {
+    const tapedb = defineTapeDB({ schema: schema({ task: model({ title: t.string() }) }) });
+    const bucket = new FakeR2Bucket();
+    const env = { FILES: new FakeR2Bucket(), DATA: bucket, TAPEDB_CLAIM_SECRET: SECRET, ENVIRONMENT: "development" };
+    const now = Math.floor(Date.now() / 1000);
+    const claim = { sub: "u1", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.OWNER, exp: now + 600, iat: now };
+    const headers = { [TRUSTED_CLAIM_HEADER]: encodeTrustedRoleClaim(claim as never), "content-type": "application/json" } as Record<string, string>;
+    const get = bucket.get.bind(bucket);
+    let failures = 6; // every try of the boot and of the next request's
+    bucket.get = (async (...args: Parameters<typeof get>) => {
+      if (String(args[0]).startsWith("moves/") && failures > 0) {
+        failures -= 1;
+        throw new Error("R2 get failed.");
+      }
+      return get(...args);
+    }) as typeof bucket.get;
+
+    const context = new FakeRoomContext(new Database(":memory:"), WORKSPACE);
+    const room = new tapedb.WorkspaceRoom(context as never, env as never);
+    await context.ready;
+    const write = () => room.fetch(new Request("https://room/transact", { method: "POST", headers, body: JSON.stringify({ txId: crypto.randomUUID(), ops: [{ op: "insert", namespace: "task", id: "task-1", values: { title: "T" } }] }) }));
+
+    // Nothing ran: no migrations, so no table to write to.
+    expect(context.storage.sql.exec(`SELECT name FROM sqlite_master WHERE name = 'task'`).toArray()).toEqual([]);
+    const refused = await write();
+    expect(refused.status).toBe(503);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe("workspace_recovering");
+    expect((await write()).status).toBe(200);
+    expect(failures).toBe(0);
+  }, 10_000);
 });
