@@ -671,7 +671,9 @@ describe("recoverWorkspace", () => {
     const target = createSource();
     await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(target.db, target.sql), TEST_WORKSPACE, { now: NOW + 20 });
     expect(entityRows(target.db)).toEqual(entityRows(source.db));
-  });
+    // Writes, uploads and replays over 25 MB: about 3 s here, 7 s on the CI
+    // builder, past bun's 5 s default.
+  }, 60_000);
 
   test("keeps clientTxId dedupe across a cold start", async () => {
     const source = createSource();

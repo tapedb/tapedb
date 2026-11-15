@@ -68,6 +68,24 @@ export const ENGINE_MIGRATIONS: readonly BundledWorkspaceMigration[] = [
     id: "tapedb_0006_file_uploader",
     sql: `ALTER TABLE "_files" ADD COLUMN uploaded_by TEXT;`,
   },
+  {
+    // Socket state past the attachment's 16 KiB, and messages arriving in
+    // parts (see socket-state.ts). Ephemeral: never logged or snapshotted.
+    id: "tapedb_0007_socket_state",
+    sql: `CREATE TABLE "_socket_state" (
+      client_id TEXT NOT NULL,
+      part INTEGER NOT NULL,
+      data TEXT NOT NULL,
+      PRIMARY KEY (client_id, part)
+    ) WITHOUT ROWID;
+    CREATE TABLE "_socket_parts" (
+      client_id TEXT NOT NULL,
+      id TEXT NOT NULL,
+      idx INTEGER NOT NULL,
+      data TEXT NOT NULL,
+      PRIMARY KEY (client_id, id, idx)
+    ) WITHOUT ROWID;`,
+  },
 ];
 
 /** Configured migrations, applied in order on Durable Object boot. */

@@ -382,7 +382,8 @@ A message reaches every other client listening on the topic, with the
 sender's client id and user id; your own messages are not echoed back.
 Nothing is stored or replayed, and a send while the socket is down is dropped
 rather than delivered late. Listening clients rejoin their topics after a
-reconnect. By default any member of the workspace may listen and send; decide
+reconnect. Messages of any size go through: a large one travels in parts the
+workspace relays as they come, and the receiving client joins them. By default any member of the workspace may listen and send; decide
 per topic on the Worker:
 
 ```ts
