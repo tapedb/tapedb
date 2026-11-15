@@ -50,6 +50,9 @@ import {
   touchedNamespacesFromEnvelope,
 } from "./subscriptions";
 import { exportStream } from "./export";
+import { importWorkspace, assertEmpty } from "./import-workspace";
+import { readMove, writeMove, sourceEnvironment, jurisdiction, copyWorkspace, type MoveState } from "./workspace-move";
+import { flushPending, snapshotWorkspace } from "./durability";
 import { viewDependsOnSubject } from "./tx-permissions";
 import { isTopic, topicAllowed } from "./topics";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
@@ -118,6 +121,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private pendingInvalidationNamespaces = new Set<string>();
 
   private erased = false;
+  private importing = false;
+  private moving = false;
+  private moveState: MoveState | null = null;
+  private readonly roomEnv: Env;
   /** Restoring from R2 in budgeted steps; requests wait (503). */
   private recovering = false;
   private limiter = false;
@@ -126,6 +133,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    this.roomEnv = env.TAPEDB_MOVE_FROM !== undefined &&
+      (ctx.id.jurisdiction ?? undefined) === jurisdiction(env.TAPEDB_MOVE_FROM) &&
+      jurisdiction(env.TAPEDB_MOVE_FROM) !== jurisdiction(env.TAPEDB_JURISDICTION)
+      ? sourceEnvironment(env) : env;
+    env = this.roomEnv;
     void ctx.blockConcurrencyWhile(async () => {
       // A room reached outside the configured jurisdiction stores nothing.
       const expected = env.TAPEDB_JURISDICTION;
@@ -144,6 +156,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
       if (ctx.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ERASED_TABLE}'`).toArray().length > 0) {
         this.erased = true;
         return;
+      }
+
+      if (isWorkspaceId(ctx.id.name ?? "")) {
+        this.moveState = await readMove(env.DATA, ctx.id.name!);
+        if (this.moveState?.state === "moved") return;
       }
 
       // Foreign-key enforcement is per connection and off by default in
@@ -174,7 +191,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    */
   private async recoverStep(budgetMs: number): Promise<void> {
     const recovery = await recoverWorkspace(
-      this.env.DATA,
+      this.roomEnv.DATA,
       durableObjectRecoverySqlExecutor(this.ctx.storage),
       this.workspaceId,
       { deadline: Date.now() + budgetMs }
@@ -290,6 +307,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
       await discardBody(request);
       return apiError(500, "jurisdiction_mismatch", this.misplaced);
     }
+    if (this.moveState?.state === "moved" && !new URL(request.url).pathname.startsWith("/move/")) {
+      await discardBody(request);
+      return apiError(308, "workspace_moved", `This workspace moved to ${this.moveState.to}.`);
+    }
     if (this.erased) {
       await discardBody(request);
       return apiError(410, "workspace_erased", "This workspace was erased.");
@@ -310,6 +331,25 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
   private async route(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.pathname.startsWith("/move/")) return this.moveControl(request, url.pathname);
+    if (this.importing) return apiError(409, "workspace_importing", "The import is still being checked.");
+    if (url.pathname === "/import") {
+      const claim = readTrustedRoleClaim(request, this.workspaceId);
+      if (claim.role < WORKSPACE_ROLE_LEVELS.OWNER) return apiError(403, "insufficient_role", "Only an owner can import a workspace.");
+      if (request.method !== "POST") return apiError(405, "method_not_allowed", "Import uses POST.");
+      this.importing = true;
+      try {
+        const rows = await importWorkspace(durableObjectSqlExecutor(this.ctx.storage), request, claim, this.workspaceId);
+        await this.scheduleNextDurabilityAlarm(Date.now());
+        return json({ ok: true, imported: { rows } });
+      } catch (error) { return apiError(error instanceof TxError && error.code === "conflict" ? 409 : 400, "import_failed", errorMessage(error)); }
+      finally { this.importing = false; }
+    }
+
+    if (this.moveState?.state === "frozen" &&
+      !(request.method === "GET" || url.pathname === "/query" || url.pathname === "/files/authorize")) {
+      return apiError(409, "workspace_moving", "Writes resume after this workspace finishes moving.");
+    }
 
     if (url.pathname === "/websocket") {
       if (request.method !== "GET") {
@@ -401,7 +441,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     // File metadata. Bytes live in R2 and are handled by the Worker; this is
     // the queryable index so a workspace can be asked what it contains.
-    if (url.pathname === "/files" || url.pathname === "/files/authorize") {
+    if (url.pathname === "/files" || url.pathname === "/files/authorize" || url.pathname === "/files/locate") {
       // Without file rules, the same roles as the byte routes the Worker
       // serves: reading files needs a member, changing them an editor. With
       // rules, the Worker asks /files/authorize before touching bytes, and
@@ -412,6 +452,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       } catch (error) {
         if (error instanceof TxError) return apiError(403, error.code, error.message);
         throw error;
+      }
+      if (url.pathname === "/files/locate") {
+        const body = await request.json() as { path?: string; action?: string };
+        const action = body.action === "delete" ? "delete" : "read";
+        const sql = durableObjectSqlExecutor(this.ctx.storage);
+        const stored = typeof body.path === "string" ? this.storedFile(sql, body.path) : undefined;
+        const allowed = stored && (fileRulesConfigured() ? authorizeFile(sql, claim, action, stored) : claim.role >= (action === "read" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR));
+        if (!allowed) return apiError(404, "not_found", "No such file.");
+        return json(sql.one<{ key: string }>(`SELECT r2_key AS key FROM "_files" WHERE path = ?`, body.path!) ?? {});
       }
       if (url.pathname === "/files/authorize") {
         return request.method === "POST"
@@ -437,6 +486,105 @@ export class WorkspaceRoom extends DurableObject<Env> {
       "not_found",
       `No engine route for ${request.method} ${url.pathname}`
     );
+  }
+
+  private async moveControl(request: Request, path: string): Promise<Response> {
+    const claim = readTrustedRoleClaim(request, this.workspaceId);
+    if (claim.role < WORKSPACE_ROLE_LEVELS.OWNER) return apiError(403, "insufficient_role", "Only an owner can move a workspace.");
+    if (request.method !== "POST") return apiError(405, "method_not_allowed", "Move controls require POST.");
+    if (this.importing) return apiError(409, "workspace_importing", "Wait for the import to finish.");
+    if (path === "/move/run") {
+      if (this.moving) return apiError(409, "workspace_moving", "Another request is already moving this workspace.");
+      this.moving = true;
+      try {
+        const env = this.roomEnv;
+        const source = sourceEnvironment(env);
+        const to = jurisdiction(env.TAPEDB_JURISDICTION) ?? "none";
+        const body = await request.json() as { to?: string };
+        if (body.to !== to || (jurisdiction(source.TAPEDB_JURISDICTION) === jurisdiction(env.TAPEDB_JURISDICTION) && !env.WORKSPACE_FROM))
+          return apiError(400, "invalid_move", "The destination must match a different configured jurisdiction.");
+        const sourceControl = async (action: string) => {
+          let ns = source.WORKSPACE;
+          if (source.TAPEDB_JURISDICTION) ns = ns.jurisdiction(source.TAPEDB_JURISDICTION as DurableObjectJurisdiction);
+          return ns.get(ns.idFromName(this.workspaceId)).fetch(new Request(`https://room.internal/move/${action}`, {
+            method: "POST", headers: request.headers, body: JSON.stringify({ to }),
+          }));
+        };
+        let state = await readMove(env.DATA, this.workspaceId);
+        if (state && state.to !== to) return apiError(409, "move_conflict", "Another move is in progress.");
+        if (!state) assertEmpty(durableObjectSqlExecutor(this.ctx.storage));
+        if (state?.state !== "ready") {
+          const frozen = await sourceControl("freeze"); if (!frozen.ok) return frozen;
+          if (state?.state !== "copied") {
+            await writeMove(env.DATA, this.workspaceId, { state: "copying", to });
+            const files = await sourceControl("files");
+            if (!files.ok || !files.body) return files;
+            await copyWorkspace(source, env, this.workspaceId, files.body);
+            await writeMove(env.DATA, this.workspaceId, { state: "copied", to });
+          }
+          await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
+          if (this.recovering) return apiError(503, "workspace_recovering", "Retry to finish the move.");
+          await writeMove(env.DATA, this.workspaceId, { state: "ready", to });
+        }
+        const finished = await sourceControl("finish"); if (!finished.ok) return finished;
+        return json({ ok: true, moved: { workspaceId: this.workspaceId, to } });
+      } catch (error) { return apiError(error instanceof TxError ? 409 : 503, "move_incomplete", errorMessage(error)); }
+      finally { this.moving = false; }
+    }
+
+    if (path === "/move/files") {
+      const sql = durableObjectSqlExecutor(this.ctx.storage);
+      const keys = (function* () {
+        let after = "";
+        for (;;) {
+          const rows = sql.all<{ path: string; key: string }>(`SELECT path, r2_key AS key FROM "_files" WHERE path > ? ORDER BY path LIMIT 100`, after);
+          if (!rows.length) break;
+          for (const row of rows) { yield JSON.stringify(row.key) + "\n"; after = row.path; }
+        }
+      })();
+      const encoder = new TextEncoder();
+      return new Response(new ReadableStream({ pull(controller) { const next = keys.next(); if (next.done) controller.close(); else controller.enqueue(encoder.encode(next.value)); } }));
+    }
+    if (path === "/move/prepare") {
+      const sql = durableObjectSqlExecutor(this.ctx.storage);
+      try { assertEmpty(sql); return json({ ok: true }); }
+      catch { return apiError(409, "workspace_not_empty", "The destination must be empty."); }
+    }
+    if (path === "/move/restore") {
+      await this.recoverStep(RECOVERY_BOOT_BUDGET_MS);
+      return this.recovering ? apiError(503, "workspace_recovering", "Retry to continue the restore.") : json({ ok: true });
+    }
+    if (path === "/move/freeze") {
+      const body = await request.json() as { to?: string };
+      const to = body.to;
+      if (!to || !["none", "eu", "fedramp"].includes(to)) return apiError(400, "invalid_move", "Choose none, eu or fedramp.");
+      if (this.moveState && this.moveState.to !== to) return apiError(409, "move_conflict", "This workspace is moving to another destination.");
+      if (this.moveState?.state === "moved") return json({ ok: true, moved: true });
+      this.moveState = { state: "frozen", to };
+      await writeMove(this.roomEnv.DATA, this.workspaceId, this.moveState);
+      for (const socket of this.ctx.getWebSockets()) this.closeSocket(socket, 1012, "workspace moving");
+      const sql = durableObjectRecoverySqlExecutor(this.ctx.storage);
+      for (;;) {
+        const result = await flushPending(this.roomEnv.DATA, sql, this.workspaceId, Date.now());
+        if (result.error) return apiError(503, "move_flush_failed", result.error);
+        if (!result.flushed) break;
+      }
+      const snapshot = await snapshotWorkspace(this.roomEnv.DATA, sql, this.workspaceId, Date.now());
+      return snapshot.snapshotted ? json({ ok: true }) : apiError(503, "move_snapshot_failed", snapshot.error ?? "Snapshot failed.");
+    }
+    if (path === "/move/finish") {
+      const state = this.moveState;
+      if (!state) return apiError(409, "move_not_started", "Freeze the source first.");
+      this.moveState = { ...state, state: "moved" };
+      await writeMove(this.roomEnv.DATA, this.workspaceId, this.moveState);
+      const history = await listAllR2(this.roomEnv.DATA, `${workspacePrefix(this.workspaceId)}/`);
+      await deleteR2Keys(this.roomEnv.DATA, history.map(object => object.key));
+      if (this.roomEnv.FILES) await deleteR2Keys(this.roomEnv.FILES, (await listAllR2(this.roomEnv.FILES, filesPrefix(this.workspaceId))).map(object => object.key));
+      await this.ctx.storage.deleteAlarm();
+      await this.ctx.storage.deleteAll();
+      return json({ ok: true });
+    }
+    return apiError(404, "not_found", "Unknown move operation.");
   }
 
   private async transact(request: Request): Promise<Response> {
@@ -573,6 +721,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     ws: WebSocket,
     message: string | ArrayBuffer
   ): Promise<void> {
+    if (this.moveState?.state === "frozen" || this.moveState?.state === "moved") {
+      this.closeSocket(ws, 1012, "workspace moving"); return;
+    }
     const attachment = this.readSocket(ws);
     if (attachment === null) {
       this.send(ws, {
@@ -1138,11 +1289,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const workspaceId = this.workspaceId;
     this.erased = true;
     try {
-      await this.env.DATA.delete(manifestKey(workspaceId));
-      const history = (await listAllR2(this.env.DATA, `${workspacePrefix(workspaceId)}/`)).map((object) => object.key);
-      await deleteR2Keys(this.env.DATA, history);
-      const files = this.env.FILES ? (await listAllR2(this.env.FILES, filesPrefix(workspaceId))).map((object) => object.key) : [];
-      if (this.env.FILES) await deleteR2Keys(this.env.FILES, files);
+      await this.roomEnv.DATA.delete(manifestKey(workspaceId));
+      const history = (await listAllR2(this.roomEnv.DATA, `${workspacePrefix(workspaceId)}/`)).map((object) => object.key);
+      await deleteR2Keys(this.roomEnv.DATA, history);
+      const files = this.roomEnv.FILES ? (await listAllR2(this.roomEnv.FILES, filesPrefix(workspaceId))).map((object) => object.key) : [];
+      if (this.roomEnv.FILES) await deleteR2Keys(this.roomEnv.FILES, files);
 
       await this.ctx.storage.deleteAlarm();
       await this.ctx.storage.deleteAll();
@@ -1379,7 +1530,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     try {
       const tick = await durabilityTick(
-        this.env.DATA,
+        this.roomEnv.DATA,
         this.ctx.storage.sql,
         workspaceId,
         Date.now()
@@ -1527,7 +1678,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     // Logged, not written in place: a row outside the log is lost by a restore
     // from R2 (see file-index.ts).
-    recordFileEntry(durableObjectSqlExecutor(this.ctx.storage), {
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const previousKey = sql.one<{ key: string }>(`SELECT r2_key AS key FROM "_files" WHERE path = ?`, path)?.key;
+    recordFileEntry(sql, {
       path,
       key,
       size,
@@ -1536,7 +1689,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     });
     await this.scheduleFileFlush();
 
-    return json({ ok: true, data: { path, size } }, 201);
+    return json({ ok: true, data: { path, size }, previousKey }, 201);
   }
 
   private async forgetFile(request: Request): Promise<Response> {

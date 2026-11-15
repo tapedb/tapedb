@@ -15,13 +15,17 @@ export interface Env {
   /** Uploaded files. Optional unless `db.$files` is used. */
   FILES?: R2Bucket;
 
+  /** Original buckets and optional namespace while moving workspaces. */
+  DATA_FROM?: R2Bucket;
+  FILES_FROM?: R2Bucket;
+  WORKSPACE_FROM?: DurableObjectNamespace<WorkspaceRoom>;
+  /** Original jurisdiction during a move: eu, fedramp, or none. */
+  TAPEDB_MOVE_FROM?: string;
   ENVIRONMENT?: string;
   /**
    * Restricts every workspace's Durable Object to a Cloudflare jurisdiction
-   * ("eu" or "fedramp"): it runs and stores data only there. Set it before
-   * the first deploy: an object's id depends on its jurisdiction, so changing
-   * it later addresses new, empty workspaces. `tapedb deploy` checks that the
-   * R2 buckets are declared in the same jurisdiction.
+   * ("eu" or "fedramp"): it runs and stores data only there. Use `tapedb move`
+   * to relocate existing workspaces. The R2 buckets use the same jurisdiction.
    */
   TAPEDB_JURISDICTION?: string;
 

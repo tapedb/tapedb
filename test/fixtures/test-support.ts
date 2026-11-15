@@ -177,6 +177,7 @@ export class FakeR2Bucket {
       }
     }
 
+    if (value instanceof ReadableStream) value = await new Response(value).arrayBuffer();
     const outcome = this.beforePut?.(key, options, current);
     if (outcome === "conflict") {
       if (current) current.etag = this.nextEtag();
@@ -262,18 +263,19 @@ export class FakeR2Bucket {
 
   multipartUploads = 0;
 
-  async get(key: string): Promise<unknown> {
+  async get(key: string, options?: { range?: { offset: number; length: number } }): Promise<unknown> {
     const stored = this.objects.get(key);
     if (!stored) return null;
+    const bytes = options?.range ? stored.body.slice(options.range.offset, options.range.offset + options.range.length) : stored.body;
     return {
       ...this.objectFor(key),
       json: async () =>
-        JSON.parse(new TextDecoder().decode(stored.body)) as unknown,
-      text: async () => new TextDecoder().decode(stored.body),
+        JSON.parse(new TextDecoder().decode(bytes)) as unknown,
+      text: async () => new TextDecoder().decode(bytes),
       get body() {
-        return new Blob([stored.body]).stream();
+        return new Blob([bytes]).stream();
       },
-      arrayBuffer: async () => stored.body.slice().buffer,
+      arrayBuffer: async () => bytes.slice().buffer,
     };
   }
 
@@ -344,6 +346,7 @@ export class FakeR2Bucket {
 
 async function toBytes(value: unknown): Promise<Uint8Array> {
   if (typeof value === "string") return new TextEncoder().encode(value);
+  if (value instanceof ReadableStream) return new Uint8Array(await new Response(value).arrayBuffer());
   if (value instanceof Uint8Array) return value.slice();
   if (value instanceof ArrayBuffer) return new Uint8Array(value.slice(0));
   if (typeof Blob !== "undefined" && value instanceof Blob) {

@@ -14,8 +14,6 @@ The boundaries TapeDB has by design, and the gates before a public release.
 - **Retention has a floor outside TapeDB.** Deleted and overwritten values leave
   TapeDB's copies within the configured retention, but Cloudflare keeps 30 days
   of Durable Object point-in-time recovery. Erasure cannot shorten that window.
-- **Jurisdiction is chosen before the first deploy.** Changing it later means
-  exporting and moving existing workspaces. Local workerd has no jurisdictions.
 - **Ephemeral channels.** Broadcast messages and presence are ephemeral; messages sent while the socket is down are dropped.
 - **Migrations are forward operations.** Destructive changes need
   `--accept-data-loss`; renames need an explicit rename; new required fields

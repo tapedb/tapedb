@@ -163,7 +163,7 @@ function isServerError(error: unknown): error is ServerError {
  * refused and can be dropped.
  */
 function isRetryableServerError(error: ServerError): boolean {
-  if (error.status === 408 || error.status === 429) return true;
+  if (error.status === 408 || error.status === 429 || error.code === "workspace_moving") return true;
   return error.status >= 500;
 }
 
@@ -407,9 +407,9 @@ class DataClientImpl {
       ops: ops.map((op) => cloneJson(op)),
       createdAt: this.now(),
       // Persisted with the entry before the first send. A retry reuses the
-      // clientTxId, whose receipt the engine keeps for the retry window, so it
+      // clientTxId, whose receipt the engine keeps permanently, so it
       // is applied at most once however many attempts it takes; past the
-      // window the engine refuses it as retry_expired (see createdAt).
+      // legacy receipt boundary the engine refuses it as retry_expired.
       attempts: 1,
     };
 
@@ -1283,7 +1283,7 @@ class DataClientImpl {
           txId: entry.txId,
           clientTxId: entry.clientTxId,
           // The first attempt's time, on every retry: the engine refuses a
-          // retry older than its receipts.
+          // retry older than a legacy receipt boundary.
           issuedAt: entry.createdAt,
           ops: entry.ops,
         }),

@@ -84,8 +84,13 @@ request, and R2 buckets wherever they were created.
 `tapedb init --jurisdiction eu` keeps the Durable Objects and both buckets in
 Cloudflare's EU jurisdiction, where they run and store data only in the EU,
 and `tapedb deploy` refuses a config where the two disagree (see
-[README: Data residency](README.md#data-residency)). Set it before the first
-deploy.
+[README: Data residency](README.md#data-residency)). `tapedb move` relocates
+existing workspaces, including their rows, receipts, snapshots, log segments
+and indexed file bytes. The source remains readable while it is frozen;
+after the destination is ready, traffic switches and source objects and
+SQLite storage are removed. A routing tombstone contains only the workspace
+id and destination jurisdiction. Cloudflare's point-in-time recovery window
+still applies to the original Durable Object's plaintext data.
 
 Jurisdiction controls where the data is stored and processed. Cloudflare,
 Inc. is still the processor, so your transfer assessment and Cloudflare's

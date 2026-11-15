@@ -16,6 +16,15 @@ published.
 
 ### Added
 
+- `tapedb move --to eu|fedramp|none`: resumable relocation of workspaces,
+  durable history, receipt ids and indexed files. Sources freeze writes,
+  destinations refuse existing data, and traffic switches before source
+  cleanup. Optional discovery lists original R2 workspace prefixes.
+- Owner-only NDJSON import into empty workspaces, staged and committed
+  atomically with replayable logs, preserved timestamps and file metadata.
+- File byte versions keep in-flight uploads from overwriting files during a
+  move. Large copies use streamed R2 range bodies and multipart uploads.
+
 - Built-in claim limits, on by default: `identity.limits` with exact, global
   token buckets per caller IP (300 per 60 s, before the session lookup) and per
   subject (30 per 60 s, after it), kept in limiter Durable Objects of the
