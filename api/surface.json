@@ -1551,6 +1551,7 @@
     "upgrade_required",
     "upload_too_large",
     "workspace_erased",
+    "workspace_recovering",
     "wrong_workspace"
   ]
 }

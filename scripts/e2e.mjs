@@ -432,9 +432,19 @@ async function client() {
 }
 
 async function exported(db) {
-  const records = [];
+  let records = [];
   try {
-    for await (const record of db.$export()) records.push(record);
+    // A workspace restoring from R2 answers 503 until it is complete.
+    for (const deadline = Date.now() + 180_000; ; ) {
+      try {
+        records = [];
+        for await (const record of db.$export()) records.push(record);
+        break;
+      } catch (error) {
+        if (error?.status !== 503 || Date.now() > deadline) throw error;
+        await new Promise((resolve) => setTimeout(resolve, 2_000));
+      }
+    }
   } catch (error) {
     // Show what the server said, not only the status.
     const { token } = await (
