@@ -1076,6 +1076,8 @@ class DataClientImpl {
   private handleServerMessage(message: ServerMessage): void {
     switch (message.type) {
       case "topic:message": {
+        // The socket joins parts; one that reaches here was incomplete.
+        if ("part" in message) return;
         const from: TopicSender = { clientId: message.from.clientId, userId: message.from.sub };
         for (const listener of [...(this.topicListeners.get(message.topic) ?? [])]) {
           try {

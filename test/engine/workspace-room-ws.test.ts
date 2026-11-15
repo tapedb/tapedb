@@ -10,6 +10,7 @@ import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../../src/claims";
 import { encodeTrustedRoleClaim } from "../../src/verify";
 import type { Env } from "../../src/types";
 import { FakeR2Bucket } from "../fixtures/test-support";
+import { framesFor, TopicParts } from "../../src/client/socket";
 
 class MockDurableObject<EnvShape> {
   protected ctx: DurableObjectState;
@@ -35,6 +36,10 @@ class FakeWebSocket {
   }
 
   serializeAttachment(value: unknown): void {
+    // As the runtime does: an attachment is at most 16 KiB serialized.
+    if (new TextEncoder().encode(JSON.stringify(value)).byteLength > 16_384) {
+      throw new Error("Attachment exceeds the 16 KiB limit.");
+    }
     this.attachment = clone(value);
   }
 
@@ -945,5 +950,104 @@ describe("WorkspaceRoom live queries", () => {
     );
 
     expect(response.status).toBe(426);
+  });
+
+  describe("socket state and messages of any size", () => {
+    async function sendFrames(ws: FakeWebSocket, message: Record<string, unknown>, size?: number): Promise<number> {
+      const frames = framesFor(message as never, size);
+      for (const frame of frames) await room.webSocketMessage(ws as unknown as WebSocket, frame);
+      return frames.length;
+    }
+
+    test("keeps any number of live queries on one socket, past the attachment's 16 KiB", async () => {
+      // Each query names 100 ids: about 2.5 KB. Stored in the attachment,
+      // the seventh would have thrown.
+      const socket = await connect();
+      socket.clear();
+      const ids = (n: number) => Array.from({ length: 100 }, (_, index) => `board-${n}-${index}`).concat("board1");
+      for (let n = 0; n < 60; n += 1) {
+        await send(socket, { type: "query:subscribe", id: `q${n}`, query: { kanbanBoards: { $: { where: { id: { $in: ids(n) } } } } } });
+      }
+      const initial = queryMessages(socket);
+      expect(initial.filter((message) => message.type === "query:data")).toHaveLength(60);
+      expect(initial.filter((message) => message.type === "query:error")).toEqual([]);
+      expect(Number(db.query(`SELECT COUNT(*) AS n FROM "_socket_state"`).get()!.n as number)).toBeGreaterThan(0);
+
+      socket.clear();
+      await transact([{ op: "update", namespace: "kanbanBoards", id: "board1", values: { name: "Renamed" } }], "t-many");
+      await delay(100);
+      const updates = queryMessages(socket);
+      expect(new Set(updates.map((message) => message.id)).size).toBe(60);
+      expect(updates.every((message) => message.type === "query:diff" && message.seq === 2)).toBe(true);
+
+      // Unsubscribing brings it back under the limit, inline again.
+      for (let n = 0; n < 60; n += 1) await send(socket, { type: "query:unsubscribe", id: `q${n}` });
+      expect(Number(db.query(`SELECT COUNT(*) AS n FROM "_socket_state"`).get()!.n as number)).toBe(0);
+    });
+
+    test("runs a message larger than a frame, sent in parts, and refuses parts out of order", async () => {
+      const socket = await connect();
+      socket.clear();
+      const ids = Array.from({ length: 60_000 }, (_, index) => `missing-${index}`).concat("board1");
+      const frames = await sendFrames(socket, { type: "query:subscribe", id: "big", query: { kanbanBoards: { $: { where: { id: { $in: ids } } } } } });
+      expect(frames).toBeGreaterThan(3);
+      const [data] = queryMessages(socket);
+      expect(data).toMatchObject({ type: "query:data", id: "big" });
+      expect((data.data as { kanbanBoards: Array<{ id: string }> }).kanbanBoards.map((row) => row.id)).toEqual(["board1"]);
+      expect(Number(db.query(`SELECT COUNT(*) AS n FROM "_socket_parts"`).get()!.n as number)).toBe(0);
+
+      socket.clear();
+      await send(socket, { type: "part", id: "m", index: 1, last: true, data: "{}" });
+      expect(socket.messages()).toEqual([expect.objectContaining({ type: "error", code: "part_out_of_order" })]);
+    });
+
+    test("relays a topic message in parts without joining it, and receivers join it", async () => {
+      const sender = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "sender");
+      const receiver = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "receiver");
+      await send(receiver, { type: "topic:join", topic: "big" });
+      receiver.clear();
+      const message = { text: "é".repeat(400_000), list: Array.from({ length: 50_000 }, (_, index) => index) };
+      const frames = await sendFrames(sender, { type: "topic:send", topic: "big", message });
+      expect(frames).toBeGreaterThan(2);
+
+      const relayed = receiver.messages();
+      expect(relayed).toHaveLength(frames);
+      expect(relayed.every((frame) => frame.type === "topic:message" && "part" in frame)).toBe(true);
+      // Nothing was stored to join it.
+      expect(Number(db.query(`SELECT COUNT(*) AS n FROM "_socket_parts"`).get()!.n as number)).toBe(0);
+
+      const parts = new TopicParts();
+      const joined = relayed.map((frame) => parts.take(frame as never)).filter((value) => value !== null);
+      expect(joined).toEqual([expect.objectContaining({ type: "topic:message", topic: "big", message })]);
+    });
+
+    test("splits frames without cutting a character in two", () => {
+      const message = { type: "topic:send", topic: "t", message: "😀".repeat(1000) + "a" };
+      for (const size of [7, 8, 9, 101]) {
+        const frames = framesFor(message as never, size).map((frame) => JSON.parse(frame));
+        const parts = new TopicParts();
+        const joined = frames
+          .map((frame) => parts.take({ ...frame, type: "topic:message", from: { clientId: "c", sub: "s" } }))
+          .filter((value) => value !== null);
+        expect(joined).toEqual([expect.objectContaining({ message: message.message })]);
+        expect(frames.every((frame) => !/[\ud800-\udbff]$/.test(frame.data))).toBe(true);
+      }
+    });
+
+    test("carries presence of any size, and forgets a closed socket's stored state", async () => {
+      const big = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "big");
+      const peer = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "peer");
+      const presence = { name: "x".repeat(40_000) };
+      await send(peer, { type: "presence:set", target: "doc", presence: { name: "p" } });
+      peer.clear();
+      await send(big, { type: "presence:set", target: "doc", presence });
+      const update = peer.messages().find((message) => message.type === "presence:update") as { peers: Array<{ presence: unknown }> };
+      expect(update.peers.map((entry) => entry.presence)).toContainEqual(presence);
+
+      const stored = () => Number(db.query(`SELECT COUNT(*) AS n FROM "_socket_state"`).get()!.n as number);
+      expect(stored()).toBeGreaterThan(0);
+      room.webSocketClose(big as unknown as WebSocket, 1000, "bye");
+      expect(stored()).toBe(0);
+    });
   });
 });

@@ -45,6 +45,79 @@ function defaultWebSocketFactory(): WebSocketFactory {
   };
 }
 
+/**
+ * Characters per frame before a message is sent in parts: 256 Ki UTF-16
+ * units is at most 768 KiB of UTF-8, far inside the 32 MiB Cloudflare
+ * accepts per frame, and small enough not to stall other traffic.
+ */
+export const FRAME_PART_CHARS = 256 * 1024;
+
+/** Splits text into parts without cutting a surrogate pair. */
+function splitText(text: string, size: number): string[] {
+  const parts: string[] = [];
+  for (let start = 0; start < text.length; ) {
+    let end = Math.min(start + size, text.length);
+    const last = text.charCodeAt(end - 1);
+    if (end < text.length && last >= 0xd800 && last <= 0xdbff) end -= 1;
+    parts.push(text.slice(start, end));
+    start = end;
+  }
+  return parts;
+}
+
+/**
+ * The frames for one message. A large topic message goes as topic parts,
+ * which the room relays as they come; any other large message as `part`
+ * frames the room joins before running it.
+ */
+export function framesFor(message: ClientMessage, size = FRAME_PART_CHARS): string[] {
+  const text = JSON.stringify(message);
+  if (text.length <= size) return [text];
+  const id = crypto.randomUUID();
+  if (message.type === "topic:send" && "message" in message) {
+    const parts = splitText(JSON.stringify(message.message), size);
+    return parts.map((data, index) =>
+      JSON.stringify({ type: "topic:send", topic: message.topic, part: { id, index, last: index === parts.length - 1 }, data })
+    );
+  }
+  const parts = splitText(text, size);
+  return parts.map((data, index) => JSON.stringify({ type: "part", id, index, last: index === parts.length - 1, data }));
+}
+
+/**
+ * Joins topic messages that arrive in parts, per sender and message. A part
+ * out of order (a sender that dropped mid-message) discards what was joined.
+ */
+export class TopicParts {
+  private readonly pending = new Map<string, { next: number; parts: string[] }>();
+
+  take(message: Extract<ServerMessage, { type: "topic:message" }>): ServerMessage | null {
+    if (!("part" in message)) return message;
+    const key = `${message.from.clientId}\u0000${message.part.id}`;
+    const entry = this.pending.get(key) ?? { next: 0, parts: [] };
+    if (message.part.index !== entry.next) {
+      this.pending.delete(key);
+      return null;
+    }
+    entry.parts.push(message.data);
+    entry.next += 1;
+    if (!message.part.last) {
+      this.pending.set(key, entry);
+      return null;
+    }
+    this.pending.delete(key);
+    try {
+      return { type: "topic:message", topic: message.topic, message: JSON.parse(entry.parts.join("")), from: message.from };
+    } catch {
+      return null;
+    }
+  }
+
+  clear(): void {
+    this.pending.clear();
+  }
+}
+
 function parseServerMessage(value: unknown): ServerMessage | null {
   let text: string | null = null;
   if (typeof value === "string") {
@@ -73,6 +146,7 @@ export class QuerySocket {
   private readonly baseUrl: string;
   private readonly getToken: () => Promise<string>;
   private readonly onMessage: (message: ServerMessage) => void;
+  private readonly topicParts = new TopicParts();
   private readonly onSessionReady: (() => void) | undefined;
   private readonly createWebSocket: WebSocketFactory;
   private readonly minReconnectDelayMs: number;
@@ -136,7 +210,7 @@ export class QuerySocket {
   send(message: ClientMessage): boolean {
     if (!this.ws) return false;
     try {
-      this.ws.send(JSON.stringify(message));
+      for (const frame of framesFor(message)) this.ws.send(frame);
       return true;
     } catch {
       this.scheduleReconnect();
@@ -248,7 +322,8 @@ export class QuerySocket {
         // buffered payload for a reused subscription id would overwrite the
         // newer socket's state.
         if (this.ws !== ws) return;
-        const message = parseServerMessage(event.data);
+        const parsed = parseServerMessage(event.data);
+        const message = parsed?.type === "topic:message" ? this.topicParts.take(parsed) : parsed;
         if (!message) return;
         if (message.type === "session:ready") this.onSessionReady?.();
         this.onMessage(message);
@@ -260,6 +335,8 @@ export class QuerySocket {
 
       ws.onclose = () => {
         if (this.ws !== ws) return;
+        // A peer's message half-received on this socket will not continue.
+        this.topicParts.clear();
         this.ws = null;
         this.connectPromise = null;
         if (!settled) {

@@ -24,6 +24,14 @@ published.
 
 ### Fixed
 
+- A socket's live queries, presence and topics lived in its attachment,
+  which Cloudflare caps at 16 KiB: past that (a few dozen ordinary live
+  queries on one client, or one large one) every subscribe failed. They now
+  move to the workspace's storage when they outgrow it.
+- Socket messages above 64 KiB were refused. There is no TapeDB bound now:
+  the client sends large messages in parts the workspace joins, and topic
+  messages in parts the workspace relays as they come, so a broadcast of any
+  size reaches its listeners.
 - `executeQuery` compiled the caller's read rules but ran the query without
   them, so a `filter()` or `check()` read rule did not hide rows. No route
   used it (routes use `executeQueryWithPageInfo`, which was correct); it now

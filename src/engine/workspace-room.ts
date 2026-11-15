@@ -52,6 +52,7 @@ import {
 import { exportStream } from "./export";
 import { viewDependsOnSubject } from "./tx-permissions";
 import { isTopic, topicAllowed } from "./topics";
+import { acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
 import { authorizeFile, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { runTransaction } from "./tx-pipeline";
@@ -149,6 +150,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // Recovery may toggle foreign keys while restoring; make sure the
       // connection is back in enforcing mode before serving writes.
       ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
+
+      // Sockets that closed while the object was evicted left their stored
+      // state behind; hibernated sockets still open keep theirs.
+      const live = (ctx.getWebSockets?.() ?? [])
+        .map((socket) => (socket.deserializeAttachment() as { clientId?: unknown } | null)?.clientId)
+        .filter((clientId): clientId is string => typeof clientId === "string");
+      forgetOtherSockets(durableObjectSqlExecutor(ctx.storage), live);
       await this.scheduleNextDurabilityAlarm(Date.now());
     });
   }
@@ -515,7 +523,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     ws: WebSocket,
     message: string | ArrayBuffer
   ): Promise<void> {
-    const attachment = parseSocketAttachment(ws.deserializeAttachment());
+    const attachment = this.readSocket(ws);
     if (attachment === null) {
       this.send(ws, {
         type: "session:error",
@@ -538,12 +546,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     const text =
       typeof message === "string" ? message : new TextDecoder().decode(message);
+    this.handleText(ws, attachment, text, false);
+  }
 
-    if (text.length > 65_536) {
-      this.send(ws, { type: "error", code: "message_too_large" });
-      return;
-    }
-
+  /**
+   * One whole message. A frame is at most Cloudflare's 32 MiB; a larger
+   * message comes as `part` frames, stored until the last (see
+   * socket-state.ts), and then runs here like any other.
+   */
+  private handleText(ws: WebSocket, attachment: SocketAttachment, text: string, reassembled: boolean): void {
     let payload: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(text);
@@ -566,6 +577,25 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
 
     switch (payload.type) {
+      case "part": {
+        const { id, index, last, data } = payload;
+        if (
+          reassembled ||
+          typeof id !== "string" || id.length === 0 || id.length > 128 ||
+          !Number.isInteger(index) || (index as number) < 0 ||
+          typeof last !== "boolean" || typeof data !== "string"
+        ) {
+          this.send(ws, { type: "error", code: "invalid_part", message: "A part is { id, index, last, data }." });
+          return;
+        }
+        const outcome = acceptPart(durableObjectSqlExecutor(this.ctx.storage), attachment.clientId, { id, index: index as number, last, data });
+        if ("error" in outcome) {
+          this.send(ws, { type: "error", code: outcome.error, message: `Part ${index} of message ${id} arrived out of order; the message was dropped.` });
+        } else if ("text" in outcome) {
+          this.handleText(ws, attachment, outcome.text, true);
+        }
+        return;
+      }
       case "ping":
         this.handlePing(ws, payload);
         return;
@@ -607,6 +637,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   webSocketClose(ws: WebSocket, code: number, reason: string): void {
     this.dropSubscriptionResults(ws);
     this.removePresence(ws);
+    this.forgetSocketState(ws);
     // Completes the closing handshake. A client that closes without a status
     // arrives as 1005 (an abnormal drop as 1006); those codes may not be sent,
     // and echoing them threw, so the client never got its close frame and
@@ -617,7 +648,34 @@ export class WorkspaceRoom extends DurableObject<Env> {
   webSocketError(ws: WebSocket): void {
     this.dropSubscriptionResults(ws);
     this.removePresence(ws);
+    this.forgetSocketState(ws);
     this.closeSocket(ws, 1011, "websocket error");
+  }
+
+  /** A socket's attachment, with any state stored past its 16 KiB. */
+  private readSocket(ws: WebSocket): SocketAttachment | null {
+    const raw = ws.deserializeAttachment();
+    if (!isSpilled(raw)) return parseSocketAttachment(raw);
+    try {
+      return parseSocketAttachment(loadAttachment(durableObjectSqlExecutor(this.ctx.storage), raw));
+    } catch {
+      return null;
+    }
+  }
+
+  private writeSocket(ws: WebSocket, attachment: SocketAttachment): void {
+    const spilled = isSpilled(ws.deserializeAttachment());
+    ws.serializeAttachment(storeAttachment(durableObjectSqlExecutor(this.ctx.storage), attachment, spilled));
+  }
+
+  private forgetSocketState(ws: WebSocket): void {
+    const raw = ws.deserializeAttachment() as { clientId?: unknown } | null;
+    if (typeof raw?.clientId !== "string") return;
+    try {
+      forgetSocket(durableObjectSqlExecutor(this.ctx.storage), raw.clientId);
+    } catch {
+      // Best effort; the next boot clears state of sockets that are gone.
+    }
   }
 
   private handlePing(ws: WebSocket, payload: Record<string, unknown>): void {
@@ -652,7 +710,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const topics = attachment.topics ?? [];
     if (!topics.includes(topic)) {
       attachment.topics = [...topics, topic];
-      ws.serializeAttachment(attachment);
+      this.writeSocket(ws, attachment);
     }
   }
 
@@ -669,13 +727,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const topics = attachment.topics ?? [];
     if (topics.includes(topic)) {
       attachment.topics = topics.filter((joined) => joined !== topic);
-      ws.serializeAttachment(attachment);
+      this.writeSocket(ws, attachment);
     }
   }
 
   /**
    * Delivers to every other socket joined to the topic. The sender need not
    * be joined; it never receives its own message.
+   *
+   * A message too large for one frame comes as parts
+   * (`{ topic, part: { id, index, last }, data }`, `data` a slice of the
+   * message's JSON). Each part is checked and relayed as it arrives, and the
+   * receivers join them: the room never holds a whole message, so a
+   * broadcast has no size bound here.
    */
   private handleTopicSend(
     ws: WebSocket,
@@ -683,24 +747,33 @@ export class WorkspaceRoom extends DurableObject<Env> {
     payload: Record<string, unknown>
   ): void {
     const topic = payload.topic;
-    if (!isTopic(topic) || !("message" in payload)) {
-      this.topicError(ws, topic, "invalid_topic_message", "topic:send needs a topic and a message.");
+    const part = payload.part as { id?: unknown; index?: unknown; last?: unknown } | undefined;
+    const isPart =
+      part !== undefined &&
+      typeof part === "object" &&
+      part !== null &&
+      typeof part.id === "string" && part.id.length > 0 && part.id.length <= 128 &&
+      Number.isInteger(part.index) && (part.index as number) >= 0 &&
+      typeof part.last === "boolean" &&
+      typeof payload.data === "string";
+    if (!isTopic(topic) || (part === undefined ? !("message" in payload) : !isPart)) {
+      this.topicError(ws, topic, "invalid_topic_message", "topic:send needs a topic and a message (or a part and its data).");
       return;
     }
     if (!topicAllowed(claimFromAttachment(attachment, this.workspaceId), topic, "send")) {
       this.topicError(ws, topic, "permission_denied", `Not allowed to send to topic "${topic}".`);
       return;
     }
-    const delivery = JSON.stringify({
-      type: "topic:message",
-      topic,
-      message: payload.message,
-      from: { clientId: attachment.clientId, sub: attachment.sub },
-    });
+    const from = { clientId: attachment.clientId, sub: attachment.sub };
+    const delivery = JSON.stringify(
+      isPart
+        ? { type: "topic:message", topic, part: { id: part!.id, index: part!.index, last: part!.last }, data: payload.data, from }
+        : { type: "topic:message", topic, message: payload.message, from }
+    );
     const now = Math.floor(Date.now() / 1000);
     for (const other of this.ctx.getWebSockets?.() ?? []) {
       if (other === ws) continue;
-      const peer = parseSocketAttachment(other.deserializeAttachment());
+      const peer = this.readSocket(other);
       // A socket whose claim has run out hears nothing more.
       if (!peer?.topics?.includes(topic) || peer.exp <= now) continue;
       try {
@@ -734,7 +807,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       previous && previous.target === target
         ? { ...previous, presence: payload.presence }
         : { target, presence: payload.presence };
-    ws.serializeAttachment(attachment);
+    this.writeSocket(ws, attachment);
     this.broadcastPresence(target);
   }
 
@@ -751,7 +824,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const current = attachment.presence;
     if (!current || current.target !== target) return;
     attachment.presence = undefined;
-    ws.serializeAttachment(attachment);
+    this.writeSocket(ws, attachment);
     this.broadcastPresence(target, attachment.clientId);
   }
 
@@ -771,7 +844,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
     current.cursor = payload.cursor;
-    ws.serializeAttachment(attachment);
+    this.writeSocket(ws, attachment);
     this.broadcastToTarget(
       target,
       {
@@ -800,7 +873,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
     current.drag = payload.drag;
-    ws.serializeAttachment(attachment);
+    this.writeSocket(ws, attachment);
     this.broadcastToTarget(
       target,
       {
@@ -826,7 +899,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const current = attachment.presence;
     if (!current || current.target !== target) return;
     delete current.drag;
-    ws.serializeAttachment(attachment);
+    this.writeSocket(ws, attachment);
     this.broadcastToTarget(
       target,
       {
@@ -885,7 +958,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   ): Array<{ ws: WebSocket; attachment: SocketAttachment }> {
     const sockets: Array<{ ws: WebSocket; attachment: SocketAttachment }> = [];
     for (const ws of this.ctx.getWebSockets?.() ?? []) {
-      const attachment = parseSocketAttachment(ws.deserializeAttachment());
+      const attachment = this.readSocket(ws);
       if (attachment?.presence?.target === target) {
         sockets.push({ ws, attachment });
       }
@@ -894,7 +967,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   private removePresence(ws: WebSocket): void {
-    const attachment = parseSocketAttachment(ws.deserializeAttachment());
+    const attachment = this.readSocket(ws);
     if (!attachment?.presence) return;
     this.broadcastPresence(attachment.presence.target, attachment.clientId);
   }
@@ -954,7 +1027,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       id,
       query as QueryDocument
     );
-    ws.serializeAttachment(attachment);
+    this.writeSocket(ws, attachment);
     this.resultsFor(attachment.clientId).set(id, { data, pageInfo });
     this.send(ws, {
       type: "query:data",
@@ -986,7 +1059,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     );
     if (remaining.length !== attachment.subscriptions.length) {
       attachment.subscriptions = remaining;
-      ws.serializeAttachment(attachment);
+      this.writeSocket(ws, attachment);
     }
     this.resultsFor(attachment.clientId).delete(id);
     this.send(ws, { type: "query:unsubscribed", id });
@@ -1064,7 +1137,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   private dropSubscriptionResults(ws: WebSocket): void {
-    const attachment = parseSocketAttachment(ws.deserializeAttachment());
+    const attachment = this.readSocket(ws);
     if (attachment) this.subscriptionResults.delete(attachment.clientId);
   }
 
@@ -1097,7 +1170,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const runs = new Map<string, SubscriptionRun>();
 
     for (const ws of sockets) {
-      const attachment = parseSocketAttachment(ws.deserializeAttachment());
+      const attachment = this.readSocket(ws);
       if (attachment === null) continue;
 
       if (attachment.exp <= now) {
@@ -1213,7 +1286,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         attachmentChanged = true;
       }
 
-      if (attachmentChanged) ws.serializeAttachment(attachment);
+      if (attachmentChanged) this.writeSocket(ws, attachment);
     }
   }
 
