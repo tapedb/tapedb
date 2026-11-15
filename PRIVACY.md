@@ -11,7 +11,7 @@ processor.
 | --- | --- | --- |
 | Durable Object SQLite, one per workspace | Your models' rows | Until deleted |
 | | `_tx_log`: each write's operations (with values) and the time. Who made the write is not recorded | Covered rows deleted once older than half the retention (15 days by default) |
-| | `_tx_receipts`: client transaction id, sequence, a hash of the operations, and the time | Half the retention (15 days by default) |
+| | `_tx_receipts`: random client transaction id, sequence and time; an operation hash while recent | Id, sequence and time for the workspace lifetime; hash removed after half the retention (15 days by default). Superseded R2 copies leave within the full retention |
 | | `_files`: path, size, content type and uploader (the claim's `sub`) of each upload | Until the file is deleted |
 | R2 `DATA` bucket | Log segments (the `_tx_log` lines), snapshots of every table, a manifest | Superseded copies deleted within the retention (30 days by default) |
 | R2 `FILES` bucket | Uploaded bytes | Deleted with the file, at once |
@@ -19,6 +19,10 @@ processor.
 | Broadcast topics | Messages | Not stored: delivered to connected sockets only |
 | Claim limiter Durable Objects | A token count per HMAC of a caller's IP or subject (never the IP or subject itself) | Deleted once the bucket has refilled: a minute by default |
 | Worker logs | Workspace ids, counts, error messages. No row values, claim tokens or user ids | Your Workers Logs or Logpush settings |
+
+Receipts contain no row values or writer identity. Storage grows by one small
+receipt per transaction with a client id. Use a random id for each new write;
+receipt ids are not user ids. Workspace erasure removes the receipts too.
 
 Claim tokens are never put in a URL. HTTP requests carry them in
 `Authorization`, and WebSocket upgrades in `Sec-WebSocket-Protocol`. If you

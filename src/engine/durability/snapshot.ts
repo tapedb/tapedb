@@ -13,6 +13,7 @@ import {
   commitManifest,
   manifestCreatedAt,
   readEngineVersion,
+  readReceiptFloor,
   utf8Bytes,
 } from "./manifest";
 import type { SqlExecutor, SqlValue } from "./sql";
@@ -433,6 +434,7 @@ export async function snapshotWorkspace(
   );
 
   const baseSeq = readHighWater(sql);
+  const receiptFloor = readReceiptFloor(sql);
   const flushState = readFlushState(sql);
 
   markSnapshotRunning(sql, now);
@@ -485,6 +487,7 @@ export async function snapshotWorkspace(
         createdAt: current?.createdAt ?? manifestCreatedAt(now),
         engineVersion: readEngineVersion(sql),
         schemaVersion: readSchemaVersion(sql),
+        receiptFloor,
         tables,
         totalRows,
         totalBytes,
@@ -631,14 +634,14 @@ export async function pruneHistory(
     .toArray()[0]?.at;
   if (oldest !== null && oldest !== undefined) later(oldest + age);
 
-  // Receipts past the retry window (the same age); a retry issued before it
-  // is refused as retry_expired instead of being looked up.
+  // Keep the random id, sequence and time permanently for deduplication;
+  // discard only the hash derived from the operation values.
   const receipts =
     sql
-      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_receipts" WHERE at <= ?`, now - age)
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM "_tx_receipts" WHERE ops_hash IS NOT NULL AND at <= ?`, now - age)
       .toArray()[0]?.n ?? 0;
-  if (receipts > 0) sql.exec(`DELETE FROM "_tx_receipts" WHERE at <= ?`, now - age);
-  const oldestReceipt = sql.exec<{ at: number | null }>(`SELECT MIN(at) AS at FROM "_tx_receipts"`).toArray()[0]?.at;
+  if (receipts > 0) sql.exec(`UPDATE "_tx_receipts" SET ops_hash = NULL WHERE ops_hash IS NOT NULL AND at <= ?`, now - age);
+  const oldestReceipt = sql.exec<{ at: number | null }>(`SELECT MIN(at) AS at FROM "_tx_receipts" WHERE ops_hash IS NOT NULL`).toArray()[0]?.at;
   if (oldestReceipt !== null && oldestReceipt !== undefined) later(oldestReceipt + age);
 
   setHistoryPruneAt(sql, nextAt);

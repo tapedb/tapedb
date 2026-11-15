@@ -48,6 +48,8 @@ import type {
 } from "../tx-sql";
 import { acceptsValue, isBulkOp, isLinkOp, validateEnvelope, type ValidatedOp } from "../tx-validate";
 import { sha256Hex } from "./snapshot";
+import { readReceiptFloor } from "./manifest";
+import { historyAgeLimit, historyRetentionMs } from "./retention";
 import type { SqlCursor, SqlExecutor, SqlValue } from "./sql";
 
 /** Durability SQL plus the transaction primitive the restore/replay needs. */
@@ -1265,30 +1267,29 @@ async function runRecovery(
       sql.exec<{ seq: number | null }>(`SELECT MAX(seq) AS seq FROM "_tx_log" WHERE seq > ?`, manifest.baseSeq).toArray()[0]?.seq ?? 0
     );
 
+    // Older snapshots may omit receipts or contain ones whose siblings were
+    // expired. Carry their safety boundary through every later snapshot.
+    const incomplete = manifest.baseSeq > 0 && (
+      manifest.receiptFloor === undefined ||
+      !manifest.tables.some((table) => table.name === ENGINE_TABLES.txReceipts)
+    );
+    const floor = Math.max(readReceiptFloor(sql), manifest.receiptFloor ?? 0, incomplete ? now : 0);
+
     // Bookkeeping and the success marker commit together so the workspace can
     // never look caught up while its sequence state is only half written.
     sql.transactionSync(() => {
       writeFinalState(sql, manifest, Math.max(replay.maxSeq, replayedTo), now);
-      // Receipts from snapshots taken before they recorded a time: their
-      // retry window starts now.
+      // Receipts without a stored timestamp take the restore time.
       sql.exec(`UPDATE "_tx_receipts" SET at = ? WHERE at = 0`, now);
       // Written by engines that tracked missing receipts; nothing reads it.
       sql.exec(`DELETE FROM "_engine_meta" WHERE "key" = 'dedupe_floor_seq'`);
+      sql.exec(`UPDATE "_tx_receipts" SET ops_hash = NULL WHERE ops_hash IS NOT NULL AND at <= ?`, now - historyAgeLimit(historyRetentionMs()));
+      sql.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('receipts_since', ?)`, String(floor));
       markComplete(sql, manifest, now);
     });
 
-    // Snapshots from development builds before transaction receipts existed
-    // carry none, so retries of writes folded into them cannot be recognised.
-    // (A manifest with no snapshot yet replays every line, receipts included.)
-    // Like receipts past the retry window: a retry first issued before this
-    // restore may already be in the snapshot, so it is refused (retry_expired)
-    // rather than applied a second time. The data itself is restored.
-    const receiptless =
-      manifest.baseSeq > 0 &&
-      !manifest.tables.some((table) => table.name === ENGINE_TABLES.txReceipts);
-    if (receiptless) {
-      sql.exec(`INSERT OR REPLACE INTO "_engine_meta" ("key", value) VALUES ('receipts_since', ?)`, String(now));
-      console.warn("workspace_recovered_without_receipts", { workspaceId, baseSeq: manifest.baseSeq });
+    if (incomplete) {
+      console.warn("workspace_recovered_without_complete_receipts", { workspaceId, baseSeq: manifest.baseSeq });
     }
 
     return {
@@ -1298,10 +1299,10 @@ async function runRecovery(
       tables: restored.tables,
       rows: restored.rows,
       replayed: replay.replayed,
-      ...(receiptless
+      ...(incomplete
         ? {
             warnings: [
-              `The snapshot predates transaction receipts: retries first issued before this restore are refused as retry_expired.`,
+              `The snapshot does not guarantee complete transaction receipts: unknown retries first issued before this restore are refused as retry_expired.`,
             ],
           }
         : {}),

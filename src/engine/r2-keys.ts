@@ -44,6 +44,8 @@ export interface WorkspaceManifest {
   engineVersion: string;
   /** The app schema the snapshot was taken under; absent before it was recorded. */
   schemaVersion?: string;
+  /** Receipts are complete after this epoch time; zero means complete for all time. */
+  receiptFloor?: number;
   tables: ManifestTable[];
   totalRows: number;
   totalBytes: number;
@@ -232,7 +234,8 @@ export function isWorkspaceManifest(
     !Array.isArray(candidate.tables) ||
     !candidate.tables.every(isManifestTable) ||
     !isNonNegativeInteger(candidate.totalRows) ||
-    !isNonNegativeInteger(candidate.totalBytes)
+    !isNonNegativeInteger(candidate.totalBytes) ||
+    (candidate.receiptFloor !== undefined && !isNonNegativeInteger(candidate.receiptFloor))
   ) {
     return false;
   }

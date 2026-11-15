@@ -5,6 +5,15 @@
 TapeDB is still a private preview. No npm package or public repository has been
 published.
 
+### Changed
+
+- Offline retries have no age limit. Transaction receipt ids, sequences and
+  times remain for the workspace lifetime; operation hashes are removed after
+  half the history retention. Reusing an id with a different body conflicts
+  while its hash exists and acknowledges the original write afterwards.
+  Snapshots and recovery preserve receipts with removed hashes. Legacy
+  upgrades and restores retain a fixed safety boundary for missing receipts.
+
 ### Added
 
 - Built-in claim limits, on by default: `identity.limits` with exact, global
