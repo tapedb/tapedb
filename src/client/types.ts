@@ -384,6 +384,8 @@ export type ClientMessage =
   | { type: "topic:join"; topic: string }
   | { type: "topic:leave"; topic: string }
   | { type: "topic:send"; topic: string; message: unknown }
+  | { type: "topic:send"; topic: string; part: { id: string; index: number; last: boolean }; data: string }
+  | { type: "part"; id: string; index: number; last: boolean; data: string }
   | { type: "ping"; at?: unknown };
 
 export type ServerMessage =
@@ -420,6 +422,13 @@ export type ServerMessage =
     }
   | { type: "drag:update"; target: string; clientId: string; drag: unknown }
   | { type: "topic:message"; topic: string; message: unknown; from: { clientId: string; sub: string } }
+  | {
+      type: "topic:message";
+      topic: string;
+      part: { id: string; index: number; last: boolean };
+      data: string;
+      from: { clientId: string; sub: string };
+    }
   | { type: "topic:error"; topic: string | null; code: string; message: string }
   | { type: "error"; code: string; message?: string };
 

@@ -199,8 +199,22 @@ changes `version`; readers check it.
   `query:diff`, `query:error`, `query:unsubscribed`, `presence:update`,
   `cursor:update`, `drag:update`, `error`, and **experimental** `topic:message`, `topic:error`
 
-Frames above 64 KiB are refused. The protocol belongs to the client; use it
-directly only if you must.
+Messages have no size bound of TapeDB's own. A frame is at most
+Cloudflare's 32 MiB; the client sends a message longer than 256 Ki
+characters as frames of that size:
+
+- `{ type: "part", id, index, last, data }`: slices of the message's JSON,
+  which the workspace stores until the last and then runs as one message.
+  Parts out of order answer `error` `part_out_of_order` and drop the message.
+- for `topic:send`, `{ type: "topic:send", topic, part: { id, index, last },
+  data }`: slices of the topic message's JSON, relayed to listeners as
+  `topic:message` with the same `part` and `data` and joined by the
+  receiving client. The workspace never holds the whole message.
+
+A socket's live queries, presence and topics are kept in its attachment
+while they fit (12 KiB) and in the workspace's storage past that (engine
+migration `tapedb_0007_socket_state`), so a socket may hold any number of
+them. The protocol belongs to the client; use it directly only if you must.
 
 ## CLI
 
