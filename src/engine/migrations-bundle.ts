@@ -122,6 +122,23 @@ export const ENGINE_MIGRATIONS: readonly BundledWorkspaceMigration[] = [
       seq INTEGER NOT NULL
     ) WITHOUT ROWID;`,
   },
+  {
+    // Opt-in write audit (audit.ts): who changed each row, pruned by age.
+    id: "tapedb_0010_tx_audit",
+    sql: `CREATE TABLE "_tx_audit" (
+      -- table, row and sequence in one key, for snapshot paging.
+      id TEXT PRIMARY KEY NOT NULL,
+      table_name TEXT NOT NULL,
+      row_id TEXT NOT NULL,
+      seq INTEGER NOT NULL,
+      at INTEGER NOT NULL,
+      user_id TEXT,
+      role INTEGER,
+      action TEXT NOT NULL
+    ) WITHOUT ROWID;
+    CREATE INDEX "_tx_audit_row" ON "_tx_audit" (table_name, row_id, seq);
+    CREATE INDEX "_tx_audit_at" ON "_tx_audit" (at);`,
+  },
 ];
 
 /** Configured migrations, applied in order on Durable Object boot. */

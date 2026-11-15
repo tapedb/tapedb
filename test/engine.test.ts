@@ -230,7 +230,7 @@ describe("recovery ordering", () => {
     expect(boards).toBeGreaterThanOrEqual(0);
     expect(boards).toBeLessThan(columns);
     expect(columns).toBeLessThan(tasks);
-    expect(order.slice(-2)).toEqual(["_files", "_tx_receipts"]);
+    expect(order.slice(-3)).toEqual(["_files", "_tx_receipts", "_tx_audit"]);
   });
 });
 

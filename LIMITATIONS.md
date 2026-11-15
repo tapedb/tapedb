@@ -9,8 +9,7 @@ The boundaries TapeDB has by design, and the gates before a public release.
 - **One writer per workspace.** Each workspace is one Durable Object. There is
   no cross-workspace query, join or transaction, and no active-active setup.
 - **Identity is yours.** The engine verifies short-lived claims but does not
-  manage users, sessions, passwords or memberships, and it does not record who
-  made each write.
+  manage users, sessions, passwords or memberships.
 - **Personal fields use erasable keys.** Deleting a subject key makes its
   ciphertext unreadable in SQL, logs, snapshots and recovery copies. Ordinary
   plaintext and copies from before encryption follow the history retention

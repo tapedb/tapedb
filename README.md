@@ -427,6 +427,26 @@ Writes keep landing during an export; `end.consistent` is true when none did,
 and the export is then the workspace exactly at `end.seq`. An export that
 stops early ends with an `error` line instead of `end` (the CLI exits 1).
 
+## Audit
+
+```ts
+export default defineTapeDB({ schema, audit: true });
+```
+
+```ts
+const changes = await db.$history({ model: "task", id: task.id });
+// [{ seq, at, sub, role, action: "insert" | "update" | "delete" }, ...]
+```
+
+With `audit: true` each write records the claim's `sub` and role, in the
+local log and in the log lines in R2, and recovery restores them. Every row a
+write changes, cascades included, gets a history entry. `$history` returns a
+row's entries, oldest first, to admins and owners. The history follows the
+[history retention](#history-retention): entries are kept for half of it (15
+days by default) and are gone from every copy within it. Raise
+`retention.days` for a longer audit. Off by default: without it, no writer
+identity is stored, and `$history` answers 409 `audit_disabled`.
+
 ## Personal fields
 
 ```ts
@@ -606,8 +626,8 @@ index all survive, including across schema migrations made since the
 snapshot. Recovery runs in steps that commit their progress (a snapshot chunk
 or a log segment at a time): a boot spends at most 15 seconds on it, well
 inside the 30 seconds Cloudflare allows, and alarms carry on from there, so a
-workspace of any size recovers, and a recovery cut off by a reset resumes
-rather than starting over. Until it is complete the workspace answers 503
+workspace of any size recovers, and a recovery cut off by a reset or by an
+R2 read that fails resumes rather than starting over. Until it is complete the workspace answers 503
 `workspace_recovering` with `Retry-After`, never a partial result.
 
 ### History retention

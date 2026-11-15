@@ -10,7 +10,8 @@ processor.
 | Where | What | How long |
 | --- | --- | --- |
 | Durable Object SQLite, one per workspace | Your models' rows | Until deleted |
-| | `_tx_log`: each write's operations (with values) and the time. Who made the write is not recorded | Covered rows deleted once older than half the retention (15 days by default) |
+| | `_tx_log`: each write's operations (with values) and the time. The writer's `sub` and role only with `audit: true` | Covered rows deleted once older than half the retention (15 days by default) |
+| | `_tx_audit`, only with `audit: true`: for each changed row, the model, row id, sequence, time, action and the writer's `sub` and role | Deleted once older than half the retention (15 days by default); gone from R2 copies within the full retention |
 | | `_tx_receipts`: random client transaction id, sequence and time; an operation hash while recent (an HMAC under `TAPEDB_KEY_SECRET` when the schema has personal fields) | Id, sequence and time for the workspace lifetime; hash removed after half the retention (15 days by default). Superseded R2 copies leave within the full retention |
 | | `_files`: path, size, content type and uploader (the claim's `sub`) of each upload | Until the file is deleted |
 | R2 `DATA` bucket | Log segments (the `_tx_log` lines), snapshots of every table, a manifest | Superseded copies deleted within the retention (30 days by default) |
@@ -30,11 +31,14 @@ Claim tokens are never put in a URL. HTTP requests carry them in
 `Authorization`, and WebSocket upgrades in `Sec-WebSocket-Protocol`. If you
 turn on request-header logging in Cloudflare, exclude those two headers.
 
-tapedb does not record who made each row write: nothing in the engine reads
-it. Files are the exception: their uploader is kept for file rules.
-If your app needs an audit trail, keep it in your own model, where it is
-covered by your read rules, export and erasure like any other data. Use an
-opaque user id as the claim's `sub` either way, not an email address.
+By default tapedb does not record who made each row write. Files are the
+exception: their uploader is kept for file rules. `defineTapeDB({ audit: true })`
+records the writer of every write (see [README: Audit](README.md#audit)); that
+history is bounded by the retention, read only by admins and owners, and not
+part of `$export()`. A writer's entries leave every copy within the
+retention, which is how an erasure request for them is answered; erasing the
+workspace removes them at once. Use an opaque user id as
+the claim's `sub`, not an email address: the audit stores it as given.
 
 ## Retention
 

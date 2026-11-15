@@ -61,7 +61,7 @@ export async function runPersonalTransaction(sql: SqlExecutor, personal: Persona
     const nothing = tx.ops.every((op, index) => isBulk(op) && staged.matched[index] === 0);
     if (nothing && tx.clientTxId === undefined) return { txId: tx.txId, seq: sql.one<{ seq: number }>(`SELECT high_water_seq AS seq FROM "_tx_state" WHERE id = 1`)?.seq ?? 0, applied: 0, matched: staged.matched };
     const now = Date.now();
-    const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now });
+    const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
     sql.exec(`DELETE FROM "_personal_changes"`);
     let applied = 0;
     for (const [index, op] of tx.ops.entries()) {

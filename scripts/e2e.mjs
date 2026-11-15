@@ -115,6 +115,13 @@ writeFileSync(join(project, "tapedb.schema.ts"), schemaSource);
 run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "dev", "--name", "personal_fields"], { cwd: project });
 run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "check"], { cwd: project });
 for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(project, file));
+// The audit is opt-in; the suite runs with it on (audit.mjs).
+{
+  const path = join(project, "worker.ts");
+  const source = readFileSync(path, "utf8");
+  if (!source.includes("devClaims: true,")) throw new Error("worker.ts template changed: cannot turn the audit on.");
+  writeFileSync(path, source.replace("devClaims: true,", "devClaims: true,\n  audit: true,"));
+}
 // Two local namespaces exercise the same move protocol without jurisdictions.
 if (!deployName && !remote) {
   const path = join(project, "wrangler.jsonc");
@@ -269,6 +276,9 @@ async function deployStaging(name) {
   // TAPEDB_DEV_CLAIMS is not a var: it is set as a secret after the token
   // that gates it, so the deployed Worker never has an open claim route.
   config.vars = { ENVIRONMENT: "staging", ...(jurisdiction ? { TAPEDB_JURISDICTION: jurisdiction } : {}) };
+  // Workers Logs keep exceptions and the engine's console lines (workspace
+  // ids and counts, no values), so a failed drill can be read afterwards.
+  config.observability = { enabled: true, head_sampling_rate: 1 };
   if (domain) {
     // A Workers custom domain: Cloudflare creates the DNS record and certificate.
     config.routes = [{ pattern: domain, custom_domain: true }];

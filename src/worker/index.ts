@@ -14,6 +14,7 @@ import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
 import { configureTopics, type TopicOptions } from "../engine/topics";
+import { configureAudit } from "../engine/audit";
 import { configureFileAccess, fileRulesConfigured } from "../engine/file-access";
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
 import { filesPrefix, isWorkspaceId } from "../engine/r2-keys";
@@ -78,6 +79,12 @@ export interface DefineTapeDBOptions {
    */
   topics?: TopicOptions;
   /**
+   * Records who changed each row: the claim's subject and role on every log
+   * entry (also in R2), and a per-row history read with `db.$history`.
+   * Off by default; the history is pruned with `retention`.
+   */
+  audit?: boolean;
+  /**
    * How long deleted or overwritten values may remain in the workspace's
    * history (R2 log segments, older snapshots, the local replay log).
    * Defaults to 30 days; at least 2.
@@ -101,7 +108,9 @@ function roomRequest(request: Request, path: string): Request {
     init.body = request.body;
   }
 
-  return new Request(new URL(path, "https://room.internal"), init);
+  const url = new URL(path, "https://room.internal");
+  url.search = new URL(request.url).search;
+  return new Request(url, init);
 }
 
 /** The workspace's Durable Object, inside TAPEDB_JURISDICTION when set. */
@@ -512,6 +521,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   );
   configurePermissions(schema.permissions);
   configureTopics(options.topics);
+  configureAudit(options.audit);
   configureFileAccess(schema.files);
   configureRetention(options.retention);
 

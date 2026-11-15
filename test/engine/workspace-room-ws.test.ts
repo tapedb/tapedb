@@ -1,3 +1,4 @@
+import { configureAudit } from "../../src/engine/audit";
 import { useLegacyFixture } from "../fixtures/registry";
 useLegacyFixture();
 
@@ -765,6 +766,39 @@ describe("WorkspaceRoom live queries", () => {
 
     const unverified = await room.fetch(new Request("http://test/export"));
     expect(unverified.status).toBe(403);
+  });
+
+  test("GET /history: who changed a row, for admins and owners, with audit on", async () => {
+    const history = (role: number, query = "model=kanbanTasks&id=task2") =>
+      room.fetch(new Request(`http://test/history?${query}`, {
+        headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim(role, "user-1")) },
+      }));
+    await transact([{ op: "update", namespace: "kanbanTasks", id: "task2", values: { columnId: "col1", title: "Two", order: 1 } }], "h1");
+    expect((await history(WORKSPACE_ROLE_LEVELS.ADMIN)).status).toBe(409);
+
+    configureAudit(true);
+    try {
+      // The capture is installed at boot.
+      context = new FakeContext(db, WORKSPACE);
+      room = new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: new FakeR2Bucket() } as unknown as Env);
+      await context.ready;
+      await transact([{ op: "merge", namespace: "kanbanTasks", id: "task2", values: { title: "Deux" } }], "h2");
+      await transact([{ op: "delete", namespace: "kanbanTasks", id: "task2" }], "h3", WORKSPACE_ROLE_LEVELS.ADMIN);
+
+      const response = await history(WORKSPACE_ROLE_LEVELS.ADMIN);
+      expect(response.status).toBe(200);
+      const body = (await response.json()) as { data: Array<Record<string, unknown>> };
+      // The write from before audit was on is not in it.
+      expect(body.data.map(({ sub, role, action }) => ({ sub, role, action }))).toEqual([
+        { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.EDITOR, action: "update" },
+        { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.ADMIN, action: "delete" },
+      ]);
+      expect((await history(WORKSPACE_ROLE_LEVELS.EDITOR)).status).toBe(403);
+      expect((await history(WORKSPACE_ROLE_LEVELS.ADMIN, "model=nope&id=x")).status).toBe(400);
+      expect((await room.fetch(new Request("http://test/history?model=kanbanTasks&id=task2"))).status).toBe(403);
+    } finally {
+      configureAudit(false);
+    }
   });
 
   test("answers every client close with a close frame it may send", async () => {

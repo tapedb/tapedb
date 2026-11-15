@@ -11,6 +11,7 @@
 import {
   createClientParts,
   type ClientDeps,
+  type HistoryEntry,
   type DataClientImpl,
   type HeadlessDataClient,
   type StoredFile,
@@ -252,6 +253,11 @@ export interface ClientExtras {
   $export(): AsyncIterable<ExportRecord<Models>>;
   /** Deletes a subject key so its personal fields become unreadable. Owners only. */
   $erasePerson(subject: string): Promise<void>;
+  /**
+   * Who changed one row and when, oldest first, within the retention.
+   * Admins and owners only; needs `defineTapeDB({ audit: true })`.
+   */
+  $history(target: { model: keyof Models & string; id: string }): Promise<HistoryEntry[]>;
   /** Retries queued writes now (also runs on reconnect and when back online). */
   $flush(): Promise<void>;
   /** Closes the socket. */
@@ -260,8 +266,9 @@ export interface ClientExtras {
 
 export type Client<M extends Models> = {
   [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>;
-} & Omit<ClientExtras, "$export"> & {
+} & Omit<ClientExtras, "$export" | "$history"> & {
   $export(): AsyncIterable<ExportRecord<M>>;
+  $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>;
 };
 
 export interface ClientConfig<M extends Models> {
@@ -843,6 +850,7 @@ export function createClient<M extends Models>(
       };
     },
     $erasePerson: (subject) => impl.erasePerson(subject),
+    $history: ({ model, id }) => impl.history(model, id),
     $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),
     $close: () => impl.close(),
