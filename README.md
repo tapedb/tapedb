@@ -703,12 +703,6 @@ The CLI is a command, not an import: `npx tapedb init | migrate | dev | studio
 and what is experimental, the HTTP routes, the export format and the error
 codes. A test checks the package against it.
 
-## Development
-
-TapeDB is under active development and has no public release. The package is
-not ready for production use; see [LIMITATIONS.md](LIMITATIONS.md) and the
-release gates in [RELEASING.md](RELEASING.md).
-
 ## Security
 
 Report vulnerabilities privately as described in [SECURITY.md](SECURITY.md).
