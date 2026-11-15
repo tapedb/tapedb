@@ -17,6 +17,7 @@ processor.
 | R2 `FILES` bucket | Uploaded bytes | Deleted with the file, at once |
 | Socket attachments, and `_socket_state` / `_socket_parts` past 12 KiB | A connected client's `sub`, role, subscriptions, presence state and joined topics; a message arriving in parts until its last part | While the socket is open |
 | Broadcast topics | Messages | Not stored: delivered to connected sockets only |
+| Claim limiter Durable Objects | A token count per HMAC of a caller's IP or subject (never the IP or subject itself) | Deleted once the bucket has refilled: a minute by default |
 | Worker logs | Workspace ids, counts, error messages. No row values, claim tokens or user ids | Your Workers Logs or Logpush settings |
 
 Claim tokens are never put in a URL. HTTP requests carry them in

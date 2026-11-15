@@ -10,6 +10,7 @@
  * no padding, payload `{ sub, workspaceId, role, iat, exp, iss?, aud? }`.
  */
 
+import type { ClaimLimits, LimitDecision } from "./engine/claim-limits";
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "./claims";
 import { apiError, discardBody, json } from "./http";
 
@@ -106,6 +107,13 @@ export interface ClaimIdentity {
    * Back it with a Cloudflare rate-limit binding when the route is public.
    */
   allowRequest?(key: string): Promise<boolean>;
+  /**
+   * Built-in limits, on by default: exact, global token buckets per caller
+   * IP (before the session lookup) and per subject (after it). Defaults: 300
+   * requests per IP and 30 per subject, refilling over 60 seconds. Set a
+   * limit to `false`, or `limits: false`, to turn it off.
+   */
+  limits?: ClaimLimits | false;
 }
 
 export interface MintClaimDependencies {
@@ -117,6 +125,14 @@ export interface MintClaimDependencies {
   now?: () => number;
   /** Optional per-caller limiter; return false to reject with 429. */
   allowRequest?: (key: string) => Promise<boolean>;
+  /** The built-in limits: one token for this IP or subject. */
+  limit?: (kind: "ip" | "subject", value: string) => Promise<LimitDecision>;
+}
+
+function rateLimited(retryAfterSeconds: number): Response {
+  const response = apiError(429, "rate_limited", "Too many claim requests. Try again shortly.");
+  if (retryAfterSeconds > 0) response.headers.set("retry-after", String(retryAfterSeconds));
+  return response;
 }
 
 /**
@@ -134,8 +150,17 @@ export async function mintClaim(
     return apiError(405, "method_not_allowed", "Use POST.");
   }
 
+  const ip = request.headers.get("cf-connecting-ip") ?? "unknown";
+  if (deps.limit) {
+    const decision = await deps.limit("ip", ip);
+    if (!decision.allowed) {
+      await discardBody(request);
+      return rateLimited(decision.retryAfterSeconds);
+    }
+  }
+
   if (deps.allowRequest) {
-    const key = `claim:${request.headers.get("cf-connecting-ip") ?? "unknown"}`;
+    const key = `claim:${ip}`;
     let allowed: boolean;
     try {
       allowed = await deps.allowRequest(key);
@@ -158,6 +183,14 @@ export async function mintClaim(
   if (subject === null || subject.sub.trim().length === 0) {
     await discardBody(request);
     return apiError(401, "unauthenticated", "Sign in first.");
+  }
+
+  if (deps.limit) {
+    const decision = await deps.limit("subject", subject.sub);
+    if (!decision.allowed) {
+      await discardBody(request);
+      return rateLimited(decision.retryAfterSeconds);
+    }
   }
 
   let body: unknown;

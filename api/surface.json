@@ -560,7 +560,22 @@
         "shape": {
           "getSubject": "(headers: Headers) => Promise<{ sub: string; } | null>",
           "getRole": "(workspaceId: string, sub: string) => Promise<WorkspaceRole | null>",
-          "allowRequest": "((key: string) => Promise<boolean>) | undefined"
+          "allowRequest": "((key: string) => Promise<boolean>) | undefined",
+          "limits": "false | ClaimLimits | undefined"
+        }
+      },
+      "ClaimLimit": {
+        "kind": "interface",
+        "shape": {
+          "requests": "number",
+          "perSeconds": "number"
+        }
+      },
+      "ClaimLimits": {
+        "kind": "interface",
+        "shape": {
+          "ip": "false | ClaimLimit | undefined",
+          "subject": "false | ClaimLimit | undefined"
         }
       },
       "defineTapeDB": {
@@ -1514,6 +1529,7 @@
     "invalid_format",
     "invalid_json",
     "invalid_key",
+    "invalid_limit",
     "invalid_message",
     "invalid_op",
     "invalid_part",
