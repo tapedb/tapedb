@@ -71,7 +71,7 @@ export interface DefineTapeDBOptions {
    * or send to it; without it any member of the workspace may, as with
    * presence.
    *
-   * @experimental May change in a minor release; see API.md.
+   * @experimental May change in a minor release.
    */
   topics?: { authorize?: TopicAuthorizer };
   /**

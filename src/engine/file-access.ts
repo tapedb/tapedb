@@ -34,8 +34,8 @@ export interface FileInfo {
   /** Bytes; null for a write whose size is not known yet. */
   size: number | null;
   contentType: string | null;
-  /** The uploader's subject; null for files indexed before uploaders were recorded. */
-  uploadedBy: string | null;
+  /** The uploader's claim subject. */
+  uploadedBy: string;
 }
 
 export interface FileCheckContext {

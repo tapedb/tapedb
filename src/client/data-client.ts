@@ -94,8 +94,8 @@ export interface StoredFile {
   r2Key: string;
   size: number;
   contentType: string | null;
-  /** The uploader's subject; null for files indexed before uploaders were recorded. */
-  uploadedBy: string | null;
+  /** The uploader's claim subject. */
+  uploadedBy: string;
   createdAt: number;
   updatedAt: number;
 }
