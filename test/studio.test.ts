@@ -11,7 +11,7 @@
  * (or another agent's test run) on the same machine.
  */
 
-import { describe, expect, test } from "bun:test";
+import { beforeAll, describe, expect, test } from "bun:test";
 import { createServer, type IncomingMessage, type Server } from "node:http";
 
 import { PAGE_LIMIT, pageQuery, startStudio } from "../src/cli/studio";
@@ -180,6 +180,17 @@ async function stack(workspace = ""): Promise<Stack> {
     },
   };
 }
+
+// The first node:http server and fetch in a test process pay a one-time
+// start-up cost. On the CI builder it ranged from 30 ms to 13 s (7 of 50
+// runs over 250 ms, always this file's first test, whatever ran before), and
+// three times it went past the 5 s test timeout. It is paid here, under its
+// own limit, so the tests below measure the studio alone.
+beforeAll(async () => {
+  const { studio, shutdown } = await stack();
+  await fetch(`${studio.url}/api/health`);
+  await shutdown();
+}, 60_000);
 
 describe("studio page", () => {
   test("serves the browser page with the workspace picker and load-more control", async () => {
