@@ -148,7 +148,8 @@ export or erase), `ClaimError`,
 | `TAPEDB_CLAIM_SECRET` | secret | HS256 key for claims |
 | `TAPEDB_CLAIM_ISSUER`, `TAPEDB_CLAIM_AUDIENCE` | var, optional | checked when set |
 | `ENVIRONMENT` | var | `production` refuses the development claim route |
-| `TAPEDB_JURISDICTION` | var, optional | `eu` or `fedramp`; set before the first deploy |
+| `TAPEDB_MOVE_FROM` | var, optional | source jurisdiction while moving: `none`, `eu` or `fedramp`; pair with `DATA_FROM` and `FILES_FROM`, and `WORKSPACE_FROM` for a different namespace |
+| `TAPEDB_JURISDICTION` | var, optional | `eu` or `fedramp`; relocate existing workspaces with `tapedb move` |
 | `TAPEDB_DEV_CLAIMS` | var or secret | development claim route on; never in production |
 | `TAPEDB_DEV_CLAIMS_TOKEN` | secret, optional | the development claim route then needs `x-tapedb-dev-token` |
 
@@ -167,6 +168,8 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `GET /engine/workspaces/:id/schema` | the schema document the workspace runs |
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2 |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
+| `POST /engine/workspaces/:id/import` | owner-only atomic import of a consistent NDJSON export into an empty workspace; copies metadata, not file bytes |
+| `POST /engine/workspaces/:id/move` | owner-only resumable move to `{ to: "eu" | "fedramp" | "none" }` matching the deployed configuration; preserves receipt ids and removes source data after switching traffic |
 | `DELETE /engine/workspaces/:id` | erase the workspace; owner only; answers 410 afterwards |
 | `GET`/`HEAD`/`PUT`/`DELETE /engine/workspaces/:id/files/:path` | file bytes; a `PUT` carries at most `MAX_UPLOAD_BYTES` |
 | `POST /engine/workspaces/:id/files/:path?uploads` | start a multipart upload (the request's `content-type` is the file's) → `{ uploadId }`; EDITOR or higher, like every write below |
@@ -224,7 +227,7 @@ them. The protocol belongs to the client; use it directly only if you must.
 ## CLI
 
 `npx tapedb init | migrate dev|status|check | dev | studio | deploy | export
-| erase`. The exact commands and flags are in `npx tapedb --help` and are
+| erase | move`. The exact commands and flags are in `npx tapedb --help` and are
 part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside
 `TAPEDB_JURISDICTION`, or when `migrate check` fails (no migrations, schema
@@ -246,6 +249,9 @@ usually handles:
 | `unique_violation`, `foreign_key_violation` | 409 | a constraint refused the write |
 | `conflict` | 409 | a `clientTxId` reused with different operations |
 | `retry_expired` | 410 | an unknown retry before the fixed receipt boundary of a legacy upgrade or restore; send it as a new write if it still applies |
+| `workspace_moving` | 409 | writes are frozen during a move; keep them queued and retry |
+| `workspace_moved` | 308 | the old workspace moved; use the move-aware destination Worker |
+| `workspace_importing` | 409 | an import is in progress |
 | `workspace_erased` | 410 | the workspace was erased |
 | `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |

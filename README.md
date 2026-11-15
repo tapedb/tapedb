@@ -457,10 +457,41 @@ A room reached outside the configured jurisdiction answers
 config where the objects and the buckets disagree. `fedramp` works the same
 way.
 
-Choose before the first deploy. A Durable Object's id depends on its
-jurisdiction, so turning it on later addresses new, empty workspaces: move
-existing ones with `tapedb export`. Locally workerd has no jurisdictions;
-`tapedb dev` leaves the setting out.
+### Moving existing workspaces
+
+Create destination DATA and FILES buckets in the new jurisdiction. Bind them
+as `DATA` and `FILES`, and retain the original buckets as `DATA_FROM` and
+`FILES_FROM` with their original jurisdiction. Set `TAPEDB_JURISDICTION` to
+the destination and `TAPEDB_MOVE_FROM` to the source (`none`, `eu` or
+`fedramp`), then deploy this move-aware configuration. Keep the same namespace;
+`WORKSPACE_FROM` is needed only when the source uses a different namespace.
+
+```sh
+npx tapedb move --to eu --url https://db.example.com --workspaces workspaces.txt
+```
+
+The file contains one workspace UUID per line. `--workspace <uuid>` moves one.
+Use an owner claim in `TAPEDB_TOKEN`; for several workspaces, `--tokens tokens.json`
+reads a local object mapping workspace ids to owner tokens. Development uses
+the dev claim route. Discovery uses `--discover --account <id> --source-bucket
+<name>` and `CLOUDFLARE_API_TOKEN`; `--from eu` selects an EU source bucket.
+Include never-flushed workspaces in the id file as they have no R2 manifest.
+
+Until a workspace is ready, reads go to its original room. The move freezes
+writes, checkpoints rows and receipts, streams the durable state and indexed
+files to the destination, restores it, then switches traffic and removes the
+source data. Writes receive retryable `workspace_moving` and remain in the
+client outbox. A failed command can be run again to resume; a nonempty
+destination is refused. Remove `TAPEDB_MOVE_FROM` and the `_FROM` bindings only
+after every workspace has completed its move.
+
+`POST /engine/workspaces/:id/import` imports a complete, consistent NDJSON
+export into an empty workspace with an owner claim. Rows and file metadata
+are validated, applied and logged atomically. File bytes are transferred by
+`tapedb move`. Import preserves row timestamps and records a fixed boundary
+for transaction receipts absent from the export.
+
+Locally workerd has no jurisdictions; `tapedb dev` leaves the setting out.
 
 ## Claims and identity
 
@@ -567,7 +598,7 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | `tapedb/worker` | `defineTapeDB`, claim helpers | no |
 
 The CLI is a command, not an import: `npx tapedb init | migrate | dev | studio
-| deploy | export | erase`.
+| deploy | export | erase | move`.
 
 [API.md](API.md) is the reference: every export and signature, what is stable
 and what is experimental, the HTTP routes, the export format and the error

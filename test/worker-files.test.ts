@@ -27,6 +27,7 @@ const tapedb = defineTapeDB({ schema: schema({ note: model({ body: t.string() })
 function env(roomStatus: number) {
   const files = new FakeR2Bucket();
   const roomCalls: string[] = [];
+  let key: string | undefined;
   return {
     files,
     roomCalls,
@@ -39,7 +40,10 @@ function env(roomStatus: number) {
         idFromName: (name: string) => name,
         get: () => ({
           fetch: async (request: Request) => {
-            roomCalls.push(`${request.method} ${new URL(request.url).pathname}`);
+            const path = new URL(request.url).pathname;
+            roomCalls.push(`${request.method} ${path}`);
+            if (path === "/files/locate") return Response.json({ key });
+            if (roomStatus < 300 && request.method === "POST") key = (await request.json() as { key?: string }).key;
             return new Response(JSON.stringify({ ok: roomStatus < 300 }), { status: roomStatus });
           },
         }),

@@ -62,7 +62,7 @@ async function boot(db: Database): Promise<void> {
       return ready;
     },
   };
-  new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: {} } as unknown as Env);
+  new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: { get: async () => null } } as unknown as Env);
   await ready;
 }
 

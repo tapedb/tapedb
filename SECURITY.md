@@ -90,3 +90,13 @@ The design boundaries and release gates are listed in
 [LIMITATIONS.md](LIMITATIONS.md). In particular, TapeDB does not record who
 made each write and its erasure cannot reach
 Cloudflare's point-in-time recovery window.
+
+## Workspace moves and imports
+
+Only workspace owners can move or import. A move checks that the destination
+is empty, freezes source writes, preserves retry receipts, and publishes the
+destination only after rows and indexed files are present. Internal move
+controls accept only Worker-forwarded claims and have no public route.
+Concurrent move requests are serialized by the destination room. Uploads use
+separate byte objects and commit their index pointers afterwards, so a write
+refused during a move cannot overwrite a file already being transferred.

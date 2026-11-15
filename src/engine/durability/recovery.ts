@@ -54,6 +54,7 @@ import type { SqlCursor, SqlExecutor, SqlValue } from "./sql";
 
 /** Durability SQL plus the transaction primitive the restore/replay needs. */
 export interface RecoverySqlExecutor extends SqlExecutor {
+  settle?(): Promise<void>;
   transactionSync<T>(fn: () => T): T;
 }
 
@@ -864,6 +865,23 @@ function replayLine(
     return true;
   }
 
+  if (line.ops.some(op => isPlainRecord(op) && (op.op === "import:row" || op.op === "import:begin" || op.op === "import:end"))) {
+    recordReplayedLine(sql, line);
+    for (const raw of line.ops as Array<{ op: string; table: string; row: RestorableRow }>) {
+      if (raw.op === "file:put" || raw.op === "file:forget") { applyFileOps(txSql, [raw as never], line.at); continue; }
+      if (raw.op !== "import:row") continue;
+      const changes = changesAfter(line.schemaVersion);
+      const table = evolveTable(raw.table, changes);
+      if (table === null || !namespaceTables().includes(table)) continue;
+      const row = evolveRows([raw.row], raw.table, changes)[0];
+      const old = sql.exec<{ updated_seq: number }>(`SELECT updated_seq FROM "${table}" WHERE id = ?`, String(row.id)).toArray()[0];
+      if (old && old.updated_seq >= line.seq) continue;
+      const allowed = new Set(sql.exec<{ name: string }>(`PRAGMA table_info("${table}")`).toArray().map(column => column.name));
+      insertChunk(sql, table, [row], allowed);
+    }
+    return true;
+  }
+
   const ops = evolveOps(expandLogOps(line.ops), changesAfter(line.schemaVersion));
   // Receipts survive even when a migration removed every referenced model.
   if (ops.length === 0) {
@@ -939,6 +957,14 @@ function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
   );
 }
 
+function startsImport(ops: unknown[]): boolean {
+  return isPlainRecord(ops[0]) && ops[0].op === "import:begin";
+}
+async function importForeignKeys(sql: RecoverySqlExecutor, enabled: boolean): Promise<void> {
+  await sql.settle?.();
+  sql.exec(`PRAGMA foreign_keys = ${enabled ? "ON" : "OFF"}`);
+}
+
 async function replayLogs(
   bucket: R2Bucket,
   sql: RecoverySqlExecutor,
@@ -1009,6 +1035,16 @@ async function replayLogs(
     });
 
     for (const line of lines) {
+      if (line.opsParts === undefined && startsImport(line.ops)) {
+        applyPending();
+        await importForeignKeys(sql, false);
+        try {
+          sql.transactionSync(() => { if (line.seq > baseSeq) replayLine(sql, txSql, line); else recordReplayedLine(sql, line); });
+          foreignKeyCheck(sql);
+        } finally { await importForeignKeys(sql, true); }
+        maxSeq = Math.max(maxSeq, line.seq); replayed++;
+        continue;
+      }
       if (line.opsParts === undefined) {
         pending.push(line);
         continue;
@@ -1043,9 +1079,12 @@ async function replayParts(
   if (!object) throw new Error(`The ops of log entry ${line.seq} are missing from R2.`);
   let part = 0;
   let applied = false;
+  let importing = false;
+  try {
   for await (const text of objectLines(object)) {
     const ops = JSON.parse(text) as unknown[];
     const current = part;
+    if (part === 0 && startsImport(ops)) { importing = true; await importForeignKeys(sql, false); }
     sql.transactionSync(() => {
       if (current === 0) recordReplayedLine(sql, { ...line, ops });
       else sql.exec(`INSERT OR IGNORE INTO "_tx_log_parts" (seq, part, ops) VALUES (?, ?, ?)`, line.seq, current, text);
@@ -1053,6 +1092,8 @@ async function replayParts(
     });
     part += 1;
   }
+  if (importing) foreignKeyCheck(sql);
+  } finally { if (importing) await importForeignKeys(sql, true); }
   if (part !== line.opsParts) {
     throw new Error(`Log entry ${line.seq} has ${part} parts in R2; its segment says ${line.opsParts}.`);
   }

@@ -27,6 +27,8 @@ export interface FilePutOp {
   contentType: string | null;
   /** The uploader's claim subject. */
   uploadedBy?: string | null;
+  createdAt?: number;
+  updatedAt?: number;
 }
 
 export interface FileForgetOp {
@@ -89,8 +91,8 @@ export function applyFileOps(
         op.size,
         op.contentType,
         op.uploadedBy ?? null,
-        at,
-        at
+        op.createdAt ?? at,
+        op.updatedAt ?? at
       );
     } else {
       changed += sql.exec(

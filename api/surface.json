@@ -599,6 +599,10 @@
           "WORKSPACE": "DurableObjectNamespace<WorkspaceRoom>",
           "DATA": "R2Bucket",
           "FILES": "R2Bucket | undefined",
+          "DATA_FROM": "R2Bucket | undefined",
+          "FILES_FROM": "R2Bucket | undefined",
+          "WORKSPACE_FROM": "DurableObjectNamespace<WorkspaceRoom> | undefined",
+          "TAPEDB_MOVE_FROM": "string | undefined",
           "ENVIRONMENT": "string | undefined",
           "TAPEDB_JURISDICTION": "string | undefined",
           "TAPEDB_CLAIM_SECRET": "string",
@@ -1506,7 +1510,7 @@
       }
     }
   },
-  "cli": "tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out\n\nUsage:\n  tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--force]\n  tapedb migrate dev|status|check [--dir <path>] [--schema <file>]\n  tapedb deploy [--dir <path>] [--env <name>]\n  tapedb dev  [--dir <path>] [--port <port>]\n  tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]\n  tapedb export --workspace <uuid> [--url <worker-url>] [--out <file>]\n  tapedb erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]\n\nCommands:\n  init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,\n          and the first migration. Existing files are kept unless --force.\n          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.\n  migrate dev --name <name> [--rename old=new] [--accept-data-loss]\n          Diff the schema against the last migration and write the next one.\n  migrate status | check\n          List migrations; check fails if the schema has unmigrated changes.\n  deploy  [--env <name>]  Check ENVIRONMENT, dev claims, data residency and migrations, then wrangler deploy.\n  dev     Run the local database with wrangler dev on port 8787.\n  studio  Open a local table browser against a running Worker.\n  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).\n  erase   Delete a workspace for good: its data, history and files (owner claim).\n          --confirm must repeat the workspace id. The id answers 410 afterwards.",
+  "cli": "tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out\n\nUsage:\n  tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--force]\n  tapedb migrate dev|status|check [--dir <path>] [--schema <file>]\n  tapedb deploy [--dir <path>] [--env <name>]\n  tapedb dev  [--dir <path>] [--port <port>]\n  tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]\n  tapedb export --workspace <uuid> [--url <worker-url>] [--out <file>]\n  tapedb erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]\n  tapedb move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]\n\nCommands:\n  init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,\n          and the first migration. Existing files are kept unless --force.\n          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.\n  migrate dev --name <name> [--rename old=new] [--accept-data-loss]\n          Diff the schema against the last migration and write the next one.\n  migrate status | check\n          List migrations; check fails if the schema has unmigrated changes.\n  deploy  [--env <name>]  Check ENVIRONMENT, dev claims, data residency and migrations, then wrangler deploy.\n  dev     Run the local database with wrangler dev on port 8787.\n  studio  Open a local table browser against a running Worker.\n  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).\n  erase   Delete a workspace for good: its data, history and files (owner claim).\n          --confirm must repeat the workspace id. The id answers 410 afterwards.",
   "errorCodes": [
     "claim_expired",
     "claim_secret_missing",
@@ -1531,6 +1535,7 @@
     "invalid_key",
     "invalid_limit",
     "invalid_message",
+    "invalid_move",
     "invalid_op",
     "invalid_part",
     "invalid_path",
@@ -1547,6 +1552,10 @@
     "membership_lookup_failed",
     "method_not_allowed",
     "missing_token",
+    "move_conflict",
+    "move_flush_failed",
+    "move_not_started",
+    "move_snapshot_failed",
     "no_route",
     "not_a_member",
     "not_found",
@@ -1567,6 +1576,10 @@
     "upgrade_required",
     "upload_too_large",
     "workspace_erased",
+    "workspace_importing",
+    "workspace_moved",
+    "workspace_moving",
+    "workspace_not_empty",
     "workspace_recovering",
     "wrong_workspace"
   ]

@@ -113,6 +113,24 @@ export default schema({
 writeFileSync(join(project, "tapedb.schema.ts"), schemaSource);
 run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "check"], { cwd: project });
 for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(project, file));
+// Two local namespaces exercise the same move protocol without jurisdictions.
+if (!deployName && !remote) {
+  const path = join(project, "wrangler.jsonc");
+  const config = JSON.parse(readFileSync(path, "utf8"));
+  config.vars.TAPEDB_MOVE_FROM = "none";
+  config.r2_buckets.push({ binding: "DATA_FROM", bucket_name: "move-source-data" }, { binding: "FILES_FROM", bucket_name: "move-source-files" });
+  config.durable_objects.bindings.push({ name: "WORKSPACE_FROM", class_name: "MoveSourceRoom" });
+  config.migrations[0].new_sqlite_classes.push("MoveSourceRoom");
+  writeFileSync(path, JSON.stringify(config));
+  appendFileSync(join(project, "worker.ts"), `
+export class MoveSourceRoom extends WorkspaceRoom {
+  constructor(ctx: DurableObjectState, env: any) {
+    super(ctx, { ...env, DATA: env.DATA_FROM, FILES: env.FILES_FROM, TAPEDB_MOVE_FROM: undefined });
+  }
+}
+`);
+}
+
 
 // ---- Staging deploy -----------------------------------------------------------
 
@@ -259,6 +277,12 @@ async function deployStaging(name) {
     { binding: "DATA", bucket_name: `${name}-data`, ...where },
     { binding: "FILES", bucket_name: `${name}-files`, ...where },
   ];
+  const fromWorker = flag("move-from-worker") ?? (name === "tapedb-staging-eu" ? "tapedb-staging" : undefined);
+  if (fromWorker) {
+    config.vars.TAPEDB_MOVE_FROM = "none";
+    config.r2_buckets.push({ binding: "DATA_FROM", bucket_name: `${fromWorker}-data` }, { binding: "FILES_FROM", bucket_name: `${fromWorker}-files` });
+    config.durable_objects.bindings.push({ name: "WORKSPACE_FROM", class_name: "WorkspaceRoom", script_name: fromWorker });
+  }
   for (const bucket of [`${name}-data`, `${name}-files`]) {
     const created = wrangler(["r2", "bucket", "create", bucket, ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])]);
     if (!created.ok && !/already exists|already own/i.test(created.output)) {
@@ -594,6 +618,7 @@ const scenarios = readdirSync(suite)
   .filter((file) => file.endsWith(".mjs") && file !== "common.mjs")
   .map((file) => file.replace(/\.mjs$/, ""))
   // The load run measures rather than checks, and takes a while: only on request.
+  .filter(name => name !== "workspace-move" || !deployName && !remote)
   .filter((name) => (only === undefined ? name !== "load" || deployName !== undefined : only.includes(name)))
   .sort();
 
@@ -606,6 +631,16 @@ try {
   } else if (process.env.TAPEDB_DEV_CLAIMS_TOKEN) {
     // A Worker deployed with a gated dev claim route.
     await useDevToken(process.env.TAPEDB_DEV_CLAIMS_TOKEN);
+  }
+  if (deployName && stagingConfig?.vars?.TAPEDB_MOVE_FROM !== undefined) {
+    const moved = await scenario("workspace-move.mjs");
+    if (!moved.ok) throw new Error(`jurisdiction move drill failed: ${moved.output}`);
+    console.log("ok   jurisdiction move (none -> eu): rows, files and retry receipts kept; source erased");
+    delete stagingConfig.vars.TAPEDB_MOVE_FROM;
+    stagingConfig.r2_buckets = stagingConfig.r2_buckets.filter(bucket => !bucket.binding.endsWith("_FROM"));
+    stagingConfig.durable_objects.bindings = stagingConfig.durable_objects.bindings.filter(binding => binding.name !== "WORKSPACE_FROM");
+    await deployConfig(stagingConfig);
+    await waitForStatus(base, 300_000);
   }
   console.log(`against ${base}`);
   for (const name of scenarios) {

@@ -14,6 +14,7 @@ export function durableObjectRecoverySqlExecutor(
   storage: DurableObjectStorage
 ): RecoverySqlExecutor {
   return {
+    settle: async () => { await storage.sync?.(); },
     exec<T extends Record<string, SqlValue>>(
       query: string,
       ...bindings: SqlValue[]
