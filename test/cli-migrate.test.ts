@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, test } from "bun:test";
 
-import { migrateCheck, migrateDev, readMigrations } from "../src/cli/migrate";
+import { migrateCheck, migrateDev, migrateRollback, readMigrations } from "../src/cli/migrate";
 import { run } from "../src/cli/index";
 import { applyMigrationWithoutCascades, migrationChecksum } from "../src/engine/migrations";
 import { model, schema, t } from "../src/schema";
@@ -229,6 +229,104 @@ describe("migrate dev", () => {
   });
 });
 
+describe("migrate rollback", () => {
+  const v2 = schema({
+    ...v1.models,
+    note: model({ body: t.string(), score: t.number().optional(), pinned: t.boolean().default(false).index() }),
+    tag: model({ label: t.string() }),
+  });
+
+  test("undoes added fields and models: the database is v1 again, its rows kept", async () => {
+    const root = project();
+    migrateDev(root, v1, "entities");
+    migrateDev(root, v2, "pins and tags");
+    const db = await applied(root);
+    db.exec(`INSERT INTO "note" (id, body, pinned, created_at, updated_at) VALUES ('n1', 'keep', 1, 1, 1)`);
+
+    // Undoing an addition discards what was written to it since.
+    const refused = migrateRollback(root);
+    expect(refused.status).toBe("refused");
+    expect(JSON.stringify(refused)).toContain("--accept-data-loss");
+    expect(readMigrations(root)).toHaveLength(2);
+
+    const result = migrateRollback(root, { acceptDataLoss: true });
+    expect(result).toMatchObject({ status: "created", id: "0004_rollback_to_0002", to: "0002_entities" });
+    expect(result.status === "created" ? result.schemaEdits : []).toEqual(['remove "note.pinned"', 'remove model "tag"']);
+    await apply(db, readMigrations(root).at(-1)!);
+    for (const table of ["board", "column", "note"]) expect(shape(db, table)).toEqual(shape(fresh(v1), table));
+    expect(db.query(`SELECT name FROM sqlite_master WHERE name = 'tag'`).all()).toEqual([]);
+    expect(db.query(`SELECT id, body FROM "note"`).all()).toEqual([{ id: "n1", body: "keep" }]);
+
+    // The schema code changed back: everything agrees again.
+    expect(migrateCheck(root, v1)).toEqual({ ok: true, problems: [] });
+    // And forward once more is an ordinary migration.
+    expect(migrateDev(root, v2, "pins again")).toMatchObject({ status: "created", id: "0005_pins_again" });
+  });
+
+  test("undoes renames across several migrations, values kept", async () => {
+    const root = project();
+    migrateDev(root, v1, "entities");
+    const db = await applied(root);
+    db.exec(`INSERT INTO "note" (id, body, created_at, updated_at) VALUES ('n1', 'keep me', 1, 1)`);
+
+    const text = schema({ ...v1.models, note: model({ text: t.string(), score: t.number().optional() }) });
+    migrateDev(root, text, "body to text", { renames: ["note.body=text"] });
+    const { note, ...others } = text.models;
+    const memo = schema({ ...others, memo: model({ content: t.string(), score: t.number().optional() }) });
+    migrateDev(root, memo, "note to memo", { renames: ["note=memo", "memo.text=content"] });
+    for (const migration of readMigrations(root).slice(1)) await apply(db, migration);
+    expect(db.query(`SELECT content FROM "memo"`).get()).toEqual({ content: "keep me" });
+    void note;
+
+    const result = migrateRollback(root, { to: "0002_entities" });
+    expect(result).toMatchObject({
+      status: "created",
+      changes: expect.arrayContaining([expect.objectContaining({ kind: "renameModel", from: "memo", to: "note" })]),
+    });
+    expect(result.status === "created" ? result.schemaEdits : []).toEqual(
+      expect.arrayContaining(['rename model "memo" back to "note"', 'rename "note.content" back to "body"'])
+    );
+    await apply(db, readMigrations(root).at(-1)!);
+    expect(db.query(`SELECT body FROM "note"`).get()).toEqual({ body: "keep me" });
+    expect(shape(db, "note")).toEqual(shape(fresh(v1), "note"));
+    expect(migrateCheck(root, v1).ok).toBe(true);
+  });
+
+  test("restores a type and an index change", async () => {
+    const root = project();
+    migrateDev(root, v1, "entities");
+    const changed = schema({ ...v1.models, note: model({ body: t.string().index(), score: t.string().optional() }) });
+    migrateDev(root, changed, "score text", { acceptDataLoss: true });
+    const db = await applied(root);
+    db.exec(`INSERT INTO "note" (id, body, score, created_at, updated_at) VALUES ('n1', 'x', '7', 1, 1)`);
+
+    expect(migrateRollback(root, { acceptDataLoss: true })).toMatchObject({ status: "created" });
+    await apply(db, readMigrations(root).at(-1)!);
+    expect(shape(db, "note")).toEqual(shape(fresh(v1), "note"));
+    expect(db.query(`SELECT score FROM "note"`).get()).toEqual({ score: 7 });
+  });
+
+  test("refuses to undo a drop: the values are gone", () => {
+    const root = project();
+    migrateDev(root, v1, "entities");
+    migrateDev(root, schema({ ...v1.models, note: model({ body: t.string() }) }), "drop score", { acceptDataLoss: true });
+    const result = migrateRollback(root, { acceptDataLoss: true });
+    expect(result.status).toBe("refused");
+    expect(JSON.stringify(result)).toContain('dropped \\"note.score\\"');
+    expect(readMigrations(root)).toHaveLength(2);
+  });
+
+  test("refuses with nothing before, an unknown target, or an unrecorded schema", () => {
+    const root = project();
+    migrateDev(root, v1, "entities");
+    expect(JSON.stringify(migrateRollback(root))).toContain("nothing before it");
+    migrateDev(root, v2, "pins and tags");
+    expect(JSON.stringify(migrateRollback(root, { to: "0009_nope" }))).toContain("There is no migration");
+    rmSync(join(root, "tapedb", "snapshots"), { recursive: true });
+    expect(JSON.stringify(migrateRollback(root, { acceptDataLoss: true }))).toContain("predates rollback");
+  });
+});
+
 describe("migrate check", () => {
   test("fails on unmigrated schema changes and on a stale bundle", () => {
     const root = project();
@@ -277,6 +375,13 @@ describe("CLI", () => {
     expect(await run(["migrate", "dev", "--dir", root])).toBe(1); // no --name
     expect(await run(["migrate", "dev", "--dir", root, "--name", "add at"])).toBe(0);
     expect(readMigrations(root).map((migration) => migration.id)).toEqual(["0002_entities", "0003_add_at"]);
+
+    expect(await run(["migrate", "rollback", "--dir", root])).toBe(1); // drops "at": needs --accept-data-loss
+    expect(await run(["migrate", "rollback", "--dir", root, "--accept-data-loss"])).toBe(0);
+    expect(await run(["migrate", "check", "--dir", root])).toBe(1); // the schema still has "at"
+    withSchema(root, `{ note: model({ body: t.string() }) }`);
+    expect(await run(["migrate", "check", "--dir", root])).toBe(0);
+    expect(readMigrations(root).map((migration) => migration.id)).toEqual(["0002_entities", "0003_add_at", "0004_rollback_to_0002"]);
   });
 
   test("deploy refuses unless ENVIRONMENT is production and migrations are current", async () => {

@@ -11,6 +11,10 @@
  * written before it. The declarations are part of the committed file, and the
  * checksum, like the SQL.
  *
+ * The schema after each migration is kept too, in `tapedb/snapshots/<id>.json`,
+ * so `migrate rollback` can write the migration that takes the database back
+ * to an earlier one.
+ *
  * The very first migration is the full CREATE script for the schema, under
  * the id `0002_entities`: exactly what `defineSchema` has always generated, so
  * workspaces deployed before migrations were files keep a matching checksum.
@@ -350,6 +354,21 @@ function snapshotPath(root: string): string {
   return join(root, "tapedb", "schema.snapshot.json");
 }
 
+function historyPath(root: string, id: string): string {
+  return join(root, "tapedb", "snapshots", `${id}.json`);
+}
+
+function writeHistory(root: string, id: string, snapshot: SchemaSnapshot): void {
+  mkdirSync(join(root, "tapedb", "snapshots"), { recursive: true });
+  writeFileSync(historyPath(root, id), `${JSON.stringify(snapshot, null, 2)}\n`);
+}
+
+/** The schema as it was after migration `id`, when it was recorded. */
+export function readHistory(root: string, id: string): SchemaSnapshot | null {
+  const path = historyPath(root, id);
+  return existsSync(path) ? (JSON.parse(readFileSync(path, "utf8")) as SchemaSnapshot) : null;
+}
+
 function bundlePath(root: string): string {
   return join(root, "tapedb", "migrations.gen.ts");
 }
@@ -417,6 +436,10 @@ export function migrateDev(
   const previous = readSnapshot(root);
   const existing = readMigrations(root);
   mkdirSync(migrationsDir(root), { recursive: true });
+  // A project from before the history was kept: the snapshot is the schema
+  // after its last migration.
+  const last = existing.at(-1);
+  if (previous !== null && last && readHistory(root, last.id) === null) writeHistory(root, last.id, previous);
 
   let file: MigrationFile;
   if (previous === null) {
@@ -443,18 +466,167 @@ export function migrateDev(
 
   writeFileSync(join(migrationsDir(root), `${file.id}.sql`), file.sql);
   writeFileSync(snapshotPath(root), `${JSON.stringify(next, null, 2)}\n`);
+  writeHistory(root, file.id, next);
   writeFileSync(bundlePath(root), renderBundle([...existing, file]));
   return {
     status: "created",
     id: file.id,
-    statements: file.sql
-      .split("\n")
-      .filter((line) => !line.startsWith("--"))
-      .join("\n")
-      .split(";")
-      .filter((statement) => statement.trim()).length,
+    statements: countStatements(file.sql),
     changes: file.changes,
   };
+}
+
+// ---- Rollback ------------------------------------------------------------------
+
+export type RollbackResult =
+  | { status: "created"; id: string; to: string; statements: number; changes: SchemaChange[]; schemaEdits: string[] }
+  | { status: "refused"; reasons: string[] };
+
+/**
+ * The renames that take the current names back to the names at `target`:
+ * each migration's renames after it, followed forward from the target names.
+ */
+function renamesBack(target: SchemaSnapshot, undone: MigrationFile[]): string[] {
+  const models = new Map(Object.keys(target.models).map((name) => [name, name]));
+  const fields = new Map<string, { model: string; field: string; current: string }>();
+  for (const [name, entry] of Object.entries(target.models)) {
+    for (const field of Object.keys(entry.attributes)) fields.set(`${name}.${field}`, { model: name, field, current: field });
+  }
+  for (const migration of undone) {
+    for (const change of migration.changes) {
+      if (change.kind === "renameModel") {
+        for (const [original, current] of models) if (current === change.from) models.set(original, change.to);
+      } else if (change.kind === "renameField") {
+        for (const entry of fields.values()) {
+          if (models.get(entry.model) === change.model && entry.current === change.from) entry.current = change.to;
+        }
+      }
+    }
+  }
+  const renames: string[] = [];
+  for (const [original, current] of models) if (original !== current) renames.push(`${current}=${original}`);
+  for (const entry of fields.values()) {
+    if (entry.current !== entry.field) renames.push(`${models.get(entry.model)}.${entry.current}=${entry.field}`);
+  }
+  return renames;
+}
+
+/** What the schema code has to change to match `target`, in words. */
+function schemaEdits(current: SchemaSnapshot, target: SchemaSnapshot, renames: string[]): string[] {
+  const modelBack = new Map<string, string>();
+  const fieldBack = new Map<string, string>();
+  for (const rename of renames) {
+    const [from, to] = rename.split("=");
+    if (from.includes(".")) fieldBack.set(from, to);
+    else modelBack.set(from, to);
+  }
+  const describe = (attribute: SnapshotAttribute) =>
+    [attribute.type, attribute.optional ? "optional" : "", attribute.unique ? "unique" : attribute.indexed ? "indexed" : "",
+      attribute.default === undefined ? "" : `default ${JSON.stringify(attribute.default)}`].filter(Boolean).join(", ");
+  const edits: string[] = [];
+  const matched = new Set<string>();
+  for (const [name, entry] of Object.entries(target.models)) {
+    const was = [...modelBack.entries()].find(([, original]) => original === name)?.[0] ?? name;
+    const now = current.models[was];
+    if (!now) {
+      edits.push(`add model "${name}"`);
+      continue;
+    }
+    matched.add(was);
+    if (was !== name) edits.push(`rename model "${was}" back to "${name}"`);
+    const kept = new Set<string>();
+    for (const [field, attribute] of Object.entries(entry.attributes)) {
+      const from = [...fieldBack.entries()].find(([key, original]) => key.startsWith(`${was}.`) && original === field)?.[0].split(".")[1] ?? field;
+      if (!(from in now.attributes)) {
+        edits.push(`add "${name}.${field}" (${describe(attribute)})`);
+        continue;
+      }
+      kept.add(from);
+      if (from !== field) edits.push(`rename "${name}.${from}" back to "${field}"`);
+      if (JSON.stringify(now.attributes[from]) !== JSON.stringify(attribute)) edits.push(`make "${name}.${field}" ${describe(attribute)} again`);
+    }
+    for (const field of Object.keys(now.attributes)) if (!kept.has(field)) edits.push(`remove "${name}.${field}"`);
+  }
+  for (const name of Object.keys(current.models)) if (!matched.has(name)) edits.push(`remove model "${name}"`);
+  return edits;
+}
+
+/**
+ * `tapedb migrate rollback [--to <id>]`: writes the migration that takes the
+ * database back to the schema after `<id>` (by default, the one before the
+ * last). It is a new forward migration, applied like any other.
+ *
+ * Refused when a migration being undone dropped data: those values are gone,
+ * so the earlier schema cannot be restored. Undoing an addition discards the
+ * values written since, and needs --accept-data-loss like any drop.
+ */
+export function migrateRollback(root: string, options: { to?: string; acceptDataLoss?: boolean } = {}): RollbackResult {
+  const existing = readMigrations(root);
+  const current = readSnapshot(root);
+  if (current === null || existing.length === 0) return { status: "refused", reasons: ["There are no migrations to roll back."] };
+  const targetIndex = options.to === undefined ? existing.length - 2 : existing.findIndex((migration) => migration.id === options.to);
+  if (options.to !== undefined && targetIndex === -1) {
+    return { status: "refused", reasons: [`There is no migration "${options.to}".`] };
+  }
+  if (targetIndex < 0) return { status: "refused", reasons: [`${existing[0].id} creates the schema; there is nothing before it to go back to.`] };
+  if (targetIndex === existing.length - 1) return { status: "refused", reasons: [`${options.to} is the last migration already.`] };
+  const target = existing[targetIndex];
+  const before = readHistory(root, target.id);
+  if (before === null) {
+    return {
+      status: "refused",
+      reasons: [
+        `The schema after ${target.id} was not recorded (tapedb/snapshots/${target.id}.json): it predates rollback. Change the schema back and run \`tapedb migrate dev\`.`,
+      ],
+    };
+  }
+  const undone = existing.slice(targetIndex + 1);
+  const dropped = undone.flatMap((migration) =>
+    migration.changes
+      .filter((change) => change.kind === "dropField" || change.kind === "dropModel")
+      .map((change) =>
+        change.kind === "dropField"
+          ? `${migration.id} dropped "${change.model}.${change.field}"`
+          : `${migration.id} dropped model "${change.model}"`
+      )
+  );
+  if (dropped.length > 0) {
+    return {
+      status: "refused",
+      reasons: [`${dropped.join("; ")}: those values are gone, so the schema after ${target.id} cannot be restored.`],
+    };
+  }
+
+  const renames = renamesBack(before, undone);
+  const plan = diffSnapshots(current, before, { renames, acceptDataLoss: options.acceptDataLoss });
+  if (plan.refused.length > 0) return { status: "refused", reasons: plan.refused };
+  expandRebuilds(plan, before);
+  const number = Math.max(...existing.map((migration) => Number(migration.id.slice(0, 4)))) + 1;
+  const id = `${String(number).padStart(4, "0")}_rollback_to_${target.id.slice(0, 4)}`;
+  const header = plan.changes.length > 0 ? `${CHANGES_PREFIX}${JSON.stringify(plan.changes)}\n` : "";
+  const file: MigrationFile = { id, sql: `${header}${plan.statements.join("\n")}\n`, changes: plan.changes };
+  if (readHistory(root, existing.at(-1)!.id) === null) writeHistory(root, existing.at(-1)!.id, current);
+  writeFileSync(join(migrationsDir(root), `${id}.sql`), file.sql);
+  writeFileSync(snapshotPath(root), `${JSON.stringify(before, null, 2)}\n`);
+  writeHistory(root, id, before);
+  writeFileSync(bundlePath(root), renderBundle([...existing, file]));
+  return {
+    status: "created",
+    id,
+    to: target.id,
+    statements: countStatements(file.sql),
+    changes: plan.changes,
+    schemaEdits: schemaEdits(current, before, renames),
+  };
+}
+
+function countStatements(sql: string): number {
+  return sql
+    .split("\n")
+    .filter((line) => !line.startsWith("--"))
+    .join("\n")
+    .split(";")
+    .filter((statement) => statement.trim()).length;
 }
 
 export interface CheckResult {
