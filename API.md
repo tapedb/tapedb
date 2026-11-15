@@ -238,7 +238,7 @@ them. The protocol belongs to the client; use it directly only if you must.
 
 ## CLI
 
-`npx tapedb init | migrate dev|status|check | dev | studio | deploy | export
+`npx tapedb init | migrate dev|rollback|status|check | dev | studio | deploy | export
 | erase | move`. The exact commands and flags are in `npx tapedb --help` and are
 part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside

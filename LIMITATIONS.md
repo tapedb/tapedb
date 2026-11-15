@@ -16,9 +16,11 @@ The boundaries TapeDB has by design, and the gates before a public release.
   ciphertext unreadable in SQL, logs, snapshots and recovery copies. Ordinary
   plaintext and copies from before encryption follow the history retention
   and Cloudflare's 30-day recovery window.
-- **Migrations are forward operations.** Destructive changes need
+- **Migrations are files you review.** Destructive changes need
   `--accept-data-loss`; renames need an explicit rename; new required fields
-  need a default or must be optional. Review generated SQL before deploying.
+  need a default or must be optional. `migrate rollback` writes the migration
+  back to an earlier schema; a drop cannot be undone, because its values are
+  gone. Review generated SQL before deploying.
 
 
 ## Release gates

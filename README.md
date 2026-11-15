@@ -352,6 +352,20 @@ would leave a row pointing at nothing rolls back.
 - Migrations declare what they changed, so recovery can replay log segments
   and snapshots written under an older schema. Undeclared drift fails closed.
 
+```bash
+npx tapedb migrate rollback                  # back to the schema before the last migration
+npx tapedb migrate rollback --to 0004_tags   # back to the schema after 0004_tags
+```
+
+`migrate rollback` writes the migration that takes the database back to an
+earlier schema, as the next numbered file: workspaces apply it like any other,
+and recovery reads data written on either side of it. Renames are undone with
+their values; undoing an added field or model discards what was written to it
+since, so it needs `--accept-data-loss`. A migration that dropped data cannot
+be undone, and rollback says so. It then lists what to change in the schema
+code; `migrate check` passes once the code matches. The schema after each
+migration is kept in `tapedb/snapshots/`; commit it with the migrations.
+
 `migrate check` fails CI (or a pre-commit hook) when the schema has changes
 with no migration. `tapedb deploy` refuses to ship a dev configuration or an
 unmigrated schema, then runs `wrangler deploy`.

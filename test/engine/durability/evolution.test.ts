@@ -127,3 +127,43 @@ describe("recovery across a schema change", () => {
     expect(changesAfter("0003_evolve")).toEqual([]);
   });
 });
+
+describe("recovery across a rollback", () => {
+  test("rows written while an added field existed restore after the rollback removed it", async () => {
+    const { mkdtempSync, rmSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const { migrateDev, migrateRollback, readMigrations } = await import("../../../src/cli/migrate");
+    const root = mkdtempSync(join(tmpdir(), "tapedb-rollback-"));
+    try {
+      const base = schema({ task: model({ title: t.string() }) });
+      const added = schema({ task: model({ title: t.string(), priority: t.number().default(3) }) });
+      migrateDev(root, base, "entities");
+      migrateDev(root, added, "priority");
+      const bundle = (): BundledWorkspaceMigration[] => [...base.migrations.slice(0, -1), ...readMigrations(root)];
+
+      // Written while the field existed: in the snapshot and in the log.
+      useSchema(added, bundle());
+      const source = open(bundle());
+      const write = (ops: unknown[]) => runTransaction(source.tx, TEST_WORKSPACE, claim, { txId: crypto.randomUUID(), ops });
+      write([{ op: "insert", namespace: "task", id: "a", values: { title: "A", priority: 1 } }]);
+      const bucket = new FakeR2Bucket();
+      await flushPending(bucket, source.durable, TEST_WORKSPACE, NOW);
+      await snapshotWorkspace(bucket, source.durable, TEST_WORKSPACE, NOW);
+      write([{ op: "insert", namespace: "task", id: "b", values: { title: "B", priority: 2 } }]);
+      write([{ op: "patch", namespace: "task", id: "a", values: { title: "A2", priority: 5 } }]);
+      await flushPending(bucket, source.durable, TEST_WORKSPACE, NOW + 10);
+
+      expect(migrateRollback(root, { acceptDataLoss: true })).toMatchObject({ status: "created" });
+      useSchema(base, bundle());
+      const target = open(bundle());
+      await recoverWorkspace(bucket as unknown as R2Bucket, target.recovery, TEST_WORKSPACE, { now: NOW + 20 });
+      expect(target.db.query(`SELECT id, title FROM "task" ORDER BY id`).all()).toEqual([
+        { id: "a", title: "A2" },
+        { id: "b", title: "B" },
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});

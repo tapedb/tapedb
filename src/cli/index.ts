@@ -21,7 +21,7 @@ import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 import type { TapeDBSchema } from "../schema";
-import { migrateCheck, migrateDev, readMigrations, readSnapshot } from "./migrate";
+import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot } from "./migrate";
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
 
@@ -129,7 +129,24 @@ async function migrate(argv: string[]): Promise<number> {
     return 0;
   }
 
-  console.error("Usage: tapedb migrate dev --name <name> | status | check");
+  if (action === "rollback") {
+    const result = migrateRollback(root, {
+      ...(typeof flags.to === "string" ? { to: flags.to } : {}),
+      acceptDataLoss: flags["accept-data-loss"] === true,
+    });
+    if (result.status === "refused") {
+      console.error(`No migration written:\n\n  ${result.reasons.join("\n  ")}`);
+      return 1;
+    }
+    console.log(`Created tapedb/migrations/${result.id}.sql (${result.statements} statements): the schema after ${result.to}.`);
+    if (result.schemaEdits.length > 0) {
+      console.log(`\nChange the schema to match, then \`tapedb migrate check\` passes:\n  ${result.schemaEdits.join("\n  ")}`);
+    }
+    console.log("\nReview it, commit it, and deploy: each workspace applies it on its next wake.");
+    return 0;
+  }
+
+  console.error("Usage: tapedb migrate dev --name <name> | rollback [--to <id>] | status | check");
   return 1;
 }
 
@@ -389,7 +406,7 @@ function usage(): number {
 
 Usage:
   tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--force]
-  tapedb migrate dev|status|check [--dir <path>] [--schema <file>]
+  tapedb migrate dev|rollback|status|check [--dir <path>] [--schema <file>]
   tapedb deploy [--dir <path>] [--env <name>]
   tapedb dev  [--dir <path>] [--port <port>]
   tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
@@ -403,6 +420,9 @@ Commands:
           --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.
   migrate dev --name <name> [--rename old=new] [--accept-data-loss]
           Diff the schema against the last migration and write the next one.
+  migrate rollback [--to <id>] [--accept-data-loss]
+          Write the migration that takes the database back to the schema
+          after <id> (default: the one before the last).
   migrate status | check
           List migrations; check fails if the schema has unmigrated changes.
   deploy  [--env <name>]  Check ENVIRONMENT, dev claims, data residency and migrations, then wrangler deploy.
