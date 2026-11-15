@@ -63,6 +63,19 @@ const TERMINAL_AUTH_CODES = new Set([
   "invalid_config",
 ]);
 
+/** One recorded change to a row (`db.$history`). */
+export interface HistoryEntry {
+  /** Log sequence of the transaction. */
+  seq: number;
+  /** Commit time, ms since the epoch. */
+  at: number;
+  /** The writer's claim subject. */
+  sub: string | null;
+  /** The writer's workspace role level. */
+  role: number | null;
+  action: "insert" | "update" | "delete";
+}
+
 export interface FetchResponseLike {
   body?: ReadableStream<Uint8Array> | null;
   ok: boolean;
@@ -504,6 +517,22 @@ class DataClientImpl {
       const error = readServerError(await response.json().catch(() => null));
       throw new ServerError(error?.code ?? "http_error", error?.message ?? `Erasure failed with HTTP ${response.status}.`, response.status);
     }
+  }
+
+  async history(model: string, id: string): Promise<HistoryEntry[]> {
+    if (!model || !id) throw new Error("A model and a row id are required.");
+    const token = await this.requireToken();
+    const query = new URLSearchParams({ model, id });
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/history?${query}`,
+      { method: "GET", headers: { authorization: `Bearer ${token}` } }
+    );
+    const body = (await response.json().catch(() => null)) as { ok?: boolean; data?: HistoryEntry[] } | null;
+    if (!response.ok || !body?.ok || !Array.isArray(body.data)) {
+      const error = readServerError(body);
+      throw new ServerError(error?.code ?? "http_error", error?.message ?? `History failed with HTTP ${response.status}.`, response.status);
+    }
+    return body.data;
   }
 
   async *exportRecords(): AsyncGenerator<Record<string, unknown>> {

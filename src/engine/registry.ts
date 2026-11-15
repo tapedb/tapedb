@@ -81,6 +81,7 @@ export const ENGINE_TABLES = {
   snapshotState: "_snapshot_state",
   engineMeta: "_engine_meta",
   files: "_files",
+  txAudit: "_tx_audit",
 } as const;
 
 /** Configured namespaces, keyed by API name. Mutated by `configureRegistry`. */

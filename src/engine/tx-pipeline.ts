@@ -7,6 +7,7 @@
  * rolls back the log, the high-water mark and every row mutation together.
  */
 
+import { auditEnabled } from "./audit";
 import type { RoleClaim } from "../claims";
 import { applyOps } from "./tx-apply";
 import { bulkChunk, isBulk, releaseStaged, stageBulkOps, stagedIds } from "./tx-bulk";
@@ -92,7 +93,7 @@ export function runTransaction(
       // re-judge) and before the sequence is allocated (a denial burns nothing).
       assertRowPermissions(sql, claim, tx.ops);
       const now = Date.now();
-      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now });
+      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
       // In parts when it is larger than a row holds (see tx-log.ts).
       writeLogOps(sql, seq, tx.rawOps);
       const applied = applyOps({ sql, seq, now, txId: tx.txId }, tx.ops);
@@ -121,7 +122,7 @@ export function runTransaction(
         // retrying later cannot suddenly match newly-created rows.
         const state = sql.one<TxStateRow>(`SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`);
         const seq = tx.clientTxId === undefined ? (state?.high_water_seq ?? 0) : appendLogEntry(sql, {
-          clientTxId: tx.clientTxId, ops: "[]", opsHash: hash, at: Date.now(),
+          clientTxId: tx.clientTxId, ops: "[]", opsHash: hash, at: Date.now(), userId: claim.sub, role: claim.role,
         });
         return { txId: tx.txId, seq, applied: 0, ...matched };
       }
@@ -133,7 +134,7 @@ export function runTransaction(
       }
 
       const now = Date.now();
-      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now });
+      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
       const log = new LogWriter(sql, seq);
       const context = { sql, seq, now, txId: tx.txId };
       let applied = 0;
@@ -162,6 +163,9 @@ export interface LogEntry {
   ops: string;
   opsHash: string;
   at: number;
+  /** The writer, recorded only with `defineTapeDB({ audit: true })`. */
+  userId?: string | null;
+  role?: number | null;
 }
 
 /**
@@ -202,12 +206,10 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
     entry.clientTxId,
     entry.ops,
     entry.opsHash,
-    // Who wrote what is not recorded: nothing reads it (replay does not
-    // re-authorize), so keeping the writer's identity for the retention
-    // period would be personal data without a purpose. The columns stay for
-    // the frozen baseline schema.
-    null,
-    null,
+    // Who wrote what is recorded only when the deployment asks for an audit
+    // (audit.ts): otherwise it would be personal data without a purpose.
+    auditEnabled() ? entry.userId ?? null : null,
+    auditEnabled() ? entry.role ?? null : null,
     entry.at,
     readSchemaVersion(sql)
   );

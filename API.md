@@ -95,13 +95,14 @@ On the client itself:
 | `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `subscribe(listener)` with `PresencePeer[]`, `leave()` |
 | `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean | "queued"` (`"queued"` while the socket is down: sent after reconnecting, up to 100 per topic for 60 s; `false` when that queue is full), `subscribe((message, from) => …, { onError? })`, which never hears your own messages; never stored, never delivered late |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
+| `$history({ model, id })` | `Promise<HistoryEntry[]>`: each recorded change to the row, oldest first, as `{ seq, at, sub, role, action }` with `action` `"insert"`, `"update"` or `"delete"`; ADMIN or higher; needs `audit: true` on the Worker |
 | `$flush()` | waits until queued writes are acknowledged |
 | `$close()` | closes the socket |
 
 Also exported: `id()` (time-ordered ids), `Query`, `PageQuery`, `Write`,
 `WORKSPACE_ROLE_LEVELS`, `hasRole`, `hasRoleLevel`, and the
 types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
-`Page`, `Result`, `LiveState`, `WriteResult`, `QueryError`,
+`Page`, `Result`, `LiveState`, `WriteResult`, `HistoryEntry`, `QueryError`,
 `WriteRejection`, `PresenceRoom`, `PresencePeer`, `RoleClaim`,
 `WorkspaceRole`, `ExportRecord`, and **experimental** `BroadcastTopic` and
 `TopicSender`.
@@ -127,6 +128,7 @@ the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
 | `identity` | `ClaimIdentity`: `getSubject(headers)` → `{ sub } \| null`, `getRole(workspaceId, sub)` → role or `null`, optional `limits` (`ClaimLimits`: `{ ip?, subject? }`, each `{ requests, perSeconds }` or `false`; defaults `{ requests: 300, perSeconds: 60 }` per IP before the session lookup and `{ requests: 30, perSeconds: 60 }` per subject after it; `false` turns both off), and optional `allowRequest(key)` → `boolean`, checked after the IP limit with `key` = `claim:<cf-connecting-ip>` (false → 429 `rate_limited`) |
 | `devClaims` | serve the development claim route; refused in production |
 | `retention` | `{ days }`: how long deleted or overwritten values may stay in history; default 30, at least 2 |
+| `audit` | `true` records the writer (`sub`, role) of every write and keeps a per-row history for `$history`, within `retention`; default off |
 | `topics` | **experimental**: `TopicOptions` `{ authorize?, replaySeconds? }`: a `TopicAuthorizer` for broadcast topics, and the seconds of each topic kept for listeners that reconnect (default 60, `0` keeps none) |
 
 Also exported: `signRoleClaim(secret, { sub, workspaceId, role, iss?, aud?,
@@ -168,6 +170,7 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `GET /engine/workspaces/:id/schema` | the schema document the workspace runs |
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2 |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
+| `GET /engine/workspaces/:id/history?model=…&id=…` | one row's recorded changes → `{ ok, data: HistoryEntry[] }`; ADMIN or higher; 409 `audit_disabled` without `audit: true` |
 | `POST /engine/workspaces/:id/import` | owner-only atomic import of a consistent NDJSON export into an empty workspace; copies metadata, not file bytes |
 | `POST /engine/workspaces/:id/move` | owner-only resumable move to `{ to: "eu" | "fedramp" | "none" }` matching the deployed configuration; preserves receipt ids and removes source data after switching traffic |
 | `DELETE /engine/workspaces/:id` | erase the workspace; owner only; answers 410 afterwards |
@@ -260,6 +263,7 @@ usually handles:
 | `workspace_moving` | 409 | writes are frozen during a move; keep them queued and retry |
 | `workspace_moved` | 308 | the old workspace moved; use the move-aware destination Worker |
 | `workspace_importing` | 409 | an import is in progress |
+| `audit_disabled` | 409 | `$history` on a Worker without `audit: true` |
 | `workspace_erased` | 410 | the workspace was erased |
 | `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |
