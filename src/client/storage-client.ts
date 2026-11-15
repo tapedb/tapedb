@@ -1,10 +1,10 @@
+import { retryWhileRecovering, type RecoveringRetryOptions } from "./recovering";
+
 /**
  * Authenticated file transport for the workspace's R2 routes. A file of any
  * size uploads: up to `UPLOAD_PART_BYTES` in one request, larger as a
  * multipart upload of parts that size (R2 objects reach 5 TB).
  */
-import { retryWhileRecovering, type RecoveringRetryOptions } from "./recovering";
-
 export const UPLOAD_PART_BYTES = 16 * 1024 * 1024;
 
 export interface StorageObject {
