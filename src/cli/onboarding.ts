@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { confirm, interactive, select } from "./prompts";
 export { ask, confirm, interactive } from "./prompts";
 
@@ -114,7 +115,15 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
   const listed = command(["secret", "list", "--format", "json", ...environmentArgs], true);
   let existing: Array<{ name: string }> = [];
   if (listed.status === 0) existing = JSON.parse(listed.stdout);
-  else if (!/\b10007\b/.test(listed.stderr + listed.stdout)) requireSuccess(listed, "Secret lookup");
+  else {
+    // Wrangler 4.163 formats missing-Worker errors without the API's 10007.
+    // Only accept that specific message for the Worker being deployed.
+    const output = stripVTControlCharacters(listed.stderr + "\n" + listed.stdout);
+    const workerName = selected.name ?? (env ? config.name + "-" + env : config.name);
+    const reported = output.match(/\[ERROR\]\s+Worker "([^"\n]+)" not found\./)?.[1];
+    const notCreated = /\b10007\b/.test(output) || reported === workerName;
+    if (!notCreated) requireSuccess(listed, "Secret lookup");
+  }
   const secrets = missingSecrets(existing.map(item => item.name));
   const temp = mkdtempSync(join(tmpdir(), "tapedb-deploy-"));
   try {

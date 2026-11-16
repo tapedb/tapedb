@@ -62,3 +62,59 @@ test("a secret lookup permission error stops deployment instead of generating re
   await expect(provisionAndDeploy(root, { account_id: "account", name: "app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
   expect(deployed).toBe(false);
 });
+
+test.each([
+  '✘ [ERROR] Worker "app" not found.\n\nIf this is a new Worker, run wrangler deploy first to create it.',
+  'A request to the Cloudflare API failed [code: 10007]',
+])("first deployment accepts a missing Worker and preserves its generated secrets on rerun: %s", async (message) => {
+  const root = project();
+  const remote = new Map<string, string>();
+  let deployments = 0;
+  let removedFile = "";
+  const command: WranglerCommand = (args) => {
+    if (args[0] === "whoami") return { status: 0, stdout: JSON.stringify({ accounts: [{ id: "account", name: "Account" }] }), stderr: "" };
+    if (args[0] === "secret") return remote.size
+      ? { status: 0, stdout: JSON.stringify([...remote.keys()].map(name => ({ name }))), stderr: "" }
+      : { status: 1, stdout: "", stderr: message };
+    if (args[0] === "deploy") {
+      deployments++;
+      const at = args.indexOf("--secrets-file");
+      if (deployments === 1) {
+        expect(at).toBeGreaterThan(-1);
+        removedFile = args[at + 1]!;
+        const created = JSON.parse(readFileSync(removedFile, "utf8")) as Record<string, string>;
+        expect(Object.keys(created).sort()).toEqual(["TAPEDB_CLAIM_SECRET", "TAPEDB_KEY_SECRET"]);
+        for (const [name, value] of Object.entries(created)) {
+          expect(Buffer.from(value, "base64url")).toHaveLength(32);
+          remote.set(name, value);
+        }
+      } else expect(at).toBe(-1);
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    throw new Error("Unexpected command: " + args.join(" "));
+  };
+  const config: DeployConfig = { account_id: "account", name: "app" };
+  expect(await provisionAndDeploy(root, config, undefined, true, () => command)).toBe(0);
+  expect(existsSync(removedFile)).toBe(false);
+  const firstSecrets = [...remote];
+  expect(await provisionAndDeploy(root, config, undefined, true, () => command)).toBe(0);
+  expect([...remote]).toEqual(firstSecrets);
+  expect(deployments).toBe(2);
+});
+
+test.each([
+  '✘ [ERROR] Worker "different-app" not found.',
+  '✘ [ERROR] Authentication error [code: 10000]',
+  '✘ [ERROR] Permission denied',
+  '✘ [ERROR] Unexpected response 404',
+])("unrelated secret lookup failure stops deployment: %s", async (message) => {
+  const root = project();
+  let deployed = false;
+  const command: WranglerCommand = (args) => {
+    if (args[0] === "whoami") return { status: 0, stdout: JSON.stringify({ accounts: [{ id: "account", name: "Account" }] }), stderr: "" };
+    if (args[0] === "deploy") deployed = true;
+    return { status: 1, stdout: "", stderr: message };
+  };
+  await expect(provisionAndDeploy(root, { account_id: "account", name: "app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
+  expect(deployed).toBe(false);
+});

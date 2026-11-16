@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.6 - 2026-11-16
+
+- First cloud deployment recognises Wrangler’s missing-Worker message even when it omits API error code 10007. Setup generates both required secrets and deploys without a manual bootstrap. Other lookup failures still stop deployment.
+
+
 ## 0.1.5 - 2026-11-16
 
 - Setup uses arrow-key menus with visible choices and cancellation. Choosing cloud setup proceeds to deployment without asking the same question again. Standalone deploy has one explicit Deploy now confirmation.
