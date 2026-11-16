@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.5 - 2026-11-16
+
+- Setup uses arrow-key menus with visible choices and cancellation. Choosing cloud setup proceeds to deployment without asking the same question again. Standalone deploy has one explicit Deploy now confirmation.
+
+
 ## 0.1.4 - 2026-11-16
 
 - Interactive project setup installs TapeDB and Wrangler, offers local development or cloud deployment, and ignores local secrets.
