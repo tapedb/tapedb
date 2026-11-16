@@ -2,6 +2,18 @@
 
 ## 0.1.0 - Unreleased
 
+### Security
+
+- The Worker refused `/move/*`, `/storage/*` and writes to `/files`, but a
+  doubled slash in the request path (`/engine/workspaces/<id>//x/files`)
+  reached them: the room URL was resolved relative to the path, so `//x/...`
+  became a different URL. An editor could record an index entry pointing at
+  any stored object and then read or delete it through the file routes; an
+  owner could call the internal move controls. The room URL is now built from
+  the path as is, a path with an empty segment outside `/files/` answers 404,
+  the index accepts only objects stored under the file's own path, and every
+  client `x-tapedb-*` header is removed before forwarding.
+
 ### Changed
 
 - Requests made while a workspace is being restored from R2 (503
