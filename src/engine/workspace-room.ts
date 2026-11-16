@@ -2018,8 +2018,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (typeof path !== "string" || path.length === 0) {
       return apiError(400, "invalid_path", "path is required.");
     }
-    if (typeof key !== "string" || key.length === 0) {
-      return apiError(400, "invalid_key", "key is required.");
+    // Bytes are stored under the file's own path in this workspace's prefix.
+    // An index entry pointing anywhere else would serve, and later delete, an
+    // object this workspace does not own.
+    const own = `${filesPrefix(this.workspaceId)}${path}`;
+    if (typeof key !== "string" || (key !== own && !key.startsWith(`${own}/.tapedb/`))) {
+      return apiError(400, "invalid_key", "key must be the stored object of this path in this workspace.");
     }
     if (typeof size !== "number" || !Number.isFinite(size) || size < 0) {
       return apiError(400, "invalid_size", "size must be a non-negative number.");
