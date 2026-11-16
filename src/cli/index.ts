@@ -2,7 +2,7 @@
 /**
  * tapedb CLI.
  *
- * `init` writes the files a Worker needs, and nothing else:
+ * `init` guides project setup, installs dependencies and writes:
  *   tapedb.schema.ts   the models
  *   worker.ts          the Worker entry (two exports)
  *   wrangler.jsonc     one Durable Object class, two R2 buckets
@@ -25,6 +25,7 @@ import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot } from "./migrate";
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
+import { ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, type DeployConfig } from "./onboarding";
 
 let schemaLoads = 0;
 
@@ -229,23 +230,19 @@ async function deploy(argv: string[]): Promise<number> {
     console.error(`No wrangler.jsonc in ${root}.`);
     return 1;
   }
-  const config = parseJsonc(readFileSync(configPath, "utf8")) as {
-    vars?: Record<string, string>;
-    r2_buckets?: Array<{ binding?: string; bucket_name?: string; jurisdiction?: string }>;
-    env?: Record<string, { vars?: Record<string, string>; r2_buckets?: Array<{ binding?: string; bucket_name?: string; jurisdiction?: string }> }>;
-  };
+  const config = parseJsonc(readFileSync(configPath, "utf8")) as DeployConfig;
   const vars = env === undefined ? config.vars : config.env?.[env]?.vars;
-  if (vars?.ENVIRONMENT !== "production") {
+  if (vars?.ENVIRONMENT !== "production" && !interactive() && flags.yes !== true) {
     console.error(
       `Refusing to deploy: ENVIRONMENT is ${JSON.stringify(vars?.ENVIRONMENT ?? null)}${env ? ` in env "${env}"` : ""}, not "production". Dev claims are only refused when it is "production". Set it in wrangler.jsonc${env ? ` under env.${env}.vars` : " (or add an env and pass --env)"}.`
     );
     return 1;
   }
-  if (vars.TAPEDB_DEV_CLAIMS !== undefined) {
+  if (vars?.TAPEDB_DEV_CLAIMS !== undefined) {
     console.error("Refusing to deploy: TAPEDB_DEV_CLAIMS is set. It must never reach production.");
     return 1;
   }
-  const residency = checkJurisdiction(vars, (env === undefined ? undefined : config.env?.[env]?.r2_buckets) ?? config.r2_buckets ?? []);
+  const residency = checkJurisdiction(vars ?? {}, (env === undefined ? undefined : config.env?.[env]?.r2_buckets) ?? config.r2_buckets ?? []);
   if (residency !== null) {
     console.error(`Refusing to deploy: ${residency}`);
     return 1;
@@ -257,11 +254,7 @@ async function deploy(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const run = spawnSync("npx", ["--no-install", "wrangler", "deploy", ...(env ? ["--env", env] : [])], {
-    cwd: root,
-    stdio: "inherit",
-  });
-  return run.status ?? 1;
+  return provisionAndDeploy(root, config, env, flags.yes === true);
 }
 
 const JURISDICTIONS = ["eu", "fedramp"];
@@ -385,7 +378,13 @@ function parseFlags(argv: string[]): Record<string, string | boolean> {
 async function init(argv: string[]): Promise<number> {
   const flags = parseFlags(argv);
   const target = resolve(typeof flags.dir === "string" ? flags.dir : ".");
-  const name = typeof flags.name === "string" ? flags.name : "tapedb-app";
+  const existingConfig = existsSync(join(target, "wrangler.jsonc"))
+    ? parseJsonc(readFileSync(join(target, "wrangler.jsonc"), "utf8")) as DeployConfig : undefined;
+  const defaultName = existingConfig?.name ?? (basename(target).toLowerCase().replace(/[^a-z0-9-]/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "tapedb-app");
+  const name = typeof flags.name === "string" ? flags.name : flags.yes === true ? defaultName : await ask("Project name", defaultName);
+  if (!/^[a-z0-9][a-z0-9-]{0,50}$/.test(name)) throw new Error("Use a project name of 1–51 lowercase letters, numbers or hyphens.");
+  if (flags.local === true && flags.cloud === true) throw new Error("Choose --local or --cloud.");
+  const cloud = flags.cloud === true || (flags.local !== true && flags.yes !== true && await confirm("Deploy to Cloudflare after setup?"));
   const force = flags.force === true;
   const jurisdiction = typeof flags.jurisdiction === "string" ? flags.jurisdiction : undefined;
   if (jurisdiction !== undefined && !JURISDICTIONS.includes(jurisdiction)) {
@@ -416,6 +415,14 @@ async function init(argv: string[]): Promise<number> {
     console.log(`  ${status === "written" ? "created" : "kept   "}  ${file}`);
   }
 
+  ignoreLocalFiles(target);
+  if (flags["no-install"] !== true) {
+    let packageRoot = ownDistDir();
+    while (!existsSync(join(packageRoot, "package.json")) && dirname(packageRoot) !== packageRoot) packageRoot = dirname(packageRoot);
+    const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { version: string };
+    installProject(target, manifest.version);
+  }
+
   try {
     if (readSnapshot(target) === null) {
       const schema = await loadSchema(target, {});
@@ -431,25 +438,12 @@ async function init(argv: string[]): Promise<number> {
     return 1;
   }
 
-  console.log(`
-Run it locally:
-
-  npm install @tapedb/tapedb      # the library this Worker imports
-  npx @tapedb/tapedb dev          # http://localhost:8787, with a dev claim route
-  npx @tapedb/tapedb studio       # table browser for the running Worker
-
-Wrangler simulates the R2 buckets locally, so a local database needs no
-Cloudflare resources and no secrets pushed.
-
-When you deploy, first:
-
-  npx wrangler r2 bucket create ${name}-data${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
-  npx wrangler r2 bucket create ${name}-files${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
-  npx wrangler secret put TAPEDB_CLAIM_SECRET
-  npx wrangler secret put TAPEDB_KEY_SECRET
-  npx @tapedb/tapedb deploy       # once ENVIRONMENT is "production"
-
-That is the whole footprint: one Durable Object class, two R2 buckets.`);
+  console.log("\nReady. Start the database with npx @tapedb/tapedb dev");
+  console.log("Open its table browser with npx @tapedb/tapedb studio");
+  if (cloud) return deploy(["--dir", target, ...(flags.yes === true ? ["--yes"] : [])]);
+  if (interactive() && flags["no-start"] !== true && flags.yes !== true && await confirm("Start the local database now?", true)) {
+    return dev(["--dir", target]);
+  }
   return 0;
 }
 
@@ -457,7 +451,7 @@ function usage(): number {
   console.log(`tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out
 
 Usage:
-  tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--force]
+  tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--yes] [--no-install] [--no-start] [--force]
   tapedb migrate dev|rollback|status|check [--dir <path>] [--schema <file>]
   tapedb deploy [--dir <path>] [--env <name>]
   tapedb dev  [--dir <path>] [--port <port>]
@@ -477,7 +471,7 @@ Commands:
           after <id> (default: the one before the last).
   migrate status | check
           List migrations; check fails if the schema has unmigrated changes.
-  deploy  [--env <name>]  Check ENVIRONMENT, dev claims, data residency and migrations, then wrangler deploy.
+  deploy  [--env <name>] [--yes]  Select an account, provision missing resources and secrets, and deploy.
   dev     Run the local database with wrangler dev on port 8787.
   studio  Open a local table browser against a running Worker.
   export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).
@@ -691,5 +685,8 @@ export function isEntryPoint(entry: string | undefined, moduleUrl: string): bool
 
 // Only execute when invoked as the binary, never when imported.
 if (isEntryPoint(process.argv[1], import.meta.url)) {
-  void run(process.argv.slice(2)).then((code) => process.exit(code));
+  void run(process.argv.slice(2)).then((code) => process.exit(code)).catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exit(1);
+  });
 }
