@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.1.1 - 2026-11-16
+
+### Documentation
+
+- The `move` example gave `--url https://db.example.com`. `example.com` is
+  reserved for documentation (RFC 2606), so that host never exists, and it is
+  not the shape `tapedb init` produces: a deployed Worker answers on
+  `https://tapedb-app.<account-subdomain>.workers.dev` unless a custom domain is
+  attached. The example now uses that shape and says what `--url` refers to.
+- The `client({ url })` comment pointed at `api.example.com`, in the shipped
+  declarations and on the generated API pages.
+- `verify` gains `test:docs`, which fails when a reserved example domain appears
+  in a file the tarball ships.
+
 ## 0.1.0 - 2026-11-16
 
 ### Security
