@@ -1,7 +1,7 @@
 // File rules in workerd: the workspace decides each file operation before bytes move.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s } from "./common.mjs";
 
 const db = createClient({ schema: s, url: BASE, workspace: randomUUID() });

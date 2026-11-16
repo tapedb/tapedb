@@ -1,7 +1,7 @@
 /**
- * `tapedb/schema`: everything a schema file imports, and nothing else.
+ * `@tapedb/tapedb/schema`: everything a schema file imports, and nothing else.
  *
- *   import { schema, model, t, role, filter, check, fileCheck, attachedTo } from "tapedb/schema";
+ *   import { schema, model, t, role, filter, check, fileCheck, attachedTo } from "@tapedb/tapedb/schema";
  */
 
 export { schema, model, t, role, filter, check, fileCheck, attachedTo } from "./schema";

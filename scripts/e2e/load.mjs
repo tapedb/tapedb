@@ -4,7 +4,7 @@
 //   SUBSCRIBERS=50 ROWS=500 WRITES=400 CONCURRENCY=8; DISTINCT=1 makes each subscriber
 //   its own user (claims signed with TAPEDB_CLAIM_SECRET, or .dev.vars locally).
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { readFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
 import { BASE, s } from "./common.mjs";

@@ -3,7 +3,7 @@
 // (sent in parts), and a 2 MiB broadcast (relayed in parts).
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s, until } from "./common.mjs";
 
 const workspace = randomUUID();

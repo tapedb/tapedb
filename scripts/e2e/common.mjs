@@ -1,5 +1,5 @@
 /** Shared by the end-to-end scenarios: the schema the e2e project deploys, and its URL. */
-import { fileCheck, model, schema, t } from "tapedb/schema";
+import { fileCheck, model, schema, t } from "@tapedb/tapedb/schema";
 
 /** The Worker under test: a local `tapedb dev` by default, or TAPEDB_URL. */
 export const BASE = (process.env.TAPEDB_URL ?? "http://127.0.0.1:8787").replace(/\/+$/, "");
