@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.6 - 2026-11-16
 
 - A first cloud deploy no longer stops at "Secret lookup failed". Wrangler 4.163 reports a Worker that doesn't exist yet as `Worker "<name>" not found.` without the API's 10007 code, which setup didn't recognise; it now treats that answer, for the Worker being deployed, as "no secrets yet" and generates them.
 
