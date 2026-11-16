@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- Interactive project setup installs TapeDB and Wrangler, offers local development or cloud deployment, and ignores local secrets.
+- Deployment selects the Cloudflare account, reuses existing buckets and secrets, creates missing resources and uploads generated secrets with the Worker.
+
+
 ## 0.1.3 - 2026-11-16
 
 ### Fixed
