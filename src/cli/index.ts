@@ -25,6 +25,7 @@ import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot } from "./migrate";
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
+import { select } from "./prompts";
 import { ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, type DeployConfig } from "./onboarding";
 
 let schemaLoads = 0;
@@ -384,7 +385,7 @@ async function init(argv: string[]): Promise<number> {
   const name = typeof flags.name === "string" ? flags.name : flags.yes === true ? defaultName : await ask("Project name", defaultName);
   if (!/^[a-z0-9][a-z0-9-]{0,50}$/.test(name)) throw new Error("Use a project name of 1–51 lowercase letters, numbers or hyphens.");
   if (flags.local === true && flags.cloud === true) throw new Error("Choose --local or --cloud.");
-  const cloud = flags.cloud === true || (flags.local !== true && flags.yes !== true && await confirm("Deploy to Cloudflare after setup?"));
+  const cloud = flags.cloud === true || (interactive() && flags.local !== true && flags.yes !== true && (await select("How do you want to run TapeDB?", ["Run locally", "Deploy to Cloudflare"])) === 1);
   const force = flags.force === true;
   const jurisdiction = typeof flags.jurisdiction === "string" ? flags.jurisdiction : undefined;
   if (jurisdiction !== undefined && !JURISDICTIONS.includes(jurisdiction)) {
@@ -438,9 +439,10 @@ async function init(argv: string[]): Promise<number> {
     return 1;
   }
 
+  // Choosing cloud setup already expresses the deployment decision.
+  if (cloud) return deploy(["--dir", target, "--yes"]);
   console.log("\nReady. Start the database with npx @tapedb/tapedb dev");
   console.log("Open its table browser with npx @tapedb/tapedb studio");
-  if (cloud) return deploy(["--dir", target, ...(flags.yes === true ? ["--yes"] : [])]);
   if (interactive() && flags["no-start"] !== true && flags.yes !== true && await confirm("Start the local database now?", true)) {
     return dev(["--dir", target]);
   }

@@ -3,20 +3,8 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createInterface } from "node:readline/promises";
-
-export const interactive = () => Boolean(process.stdin.isTTY && process.stdout.isTTY && !process.env.CI);
-
-export async function ask(question: string, fallback: string): Promise<string> {
-  if (!interactive()) return fallback;
-  const input = createInterface({ input: process.stdin, output: process.stdout });
-  try { return (await input.question(question + " [" + fallback + "]: ")).trim() || fallback; }
-  finally { input.close(); }
-}
-
-export async function confirm(question: string, fallback = false): Promise<boolean> {
-  return /^(y|yes)$/i.test(await ask(question, fallback ? "yes" : "no"));
-}
+import { confirm, interactive, select } from "./prompts";
+export { ask, confirm, interactive } from "./prompts";
 
 export function installProject(root: string, version: string): void {
   const path = join(root, "package.json");
@@ -90,8 +78,7 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
     if (accounts.length === 1) account = accounts[0]!.id;
     else {
       if (!interactive()) throw new Error("Select an account using account_id in wrangler.jsonc.");
-      console.log(accounts.map((item, index) => "  " + (index + 1) + ". " + item.name).join("\n"));
-      const index = Number(await ask("Cloudflare account", "1")) - 1;
+      const index = await select("Cloudflare account", accounts.map(item => item.name + " (" + item.id + ")"));
       account = accounts[index]?.id;
     }
   }
@@ -101,7 +88,7 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
   console.log("\nDeploy " + (selected.name ?? config.name) + " to " + accounts.find(item => item.id === account)!.name);
   console.log("  R2: " + buckets.map(bucket => bucket.bucket_name).join(", "));
   console.log("  Existing buckets and secrets are kept. Missing secrets are generated.");
-  if (!yes && !(await confirm("Create missing resources and deploy?"))) return 1;
+  if (!yes && !(await confirm("Deploy now?", true))) return 1;
   // Persist the chosen account and production mode only after the deployment decision.
   config.account_id = account;
   selected.vars ??= {};
