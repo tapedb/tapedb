@@ -34,7 +34,7 @@ test("deployment reuses a bucket and secret, scopes commands to the chosen accou
     calls.push(args);
     let stdout = "";
     if (args[0] === "whoami") stdout = JSON.stringify({ accounts: [{ id: "account", name: "My account" }] });
-    if (args[0] === "r2" && args[2] === "list") stdout = "name: app-data\ncreation_date: 2026-01-01\n";
+    if (args[0] === "r2" && args[2] === "list") stdout = "\u001b[1mname:\u001b[0m app-data\ncreation_date: 2026-01-01\n";
     if (args[0] === "secret") stdout = JSON.stringify([{ name: "TAPEDB_CLAIM_SECRET" }]);
     if (args[0] === "deploy") {
       secretFile = args[args.indexOf("--secrets-file") + 1]!;
@@ -89,5 +89,62 @@ test("a missing-Worker answer about a different Worker still stops deployment", 
     return { status: 1, stdout: "", stderr: `✘ [ERROR] Worker "other-app" not found.` };
   };
   await expect(provisionAndDeploy(root, { account_id: "account", name: "tapedb-app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
+  expect(deployed).toBe(false);
+});
+
+test.each([
+  '✘ [ERROR] Worker "app" not found.\n\nIf this is a new Worker, run wrangler deploy first to create it.',
+  'A request to the Cloudflare API failed [code: 10007]',
+  '\u001b[31m✘ \u001b[41;31m[\u001b[41;97mERROR\u001b[41;31m]\u001b[0m \u001b[1mWorker "\u001b[0m\u001b[1mapp\u001b[0m\u001b[1m" not found.\u001b[0m',
+])("first deployment accepts a missing Worker and preserves its generated secrets on rerun: %s", async (message) => {
+  const root = project();
+  const remote = new Map<string, string>();
+  let deployments = 0;
+  let removedFile = "";
+  const command: WranglerCommand = (args) => {
+    if (args[0] === "whoami") return { status: 0, stdout: JSON.stringify({ accounts: [{ id: "account", name: "Account" }] }), stderr: "" };
+    if (args[0] === "secret") return remote.size
+      ? { status: 0, stdout: JSON.stringify([...remote.keys()].map(name => ({ name }))), stderr: "" }
+      : { status: 1, stdout: "", stderr: message };
+    if (args[0] === "deploy") {
+      deployments++;
+      const at = args.indexOf("--secrets-file");
+      if (deployments === 1) {
+        expect(at).toBeGreaterThan(-1);
+        removedFile = args[at + 1]!;
+        const created = JSON.parse(readFileSync(removedFile, "utf8")) as Record<string, string>;
+        expect(Object.keys(created).sort()).toEqual(["TAPEDB_CLAIM_SECRET", "TAPEDB_KEY_SECRET"]);
+        for (const [name, value] of Object.entries(created)) {
+          expect(Buffer.from(value, "base64url")).toHaveLength(32);
+          remote.set(name, value);
+        }
+      } else expect(at).toBe(-1);
+      return { status: 0, stdout: "", stderr: "" };
+    }
+    throw new Error("Unexpected command: " + args.join(" "));
+  };
+  const config: DeployConfig = { account_id: "account", name: "app" };
+  expect(await provisionAndDeploy(root, config, undefined, true, () => command)).toBe(0);
+  expect(existsSync(removedFile)).toBe(false);
+  const firstSecrets = [...remote];
+  expect(await provisionAndDeploy(root, config, undefined, true, () => command)).toBe(0);
+  expect([...remote]).toEqual(firstSecrets);
+  expect(deployments).toBe(2);
+});
+
+test.each([
+  '✘ [ERROR] Worker "different-app" not found.',
+  '✘ [ERROR] Authentication error [code: 10000]',
+  '✘ [ERROR] Permission denied',
+  '✘ [ERROR] Unexpected response 404',
+])("unrelated secret lookup failure stops deployment: %s", async (message) => {
+  const root = project();
+  let deployed = false;
+  const command: WranglerCommand = (args) => {
+    if (args[0] === "whoami") return { status: 0, stdout: JSON.stringify({ accounts: [{ id: "account", name: "Account" }] }), stderr: "" };
+    if (args[0] === "deploy") deployed = true;
+    return { status: 1, stdout: "", stderr: message };
+  };
+  await expect(provisionAndDeploy(root, { account_id: "account", name: "app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
   expect(deployed).toBe(false);
 });
