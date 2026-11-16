@@ -1,7 +1,7 @@
 // Includes, in-lists and wide OR filters over more than 100 values, against workerd's 100-parameter limit.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s } from "./common.mjs";
 const db = createClient({ schema: s, url: BASE, workspace: randomUUID() });
 const board = await db.board.create({ data: { name: "B" } });

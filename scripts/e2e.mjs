@@ -83,9 +83,9 @@ run("npm", ["run", "build"], { cwd: root });
 const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", project], { cwd: root }))[0].filename;
 writeFileSync(join(project, "package.json"), JSON.stringify({ name: "tapedb-e2e", private: true, type: "module" }));
 run("npm", ["install", join(project, packed), "wrangler@4", "--no-audit", "--no-fund"], { cwd: project });
-run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "init", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], { cwd: project });
+run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "init", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], { cwd: project });
 
-const schemaSource = `import { fileCheck, model, schema, t } from "tapedb/schema";
+const schemaSource = `import { fileCheck, model, schema, t } from "@tapedb/tapedb/schema";
 
 export default schema({
   person: model({ name: t.string().personal({ subject: "self" }), data: t.json().personal({ subject: "self" }).optional() }),
@@ -112,8 +112,8 @@ export default schema({
 });
 `;
 writeFileSync(join(project, "tapedb.schema.ts"), schemaSource);
-run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "dev", "--name", "personal_fields"], { cwd: project });
-run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "check"], { cwd: project });
+run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "migrate", "dev", "--name", "personal_fields"], { cwd: project });
+run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "migrate", "check"], { cwd: project });
 for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(project, file));
 // The audit is opt-in; the suite runs with it on (audit.mjs).
 {
@@ -437,7 +437,7 @@ let base = remote?.replace(/\/+$/, "");
 async function startDev() {
   const port = await freePort();
   const log = [];
-  dev = spawn(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "dev", "--port", String(port)], {
+  dev = spawn(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "dev", "--port", String(port)], {
     cwd: project,
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -498,7 +498,7 @@ function scenario(file) {
 const WORKSPACE = randomUUID();
 
 async function client() {
-  const { createClient } = await import(join(project, "node_modules/tapedb/dist/index.js"));
+  const { createClient } = await import(join(project, "node_modules/@tapedb/tapedb/dist/index.js"));
   const { s } = await import(join(project, "common.mjs"));
   return createClient({ schema: s, url: base, workspace: WORKSPACE });
 }
@@ -587,7 +587,7 @@ async function drills() {
   assert.equal(receipt.ok, true, JSON.stringify(receipt));
   await db.$files.upload(new Blob(["drill"], { type: "text/plain" }), { path: "drill/file.txt" });
   // A second workspace, durable in R2 by the same wait, erased before the wipe.
-  const { createClient } = await import(join(project, "node_modules/tapedb/dist/index.js"));
+  const { createClient } = await import(join(project, "node_modules/@tapedb/tapedb/dist/index.js"));
   const { s } = await import(join(project, "common.mjs"));
   const erasedId = randomUUID();
   const doomed = createClient({ schema: s, url: base, workspace: erasedId });
@@ -609,12 +609,12 @@ async function drills() {
   // Rebuild of a referenced table (board <- column, cascade) with data in it.
   if (deployName) {
     writeFileSync(join(project, "tapedb.schema.ts"), schemaSource.replace("name: t.string(),\n    columns", 'name: t.string().default("untitled"),\n    columns'));
-    run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "dev", "--name", "board_default"], { cwd: project });
+    run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "migrate", "dev", "--name", "board_default"], { cwd: project });
     await redeployStaging();
   } else {
     await stopDev();
     writeFileSync(join(project, "tapedb.schema.ts"), schemaSource.replace("name: t.string(),\n    columns", 'name: t.string().default("untitled"),\n    columns'));
-    run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "migrate", "dev", "--name", "board_default"], { cwd: project });
+    run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "migrate", "dev", "--name", "board_default"], { cwd: project });
     await startDev();
   }
   const migrated = await client();
@@ -626,7 +626,7 @@ async function drills() {
 
   // Erase the second workspace. The wipe below removes its tombstone with
   // everything else, so after it the workspace must come back from R2 empty.
-  run(process.execPath, [join(project, "node_modules/tapedb/dist/cli.js"), "erase", "--workspace", erasedId, "--confirm", erasedId, "--url", base], { cwd: project });
+  run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "erase", "--workspace", erasedId, "--confirm", erasedId, "--url", base], { cwd: project });
 
   // Wipe every Durable Object's storage; R2 stays.
   if (deployName) {

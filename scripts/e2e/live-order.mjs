@@ -1,6 +1,6 @@
 // A live ordered list keeps its order through inserts and moves, in workerd.
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s, until } from "./common.mjs";
 const db = createClient({ schema: s, url: BASE, workspace: randomUUID() });
 await db.task.create({ data: { title: "B" } });

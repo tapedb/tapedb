@@ -19,10 +19,10 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /** Package export -> source entry. Keep in step with package.json "exports". */
 export const ENTRIES: Record<string, string> = {
-  tapedb: "src/index.ts",
-  "tapedb/schema": "src/schema-entry.ts",
-  "tapedb/react": "src/react/index.ts",
-  "tapedb/worker": "src/worker/index.ts",
+  "@tapedb/tapedb": "src/index.ts",
+  "@tapedb/tapedb/schema": "src/schema-entry.ts",
+  "@tapedb/tapedb/react": "src/react/index.ts",
+  "@tapedb/tapedb/worker": "src/worker/index.ts",
 };
 
 const FORMAT = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.WriteArrowStyleSignature;

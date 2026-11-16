@@ -24,16 +24,16 @@ and what is experimental, in [API.md](API.md); the design boundaries are in
 newer; the library itself runs in Cloudflare Workers.
 
 ```bash
-npx tapedb init     # schema, worker, wrangler config, first migration
-npx tapedb dev      # local database with a dev claim route
-npx tapedb studio   # local table browser on http://127.0.0.1:4400
+npx @tapedb/tapedb init     # schema, worker, wrangler config, first migration
+npx @tapedb/tapedb dev      # local database with a dev claim route
+npx @tapedb/tapedb studio   # local table browser on http://127.0.0.1:4400
 ```
 
 ## The schema
 
 ```ts
 // tapedb.schema.ts
-import { check, filter, model, role, schema, t } from "tapedb/schema";
+import { check, filter, model, role, schema, t } from "@tapedb/tapedb/schema";
 
 export default schema({
   board: model({
@@ -75,7 +75,7 @@ time-ordered), `createdAt` and `updatedAt`.
 ## Reads
 
 ```ts
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import schema from "./tapedb.schema";
 
 const db = createClient({ schema, url, workspace, userId, getToken });
@@ -187,7 +187,7 @@ const stop = db.task
 ```
 
 ```tsx
-// React (tapedb/react)
+// React (@tapedb/tapedb/react)
 const { data, isLoading } = useLive(
   db.task.findMany({ where: { columnId }, orderBy: { position: "asc" } })
 );
@@ -334,7 +334,7 @@ Each model's actions take one of three decisions:
 
 ```bash
 # edit tapedb.schema.ts, then
-npx tapedb migrate dev --name add_task_priority
+npx @tapedb/tapedb migrate dev --name add_task_priority
 ```
 
 `migrate dev` diffs the schema against `tapedb/schema.snapshot.json` and
@@ -354,8 +354,8 @@ would leave a row pointing at nothing rolls back.
   and snapshots written under an older schema. Undeclared drift fails closed.
 
 ```bash
-npx tapedb migrate rollback                  # back to the schema before the last migration
-npx tapedb migrate rollback --to 0004_tags   # back to the schema after 0004_tags
+npx @tapedb/tapedb migrate rollback                  # back to the schema before the last migration
+npx @tapedb/tapedb migrate rollback --to 0004_tags   # back to the schema after 0004_tags
 ```
 
 `migrate rollback` writes the migration that takes the database back to an
@@ -420,7 +420,7 @@ const board = db.$broadcast<{ kind: "ping"; at: number }>("board:" + boardId);
 const stop = board.subscribe((message, from) => flash(from.userId, message));
 board.send({ kind: "ping", at: Date.now() });   // false (dropped) while offline
 
-// React (tapedb/react)
+// React (@tapedb/tapedb/react)
 const send = useBroadcast(db, "board:" + boardId, (message, from) => flash(from.userId, message));
 ```
 
@@ -457,7 +457,7 @@ for await (const record of db.$export()) {
 ```
 
 ```bash
-npx tapedb export --workspace <uuid> --out workspace.ndjson   # TAPEDB_TOKEN, or a dev claim
+npx @tapedb/tapedb export --workspace <uuid> --out workspace.ndjson   # TAPEDB_TOKEN, or a dev claim
 ```
 
 The engine streams NDJSON: a `header` line (the models exported, and any the
@@ -524,7 +524,7 @@ cannot erase plaintext already held in those copies.
 ## Erasing a workspace
 
 ```bash
-npx tapedb erase --workspace <uuid> --confirm <uuid>   # owner claim: TAPEDB_TOKEN, or a dev claim
+npx @tapedb/tapedb erase --workspace <uuid> --confirm <uuid>   # owner claim: TAPEDB_TOKEN, or a dev claim
 ```
 
 `DELETE /engine/workspaces/:id` with an owner's claim deletes everything the
@@ -542,7 +542,7 @@ retention is also 30 days.
 ## Data residency
 
 ```bash
-npx tapedb init --jurisdiction eu
+npx @tapedb/tapedb init --jurisdiction eu
 ```
 
 writes `"TAPEDB_JURISDICTION": "eu"` into `wrangler.jsonc` vars and
@@ -565,7 +565,7 @@ the destination and `TAPEDB_MOVE_FROM` to the source (`none`, `eu` or
 `WORKSPACE_FROM` is needed only when the source uses a different namespace.
 
 ```sh
-npx tapedb move --to eu --url https://db.example.com --workspaces workspaces.txt
+npx @tapedb/tapedb move --to eu --url https://db.example.com --workspaces workspaces.txt
 ```
 
 The file contains one workspace UUID per line. `--workspace <uuid>` moves one.
@@ -598,7 +598,7 @@ stays yours: implement two methods and the library serves the claim route.
 
 ```ts
 import { env } from "cloudflare:workers";
-import { defineTapeDB, WORKSPACE_ROLE_LEVELS } from "tapedb/worker";
+import { defineTapeDB, WORKSPACE_ROLE_LEVELS } from "@tapedb/tapedb/worker";
 import schema from "./tapedb.schema";
 import { migrations } from "./tapedb/migrations.gen";
 
@@ -694,12 +694,12 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 
 | import | contains | React |
 | --- | --- | --- |
-| `tapedb` | `createClient`, schema builders, `id` | no (zero runtime deps) |
-| `tapedb/schema` | `schema`, `model`, `t`, `role`, `filter`, `check` | no |
-| `tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer (React 19) |
-| `tapedb/worker` | `defineTapeDB`, claim helpers | no |
+| `@tapedb/tapedb` | `createClient`, schema builders, `id` | no (zero runtime deps) |
+| `@tapedb/tapedb/schema` | `schema`, `model`, `t`, `role`, `filter`, `check` | no |
+| `@tapedb/tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer (React 19) |
+| `@tapedb/tapedb/worker` | `defineTapeDB`, claim helpers | no |
 
-The CLI is a command, not an import: `npx tapedb init | migrate | dev | studio
+The CLI is a command, not an import: `npx @tapedb/tapedb init | migrate | dev | studio
 | deploy | export | erase | move`.
 
 [API.md](API.md) is the reference: every export and signature, what is stable

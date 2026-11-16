@@ -1,7 +1,7 @@
 // The opt-in audit in workerd: who changed a row, through the Worker and the room.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s } from "./common.mjs";
 
 const workspace = randomUUID();

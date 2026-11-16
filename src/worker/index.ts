@@ -320,7 +320,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   return { WorkspaceRoom, worker };
 }
 
-// The public surface of `tapedb/worker`; see API.md. Everything else in this
+// The public surface of `@tapedb/tapedb/worker`; see API.md. Everything else in this
 // module (trusted-claim plumbing, dev claims, the room class itself) is
 // internal: the Durable Object class reaches the Worker as
 // `defineTapeDB(...).WorkspaceRoom`.

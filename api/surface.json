@@ -1,6 +1,6 @@
 {
   "entries": {
-    "tapedb": {
+    "@tapedb/tapedb": {
       "Access": {
         "kind": "interface",
         "shape": {
@@ -425,7 +425,7 @@
         }
       }
     },
-    "tapedb/schema": {
+    "@tapedb/tapedb/schema": {
       "Access": {
         "kind": "interface",
         "shape": {
@@ -578,7 +578,7 @@
         "shape": "<F extends Fields = Fields, M extends Models = Models> Scalars<F> & { [K in RelationKeys<F>]?: F[K] extends HasMany ? ManyFilter<Where<TargetFieldsOf<F[K], M>, M>> : Where<TargetFieldsOf<F[K], M>, M> | null; } & { AND?: Where<F, M> | Where<F, M>[]; OR?: Where<F, M>[]; NOT?: Where<F, M> | Where<F, M>[]; }"
       }
     },
-    "tapedb/react": {
+    "@tapedb/tapedb/react": {
       "LivePage": {
         "kind": "interface",
         "shape": {
@@ -608,7 +608,7 @@
         "shape": "(db: { $presence(room: string): PresenceRoom; }, room: string, presence?: unknown) => PresencePeer[]"
       }
     },
-    "tapedb/worker": {
+    "@tapedb/tapedb/worker": {
       "AppMigration": {
         "kind": "type",
         "shape": "BundledWorkspaceMigration"

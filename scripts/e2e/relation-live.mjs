@@ -1,6 +1,6 @@
 // A live query filtered through a relation re-runs when the related row changes.
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s, until } from "./common.mjs";
 
 const db = createClient({ schema: s, url: BASE, workspace: randomUUID() });
