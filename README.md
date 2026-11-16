@@ -25,6 +25,7 @@ newer; the library itself runs in Cloudflare Workers.
 
 ```bash
 npx @tapedb/tapedb init     # schema, worker, wrangler config, first migration
+npm install @tapedb/tapedb  # the library and types your Worker compiles against
 npx @tapedb/tapedb dev      # local database with a dev claim route
 npx @tapedb/tapedb studio   # local table browser on http://127.0.0.1:4400
 ```
