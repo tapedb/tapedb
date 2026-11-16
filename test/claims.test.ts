@@ -13,7 +13,7 @@ import { mintClaim, mintDevClaim, signRoleClaim } from "../src/mint";
 import { ClaimError, extractClaimToken, verifyRoleClaim } from "../src/verify";
 
 const SECRET = "test-secret-do-not-use-in-production";
-const OTHER_SECRET = "a-different-secret";
+const OTHER_SECRET = "a-different-secret-for-the-signature-test";
 const WORKSPACE = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 const OTHER_WORKSPACE = "11111111-2222-4333-8444-555555555555";
 
@@ -331,3 +331,45 @@ describe("claim transport", () => {
     expect(extractClaimToken(basic)).toBeNull();
   });
 });
+
+describe("claim secret length", () => {
+  const short = "x".repeat(31);
+  const enough = "x".repeat(32);
+
+  test("signing refuses a secret under 32 bytes", async () => {
+    await expect(signRoleClaim(short, { sub: "u", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER })).rejects.toThrow("at least 32 bytes");
+    await expect(signRoleClaim(enough, { sub: "u", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER })).resolves.toHaveProperty("token");
+  });
+
+  test("verification refuses a secret under 32 bytes, even for a token signed with it", async () => {
+    const { token } = await signRoleClaim(enough, { sub: "u", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER });
+    const forged = await forgeWithShortSecret(short);
+    await expect(verifyRoleClaim(forged, { TAPEDB_CLAIM_SECRET: short }, WORKSPACE)).rejects.toThrow("at least 32 bytes");
+    await expect(verifyRoleClaim(token, { TAPEDB_CLAIM_SECRET: enough }, WORKSPACE)).resolves.toHaveProperty("sub", "u");
+  });
+
+  test("counts bytes, not characters", async () => {
+    // 16 two-byte characters: 32 bytes.
+    await expect(signRoleClaim("é".repeat(16), { sub: "u", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER })).resolves.toHaveProperty("token");
+    await expect(signRoleClaim("é".repeat(15), { sub: "u", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER })).rejects.toThrow("at least 32 bytes");
+  });
+
+  test("the claim routes answer 500 claim_secret_missing", async () => {
+    const identity = { getSubject: async () => ({ sub: "u" }), getRole: async () => WORKSPACE_ROLE_LEVELS.MEMBER };
+    const request = () => new Request("https://w.test/_tapedb/claim", { method: "POST", body: JSON.stringify({ workspaceId: WORKSPACE }) });
+    const minted = await handleClaimRequest(request(), { env: { TAPEDB_CLAIM_SECRET: short }, identity });
+    expect(minted.status).toBe(500);
+    expect(await minted.json()).toMatchObject({ error: { code: "claim_secret_missing" } });
+    const dev = await handleClaimRequest(request(), { env: { TAPEDB_CLAIM_SECRET: short, TAPEDB_DEV_CLAIMS: "true" }, devClaims: true });
+    expect(dev.status).toBe(500);
+  });
+});
+
+/** A token signed directly with WebCrypto, bypassing signRoleClaim's check. */
+async function forgeWithShortSecret(secret: string): Promise<string> {
+  const header = base64Url({ alg: "HS256", typ: "JWT" });
+  const body = base64Url({ sub: "u", workspaceId: WORKSPACE, role: WORKSPACE_ROLE_LEVELS.OWNER, iat: 0, exp: Math.floor(Date.now() / 1000) + 60 });
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  const signature = new Uint8Array(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(`${header}.${body}`)));
+  return `${header}.${body}.${btoa(String.fromCharCode(...signature)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")}`;
+}

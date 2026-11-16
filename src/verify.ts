@@ -1,5 +1,6 @@
 import {
   WORKSPACE_ROLE_LEVELS,
+  claimSecretProblem,
   type RoleClaim,
   type WorkspaceRole,
 } from "./claims";
@@ -104,9 +105,8 @@ export async function verifyRoleClaim(
 
   const signature = decodeBase64Url(signatureSegment, "signature");
   const secret = env.TAPEDB_CLAIM_SECRET;
-  if (!secret) {
-    throw new Error("TAPEDB_CLAIM_SECRET is not configured.");
-  }
+  const problem = claimSecretProblem(secret);
+  if (problem !== null) throw new Error(problem);
 
   const key = await crypto.subtle.importKey(
     "raw",

@@ -436,7 +436,7 @@ order. Presence converges the same way: after a reconnect the client
 publishes its state again and receives everyone else's. Messages are limited to
 4 MiB of encoded JSON, including multipart messages. The workspace relays parts
 as they arrive, and the receiving client joins them. Pending assembly is bounded
-to 8 MiB per socket and 32 MiB per workspace; excess messages are rejected. By default any member of the workspace may listen and send; decide
+to 8 MiB per socket and 32 MiB per workspace; excess messages are rejected. By default anyone with a claim for the workspace may listen and send, guests included; decide
 per topic on the Worker:
 
 ```ts

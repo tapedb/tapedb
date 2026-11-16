@@ -11,7 +11,7 @@
  */
 
 import type { ClaimLimits, LimitDecision } from "./engine/claim-limits";
-import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "./claims";
+import { WORKSPACE_ROLE_LEVELS, claimSecretProblem, type RoleClaim, type WorkspaceRole } from "./claims";
 import { apiError, discardBody, json } from "./http";
 
 export const DEFAULT_CLAIM_TTL_SECONDS = 300;
@@ -52,7 +52,8 @@ export async function signRoleClaim(
   input: MintClaimInput,
   now: number = Date.now()
 ): Promise<MintedClaim> {
-  if (!secret) throw new Error("TAPEDB_CLAIM_SECRET is not configured.");
+  const problem = claimSecretProblem(secret);
+  if (problem !== null) throw new Error(problem);
 
   const ttlSeconds = input.ttlSeconds ?? DEFAULT_CLAIM_TTL_SECONDS;
   const issuedAt = Math.floor(now / 1000);
@@ -209,8 +210,9 @@ export async function mintClaim(
     return apiError(400, "invalid_workspace_id", "workspaceId must be a UUID.");
   }
 
-  if (!deps.secret) {
-    return apiError(500, "claim_secret_missing", "TAPEDB_CLAIM_SECRET is not configured.");
+  const secretProblem = claimSecretProblem(deps.secret);
+  if (secretProblem !== null) {
+    return apiError(500, "claim_secret_missing", secretProblem);
   }
 
   let role: WorkspaceRole | null;
