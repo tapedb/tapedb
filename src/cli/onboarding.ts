@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { stripVTControlCharacters } from "node:util";
 import { confirm, interactive, select } from "./prompts";
 export { ask, confirm, interactive } from "./prompts";
 
@@ -103,7 +104,7 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
     let names = known.get(jurisdiction);
     if (!names) {
       const output = requireSuccess(command(["r2", "bucket", "list", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], true), "R2 bucket lookup");
-      names = new Set(Array.from(output.matchAll(/^\s*name:\s*(\S+)\s*$/gm), match => match[1]!));
+      names = new Set(Array.from(stripVTControlCharacters(output).matchAll(/^\s*name:\s*(\S+)\s*$/gm), match => match[1]!));
       known.set(jurisdiction, names);
     }
     if (!names.has(bucket.bucket_name)) {
@@ -134,10 +135,12 @@ function workerName(config: DeployConfig, env: string | undefined): string {
 /**
  * Whether a failed `wrangler secret list` only says this Worker does not exist yet (a first
  * deploy). The API answers with code 10007; Wrangler 4.163 prints `Worker "<name>" not found.`
- * without it. Any other failure, or a missing Worker of another name, is a real error.
+ * without it, and may colour it. Any other failure, or a missing Worker of another name, is a
+ * real error.
  */
 function workerNotFound(output: string, name: string): boolean {
-  return /\b10007\b/.test(output) || output.includes('Worker "' + name + '" not found');
+  const plain = stripVTControlCharacters(output);
+  return /\b10007\b/.test(plain) || plain.includes('Worker "' + name + '" not found');
 }
 
 export function missingSecrets(existing: string[]): Record<string, string> {
