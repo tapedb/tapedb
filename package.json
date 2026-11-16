@@ -60,7 +60,8 @@
   "scripts": {
     "build": "tsup",
     "typecheck": "tsc --noEmit && tsc --noEmit -p test/types",
-    "verify": "bun run typecheck && bun test && bun run build && bun run test:package",
+    "verify": "bun run typecheck && bun test && bun run test:docs && bun run build && bun run test:package",
+    "test:docs": "node scripts/check-docs.mjs",
     "test:package": "node scripts/package-smoke.mjs",
     "test": "bun test test",
     "api:update": "bun scripts/api-surface.ts --write",
