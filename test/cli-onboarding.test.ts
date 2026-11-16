@@ -62,3 +62,32 @@ test("a secret lookup permission error stops deployment instead of generating re
   await expect(provisionAndDeploy(root, { account_id: "account", name: "app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
   expect(deployed).toBe(false);
 });
+
+test("a first deploy treats wrangler's missing-Worker answer as no secrets yet", async () => {
+  // Wrangler 4.163 prints this without Cloudflare's 10007 code.
+  const missing = `✘ [ERROR] Worker "tapedb-app" not found.\n\n  If this is a new Worker, run \`wrangler deploy\` first to create it.\n`;
+  for (const answer of [missing, "A request to the Cloudflare API failed. workers.api.error.script_not_found [code: 10007]"]) {
+    const root = project();
+    let generated: string[] = [];
+    const command: WranglerCommand = (args) => {
+      if (args[0] === "whoami") return { status: 0, stdout: JSON.stringify({ accounts: [{ id: "account", name: "Account" }] }), stderr: "" };
+      if (args[0] === "secret") return { status: 1, stdout: "", stderr: answer };
+      if (args[0] === "deploy") generated = Object.keys(JSON.parse(readFileSync(args[args.indexOf("--secrets-file") + 1]!, "utf8")));
+      return { status: 0, stdout: "", stderr: "" };
+    };
+    expect(await provisionAndDeploy(root, { account_id: "account", name: "tapedb-app" }, undefined, true, () => command)).toBe(0);
+    expect(generated).toEqual(["TAPEDB_CLAIM_SECRET", "TAPEDB_KEY_SECRET"]);
+  }
+});
+
+test("a missing-Worker answer about a different Worker still stops deployment", async () => {
+  const root = project();
+  let deployed = false;
+  const command: WranglerCommand = (args) => {
+    if (args[0] === "whoami") return { status: 0, stdout: JSON.stringify({ accounts: [{ id: "account", name: "Account" }] }), stderr: "" };
+    if (args[0] === "deploy") deployed = true;
+    return { status: 1, stdout: "", stderr: `✘ [ERROR] Worker "other-app" not found.` };
+  };
+  await expect(provisionAndDeploy(root, { account_id: "account", name: "tapedb-app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
+  expect(deployed).toBe(false);
+});
