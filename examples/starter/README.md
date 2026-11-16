@@ -30,6 +30,7 @@ import schema from "./tapedb.schema";
 const db = createClient({
   schema,
   url: "http://localhost:8787",
+  userId: "dev-user", // claim subject; required for persistent browser queues
   workspace: "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a", // any UUID: one database each
 });
 
@@ -40,7 +41,7 @@ const boards = await db.board.findMany({ include: { columns: { include: { tasks:
 ```
 
 With no `getToken`, the client asks the dev claim route for a token. In
-production, pass `getToken` and configure `identity` in `defineTapeDB`.
+production, pass the authenticated subject as `userId`, supply `getToken` and configure `identity` in `defineTapeDB`.
 
 ## Change the schema
 

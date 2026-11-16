@@ -33,6 +33,8 @@ export interface ApplyContext {
    * and a patch of a missing row is a no-op instead of an error.
    */
   replay?: boolean;
+  /** Authorize against the row immediately before each mutation. */
+  beforeOp?: (op: ValidatedOp) => void;
 }
 
 interface ErrorContext {
@@ -45,6 +47,7 @@ export function applyOps(context: ApplyContext, ops: ValidatedOp[]): number {
 
   for (const [opIndex, op] of ops.entries()) {
     try {
+      context.beforeOp?.(op);
       applied += applyOp(context, op);
     } catch (error) {
       throw toTxError(error, { txId: context.txId, opIndex });

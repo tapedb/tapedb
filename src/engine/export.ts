@@ -26,8 +26,12 @@ import { compileQuery } from "./query-compile";
 import { authorizeQuery, executeCompiledQueryWithPageInfo, viewAccess } from "./query-execute";
 import { QUERY_CHUNK_ROWS } from "./query-types";
 import { ENGINE_TABLES, NAMESPACES } from "./registry";
-import type { SqlExecutor } from "./tx-sql";
+import type { SqlExecutor, SqlRow } from "./tx-sql";
+import { readableFiles } from "./file-access";
 import { TxError } from "./tx-types";
+
+type ExportFile = SqlRow & { id: string; path: string; size: number; contentType: string | null; uploadedBy: string | null; r2Key: string; createdAt: number; updatedAt: number };
+type StepResult = { data: QueryResult; pageInfo: QueryPageInfo; files?: ExportFile[] };
 
 export const EXPORT_FORMAT = "tapedb-export";
 export const EXPORT_VERSION = 1;
@@ -66,7 +70,7 @@ function* exportSteps(
   claim: RoleClaim,
   workspaceId: string,
   now: () => number = Date.now
-): Generator<string | (() => { data: QueryResult; pageInfo: QueryPageInfo }), void, { data: QueryResult; pageInfo: QueryPageInfo }> {
+): Generator<string | (() => StepResult), void, StepResult> {
   const startSeq = highWater(sql);
   const { models, skipped } = plan(claim);
   yield JSON.stringify({
@@ -110,7 +114,7 @@ function* exportSteps(
 
     let lastPath: string | null = null;
     for (;;) {
-      const files: Array<Record<string, string | number | null>> = sql.all<Record<string, string | number | null>>(
+      const files: ExportFile[] = sql.all<ExportFile>(
         `SELECT "id", "path", "r2_key" AS "r2Key", "size", "content_type" AS "contentType",
                 "uploaded_by" AS "uploadedBy", "created_at" AS "createdAt", "updated_at" AS "updatedAt"
            FROM "${ENGINE_TABLES.files}"
@@ -119,7 +123,11 @@ function* exportSteps(
         ...((lastPath === null ? [] : [lastPath]) as string[]),
         QUERY_CHUNK_ROWS
       );
-      for (const file of files) yield JSON.stringify({ type: "file", file });
+      const visible = (yield () => {
+        const ids = new Set(readableFiles(sql, claim, files.map(file => ({ ...file, uploadedBy: file.uploadedBy ?? "" }))).map(file => file.id));
+        return { data: {}, pageInfo: {}, files: files.filter(file => ids.has(file.id)) };
+      }).files ?? [];
+      for (const file of visible) yield JSON.stringify({ type: "file", file });
       if (files.length < QUERY_CHUNK_ROWS) break;
       lastPath = String(files[files.length - 1].path);
     }

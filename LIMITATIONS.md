@@ -26,6 +26,10 @@
 The repository and npm package stay private until every gate in
 [RELEASING.md](RELEASING.md) is met: CI on every change, a clean secret and
 history scan, a security review of the claim, workspace, file and erase paths,
-a packed artifact exercised from a clean project, an independent review or
-the maintainer's written acceptance of the remaining risk, and dogfooding
-beyond the test suite and staging drills.
+a packed artifact exercised from a clean project, an independent source review,
+and deployed-runtime durability, recovery, migration, erasure and offline
+persistence checks.
+
+Socket JSON messages are bounded to 4 MiB, with at most 1,024 parts. Pending
+assemblies allow eight IDs and 8 MiB per socket, and 32 MiB per workspace. Topic
+replay is additionally bounded to 8 MiB across the workspace.

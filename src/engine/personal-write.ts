@@ -41,23 +41,6 @@ export async function runPersonalTransaction(sql: SqlExecutor, personal: Persona
     for (const ids of stagedIds(sql, staged.keys.get(index)!)) yield bulkChunk(tx.txId, tx.ops[index] as never, tx.rawOps[index], ids);
   })();
   try {
-    // Every rule is decided against the same pre-write database.
-    for (const [index, op] of tx.ops.entries()) {
-      const batches = isBulk(op) ? chunks(index) : [{ ops: [op] }];
-      for (const batch of batches) {
-        const groups = new Map<string, string[]>();
-        for (const item of batch.ops) {
-          const name = isLinkOp(item) ? item.childNamespace : item.namespace;
-          const id = isLinkOp(item) ? item.childId : "id" in item ? item.id : undefined;
-          if (id) { const ids = groups.get(name) ?? []; ids.push(id); groups.set(name, ids); }
-        }
-        for (const [name, ids] of groups) {
-          const model = findNamespace(name)!;
-          await personal.read(() => personal.decodeRows(name, sql.all(`SELECT * FROM "${model.table}" WHERE id IN (SELECT value FROM json_each(?))`, JSON.stringify(ids))));
-        }
-        assertRowPermissions(viewSql, claim, batch.ops);
-      }
-    }
     const nothing = tx.ops.every((op, index) => isBulk(op) && staged.matched[index] === 0);
     if (nothing && tx.clientTxId === undefined) return { txId: tx.txId, seq: sql.one<{ seq: number }>(`SELECT high_water_seq AS seq FROM "_tx_state" WHERE id = 1`)?.seq ?? 0, applied: 0, matched: staged.matched };
     const now = Date.now();
@@ -67,6 +50,7 @@ export async function runPersonalTransaction(sql: SqlExecutor, personal: Persona
     for (const [index, op] of tx.ops.entries()) {
       const batches = isBulk(op) ? chunks(index) : [{ ops: [op] }];
       for (const batch of batches) for (let item of batch.ops) {
+        await personal.read(() => assertRowPermissions(viewSql, claim, [item]));
         if ("values" in item && "id" in item) {
           const model = findNamespace(item.namespace)!;
           const inserting = !sql.one(`SELECT id FROM "${model.table}" WHERE id = ?`, item.id);
