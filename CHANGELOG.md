@@ -13,6 +13,10 @@
   the path as is, a path with an empty segment outside `/files/` answers 404,
   the index accepts only objects stored under the file's own path, and every
   client `x-tapedb-*` header is removed before forwarding.
+- `TAPEDB_CLAIM_SECRET` must be at least 32 bytes. A shorter secret could be
+  recovered offline from any claim and used to forge others; signing and
+  verifying now refuse it, and the claim routes answer 500
+  `claim_secret_missing`. `tapedb init` already generates 32 random bytes.
 
 ### Changed
 

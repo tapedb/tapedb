@@ -12,7 +12,7 @@ const { setLogPartBytesForTests } = await import("../src/engine/tx-log");
 const { flushPending } = await import("../src/engine/durability/flusher");
 const { durableObjectRecoverySqlExecutor } = await import("../src/engine/durability/recovery-support");
 const ID = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a6b";
-const SECRET = "workspace-move-secret-test-test";
+const SECRET = "workspace-move-secret-test-test-test";
 const models = schema({
   parent: model({ name: t.string(), children: t.hasMany("child") }),
   child: model({ name: t.string(), parent: t.belongsTo("parent") }),

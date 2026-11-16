@@ -11,7 +11,8 @@
  * and the client rejoins them after a reconnect.
  *
  * Who may join or send is the deployment's call (`defineTapeDB({ topics })`);
- * by default any member of the workspace may, as with presence.
+ * by default anyone with a claim for the workspace may, guests included, as
+ * with presence.
  */
 
 import type { RoleClaim } from "../claims";

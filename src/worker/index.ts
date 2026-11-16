@@ -71,9 +71,9 @@ export interface DefineTapeDBOptions {
   devClaims?: boolean;
   /**
    * Broadcast topics. `authorize` decides whether a caller may join a topic
-   * or send to it; without it any member of the workspace may, as with
-   * presence. `replaySeconds` (default 60) is how much of each topic the
-   * room keeps for clients that reconnect.
+   * or send to it; without it anyone with a claim for the workspace may,
+   * guests included, as with presence. `replaySeconds` (default 60) is how
+   * much of each topic the room keeps for clients that reconnect.
    *
    * @experimental May change in a minor release.
    */
