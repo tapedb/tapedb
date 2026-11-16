@@ -434,17 +434,24 @@ async function init(argv: string[]): Promise<number> {
   }
 
   console.log(`
-Next:
+Run it locally:
+
+  npm install @tapedb/tapedb      # the library this Worker imports
+  npx @tapedb/tapedb dev          # http://localhost:8787, with a dev claim route
+  npx @tapedb/tapedb studio       # table browser for the running Worker
+
+Wrangler simulates the R2 buckets locally, so a local database needs no
+Cloudflare resources and no secrets pushed.
+
+When you deploy, first:
 
   npx wrangler r2 bucket create ${name}-data${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
   npx wrangler r2 bucket create ${name}-files${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
   npx wrangler secret put TAPEDB_CLAIM_SECRET
   npx wrangler secret put TAPEDB_KEY_SECRET
-  npx @tapedb/tapedb dev          # local database
   npx @tapedb/tapedb deploy       # once ENVIRONMENT is "production"
 
-That is the whole footprint: one Durable Object class, two R2 buckets.
-`);
+That is the whole footprint: one Durable Object class, two R2 buckets.`);
   return 0;
 }
 
