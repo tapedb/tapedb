@@ -26,6 +26,17 @@ outbox remediation pass. The review was source-only: the reviewer did not run
 tests or validate Cloudflare behavior. Regression tests accompany the fixes;
 CI and deployed runtime validation remain separate evidence.
 
+## Release acceptance — 0.1.0
+
+The independent review above was done by an agent, not a person. For 0.1.0
+the maintainer accepts it as gate 6's independent source review, together with
+the follow-up review in [SECURITY-REVIEW.md](SECURITY-REVIEW.md) and the
+deployed-runtime checks below. The remaining risk is that a person reviewing
+the same code could find what the agent reviews did not. Security reports are
+handled as described in [SECURITY.md](SECURITY.md).
+
+Accepted by Brandon Diaz, 2026-11-16.
+
 ## Runtime validation
 
 The remediation passed 572 tests, typechecking, builds and packed npm consumer
@@ -33,3 +44,11 @@ checks. CI also passed Chromium persistence, secret scanning, and the packed
 workerd consumer and recovery suite. Deployed Cloudflare checks restored
 31,108 rows, a file and a retry receipt after class deletion; the erased
 workspace restored empty. The jurisdiction move and EU checks passed.
+
+The release candidate after the follow-up fixes (`c9ddef9`) passed the same
+checks: 583 tests and the packed npm consumer checks in `verify`; the packed
+workerd scenarios and drills locally; and on Cloudflare (staging build
+`640e13b4`) every scenario, the class-deletion drill restoring 31,108 rows, a
+file and a retry receipt, an erased workspace restoring empty, the move into
+the EU jurisdiction and the EU checks. Later commits before the tag change
+documentation only.

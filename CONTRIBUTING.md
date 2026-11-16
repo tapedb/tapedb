@@ -109,10 +109,9 @@ flusher, snapshots or recovery.
 
 ## Releasing
 
-Do not publish from a feature branch, and do not create a release tag while the
-private-preview gates are open. The gates, checks and publish steps are in
-[RELEASING.md](RELEASING.md). `package.json` stays `"private": true` until the
-release pull request removes it.
+Do not publish from a feature branch, and do not create a release tag before
+every gate is met. The gates, checks and publish steps are in
+[RELEASING.md](RELEASING.md).
 
 The package smoke check in `verify` uses Node 22.18 or newer and npm. It
 installs the built tarball into default npm, CommonJS and ESM projects, then

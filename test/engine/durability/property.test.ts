@@ -10,7 +10,7 @@ useLegacyFixture();
  * A fresh database recovers from the fake R2 bucket and must match the source
  * row-for-row, including `updated_seq` and every foreign-key column.
  *
- * This is the fast "wipe a DO, rebuild from R2" drill that runs in CI. The
+ * This is the fast "wipe a DO, rebuild from R2" drill that runs in `verify`. The
  * slower drill runs against a real Worker under `wrangler dev`.
  */
 
