@@ -2,16 +2,15 @@
 
 ## Current status
 
-The repository is **private** and `package.json` still has `"private": true`.
-The version is `0.1.0`, but nothing has been published. Do not create a release
-tag or run `npm publish` until every gate below is satisfied.
+0.1.0 is the first release. Every later release passes the same gates and
+checks before it is tagged or published.
 
 The design boundaries are in [LIMITATIONS.md](LIMITATIONS.md). The security
 model and operator responsibilities are in [SECURITY.md](SECURITY.md).
 
 ## Gates
 
-All gates must be true before the repository or package becomes public:
+All gates must be true before a release is tagged or published:
 
 1. `bun install --frozen-lockfile && bun run verify` passes on Node 22.18 or
    newer in CI.

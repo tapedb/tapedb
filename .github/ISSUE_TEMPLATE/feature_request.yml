@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        TapeDB is a private preview. Explain the problem before the shape of the solution, and note which documented limitation it touches.
+        Explain the problem before the shape of the solution, and note which documented limitation it touches.
   - type: textarea
     id: problem
     attributes:
