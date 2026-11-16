@@ -34,6 +34,18 @@ try {
     assert.equal(readFileSync(join(dir, ".dev.vars"), "utf8"), secret);
     assert.equal(readFileSync(join(dir, "package.json"), "utf8"), installedManifest);
     run("migrate", "check");
+    if (type === undefined) {
+      // Exercise dependency installation against this packed version, before
+      // it is published: the existing file dependency must remain intact.
+      run("init", "--yes", "--no-start");
+      const ready = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
+      assert.ok(ready.devDependencies.wrangler, "init must install Wrangler");
+      assert.equal(ready.scripts["tapedb:dev"], "tapedb dev");
+      assert.ok(existsSync(join(dir, "node_modules", "wrangler", "package.json")));
+      assert.equal(ready.dependencies["@tapedb/tapedb"], JSON.parse(installedManifest).dependencies["@tapedb/tapedb"]);
+      assert.ok(readFileSync(join(dir, ".gitignore"), "utf8").includes(".dev.vars"));
+      console.log("package smoke: automatic project installation passed");
+    }
 
     // Compile the installed public types, including declaration emission for
     // the generated Worker. Source-only typechecks miss private-name leaks in

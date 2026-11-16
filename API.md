@@ -299,3 +299,9 @@ Historical plaintext copies retain their original retention windows.
 
 Broadcast `send` returns `false` for JSON messages exceeding 4 MiB, before
 queueing or sending them. Multipart transmission obeys the same message bound.
+
+### Interactive setup
+
+`npx @tapedb/tapedb init` asks for a project name and local or cloud setup, installs the library and Wrangler using the project package manager, and offers to start the local database. `--local`, `--cloud`, `--name`, `--yes`, `--no-install` and `--no-start` support scripted setup. `--yes` uses defaults and does not select cloud deployment unless `--cloud` is also supplied.
+
+`tapedb deploy` selects the Cloudflare account, shows the deployment target, creates missing R2 buckets and missing secrets, then deploys the Worker. Existing remote secrets are preserved. `--yes` accepts the displayed deployment plan for CI. Unmigrated schemas, dev-claim variables and inconsistent data jurisdictions still refuse deployment.
