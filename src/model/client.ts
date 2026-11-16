@@ -303,7 +303,7 @@ export interface ClientConfig<M extends Models> {
   /** Claim subject; required for authenticated browser persistence. Recreate the client on account changes. */
   userId?: string;
   schema: Schema<M>;
-  /** The Worker's origin, e.g. https://api.example.com or http://localhost:8787. */
+  /** The Worker's origin, e.g. https://tapedb-app.<account-subdomain>.workers.dev or http://localhost:8787. */
   url: string;
   /** Workspace id (a UUID): which database this client talks to. */
   workspace: string;
