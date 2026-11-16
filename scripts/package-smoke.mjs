@@ -71,6 +71,20 @@ try {
     assert.equal(readdirSync(dir).filter(name => /^\.tapedb\.schema\./.test(name)).length, 0);
     console.log(`package smoke: ${type ?? "default npm"} passed`);
   }
+
+  // `npx @tapedb/tapedb init` runs the CLI from outside the project: the schema it
+  // writes imports the package by name, and with no node_modules beside it that name
+  // cannot resolve. The README's first command must still write the first migration.
+  const standalone = join(scratch, "standalone");
+  mkdirSync(standalone);
+  const outsideCli = join(scratch, "default", "node_modules", "@tapedb", "tapedb", "dist", "cli.js");
+  command(process.execPath, [outsideCli, "init"], standalone);
+  assert.ok(
+    existsSync(join(standalone, "tapedb", "migrations", "0002_entities.sql")),
+    "init outside a project must still write the first migration"
+  );
+  assert.equal(readdirSync(standalone).filter(name => /^\.tapedb\.schema\./.test(name)).length, 0);
+  console.log("package smoke: init outside a project passed");
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

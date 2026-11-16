@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.1.2 - 2026-11-16
+
+### Fixed
+
+- `npx @tapedb/tapedb init` in a directory with no `node_modules` stopped before
+  writing the first migration: the schema it writes imports the package by name,
+  and that name cannot resolve from a project that has not installed it. `init`
+  now retries the load against the CLI's own build, so the documented first
+  command produces `tapedb/migrations/0002_entities.sql` as it says it does. The
+  packed-consumer smoke covers the case by running `init` from outside the
+  project, the way `npx` does.
+- A schema that genuinely cannot resolve the package now says so, and names the
+  install command, instead of reporting a schema error.
+
+### Documentation
+
+- The quickstart installs the library as well as scaffolding it: the Worker that
+  `init` writes imports `@tapedb/tapedb/worker`, so the project needs it to build
+  and deploy.
+
 ## 0.1.1 - 2026-11-16
 
 ### Documentation
