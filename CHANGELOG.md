@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Loading a schema before installing the package resolves missing TapeDB
+  imports through the CLI's own build without rewriting schema values.
+  Package-name strings used as field defaults remain unchanged, and relative
+  helper modules can resolve their own TapeDB imports too.
+
 ## 0.1.2 - 2026-11-16
 
 ### Fixed
