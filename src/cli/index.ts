@@ -27,6 +27,33 @@ import { moveWorkspaces } from "./move";
 
 let schemaLoads = 0;
 
+/** This CLI's own build: the last-resort root for the package's own specifiers. */
+function ownDistDir(): string {
+  return dirname(fileURLToPath(import.meta.url));
+}
+
+/** Rewrite bare `@tapedb/tapedb…` imports in a schema copy to this CLI's own files. */
+function rewritePackageImports(source: string): string {
+  const dist = ownDistDir();
+  const modules: Record<string, string> = {
+    "@tapedb/tapedb/schema": "schema.js",
+    "@tapedb/tapedb/worker": "worker.js",
+    "@tapedb/tapedb/react": "react.js",
+    "@tapedb/tapedb": "index.js",
+  };
+  return source.replace(/(["'])(@tapedb\/tapedb(?:\/(?:schema|worker|react))?)\1/g, (_match, _quote: string, specifier: string) => {
+    const file = modules[specifier];
+    return file ? JSON.stringify(pathToFileURL(join(dist, file)).href) : JSON.stringify(specifier);
+  });
+}
+
+/** True when the failure is "the package cannot be resolved from this project". */
+function isUnresolvedPackage(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  const message = error instanceof Error ? error.message : String(error);
+  return (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") && message.includes("@tapedb/tapedb");
+}
+
 /** Loads the schema module: its default export, or an export named `schema`. */
 async function loadSchema(root: string, flags: Record<string, string | boolean>): Promise<TapeDBSchema> {
   const path = resolve(root, typeof flags.schema === "string" ? flags.schema : "tapedb.schema.ts");
@@ -43,10 +70,26 @@ async function loadSchema(root: string, flags: Record<string, string | boolean>)
     // CommonJS. An explicit .mts copy avoids inheriting its package type;
     // leave explicit .cts and JavaScript module formats alone.
     const extension = extname(path) === ".ts" ? ".mts" : extname(path);
-    const copy = join(dirname(path), `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}${extension}`);
+    const stem = `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}`;
+    const copy = join(dirname(path), `${stem}${extension}`);
     copyFileSync(path, copy);
     try {
       loaded = (await import(pathToFileURL(copy).href)) as Record<string, unknown>;
+    } catch (error) {
+      // A schema imports the package by name. When the CLI runs through `npx` in
+      // a project that has not installed it yet, that name cannot resolve — and
+      // `npx @tapedb/tapedb init` in an empty directory would stop before writing
+      // the first migration. Retry once from a second copy that points those
+      // specifiers at this CLI's own build. Only a resolution failure gets here,
+      // so a project that installed the package keeps loading its own copy.
+      if (!isUnresolvedPackage(error)) throw error;
+      const fallback = join(dirname(path), `${stem}.own${extension}`);
+      writeFileSync(fallback, rewritePackageImports(readFileSync(copy, "utf8")));
+      try {
+        loaded = (await import(pathToFileURL(fallback).href)) as Record<string, unknown>;
+      } finally {
+        rmSync(fallback, { force: true });
+      }
     } finally {
       rmSync(copy, { force: true });
     }
@@ -382,9 +425,11 @@ async function init(argv: string[]): Promise<number> {
       if (result.status === "created") console.log(`  created  tapedb/migrations/${result.id}.sql`);
     }
   } catch (error) {
-    console.error(
-      `\n  Could not generate the first migration (${error instanceof Error ? error.message : String(error)}).\n  Fix the schema and run \`npx @tapedb/tapedb init\` again; existing files are kept.`
-    );
+    const message = error instanceof Error ? error.message : String(error);
+    const hint = message.includes("@tapedb/tapedb")
+      ? `\n  The schema imports the package by name, so it must be installable from this project.\n  Run \`npm install @tapedb/tapedb\` and then \`npx @tapedb/tapedb init\` again; existing files are kept.`
+      : `\n  Fix the schema and run \`npx @tapedb/tapedb init\` again; existing files are kept.`;
+    console.error(`\n  Could not generate the first migration (${message}).${hint}`);
     return 1;
   }
 
