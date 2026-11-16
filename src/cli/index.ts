@@ -19,6 +19,7 @@ import { randomBytes } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import * as nodeModule from "node:module";
 
 import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot } from "./migrate";
@@ -32,8 +33,11 @@ function ownDistDir(): string {
   return dirname(fileURLToPath(import.meta.url));
 }
 
-/** Rewrite bare `@tapedb/tapedb…` imports in a schema copy to this CLI's own files. */
-function rewritePackageImports(source: string): string {
+/** Resolve missing package imports without changing schema source or values. */
+function schemaPackageResolution() {
+  // The packaged CLI requires Node 22.18+. Bun can still load installed
+  // schemas when running the source tests, without Node's loader hooks.
+  if (typeof nodeModule.registerHooks !== "function") return undefined;
   const dist = ownDistDir();
   const modules: Record<string, string> = {
     "@tapedb/tapedb/schema": "schema.js",
@@ -41,9 +45,16 @@ function rewritePackageImports(source: string): string {
     "@tapedb/tapedb/react": "react.js",
     "@tapedb/tapedb": "index.js",
   };
-  return source.replace(/(["'])(@tapedb\/tapedb(?:\/(?:schema|worker|react))?)\1/g, (_match, _quote: string, specifier: string) => {
-    const file = modules[specifier];
-    return file ? JSON.stringify(pathToFileURL(join(dist, file)).href) : JSON.stringify(specifier);
+  return nodeModule.registerHooks({
+    resolve(specifier, context, nextResolve) {
+      try {
+        return nextResolve(specifier, context);
+      } catch (error) {
+        const file = Object.hasOwn(modules, specifier) ? modules[specifier] : undefined;
+        if (!file || !isUnresolvedPackage(error)) throw error;
+        return nextResolve(pathToFileURL(join(dist, file)).href, context);
+      }
+    },
   });
 }
 
@@ -73,24 +84,11 @@ async function loadSchema(root: string, flags: Record<string, string | boolean>)
     const stem = `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}`;
     const copy = join(dirname(path), `${stem}${extension}`);
     copyFileSync(path, copy);
+    const hooks = schemaPackageResolution();
     try {
       loaded = (await import(pathToFileURL(copy).href)) as Record<string, unknown>;
-    } catch (error) {
-      // A schema imports the package by name. When the CLI runs through `npx` in
-      // a project that has not installed it yet, that name cannot resolve — and
-      // `npx @tapedb/tapedb init` in an empty directory would stop before writing
-      // the first migration. Retry once from a second copy that points those
-      // specifiers at this CLI's own build. Only a resolution failure gets here,
-      // so a project that installed the package keeps loading its own copy.
-      if (!isUnresolvedPackage(error)) throw error;
-      const fallback = join(dirname(path), `${stem}.own${extension}`);
-      writeFileSync(fallback, rewritePackageImports(readFileSync(copy, "utf8")));
-      try {
-        loaded = (await import(pathToFileURL(fallback).href)) as Record<string, unknown>;
-      } finally {
-        rmSync(fallback, { force: true });
-      }
     } finally {
+      hooks?.deregister();
       rmSync(copy, { force: true });
     }
   } catch (error) {

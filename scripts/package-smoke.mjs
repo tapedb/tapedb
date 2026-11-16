@@ -85,6 +85,27 @@ try {
   );
   assert.equal(readdirSync(standalone).filter(name => /^\.tapedb\.schema\./.test(name)).length, 0);
   console.log("package smoke: init outside a project passed");
+
+  // Missing-package resolution applies to the module graph, not to string
+  // values inside the schema. Helpers may import the package themselves.
+  for (const nested of [false, true]) {
+    const dir = join(scratch, nested ? "standalone-helper" : "standalone-defaults");
+    mkdirSync(dir);
+    const schemaPath = join(dir, "tapedb.schema.ts");
+    const values = ['@tapedb/tapedb', '@tapedb/tapedb/schema', '@tapedb/tapedb/worker', '@tapedb/tapedb/react'];
+    const fields = values.map((value, index) => `field${index}: t.string().default(${JSON.stringify(value)})`).join(',');
+    const source = nested
+      ? 'import { schema, model } from "@tapedb/tapedb/schema";\nimport { fields } from "./fields.mts";\nexport default schema({ note: model(fields) });\n'
+      : `import { schema, model, t } from "@tapedb/tapedb/schema";\nexport default schema({ note: model({${fields}}) });\n`;
+    if (nested) writeFileSync(join(dir, "fields.mts"), `import { t } from "@tapedb/tapedb/schema";\nexport const fields = {${fields}};\n`);
+    writeFileSync(schemaPath, source);
+    command(process.execPath, [outsideCli, "init"], dir);
+    const sql = readFileSync(join(dir, "tapedb", "migrations", "0002_entities.sql"), "utf8");
+    for (const value of values) assert.ok(sql.includes(`DEFAULT '${value}'`), `schema default must remain ${value}`);
+    assert.equal(readFileSync(schemaPath, "utf8"), source);
+    assert.equal(readdirSync(dir).filter(name => /^\.tapedb\.schema\./.test(name)).length, 0);
+  }
+  console.log("package smoke: standalone defaults and helper imports passed");
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
