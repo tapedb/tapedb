@@ -2,9 +2,8 @@
 
 ## Supported versions
 
-TapeDB has no public release yet. The private preview is tested from `main`;
-there are no supported release branches or versions until the first public
-release. Security fixes land on `main` and are called out in the changelog.
+The latest 0.x release receives security fixes. Fixes land on `main`, ship in
+a patch release, and are called out in the changelog.
 
 ## Reporting a vulnerability
 

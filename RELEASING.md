@@ -2,21 +2,20 @@
 
 ## Current status
 
-The repository is **private** and `package.json` still has `"private": true`.
-The version is `0.1.0`, but nothing has been published. Do not create a release
-tag or run `npm publish` until every gate below is satisfied.
+0.1.0 is the first release. Every later release passes the same gates and
+checks before it is tagged or published.
 
 The design boundaries are in [LIMITATIONS.md](LIMITATIONS.md). The security
 model and operator responsibilities are in [SECURITY.md](SECURITY.md).
 
 ## Gates
 
-All gates must be true before the repository or package becomes public:
+All gates must be true before a release is tagged or published:
 
 1. `bun install --frozen-lockfile && bun run verify` passes on Node 22.18 or
-   newer in CI.
-2. The CI secret and history scan is clean, and dependency and GitHub Actions
-   updates have been reviewed.
+   newer.
+2. The secret and history scan is clean, and dependency updates have been
+   reviewed.
 3. The security review covers claims, the trusted claim header, workspace
    isolation, file routes and erasure. Findings are fixed or accepted in
    writing.
@@ -29,7 +28,7 @@ All gates must be true before the repository or package becomes public:
 7. The GitHub repository is made public only after the npm package is ready,
    with branch protection or rulesets and secret scanning enabled. GitHub does
    not offer branch protection or rulesets for private repositories on the
-   free plan, so this is applied at the visibility change; until then the CI
+   free plan, so this is applied at the visibility change; until then the
    checks are advisory.
 
 The scoped security review is recorded in
@@ -50,9 +49,16 @@ bun run test:browser
 bun pm pack --destination /tmp/pack
 ```
 
-The CI consumer job exercises a freshly packed artifact in workerd, including
-writes, live queries, files, migrations, owner erasure and an R2 restore. The
-browser job checks IndexedDB persistence across a reload in Chromium.
+The consumer check is `bun run test:e2e`: it exercises a freshly packed
+artifact in workerd, including writes, live queries, files, migrations, owner
+erasure and an R2 restore. `bun run test:browser` checks IndexedDB persistence
+across a reload in Chromium.
+
+The secret and history scan that a workflow used to run is `gitleaks detect`:
+
+```bash
+gitleaks detect --source . --redact --no-banner --verbose   # gitleaks v8.30.1
+```
 
 The package smoke test inside `verify` installs the tarball under Node in
 default npm, CommonJS and ESM projects. It uses Node 22.18 or newer and npm, and emits consumer TypeScript declarations.
@@ -76,14 +82,19 @@ Only after the gates and checks:
 
 1. Update `CHANGELOG.md` and set the intended version in `package.json`.
 2. Open the release pull request and remove `"private": true` there. Keep
-   `publishConfig` and the repository metadata. Merge only after CI is green.
+   `publishConfig` and the repository metadata. Merge only after the checks
+   pass.
 3. Create an annotated tag and GitHub release from the merged commit.
 4. From that tag on a clean checkout, run the package checks again.
-5. Publish with provenance:
+5. Publish:
 
    ```bash
-   npm publish --provenance --access public
+   npm publish --access public
    ```
+
+   Without an npm CI service there is no OIDC token, so this publish carries no
+   provenance attestation. Do not add `--provenance` unless the publish runs in
+   CI.
 
 6. Verify the registry and the consumer path:
 
