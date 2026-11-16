@@ -99,7 +99,7 @@ Only after the gates and checks:
 6. Verify the registry and the consumer path:
 
    ```bash
-   npm view tapedb version dist-tags.latest
+   npm view @tapedb/tapedb version dist-tags.latest
    cd "$(mktemp -d)" && npm init -y && npm install @tapedb/tapedb wrangler
    npx @tapedb/tapedb init
    ```
