@@ -3,6 +3,7 @@
 ## 0.1.6 - 2026-11-16
 
 - A first cloud deploy no longer stops at "Secret lookup failed". Wrangler 4.163 reports a Worker that doesn't exist yet as `Worker "<name>" not found.` without the API's 10007 code, which setup didn't recognise; it now treats that answer, for the Worker being deployed, as "no secrets yet" and generates them.
+- Setup recognises existing R2 buckets, and a missing Worker, when Wrangler colours its output. A second run after a failed first deploy reuses the buckets it created.
 
 
 ## 0.1.5 - 2026-11-16
