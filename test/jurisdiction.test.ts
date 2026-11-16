@@ -166,7 +166,8 @@ describe("tapedb deploy and init", () => {
     try {
       // The files are written first; the first migration then needs an
       // installed tapedb, which a temp dir lacks (the e2e covers that path).
-      await run(["init", "--dir", dir, "--jurisdiction", "eu", "--no-install", "--no-start"]);
+      // --yes and --local keep it from prompting when the tests run in a terminal.
+      await run(["init", "--dir", dir, "--jurisdiction", "eu", "--yes", "--local", "--no-install", "--no-start"]);
     } finally {
       [console.log, console.error] = [log, error];
     }
