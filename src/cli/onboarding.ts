@@ -114,7 +114,7 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
   const listed = command(["secret", "list", "--format", "json", ...environmentArgs], true);
   let existing: Array<{ name: string }> = [];
   if (listed.status === 0) existing = JSON.parse(listed.stdout);
-  else if (!/\b10007\b/.test(listed.stderr + listed.stdout)) requireSuccess(listed, "Secret lookup");
+  else if (!workerNotFound(listed.stderr + listed.stdout, workerName(config, env))) requireSuccess(listed, "Secret lookup");
   const secrets = missingSecrets(existing.map(item => item.name));
   const temp = mkdtempSync(join(tmpdir(), "tapedb-deploy-"));
   try {
@@ -123,6 +123,21 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
     const result = command(["deploy", ...environmentArgs, ...(Object.keys(secrets).length ? ["--secrets-file", file] : [])]);
     return result.status ?? 1;
   } finally { rmSync(temp, { recursive: true, force: true }); }
+}
+
+/** The name Wrangler deploys under: an environment without its own name gets `<name>-<env>`. */
+function workerName(config: DeployConfig, env: string | undefined): string {
+  if (!env) return config.name ?? "";
+  return config.env?.[env]?.name ?? config.name + "-" + env;
+}
+
+/**
+ * Whether a failed `wrangler secret list` only says this Worker does not exist yet (a first
+ * deploy). The API answers with code 10007; Wrangler 4.163 prints `Worker "<name>" not found.`
+ * without it. Any other failure, or a missing Worker of another name, is a real error.
+ */
+function workerNotFound(output: string, name: string): boolean {
+  return /\b10007\b/.test(output) || output.includes('Worker "' + name + '" not found');
 }
 
 export function missingSecrets(existing: string[]): Record<string, string> {
