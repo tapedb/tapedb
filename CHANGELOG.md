@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.5 - 2026-11-16
 
 - Setup uses arrow-key menus with visible choices and cancellation. Choosing cloud setup proceeds to deployment without asking the same question again. Standalone deploy has one explicit Deploy now confirmation.
 
