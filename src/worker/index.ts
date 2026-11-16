@@ -98,19 +98,32 @@ export interface TapeDBWorker {
   worker: { fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> };
 }
 
-function roomRequest(request: Request, path: string): Request {
-  const headers = new Headers(request.headers);
-  // Never let a client supply the trusted claim header.
-  headers.delete(TRUSTED_CLAIM_HEADER);
+/**
+ * Headers the Worker forwards to a room: the client's, minus every
+ * `x-tapedb-*` header. Only the Worker sets those (the verified claim).
+ */
+function forwardableHeaders(source: HeadersInit | undefined): Headers {
+  const headers = new Headers(source);
+  for (const name of [...headers.keys()]) {
+    if (name.startsWith("x-tapedb-")) headers.delete(name);
+  }
+  return headers;
+}
 
-  const init: RequestInit = { method: request.method, headers };
+/** A room URL with exactly this path; never resolved relative to anything. */
+function roomUrl(path: string, search = ""): URL {
+  const url = new URL("https://room.internal/");
+  url.pathname = path;
+  url.search = search;
+  return url;
+}
+
+function roomRequest(request: Request, path: string): Request {
+  const init: RequestInit = { method: request.method, headers: forwardableHeaders(request.headers) };
   if (request.method !== "GET" && request.method !== "HEAD") {
     init.body = request.body;
   }
-
-  const url = new URL(path, "https://room.internal");
-  url.search = new URL(request.url).search;
-  return new Request(url, init);
+  return new Request(roomUrl(path, new URL(request.url).search), init);
 }
 
 /** The workspace's Durable Object, inside TAPEDB_JURISDICTION when set. */
@@ -167,11 +180,11 @@ async function callRoom(
   init: RequestInit,
   trustedClaim: string
 ): Promise<Response> {
-  const headers = new Headers(init.headers);
-  headers.delete(TRUSTED_CLAIM_HEADER);
+  const headers = forwardableHeaders(init.headers);
   headers.set(TRUSTED_CLAIM_HEADER, trustedClaim);
 
-  const request = new Request(new URL(path, "https://room.internal"), {
+  const queryAt = path.indexOf("?");
+  const request = new Request(queryAt === -1 ? roomUrl(path) : roomUrl(path.slice(0, queryAt), path.slice(queryAt)), {
     ...init,
     headers,
   });
@@ -230,6 +243,13 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
       if (!isWorkspaceId(workspaceId)) {
         await discardBody(request);
         return apiError(400, "invalid_workspace_id", "Workspace id must be a UUID.");
+      }
+      // An empty segment ("//") would let one route stand in for another
+      // that the Worker keeps internal. No room route has one; a file path
+      // may, and is passed to the byte routes as data, never as the path.
+      if (!roomPath.startsWith("/files/") && roomPath.includes("//")) {
+        await discardBody(request);
+        return apiError(404, "no_route", `No route for ${request.method} ${url.pathname}.`);
       }
 
       // Every engine route needs a verified claim before a Durable Object is
