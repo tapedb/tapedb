@@ -46,6 +46,6 @@ Personal key deletion does not erase prior plaintext from pre-encryption
 history or external exports. Those copies require their own retention and
 erasure process. Cloudflare's point-in-time recovery caveat remains.
 
-The independent-review and sustained-production-dogfooding gate in
-RELEASING.md remains open. No maintainer risk acceptance is inferred from an
-instruction to implement fixes, and no production history is claimed here.
+The subsequent independent source review and remediation are recorded in
+[INDEPENDENT-REVIEW.md](INDEPENDENT-REVIEW.md). Validate the exact release
+candidate against the checks in [RELEASING.md](RELEASING.md).

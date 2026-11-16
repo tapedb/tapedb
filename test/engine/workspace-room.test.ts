@@ -42,6 +42,7 @@ function createSqlStorage(db: Database) {
     ): SqlCursor<T> {
       const trimmed = query.trim();
       const lower = trimmed.toLowerCase();
+      if (/^(drop table(?: if exists)?|delete from)\s+"?_cf_/i.test(trimmed)) throw new Error("not authorized: SQLITE_AUTH");
       const isRead =
         /^(select|with|explain)\b/i.test(trimmed) ||
         (lower.startsWith("pragma") && !lower.includes("="));
@@ -421,6 +422,7 @@ describe("WorkspaceRoom erase", () => {
     const env = { DATA: data, FILES: files } as unknown as Env;
     const room = new WorkspaceRoom(context as unknown as DurableObjectState, env);
     await context.ready;
+    db.exec('CREATE TABLE "_cf_KV" (key TEXT PRIMARY KEY, value BLOB)');
 
     const write = await room.fetch(new Request("http://test/transact", {
       method: "POST",
@@ -446,8 +448,9 @@ describe("WorkspaceRoom erase", () => {
     expect([...data.objects.keys()]).toEqual([`ws/${OTHER}/manifest.json`]);
     expect([...files.objects.keys()]).toEqual([`workspaces/${OTHER}/files/keep.txt`]);
     expect(context.alarm).toBeNull();
-    const tables = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`).all();
+    const tables = db.query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'`).all();
     expect(tables).toEqual([{ name: "_tapedb_erased" }]);
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = '_cf_KV'").get()).not.toBeNull();
 
     // Everything after answers 410, including after a restart.
     expect((await room.fetch(new Request("http://test/status", { headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim()) } }))).status).toBe(410);
@@ -498,5 +501,83 @@ describe("WorkspaceRoom erase", () => {
     expect((await files("DELETE", WORKSPACE_ROLE_LEVELS.MEMBER, { path: "a.txt" })).status).toBe(403);
     const listed = await files("GET", WORKSPACE_ROLE_LEVELS.MEMBER);
     expect(((await listed.json()) as { data: Array<{ path: string }> }).data.map((row) => row.path)).toEqual(["a.txt"]);
+  });
+});
+
+
+describe("erasure is isolated from ongoing work", () => {
+  const erase = (room: InstanceType<typeof WorkspaceRoom>) => room.fetch(new Request("http://test/", { method: "DELETE", headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim(WORKSPACE_ROLE_LEVELS.OWNER)) } }));
+  test("waits for an in-flight R2 flush and rejects socket writes before deleting", async () => {
+    const db = new Database(":memory:");
+    const context = new FakeContext(db, TEST_WORKSPACE);
+    const data = new FakeR2Bucket();
+    const room = new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: data } as unknown as Env);
+    await context.ready;
+    await room.fetch(new Request("http://test/transact", { method: "POST", headers: { "content-type": "application/json", "x-tapedb-claims": encodeTrustedRoleClaim(claim()) }, body: JSON.stringify({ txId: "seed", ops: [{ op: "update", namespace: "folders", id: "f", values: { name: "before" } }] }) }));
+    let began!: () => void, release!: () => void;
+    const entered = new Promise<void>(resolve => began = resolve);
+    const held = new Promise<void>(resolve => release = resolve);
+    const put = data.put.bind(data);
+    let first = true;
+    data.put = async (...args: Parameters<typeof data.put>) => {
+      if (first) { first = false; began(); await held; }
+      return put(...args);
+    };
+    const flush = room.alarm();
+    await entered;
+    const deleting = erase(room);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(db.query("SELECT name FROM folders WHERE id = 'f'").get()).toEqual({ name: "before" });
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = '_tapedb_erasing'").get()).toBeNull();
+    const socket = new FakeSocket("late");
+    socket.attachment = { clientId: "late", sub: "user-1", role: WORKSPACE_ROLE_LEVELS.OWNER, exp: Math.floor(Date.now() / 1000) + 60, subscriptions: [] };
+    await room.webSocketMessage(socket as unknown as WebSocket, JSON.stringify({ type: "part", id: "late", index: 0, last: false, data: "unfinished" }));
+    expect(socket.closed).toBe(true);
+    expect(db.query("SELECT COUNT(*) AS n FROM _socket_parts WHERE client_id = 'late'").get()).toEqual({ n: 0 });
+    release();
+    await flush;
+    expect((await deleting).status).toBe(200);
+    expect(data.objects.size).toBe(0);
+    expect(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()).toEqual([{ name: "_tapedb_erased" }]);
+  });
+
+  test("a restart after failed cleanup refuses writes and resumes from durable intent", async () => {
+    const db = new Database(":memory:");
+    const data = new FakeR2Bucket();
+    const context = new FakeContext(db, TEST_WORKSPACE);
+    const env = { DATA: data } as unknown as Env;
+    const room = new WorkspaceRoom(context as unknown as DurableObjectState, env);
+    await context.ready;
+    data.seed(`ws/${TEST_WORKSPACE}/log/1-1.ndjson`, "history");
+    data.failDeletes = true;
+    expect((await erase(room)).status).toBe(500);
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = '_tapedb_erasing'").get()).not.toBeNull();
+    const nextContext = new FakeContext(db, TEST_WORKSPACE);
+    const restarted = new WorkspaceRoom(nextContext as unknown as DurableObjectState, env);
+    await nextContext.ready;
+    const write = await restarted.fetch(new Request("http://test/transact", { method: "POST", headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim()) }, body: "{}" }));
+    expect(write.status).toBe(410);
+    data.failDeletes = false;
+    await restarted.alarm();
+    expect(data.objects.size).toBe(0);
+    expect(db.query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'").all()).toEqual([{ name: "_tapedb_erased" }]);
+  });
+
+  test("a failure installing the tombstone rolls local cleanup back, leaving durable intent", async () => {
+    const db = new Database(":memory:");
+    const context = new FakeContext(db, TEST_WORKSPACE);
+    const data = new FakeR2Bucket();
+    const room = new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: data } as unknown as Env);
+    await context.ready;
+    const exec = context.storage.sql.exec.bind(context.storage.sql);
+    context.storage.sql.exec = ((query: string, ...args: unknown[]) => {
+      if (query.startsWith('CREATE TABLE "_tapedb_erased"')) throw new Error("interrupted local cleanup");
+      return exec(query, ...args);
+    }) as typeof context.storage.sql.exec;
+    expect((await erase(room)).status).toBe(500);
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = '_tapedb_erasing'").get()).not.toBeNull();
+    expect(db.query("SELECT name FROM sqlite_master WHERE name = 'folders'").get()).not.toBeNull();
+    context.storage.sql.exec = exec;
+    expect((await erase(room)).status).toBe(200);
   });
 });

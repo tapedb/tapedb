@@ -16,7 +16,7 @@
 
 import type { RoleClaim } from "../claims";
 import { compileQuery } from "./query-compile";
-import { executeCompiledQueryWithPageInfo, viewAccess } from "./query-execute";
+import { authorizeQuery, executeCompiledQueryWithPageInfo, viewAccess } from "./query-execute";
 import { findNamespace } from "./registry";
 import type { SqlExecutor } from "./tx-sql";
 import { TxError } from "./tx-types";
@@ -54,6 +54,7 @@ function resolveIds(
     { [op.namespace]: { $: { where, order: { id: "asc" }, limit: BULK_BATCH_ROWS, select: ["id"] } } },
     viewAccess(claim)
   );
+  authorizeQuery(claim, compiled);
   const { data, pageInfo } = executeCompiledQueryWithPageInfo(sql, compiled, claim);
   return {
     ids: (data[op.namespace] ?? []).map((row) => (row as { id: string }).id),

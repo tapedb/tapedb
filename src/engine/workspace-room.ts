@@ -49,6 +49,7 @@ import {
   queryMatchesTouched,
   touchedNamespacesFromEnvelope,
 } from "./subscriptions";
+import { storageHandler } from "./storage-routes";
 import { exportStream } from "./export";
 import { importWorkspace, assertEmpty } from "./import-workspace";
 import { readMove, readMoveWithRetries, writeMove, sourceEnvironment, jurisdiction, copyWorkspace, type MoveState } from "./workspace-move";
@@ -58,14 +59,15 @@ import { isTopic, REPLAY_MESSAGES, topicAllowed, topicReplayMs } from "./topics"
 import { auditEnabled, dropAuditCapture, rowHistory, syncAuditCapture } from "./audit";
 import { findNamespace } from "./registry";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
-import { acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
+import { MAX_SOCKET_MESSAGE_BYTES } from "../socket-protocol";
+import { SocketLimitError, acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
 import { authorizeFile, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { migratePersonal } from "./personal-migrate";
 import { PersonalRuntime, hasPersonalFields, personalKeyPrefix } from "./personal";
 import { installPersonalCapture, runPersonalTransaction } from "./personal-write";
 import { runTransaction } from "./tx-pipeline";
-import { durableObjectSqlExecutor, type SqlValue } from "./tx-sql";
+import { durableObjectSqlExecutor, type SqlValue, type SqlExecutor } from "./tx-sql";
 import { TxError, type TxErrorCode } from "./tx-types";
 import { acceptVerifiedSocket } from "./ws-handshake";
 import { offeredProtocols, SOCKET_PROTOCOL } from "../socket-protocol";
@@ -124,6 +126,7 @@ export function setRecoveryBudgetsForTests(boot: number, step: number): void {
  */
 /** Left in an erased workspace's otherwise empty SQLite: when it was erased, nothing else. */
 const ERASED_TABLE = "_tapedb_erased";
+const ERASING_TABLE = "_tapedb_erasing";
 
 export class WorkspaceRoom extends DurableObject<Env> {
   /**
@@ -141,6 +144,23 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
   private personal?: PersonalRuntime;
   private erased = false;
+  private erasurePending = false;
+  private erasureRun: Promise<{ historyObjects: number; files: number }> | null = null;
+  private readonly activeWork = new Set<Promise<unknown>>();
+  private fileWork: Promise<void> = Promise.resolve();
+
+  private serializeFileWork<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.fileWork.then(operation, operation);
+    this.fileWork = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  private async trackWork<T>(operation: () => Promise<T>): Promise<T> {
+    const work = Promise.resolve().then(operation);
+    this.activeWork.add(work);
+    try { return await work; }
+    finally { this.activeWork.delete(work); }
+  }
   private importing = false;
   private moving = false;
   private moveState: MoveState | null = null;
@@ -176,6 +196,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // A claim-limiter object (see claim-limits.ts) holds buckets only.
     if (isLimiterName(ctx.id.name)) {
       this.limiter = true;
+      return;
+    }
+
+    // An interrupted erase is never reopened as an ordinary workspace.
+    if (ctx.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ERASING_TABLE}'`).toArray().length > 0) {
+      this.erased = true;
+      this.erasurePending = true;
+      await ctx.storage.setAlarm(Date.now());
       return;
     }
 
@@ -423,6 +451,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return apiError(308, "workspace_moved", `This workspace moved to ${this.moveState.to}.`);
     }
     if (this.erased) {
+      if (this.erasurePending && request.method === "DELETE" && new URL(request.url).pathname === "/") return this.erase(request);
       await discardBody(request);
       return apiError(410, "workspace_erased", "This workspace was erased.");
     }
@@ -435,7 +464,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
       response.headers.set("retry-after", "2");
       return response;
     }
-    try { return await this.route(request); }
+    try {
+      const erase = request.method === "DELETE" && new URL(request.url).pathname === "/";
+      return await (erase ? this.route(request) : this.trackWork(() => this.route(request)));
+    }
     finally {
       this.personal?.clearPlaintext();
       await discardBody(request);
@@ -462,6 +494,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (this.moveState?.state === "frozen" &&
       !(request.method === "GET" || url.pathname === "/query" || url.pathname === "/files/authorize")) {
       return apiError(409, "workspace_moving", "Writes resume after this workspace finishes moving.");
+    }
+
+    if (url.pathname.startsWith("/storage/")) {
+      const claim = readTrustedRoleClaim(request, this.workspaceId);
+      const handle = storageHandler(async (_env, _workspace, path, init, trustedClaim) => {
+        const headers = new Headers(init.headers);
+        headers.set("x-tapedb-claims", trustedClaim);
+        return this.route(new Request(new URL(path, "https://room.internal"), { ...init, headers }));
+      });
+      return this.serializeFileWork(() => {
+        if (this.moveState?.state === "frozen" || this.moveState?.state === "moved") return Promise.resolve(apiError(409, "workspace_moving", "File operations resume after the move."));
+        return handle(request, this.roomEnv, this.workspaceId, url.pathname.slice("/storage/".length), claim.role, request.headers.get("x-tapedb-claims")!);
+      });
     }
 
     if (url.pathname === "/websocket") {
@@ -877,6 +922,17 @@ export class WorkspaceRoom extends DurableObject<Env> {
     ws: WebSocket,
     message: string | ArrayBuffer
   ): Promise<void> {
+    if (!(await this.bootAgain()) || this.recovering || this.misplaced !== null) { this.closeSocket(ws, 1012, "workspace unavailable"); return; }
+    if (this.erased) { this.closeSocket(ws, 4410, "workspace erased"); return; }
+    try { return await this.trackWork(() => this.handleSocketMessage(ws, message)); }
+    catch (error) {
+      if (!(error instanceof SocketLimitError)) throw error;
+      this.send(ws, { type: "error", code: "message_limit_exceeded", message: error.message });
+      this.closeSocket(ws, 1009, "socket memory budget exceeded");
+    }
+  }
+
+  private async handleSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
     if (this.moveState?.state === "frozen" || this.moveState?.state === "moved") {
       this.closeSocket(ws, 1012, "workspace moving"); return;
     }
@@ -912,6 +968,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * socket-state.ts), and then runs here like any other.
    */
   private async handleText(ws: WebSocket, attachment: SocketAttachment, text: string, reassembled: boolean): Promise<void> {
+    if (text.length > MAX_SOCKET_MESSAGE_BYTES || new TextEncoder().encode(text).byteLength > MAX_SOCKET_MESSAGE_BYTES) throw new SocketLimitError("A complete WebSocket message is at most 4 MiB.");
     let payload: Record<string, unknown>;
     try {
       const parsed: unknown = JSON.parse(text);
@@ -945,9 +1002,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
           this.send(ws, { type: "error", code: "invalid_part", message: "A part is { id, index, last, data }." });
           return;
         }
-        const outcome = acceptPart(durableObjectSqlExecutor(this.ctx.storage), attachment.clientId, { id, index: index as number, last, data });
+        const outcome = acceptPart(durableObjectSqlExecutor(this.ctx.storage), attachment.clientId, { id: `message:${id}`, index: index as number, last, data });
         if ("error" in outcome) {
-          this.send(ws, { type: "error", code: outcome.error, message: `Part ${index} of message ${id} arrived out of order; the message was dropped.` });
+          this.send(ws, { type: "error", code: outcome.error, message: `Message ${id} was dropped: ${outcome.error}.` });
         } else if ("text" in outcome) {
           await this.handleText(ws, attachment, outcome.text, true);
         }
@@ -992,6 +1049,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   webSocketClose(ws: WebSocket, code: number, reason: string): void {
+    if (this.erased) { this.closeSocket(ws, 4410, "workspace erased"); return; }
     this.dropSubscriptionResults(ws);
     this.removePresence(ws);
     this.forgetSocketState(ws);
@@ -1003,6 +1061,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   webSocketError(ws: WebSocket): void {
+    if (this.erased) { this.closeSocket(ws, 4410, "workspace erased"); return; }
     this.dropSubscriptionResults(ws);
     this.removePresence(ws);
     this.forgetSocketState(ws);
@@ -1111,6 +1170,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
           seq - REPLAY_MESSAGES,
           now - topicReplayMs()
         );
+        // Count alone is insufficient when frames are large. Keep replay
+        // globally bounded so a reconnect cannot buffer an unbounded result.
+        sql.exec(`DELETE FROM "_topic_buffer" WHERE (topic, seq) IN (
+          SELECT topic, seq FROM (
+            SELECT topic, seq, SUM(length(CAST(frame AS BLOB))) OVER (ORDER BY at DESC, topic, seq DESC) AS bytes
+            FROM "_topic_buffer"
+          ) WHERE bytes > ?
+        )`, 8 * 1024 * 1024);
       }
     });
     return text;
@@ -1165,6 +1232,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (!topicAllowed(claimFromAttachment(attachment, this.workspaceId), topic, "send")) {
       this.topicError(ws, topic, "permission_denied", `Not allowed to send to topic "${topic}".`);
       return;
+    }
+    if (isPart) {
+      const outcome = acceptPart(durableObjectSqlExecutor(this.ctx.storage), attachment.clientId,
+        { id: `topic:${topic}:${part!.id}`, index: part!.index as number, last: part!.last as boolean, data: payload.data as string }, false);
+      if ("error" in outcome) {
+        this.topicError(ws, topic, outcome.error, "The multipart broadcast exceeded a quota or arrived out of order.");
+        return;
+      }
     }
     const from = { clientId: attachment.clientId, sub: attachment.sub };
     // A client instance's stable id, so it can skip its own messages when they
@@ -1490,31 +1565,80 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return apiError(403, "insufficient_role", "Only an owner can erase a workspace.");
     }
 
-    const workspaceId = this.workspaceId;
     this.erased = true;
+    this.erasurePending = true;
+    if (this.invalidationTimer !== null) clearTimeout(this.invalidationTimer);
+    this.invalidationTimer = null;
+    this.pendingInvalidationNamespaces.clear();
+    for (const ws of this.ctx.getWebSockets()) this.closeSocket(ws, 4410, "workspace erased");
     try {
-      await this.roomEnv.DATA.delete(manifestKey(workspaceId));
-      const history = (await listAllR2(this.roomEnv.DATA, `${workspacePrefix(workspaceId)}/`)).map((object) => object.key);
-      await deleteR2Keys(this.roomEnv.DATA, history);
-      await deleteR2Keys(this.roomEnv.DATA, (await listAllR2(this.roomEnv.DATA, personalKeyPrefix(workspaceId))).map(object => object.key));
-      const files = this.roomEnv.FILES ? (await listAllR2(this.roomEnv.FILES, filesPrefix(workspaceId))).map((object) => object.key) : [];
-      if (this.roomEnv.FILES) await deleteR2Keys(this.roomEnv.FILES, files);
-
-      await this.ctx.storage.deleteAlarm();
-      await this.ctx.storage.deleteAll();
-      this.ctx.storage.sql.exec(`CREATE TABLE "${ERASED_TABLE}" (at INTEGER NOT NULL)`);
-      this.ctx.storage.sql.exec(`INSERT INTO "${ERASED_TABLE}" (at) VALUES (?)`, Date.now());
-
-      for (const ws of this.ctx.getWebSockets()) this.closeSocket(ws, 4410, "workspace erased");
-      this.subscriptionResults.clear();
-      console.log("workspace_erased", { workspaceId, objects: history.length + 1, files: files.length });
-      return json({ ok: true, erased: { historyObjects: history.length + 1, files: files.length } });
+      const erased = await this.finishErase();
+      return json({ ok: true, erased });
     } catch (error) {
-      // Not erased yet: let the retry in. Each step above is idempotent.
-      this.erased = false;
-      console.error("workspace_erase_failed", { workspaceId, error: String(error) });
+      // Keep the durable intent and refuse new work until cleanup succeeds.
+      await this.ctx.storage.setAlarm(Date.now() + DURABILITY_ALARM_DELAY_MS);
+      console.error("workspace_erase_failed", { workspaceId: this.workspaceId, error: String(error) });
       return apiError(500, "erase_failed", `Erasing did not finish (${errorMessage(error)}); call it again.`);
     }
+  }
+
+  private async finishErase(): Promise<{ historyObjects: number; files: number }> {
+    if (this.erasureRun) return this.erasureRun;
+    this.erasureRun = this.eraseStorage();
+    try { return await this.erasureRun; }
+    finally { this.erasureRun = null; }
+  }
+
+  private async eraseStorage(): Promise<{ historyObjects: number; files: number }> {
+    // Drain writes, snapshots and flushes that started before the erase gate.
+    // No external deletion starts until this local intent is durably stored.
+    await Promise.allSettled([...this.activeWork]);
+    const sql = this.ctx.storage.sql;
+    sql.exec(`CREATE TABLE IF NOT EXISTS "${ERASING_TABLE}" (at INTEGER NOT NULL)`);
+    sql.exec(`INSERT INTO "${ERASING_TABLE}" (at) SELECT ? WHERE NOT EXISTS (SELECT 1 FROM "${ERASING_TABLE}")`, Date.now());
+    await this.ctx.storage.sync?.();
+    const workspaceId = this.workspaceId;
+    await this.roomEnv.DATA.delete(manifestKey(workspaceId));
+    const history = (await listAllR2(this.roomEnv.DATA, `${workspacePrefix(workspaceId)}/`)).map(object => object.key);
+    await deleteR2Keys(this.roomEnv.DATA, history);
+    await deleteR2Keys(this.roomEnv.DATA, (await listAllR2(this.roomEnv.DATA, personalKeyPrefix(workspaceId))).map(object => object.key));
+    const files = this.roomEnv.FILES ? (await listAllR2(this.roomEnv.FILES, filesPrefix(workspaceId))).map(object => object.key) : [];
+    if (this.roomEnv.FILES) await deleteR2Keys(this.roomEnv.FILES, files);
+    await this.ctx.storage.deleteAlarm();
+    // Clear application/engine tables and install the tombstone in ONE SQLite
+    // transaction. deleteAll followed by CREATE leaves a crash window.
+    this.ctx.storage.transactionSync(() => {
+        // Defer checks until all referencing tables are removed by this
+        // atomic transaction; retain Cloudflare-owned internal tables.
+        sql.exec("PRAGMA defer_foreign_keys = ON");
+        for (const { name } of sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).toArray()) sql.exec(`DROP TRIGGER IF EXISTS "${name.replaceAll('"', '""')}"`);
+        const tables = sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'`).toArray();
+        // Empty rows while all referenced tables still exist. Otherwise DROP
+        // can run cascade actions against a table already removed above it.
+        for (const { name } of tables) sql.exec(`DELETE FROM "${name.replaceAll('"', '""')}"`);
+        const children = new Map<string, string[]>();
+        for (const { name } of tables) {
+          for (const fk of sql.exec<{ table: string }>(`PRAGMA foreign_key_list("${name.replaceAll('"', '""')}")`).toArray()) {
+            if (fk.table !== name) children.set(fk.table, [...(children.get(fk.table) ?? []), name]);
+          }
+        }
+        const visited = new Set<string>();
+        const drop = (name: string): void => {
+          if (visited.has(name)) return;
+          visited.add(name);
+          for (const child of children.get(name) ?? []) drop(child);
+          sql.exec(`DROP TABLE IF EXISTS "${name.replaceAll('"', '""')}"`);
+        };
+        for (const { name } of tables) drop(name);
+        sql.exec(`CREATE TABLE "${ERASED_TABLE}" (at INTEGER NOT NULL)`);
+        sql.exec(`INSERT INTO "${ERASED_TABLE}" (at) VALUES (?)`, Date.now());
+    });
+    await this.ctx.storage.sync?.();
+    this.erasurePending = false;
+    this.personal?.clearPlaintext();
+    this.subscriptionResults.clear();
+    console.log("workspace_erased", { workspaceId, objects: history.length + 1, files: files.length });
+    return { historyObjects: history.length + 1, files: files.length };
   }
 
   private send(ws: WebSocket, message: unknown): void {
@@ -1550,6 +1674,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
   // ---- Invalidation --------------------------------------------------------
 
   private scheduleInvalidation(namespaces: Iterable<string>): void {
+    if (this.erased) return;
     for (const namespace of namespaces) {
       this.pendingInvalidationNamespaces.add(namespace);
     }
@@ -1560,12 +1685,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
       this.invalidationTimer = null;
       const touched = this.pendingInvalidationNamespaces;
       this.pendingInvalidationNamespaces = new Set();
-      const work = this.flushInvalidations(touched).catch(error => console.error("workspace_invalidation_failed", error));
+      const work = this.trackWork(() => this.flushInvalidations(touched)).catch(error => console.error("workspace_invalidation_failed", error));
       this.ctx.waitUntil?.(work);
     }, DEFAULT_INVALIDATION_DEBOUNCE_MS);
   }
 
   private async flushInvalidations(touched: ReadonlySet<string>): Promise<void> {
+    if (this.erased) return;
     // `getWebSockets` is part of the Durable Object runtime. Guard the call so
     // non-WebSocket harnesses (and older test doubles) do not crash a deferred
     // invalidation pass.
@@ -1725,6 +1851,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
    */
   async alarm(): Promise<void> {
     if (!(await this.bootAgain())) return;
+    if (this.erasurePending) {
+      try { await this.finishErase(); }
+      catch (error) {
+        console.error("workspace_erase_failed", { workspaceId: this.workspaceId, error: String(error) });
+        await this.ctx.storage.setAlarm(Date.now() + DURABILITY_ALARM_DELAY_MS);
+      }
+      return;
+    }
+    if (this.erased) return;
+    return this.trackWork(() => this.runAlarm());
+  }
+
+  private async runAlarm(): Promise<void> {
     if (this.limiter) return;
     if (this.erased || this.misplaced !== null) return;
     if (this.recovering) {
@@ -1889,14 +2028,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // Logged, not written in place: a row outside the log is lost by a restore
     // from R2 (see file-index.ts).
     const sql = durableObjectSqlExecutor(this.ctx.storage);
-    const previousKey = sql.one<{ key: string }>(`SELECT r2_key AS key FROM "_files" WHERE path = ?`, path)?.key;
-    recordFileEntry(sql, {
-      path,
-      key,
-      size,
-      contentType: typeof contentType === "string" ? contentType : null,
-      uploadedBy: claim.sub,
-    });
+    const commit = (view: SqlExecutor) => {
+      const existing = this.storedFile(view, path);
+      const incoming = { path, size, contentType: typeof contentType === "string" ? contentType : null, uploadedBy: claim.sub };
+      if (!authorizeFile(view, claim, "write", incoming, existing)) return { denied: true as const };
+      const previousKey = view.one<{ key: string }>(`SELECT r2_key AS key FROM "_files" WHERE path = ?`, path)?.key;
+      recordFileEntry(sql, { ...incoming, key });
+      return { denied: false as const, previousKey };
+    };
+    const decision = this.personal
+      ? await this.ctx.storage.transaction(() => this.readPersonal(commit))
+      : sql.transactionSync(() => commit(sql));
+    if (decision.denied) return apiError(403, "file_access_denied", "The file rules do not allow the completed upload.");
+    const previousKey = decision.previousKey;
     await this.scheduleFileFlush();
 
     return json({ ok: true, data: { path, size }, previousKey }, 201);

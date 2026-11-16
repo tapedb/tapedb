@@ -79,7 +79,7 @@ time-ordered), `createdAt` and `updatedAt`.
 import { createClient } from "tapedb";
 import schema from "./tapedb.schema";
 
-const db = createClient({ schema, url, workspace, getToken });
+const db = createClient({ schema, url, workspace, userId, getToken });
 
 const open = await db.task.findMany({
   where: { done: false, due: { lt: Date.now() } },
@@ -433,8 +433,10 @@ and go out after reconnecting. The workspace keeps the last 60 seconds of
 each topic (`topics.replaySeconds`, at most 1,000 messages), and a listener
 that reconnects gets what it missed before new messages, each once, in
 order. Presence converges the same way: after a reconnect the client
-publishes its state again and receives everyone else's. Messages of any size go through: a large one travels in parts the
-workspace relays as they come, and the receiving client joins them. By default any member of the workspace may listen and send; decide
+publishes its state again and receives everyone else's. Messages are limited to
+4 MiB of encoded JSON, including multipart messages. The workspace relays parts
+as they arrive, and the receiving client joins them. Pending assembly is bounded
+to 8 MiB per socket and 32 MiB per workspace; excess messages are rejected. By default any member of the workspace may listen and send; decide
 per topic on the Worker:
 
 ```ts
@@ -713,3 +715,8 @@ Do not open a public issue for a security report.
 ## License
 
 MIT
+
+Browser clients using the default persistent outbox must pass `userId`, matching
+the claim subject (`dev-user` with `tapedb dev`). Queues are isolated by backend,
+user and workspace. Close and recreate the client when switching accounts. Old
+unscoped queues remain quarantined and are never automatically replayed.

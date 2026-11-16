@@ -101,6 +101,7 @@
       "ClientConfig": {
         "kind": "interface",
         "shape": {
+          "userId": "string | undefined",
           "schema": "Schema<M>",
           "url": "string",
           "workspace": "string",
@@ -1638,6 +1639,7 @@
     "invalid_workspace_id",
     "jurisdiction_mismatch",
     "membership_lookup_failed",
+    "message_limit_exceeded",
     "method_not_allowed",
     "missing_token",
     "move_conflict",

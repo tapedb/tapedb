@@ -282,6 +282,8 @@ export interface WriteRejection {
 // ---- Config and public client ---------------------------------------------
 
 export interface InitConfig {
+  /** Stable authenticated claim subject; required for default persistent authenticated browser clients. */
+  userId?: string;
   /** Workspace UUID. */
   workspaceId?: string;
   /** Engine origin, e.g. http://localhost:8787. */

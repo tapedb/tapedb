@@ -1,6 +1,6 @@
 // The live socket in workerd, past its old bounds: many large live queries on
 // one socket (past the attachment's 16 KiB), a query larger than a frame
-// (sent in parts), and a 40 MB broadcast (relayed in parts).
+// (sent in parts), and a 2 MiB broadcast (relayed in parts).
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { createClient } from "tapedb";
@@ -25,8 +25,8 @@ await until(() => seen.size === 40 && hugeRows === 0, "every live query answered
 await b.task.create({ data: { title: "shared" } });
 await until(() => [...seen.values()].every((rows) => rows === 1) && hugeRows === 1, "every live query updated", [[...seen.values()], hugeRows], 20_000);
 
-// A 40 MB broadcast.
-const big = { blob: "x".repeat(40 * 1024 * 1024), n: 7 };
+// A 2 MiB broadcast.
+const big = { blob: "x".repeat(2 * 1024 * 1024), n: 7 };
 const heard = [];
 const stopHear = b.$broadcast("big:1").subscribe((message) => heard.push(message));
 await until(() => {
@@ -34,11 +34,15 @@ await until(() => {
   return heard.length > 0;
 }, "b joined the topic", heard);
 heard.length = 0;
-a.$broadcast("big:1").send(big);
-await until(() => heard.some((message) => message.n === 7), "b hears the 40 MB message", heard.length, 60_000);
+const mutable = { ...big };
+a.$broadcast("big:1").send(mutable);
+mutable.blob = "changed after send";
+await until(() => heard.some((message) => message.n === 7), "b hears the 2 MiB message", heard.length, 60_000);
 const received = heard.find((message) => message.n === 7);
 assert.equal(received.blob.length, big.blob.length);
-assert.ok(received.blob === big.blob, "the 40 MB message arrives intact");
+assert.ok(received.blob === big.blob, "the 2 MiB message arrives intact");
+
+assert.equal(a.$broadcast("big:1").send({ blob: "x".repeat(4 * 1024 * 1024) }), false, "oversized messages are rejected before queueing");
 
 for (const stop of stops) stop();
 stopHear();

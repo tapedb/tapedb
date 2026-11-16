@@ -10,9 +10,10 @@
  */
 
 import { id } from "./id";
+import { MAX_SOCKET_MESSAGE_BYTES } from "../socket-protocol";
 import { retryWhileRecovering, type RecoveringRetryOptions } from "./recovering";
 import { createStorageClient, type StorageFetch } from "./storage-client";
-import { createOutbox, type Outbox } from "./outbox";
+import { createOutbox, indexedDbAvailable, scopedOutboxName, type Outbox } from "./outbox";
 import { applyOptimisticOps, applyQueryDiff, certainMatches } from "./query-cache";
 import { QuerySocket, type WebSocketFactory } from "./socket";
 import { cloneJson, stableStringify } from "./stable";
@@ -306,6 +307,24 @@ function createDevTokenProvider(apiUrl: string, workspaceId: string) {
   };
 }
 
+class AuthScopeError extends Error {}
+
+function scopedToken(getToken: () => Promise<string>, userId?: string): () => Promise<string> {
+  if (userId === undefined) return getToken;
+  return async () => {
+    const token = await getToken();
+    let subject: unknown;
+    try {
+      const payload = token.split(".")[1];
+      const base64 = payload.replace(/-/g, "+").replace(/_/g, "/");
+      const decoded = Uint8Array.from(atob(base64.padEnd(Math.ceil(base64.length / 4) * 4, "=")), char => char.charCodeAt(0));
+      subject = JSON.parse(new TextDecoder().decode(decoded)).sub;
+    } catch { /* Never assign an unreadable token to the selected user's queue. */ }
+    if (subject !== userId) throw new AuthScopeError("tapedb: token subject differs from userId; close this client and create one for the current user.");
+    return token;
+  };
+}
+
 function resolveConfig(config: InitConfig): ResolvedConfig {
   const workspaceId = config.workspaceId ?? "";
   const apiUrl = trimTrailingSlash(config.apiUrl ?? DEFAULT_API_URL);
@@ -316,7 +335,7 @@ function resolveConfig(config: InitConfig): ResolvedConfig {
     workspaceId,
     apiUrl,
     websocketUrl,
-    getToken: config.getToken ?? createDevTokenProvider(apiUrl, workspaceId),
+    getToken: scopedToken(config.getToken ?? createDevTokenProvider(apiUrl, workspaceId), config.userId),
     schema: config.schema,
     onWriteRejected: config.onWriteRejected,
   };
@@ -333,6 +352,7 @@ class DataClientImpl {
   private readonly fetchImpl: FetchLike;
   private readonly createWebSocket: WebSocketFactory | undefined;
   private readonly outbox: Outbox;
+  private readonly missingUserScope: boolean;
   private readonly now: () => number;
 
   private readonly cache = new Map<string, CacheEntry>();
@@ -376,7 +396,8 @@ class DataClientImpl {
     this.config = resolveConfig(config);
     this.fetchImpl = retryWhileRecovering(deps.fetch ?? ((url, init) => fetch(url, init)), deps.recoveringRetry);
     this.createWebSocket = deps.createWebSocket;
-    this.outbox = deps.outbox ?? createOutbox();
+    this.missingUserScope = deps.outbox === undefined && indexedDbAvailable() && !(typeof config.userId === "string" && config.userId.length > 0);
+    this.outbox = deps.outbox ?? createOutbox({ dbName: scopedOutboxName(this.config.apiUrl, config.userId) });
     this.now = deps.now ?? (() => Date.now());
 
     if (
@@ -463,7 +484,7 @@ class DataClientImpl {
       this.clearRetryTimer();
       return { status: "applied", result };
     } catch (error) {
-      if (isServerError(error) && !isRetryableServerError(error)) {
+      if (error instanceof AuthScopeError || (isServerError(error) && !isRetryableServerError(error))) {
         try {
           await this.outbox.remove(clientTxId);
         } finally {
@@ -782,6 +803,10 @@ class DataClientImpl {
    * only when that queue is full.
    */
   sendTopic(topic: string, message: unknown): boolean | "queued" {
+    const encoded = JSON.stringify({ type: "topic:send", topic, message, origin: this.topicOrigin });
+    if (encoded.length > MAX_SOCKET_MESSAGE_BYTES || new TextEncoder().encode(encoded).byteLength > MAX_SOCKET_MESSAGE_BYTES) return false;
+    // Retain the exact validated JSON value, not a mutable caller object.
+    message = JSON.parse(encoded).message;
     this.ensureSocket();
     if (this.socket?.send({ type: "topic:send", topic, message, origin: this.topicOrigin })) return true;
     const queue = (this.topicQueue.get(topic) ?? []).filter((item) => Date.now() - item.at < TOPIC_QUEUE_MS);
@@ -868,6 +893,7 @@ class DataClientImpl {
   }
 
   private configProblem(): string | null {
+    if (this.missingUserScope) return "tapedb: pass userId (the claim subject) to scope persistent authenticated browser writes.";
     if (!this.config.workspaceId) {
       return "tapedb: missing workspace. Pass createClient({ workspace }).";
     }
@@ -1446,6 +1472,7 @@ class DataClientImpl {
         this.pendingOps.delete(entry.clientTxId);
         this.retryAttempt = 0;
       } catch (error) {
+        if (error instanceof AuthScopeError) { this.clearRetryTimer(); return; }
         if (isServerError(error) && !isRetryableServerError(error)) {
           await this.outbox.remove(entry.clientTxId).catch(() => undefined);
           this.pendingOps.delete(entry.clientTxId);

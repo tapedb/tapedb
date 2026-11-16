@@ -8,11 +8,11 @@ test("offline write survives a full page reload and replays the identical transa
   await page.evaluate(async () => { (window as any).tapedb = await import("/client.js"); });
   await context.setOffline(true);
   const before = await page.evaluate(async (workspace) => {
-    const { client, createOutbox } = (window as any).tapedb;
+    const { client, createOutbox, scopedOutboxName } = (window as any).tapedb;
     const db = client(workspace);
     const status = await db.transact([{ op: "insert", namespace: "task", id: "offline", values: { title: "kept after reload" } }]);
     db.close();
-    return { status, entries: await createOutbox().list(workspace) };
+    return { status, entries: await createOutbox({ dbName: scopedOutboxName(location.origin, "browser-user") }).list(workspace) };
   }, workspace);
   expect(before.status).toBe("queued");
   expect(before.entries).toHaveLength(1);
@@ -30,8 +30,8 @@ test("offline write survives a full page reload and replays the identical transa
     issuedAt: before.entries[0].createdAt, ops: before.entries[0].ops,
   });
   await expect.poll(() => page.evaluate(async workspace => {
-    const { createOutbox } = await import("/client.js");
-    return (await createOutbox().list(workspace)).length;
+    const { createOutbox, scopedOutboxName } = await import("/client.js");
+    return (await createOutbox({ dbName: scopedOutboxName(location.origin, "browser-user") }).list(workspace)).length;
   }, workspace)).toBe(0);
 });
 

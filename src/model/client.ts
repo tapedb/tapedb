@@ -300,6 +300,8 @@ export type Client<M extends Models> = {
 };
 
 export interface ClientConfig<M extends Models> {
+  /** Claim subject; required for authenticated browser persistence. Recreate the client on account changes. */
+  userId?: string;
   schema: Schema<M>;
   /** The Worker's origin, e.g. https://api.example.com or http://localhost:8787. */
   url: string;
@@ -832,6 +834,7 @@ export function createClient<M extends Models>(
   const { client: parts, impl } = createClientParts(
     {
       workspaceId: config.workspace,
+      userId: config.userId,
       apiUrl: config.url,
       getToken: config.getToken,
       schema: config.schema.clientSchema,

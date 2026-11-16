@@ -26,3 +26,10 @@ export function claimFromProtocols(header: string | null): string | null {
   const token = entry?.slice(CLAIM_PROTOCOL_PREFIX.length) ?? "";
   return token.length > 0 ? token : null;
 }
+
+/** Bounds complete JSON messages assembled in memory, including broadcasts. */
+export const MAX_SOCKET_MESSAGE_BYTES = 4 * 1024 * 1024;
+export const MAX_SOCKET_PENDING_BYTES = 8 * 1024 * 1024;
+export const MAX_ROOM_PENDING_BYTES = 32 * 1024 * 1024;
+export const MAX_SOCKET_PENDING_MESSAGES = 8;
+export const MAX_SOCKET_MESSAGE_PARTS = 1024;

@@ -168,3 +168,38 @@ describe("replay", () => {
     expect(() => applyOps({ sql, seq: 9, now: 1 }, tx.ops)).toThrow(/already exists/);
   });
 });
+
+describe("permissions follow the action actually applied", () => {
+  test("every upsert form checks the create role for a missing row", () => {
+    for (const op of ["update", "merge", "upsert"]) {
+      const sql = setup({ tasks: { create: WORKSPACE_ROLE_LEVELS.OWNER, update: WORKSPACE_ROLE_LEVELS.EDITOR } });
+      expect(() => write(sql, [{ op, namespace: "tasks", id: "forbidden", values: { title: "x" }, ...(op === "upsert" ? { create: { title: "x" } } : {}) }])).toThrow(/not allowed to create/);
+      expect(row(sql, "forbidden")).toBeUndefined();
+      expect(seq(sql)).toBe(0);
+    }
+  });
+
+  test("a delete followed by upsert cannot reuse the old row's update permission", () => {
+    const sql = setup({ tasks: { create: WORKSPACE_ROLE_LEVELS.OWNER, update: WORKSPACE_ROLE_LEVELS.EDITOR, delete: WORKSPACE_ROLE_LEVELS.EDITOR } });
+    write(sql, [{ op: "insert", namespace: "tasks", id: "existing", values: { title: "before" } }], WORKSPACE_ROLE_LEVELS.OWNER);
+    const before = seq(sql);
+    expect(() => write(sql, [
+      { op: "delete", namespace: "tasks", id: "existing" },
+      { op: "upsert", namespace: "tasks", id: "existing", values: { title: "after" }, create: { title: "after" } },
+    ])).toThrow(/not allowed to create/);
+    expect(row(sql, "existing")?.title).toBe("before");
+    expect(seq(sql)).toBe(before);
+  });
+
+  test("a row rule sees changes made by an earlier operation and denial rolls everything back", () => {
+    const sql = setup({ tasks: { update: ({ data }) => data?.title === "owned", create: WORKSPACE_ROLE_LEVELS.EDITOR } });
+    write(sql, [{ op: "insert", namespace: "tasks", id: "existing", values: { title: "owned" } }]);
+    const before = seq(sql);
+    expect(() => write(sql, [
+      { op: "patch", namespace: "tasks", id: "existing", values: { title: "transferred" } },
+      { op: "patch", namespace: "tasks", id: "existing", values: { done: true } },
+    ])).toThrow(/Row rule denied update/);
+    expect(row(sql, "existing")).toEqual({ title: "owned", done: null });
+    expect(seq(sql)).toBe(before);
+  });
+});

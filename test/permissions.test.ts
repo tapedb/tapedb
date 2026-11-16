@@ -10,7 +10,7 @@ import { beforeEach, describe, expect, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { configureMigrations } from "../src/engine/migrations-bundle";
-import { configurePermissions } from "../src/engine/tx-permissions";
+import { assertRowPermissions, configurePermissions } from "../src/engine/tx-permissions";
 import { compileQuery } from "../src/engine/query-compile";
 import {
   executeCompiledQuery,
@@ -27,6 +27,8 @@ const schema = defineSchema({
   entities: {
     documents: {
       title: { type: "string" },
+      locked: { type: "boolean", optional: true },
+      meta: { type: "json", optional: true },
       ownerId: { type: "string", optional: true },
     },
     notes: {
@@ -442,4 +444,35 @@ describe("attribute rules", () => {
     expect(row?.title).toBe("Renamed");
     expect(row?.price).toBe(10);
   });
+});
+
+
+describe("write rules use public value types", () => {
+  test("stored booleans and JSON cannot bypass a typed update rule", () => {
+    const sql = freshDatabase();
+    configurePermissions({ overrides: { documents: { update: ({ data }) => data?.locked !== true && (data?.meta as { blocked?: boolean } | undefined)?.blocked !== true } } });
+    for (const [id, locked, meta] of [["boolean", true, {}], ["json", false, { blocked: true }]] as const) {
+      runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: `seed-${id}`, ops: [{ op: "insert", namespace: "documents", id, values: { title: "keep", locked, meta } }] });
+      expect(() => runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: `deny-${id}`, ops: [{ op: "patch", namespace: "documents", id, values: { title: "changed" } }] })).toThrow(/Row rule denied update/);
+      expect(sql.one<{ title: string }>(`SELECT title FROM documents WHERE id = ?`, id)?.title).toBe("keep");
+    }
+  });
+
+  test("create rules receive booleans and JSON before values are stored", () => {
+    const sql = freshDatabase();
+    configurePermissions({ overrides: { documents: { create: ({ next }) => next?.locked !== true && (next?.meta as { blocked?: boolean } | undefined)?.blocked !== true } } });
+    for (const values of [{ title: "denied", locked: true }, { title: "denied", meta: { blocked: true } }]) {
+      expect(() => runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: crypto.randomUUID(), ops: [{ op: "insert", namespace: "documents", id: "no", values }] })).toThrow(/Row rule denied create/);
+    }
+  });
+});
+
+
+test("link and unlink expose their foreign-key field to update rules", () => {
+  const sql = freshDatabase();
+  runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: "seed-link", ops: [{ op: "insert", namespace: "documents", id: "d", values: { title: "x", ownerId: "alice" } }] });
+  configurePermissions({ overrides: { documents: { update: ({ changed }) => !changed?.includes("ownerId") } } });
+  for (const kind of ["link", "unlink"] as const) {
+    expect(() => assertRowPermissions(sql, claimFor("alice"), [{ kind, namespace: "documents", id: "d", link: "owner", targetId: "bob", childNamespace: "documents", childId: "d", parentId: "bob", foreignKeyAttribute: "ownerId", foreignKeyColumn: "owner_id" }])).toThrow(/Row rule denied update/);
+  }
 });
