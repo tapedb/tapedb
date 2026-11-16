@@ -43,7 +43,7 @@ test("deployment reuses a bucket and secret, scopes commands to the chosen accou
     }
     return { status: 0, stdout, stderr: "" };
   };
-  const config: DeployConfig = { name: "app", vars: { ENVIRONMENT: "development" }, r2_buckets: [{ binding: "DATA", bucket_name: "app-data" }, { binding: "FILES", bucket_name: "app-files" }] };
+  const config: DeployConfig = { account_id: "account", name: "app", vars: { ENVIRONMENT: "development" }, r2_buckets: [{ binding: "DATA", bucket_name: "app-data" }, { binding: "FILES", bucket_name: "app-files" }] };
   const factory = (_root: string, account?: string) => { if (account) expect(account).toBe("account"); return command; };
   expect(await provisionAndDeploy(root, config, undefined, true, factory)).toBe(0);
   expect(calls.filter(args => args[0] === "r2" && args[2] === "create").map(args => args[3])).toEqual(["app-files"]);
@@ -59,6 +59,6 @@ test("a secret lookup permission error stops deployment instead of generating re
     if (args[0] === "deploy") deployed = true;
     return { status: 1, stdout: "", stderr: "Authentication error [code: 10000]" };
   };
-  await expect(provisionAndDeploy(root, { name: "app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
+  await expect(provisionAndDeploy(root, { account_id: "account", name: "app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
   expect(deployed).toBe(false);
 });
