@@ -7,11 +7,12 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { beforeEach, describe, expect, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { MemoryOutbox } from "../src/client/outbox";
 import { exportLines, exportStream } from "../src/engine/export";
+import { configureFileAccess } from "../src/engine/file-access";
 import { recordFileEntry } from "../src/engine/file-index";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { configureRegistry } from "../src/engine/registry";
@@ -35,6 +36,8 @@ const appSchema = schema({
   secret: model({ value: t.string() }).access({ read: role("admin") }),
 });
 
+afterEach(() => configureFileAccess(undefined));
+
 let sql: SqlExecutor;
 
 function claim(sub = "alice", level: WorkspaceRole = WORKSPACE_ROLE_LEVELS.EDITOR): RoleClaim {
@@ -45,6 +48,7 @@ function claim(sub = "alice", level: WorkspaceRole = WORKSPACE_ROLE_LEVELS.EDITO
 const owner = () => claim("seed", WORKSPACE_ROLE_LEVELS.OWNER);
 
 beforeEach(() => {
+  configureFileAccess(undefined);
   configureRegistry(appSchema.registry);
   configureMigrations(appSchema.migrations);
   configurePermissions(appSchema.permissions);
@@ -225,5 +229,28 @@ describe("export", () => {
     } finally {
       server.stop(true);
     }
+  });
+});
+
+
+describe("export file permissions", () => {
+  test("a guest cannot enumerate member-only file metadata", () => {
+    recordFileEntry(sql, { path: "private/customer.pdf", key: "private/key", size: 3, contentType: "application/pdf", uploadedBy: "bob" });
+    expect(parse(exportLines(sql, claim("guest", WORKSPACE_ROLE_LEVELS.GUEST), WORKSPACE)).filter(record => record.type === "file")).toEqual([]);
+  });
+
+  test("file checks filter every page without leaking hidden metadata", () => {
+    configureFileAccess({ read: { decision: "check", test: ({ file }) => file.uploadedBy === "alice" } });
+    for (let n = 0; n < 1001; n++) recordFileEntry(sql, { path: `a-hidden-${String(n).padStart(4, "0")}`, key: `k/${n}`, size: 1, contentType: "text/plain", uploadedBy: "bob" });
+    recordFileEntry(sql, { path: "z-visible", key: "k/visible", size: 1, contentType: "text/plain", uploadedBy: "alice" });
+    const files = parse(exportLines(sql, claim(), WORKSPACE)).filter(record => record.type === "file");
+    expect(files.map(record => (record.file as { path: string }).path)).toEqual(["z-visible"]);
+  });
+
+  test("attached files follow the parent row's read rule", () => {
+    seed();
+    configureFileAccess({ read: { decision: "attachedTo", model: "board", locate: path => path.split("/")[0] } });
+    for (const id of ["b-alice", "b-bob"]) recordFileEntry(sql, { path: `${id}/file`, key: `k/${id}`, size: 1, contentType: "text/plain", uploadedBy: "seed" });
+    expect(parse(exportLines(sql, claim(), WORKSPACE)).filter(record => record.type === "file").map(record => (record.file as { path: string }).path)).toEqual(["b-alice/file"]);
   });
 });

@@ -7,11 +7,13 @@
  */
 
 import { Database } from "bun:sqlite";
-import { describe, expect, mock, test } from "bun:test";
+import { afterEach, describe, expect, mock, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS } from "../src/claims";
 import { signRoleClaim } from "../src/mint";
 import { attachedTo, check, fileCheck, filter, model, role, schema, t } from "../src/schema";
+import { configureFileAccess } from "../src/engine/file-access";
+afterEach(() => configureFileAccess(undefined));
 import { FakeR2Bucket } from "./fixtures/test-support";
 import { FakeRoomContext } from "./fixtures/room-harness";
 
@@ -56,6 +58,8 @@ async function deployment(files: Parameters<typeof schema>[1] extends infer O ? 
         {} as ExecutionContext
       );
     return {
+      call,
+      erase: () => call("DELETE", ""),
       put: (path: string, body = "bytes") => call("PUT", `files/${path}`, body),
       get: (path: string) => call("GET", `files/${path}`),
       del: (path: string) => call("DELETE", `files/${path}`),
@@ -177,4 +181,63 @@ describe("file rules over the file", () => {
   test("an attachment to an unknown model is refused when the schema is built", () => {
     expect(() => schema({ task }, { files: { read: attachedTo("nope" as "task", () => "x") } })).toThrow(/not a model/);
   });
+});
+
+
+describe("completed upload authorization", () => {
+  test("unknown preliminary size does not bypass the final size rule", async () => {
+    const { as, bucket } = await deployment({ write: fileCheck(({ file }) => file.size === null || file.size <= 3) });
+    const alice = await as("alice", EDITOR);
+    expect((await alice.put("too-large", "12345")).status).toBe(403);
+    expect(await alice.list()).toEqual([]);
+    expect(bucket.objects.size).toBe(0);
+  });
+
+  test("multipart completion checks the actual total size and cleans rejected bytes", async () => {
+    const { as, bucket } = await deployment({ write: fileCheck(({ file }) => file.size === null || file.size <= 3) });
+    const alice = await as("alice", EDITOR);
+    const { uploadId } = await (await alice.startUpload("multipart")).json() as { uploadId: string };
+    const part = await (await alice.call("PUT", `files/multipart?uploadId=${encodeURIComponent(uploadId)}&partNumber=1`, "12345")).json();
+    const result = await alice.call("POST", `files/multipart?uploadId=${encodeURIComponent(uploadId)}`, JSON.stringify({ parts: [part] }), "application/json");
+    expect(result.status).toBe(403);
+    expect(await alice.list()).toEqual([]);
+    expect(bucket.objects.size).toBe(0);
+  });
+
+  test("attachment rules are checked again after the asynchronous byte write", async () => {
+    const { as, bucket, sql } = await deployment({ write: attachedTo("task", path => path.split("/")[0]) });
+    const alice = await as("alice", MEMBER);
+    await alice.insertTask("t1", "alice");
+    const put = bucket.put.bind(bucket);
+    bucket.put = async (...args: Parameters<typeof bucket.put>) => {
+      const result = await put(...args);
+      sql.exec(`UPDATE task SET owner_id = 'bob' WHERE id = 't1'`);
+      return result;
+    };
+    expect((await alice.put("t1/late", "bytes")).status).toBe(403);
+    expect(bucket.objects.size).toBe(0);
+  });
+});
+
+
+test("workspace erasure drains file byte writes admitted through the Worker", async () => {
+  const { as, bucket } = await deployment(undefined);
+  const alice = await as("alice", EDITOR);
+  const owner = await as("owner", WORKSPACE_ROLE_LEVELS.OWNER);
+  const put = bucket.put.bind(bucket);
+  let release!: () => void, entered!: () => void;
+  const held = new Promise<void>(resolve => release = resolve);
+  const started = new Promise<void>(resolve => entered = resolve);
+  bucket.put = async (...args: Parameters<typeof bucket.put>) => { entered(); await held; return put(...args); };
+  const upload = alice.put("late-file", "bytes");
+  await started;
+  let finished = false;
+  const erasing = owner.erase().then(result => { finished = true; return result; });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  expect(finished).toBe(false);
+  release();
+  expect((await upload).status).toBe(201);
+  expect((await erasing).status).toBe(200);
+  expect(bucket.objects.size).toBe(0);
+  expect((await alice.put("after-erase", "bytes")).status).toBe(410);
 });

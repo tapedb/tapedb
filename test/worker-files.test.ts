@@ -12,6 +12,8 @@ import { WORKSPACE_ROLE_LEVELS } from "../src/claims";
 import { signRoleClaim } from "../src/mint";
 import { model, schema, t } from "../src/schema";
 import { createStorageClient, StorageError, UPLOAD_PART_BYTES } from "../src/client/storage-client";
+import { storageHandler } from "../src/engine/storage-routes";
+import { readTrustedRoleClaim } from "../src/engine/trusted-claim";
 import { FakeR2Bucket } from "./fixtures/test-support";
 
 class MockDurableObject {
@@ -28,28 +30,28 @@ function env(roomStatus: number) {
   const files = new FakeR2Bucket();
   const roomCalls: string[] = [];
   let key: string | undefined;
-  return {
-    files,
-    roomCalls,
-    env: {
-      FILES: files,
-      DATA: new FakeR2Bucket(),
-      TAPEDB_CLAIM_SECRET: SECRET,
-      ENVIRONMENT: "development",
-      WORKSPACE: {
-        idFromName: (name: string) => name,
-        get: () => ({
-          fetch: async (request: Request) => {
-            const path = new URL(request.url).pathname;
-            roomCalls.push(`${request.method} ${path}`);
-            if (path === "/files/locate") return Response.json({ key });
-            if (roomStatus < 300 && request.method === "POST") key = (await request.json() as { key?: string }).key;
-            return new Response(JSON.stringify({ ok: roomStatus < 300 }), { status: roomStatus });
-          },
-        }),
-      },
+  const metadata = async (request: Request) => {
+    const path = new URL(request.url).pathname;
+    roomCalls.push(`${request.method} ${path}`);
+    if (roomStatus < 0) throw new Error("metadata dispatch unavailable");
+    if (path === "/files/locate") return Response.json({ key });
+    if (roomStatus < 300 && request.method === "POST") key = (await request.json() as { key?: string }).key;
+    return new Response(JSON.stringify({ ok: roomStatus < 300 }), { status: roomStatus });
+  };
+  const handle = storageHandler(async (_env, _workspace, path, init) => metadata(new Request(new URL(path, "https://room.internal"), init)));
+  const bindingEnv = {
+    FILES: files, DATA: new FakeR2Bucket(), TAPEDB_CLAIM_SECRET: SECRET, ENVIRONMENT: "development",
+    WORKSPACE: {
+      idFromName: (name: string) => name,
+      get: () => ({ fetch: async (request: Request) => {
+        const url = new URL(request.url);
+        if (!url.pathname.startsWith("/storage/")) return metadata(request);
+        const claim = readTrustedRoleClaim(request, WORKSPACE);
+        return handle(request, bindingEnv as never, WORKSPACE, url.pathname.slice("/storage/".length), claim.role, request.headers.get("x-tapedb-claims")!);
+      } }),
     },
   };
+  return { files, roomCalls, env: bindingEnv };
 }
 
 async function upload(target: ReturnType<typeof env>) {
@@ -313,4 +315,11 @@ describe("engine routes", () => {
     expect(await call("GET", WORKSPACE_ROLE_LEVELS.USER)).toEqual({ status: 403, roomCalls: [] });
     expect(await call("GET", WORKSPACE_ROLE_LEVELS.MEMBER)).toEqual({ status: 200, roomCalls: ["GET /files"] });
   });
+});
+
+
+test("upload bytes are cleaned when metadata dispatch throws", async () => {
+  const target = env(-1);
+  expect((await upload(target)).status).toBe(502);
+  expect(target.files.objects.size).toBe(0);
 });

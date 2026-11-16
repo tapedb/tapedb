@@ -22,6 +22,7 @@ import { assertDecisionShape, isViewWhereRule } from "./permission-shape";
 import type { QueryWhere } from "./query-types";
 import { findNamespace, toSnakeCase } from "./registry";
 import type { SqlExecutor, SqlRow } from "./tx-sql";
+import { fromStoredValue } from "./value-to-api";
 import { TxError } from "./tx-types";
 import { isBulkOp, isLinkOp, type ValidatedOp } from "./tx-validate";
 
@@ -253,11 +254,21 @@ export function assertOpPermission(claim: RoleClaim, op: ValidatedOp): void {
       assertPermission(claim, op.namespace, "create");
       return;
     case "patch":
-    case "upsert":
-    case "update":
-    case "merge":
       assertPermission(claim, op.namespace, "update");
       return;
+    case "upsert":
+    case "update":
+    case "merge": {
+      // Existence decides the action inside the transaction. At this point
+      // reject only if neither branch can possibly be allowed.
+      const create = decisionFor(op.namespace, "create");
+      const update = decisionFor(op.namespace, "update");
+      if (!isRule(create) && !hasRole(claim, create as WorkspaceRole) &&
+          !isRule(update) && !hasRole(claim, update as WorkspaceRole)) {
+        assertPermission(claim, op.namespace, "update");
+      }
+      return;
+    }
     case "delete":
       assertPermission(claim, op.namespace, "delete");
       return;
@@ -293,7 +304,8 @@ function targetOf(op: ValidatedOp, rowExists: boolean): RowTarget {
   }
   if (isLinkOp(op)) {
     // A link writes the child's foreign key, so the child's update rule decides.
-    return { namespace: op.childNamespace, action: "update", id: op.childId };
+    return { namespace: op.childNamespace, action: "update", id: op.childId,
+      values: { [op.foreignKeyColumn]: op.kind === "link" ? op.parentId : null } };
   }
   if (op.kind === "delete") {
     return { namespace: op.namespace, action: "delete", id: op.id };
@@ -363,7 +375,7 @@ function readRow(
   const output: Record<string, unknown> = { id };
   for (const attribute of Object.keys(definition.attributes)) {
     const column = toSnakeCase(attribute);
-    if (column in row) output[attribute] = row[column];
+    if (column in row) output[attribute] = fromStoredValue(definition.attributes[attribute].type, row[column]);
   }
   return output;
 }
@@ -383,7 +395,10 @@ function valuesToApi(
 
   const output: Record<string, unknown> = {};
   for (const [column, value] of Object.entries(values)) {
-    output[byColumn.get(column) ?? column] = value;
+    const attribute = byColumn.get(column) ?? column;
+    output[attribute] = definition.attributes[attribute]
+      ? fromStoredValue(definition.attributes[attribute].type, value as never)
+      : value;
   }
   return output;
 }
@@ -411,6 +426,7 @@ export function assertRowPermissions(
     const data = readRow(sql, namespace, id);
     const target = targetOf(op, data !== undefined);
 
+    assertPermission(claim, target.namespace, target.action);
     const decision = decisionFor(target.namespace, target.action);
     if (typeof decision !== "function") continue;
 

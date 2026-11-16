@@ -12,6 +12,15 @@ import type { OutboxEntry } from "./types";
 export const OUTBOX_DB_NAME = "tapedb-data-outbox";
 export const OUTBOX_STORE_NAME = "pending";
 
+/** Legacy unscoped databases are deliberately never adopted by a new user. */
+export function scopedOutboxName(apiUrl: string, userId?: string): string {
+  return `${OUTBOX_DB_NAME}:v2:${JSON.stringify([apiUrl.replace(/\/+$/, ""), userId === undefined ? ["development"] : ["user", userId]])}`;
+}
+
+export function indexedDbAvailable(): boolean {
+  return defaultIndexedDb() !== null;
+}
+
 export interface Outbox {
   add(entry: OutboxEntry): Promise<void>;
   list(workspaceId: string): Promise<OutboxEntry[]>;

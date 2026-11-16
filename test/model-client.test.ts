@@ -637,7 +637,10 @@ describe("live reads", () => {
     const { db, socket } = await live();
     const topic = db.$broadcast<{ x: number }>("board:1");
     // Not open yet: the message waits for the socket.
-    expect(topic.send({ x: 0 })).toBe("queued");
+    const mutable = { x: 0 };
+    expect(topic.send(mutable)).toBe("queued");
+    mutable.x = 999;
+    expect(db.$broadcast<{ blob: string }>("oversized").send({ blob: "x".repeat(4 * 1024 * 1024) })).toBe(false);
 
     const heard: unknown[] = [];
     const errors: unknown[] = [];

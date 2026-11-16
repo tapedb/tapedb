@@ -6,7 +6,7 @@
  * never in the URL. A fresh token is fetched for every reconnect attempt.
  */
 
-import { socketProtocols } from "../socket-protocol";
+import { MAX_SOCKET_MESSAGE_BYTES, MAX_SOCKET_PENDING_BYTES, MAX_SOCKET_MESSAGE_PARTS, socketProtocols } from "../socket-protocol";
 import type { ClientMessage, ServerMessage } from "./types";
 
 export interface WebSocketLike {
@@ -95,12 +95,21 @@ export function framesFor(message: ClientMessage, size = FRAME_PART_CHARS): stri
  * out of order (a sender that dropped mid-message) discards what was joined.
  */
 export class TopicParts {
-  private readonly pending = new Map<string, { next: number; parts: string[] }>();
+  private readonly pending = new Map<string, { next: number; parts: string[]; bytes: number; at: number }>();
 
   take(message: Extract<ServerMessage, { type: "topic:message" }>): ServerMessage | null {
     if (!("part" in message)) return message;
     const key = `${message.from.clientId}\u0000${message.part.id}`;
-    const entry = this.pending.get(key) ?? { next: 0, parts: [] };
+    const now = Date.now();
+    for (const [id, entry] of this.pending) if (now - entry.at > 60_000) this.pending.delete(id);
+    const entry = this.pending.get(key) ?? { next: 0, parts: [], bytes: 0, at: now };
+    const bytes = message.data.length > MAX_SOCKET_MESSAGE_BYTES ? MAX_SOCKET_MESSAGE_BYTES + 1 : new TextEncoder().encode(message.data).byteLength;
+    const total = [...this.pending.values()].reduce((sum, item) => sum + item.bytes, 0);
+    if (entry.next >= MAX_SOCKET_MESSAGE_PARTS || entry.bytes + bytes > MAX_SOCKET_MESSAGE_BYTES || total + bytes > MAX_SOCKET_PENDING_BYTES || (!this.pending.has(key) && this.pending.size >= 32)) {
+      this.pending.delete(key);
+      return null;
+    }
+    entry.bytes += bytes;
     if (message.part.index !== entry.next) {
       this.pending.delete(key);
       return null;

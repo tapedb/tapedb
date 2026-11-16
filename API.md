@@ -57,9 +57,12 @@ read `member`, write and delete `editor`. A rule that throws denies.
 
 Everything in `tapedb/schema`, plus:
 
-**`createClient({ schema, url, workspace, getToken?, onWriteRejected? })`** →
+**`createClient({ schema, url, workspace, userId?, getToken?, onWriteRejected? })`** →
 `Client`. Without `getToken` the client asks the development claim route for a
-token, which only `tapedb dev` (or a gated test Worker) serves.
+token, which only `tapedb dev` (or a gated test Worker) serves. Browser clients
+using the default IndexedDB outbox must supply `userId` matching the claim subject
+(`dev-user` in development). Close and recreate clients on account changes;
+legacy unscoped queues are retained but never automatically replayed.
 
 Per model, `db.<model>` is a `ModelClient`:
 
@@ -293,3 +296,6 @@ Workers with personal fields require `TAPEDB_KEY_SECRET`, a stable random secret
 of at least 32 characters. Moves require the same secret at both destinations.
 Existing plaintext rows are encrypted in resumable batches before reads resume.
 Historical plaintext copies retain their original retention windows.
+
+Broadcast `send` returns `false` for JSON messages exceeding 4 MiB, before
+queueing or sending them. Multipart transmission obeys the same message bound.

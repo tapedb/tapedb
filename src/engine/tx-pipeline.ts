@@ -91,12 +91,11 @@ export function runTransaction(
       // Row rules read the stored row, so they belong inside the transaction,
       // after the idempotency check (a replay of an applied tx must not
       // re-judge) and before the sequence is allocated (a denial burns nothing).
-      assertRowPermissions(sql, claim, tx.ops);
       const now = Date.now();
       const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
       // In parts when it is larger than a row holds (see tx-log.ts).
       writeLogOps(sql, seq, tx.rawOps);
-      const applied = applyOps({ sql, seq, now, txId: tx.txId }, tx.ops);
+      const applied = applyOps({ sql, seq, now, txId: tx.txId, beforeOp: op => assertRowPermissions(sql, claim, [op]) }, tx.ops);
       return { txId: tx.txId, seq, applied };
     }
 
@@ -127,16 +126,10 @@ export function runTransaction(
         return { txId: tx.txId, seq, applied: 0, ...matched };
       }
 
-      // Every row is judged before anything is written, as for a plain write.
-      for (const [index, op] of tx.ops.entries()) {
-        if (!isBulk(op)) assertRowPermissions(sql, claim, [op]);
-        else for (const chunk of chunks(index)) assertRowPermissions(sql, claim, chunk.ops);
-      }
-
       const now = Date.now();
       const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
       const log = new LogWriter(sql, seq);
-      const context = { sql, seq, now, txId: tx.txId };
+      const context = { sql, seq, now, txId: tx.txId, beforeOp: (op: typeof tx.ops[number]) => assertRowPermissions(sql, claim, [op]) };
       let applied = 0;
       for (const [index, op] of tx.ops.entries()) {
         if (!isBulk(op)) {

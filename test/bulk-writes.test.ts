@@ -437,3 +437,14 @@ describe("offline and optimistic", () => {
   });
 });
 
+
+
+test("bulk writes cannot enumerate a root model whose read role is denied", () => {
+  build({ task: { view: WORKSPACE_ROLE_LEVELS.ADMIN, update: WORKSPACE_ROLE_LEVELS.EDITOR, delete: WORKSPACE_ROLE_LEVELS.EDITOR } });
+  const owner = claimFor("seed", WORKSPACE_ROLE_LEVELS.OWNER);
+  runTransaction(sql, WORKSPACE, owner, { txId: "seed-hidden", ops: [{ op: "insert", namespace: "task", id: "hidden", values: { title: "secret", ownerId: "seed", done: false } }] });
+  for (const op of [{ op: "patchMany", namespace: "task", where: {}, values: { done: true } }, { op: "deleteMany", namespace: "task", where: {} }]) {
+    expect(() => runTransaction(sql, WORKSPACE, claimFor("editor", WORKSPACE_ROLE_LEVELS.EDITOR), { txId: crypto.randomUUID(), ops: [op] })).toThrow(/not allowed to view/);
+    expect(sql.one<{ title: string }>(`SELECT title FROM task WHERE id = 'hidden'`)?.title).toBe("secret");
+  }
+});

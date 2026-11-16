@@ -23,17 +23,19 @@ All gates must be true before the repository or package becomes public:
 4. A clean consumer project installs the packed artifact and exercises writes,
    live queries, an upload, a migration and erasure through the packaged CLI.
 5. The changelog and README describe the release and its design boundaries.
-6. An independent review and sustained production dogfooding have either
-   happened or the maintainer has accepted the remaining risk in writing.
+6. Independent source review is complete, and the release candidate passes
+   deployed-runtime durability, recovery, migration, erasure and offline
+   persistence checks.
 7. The GitHub repository is made public only after the npm package is ready,
    with branch protection or rulesets and secret scanning enabled. GitHub does
    not offer branch protection or rulesets for private repositories on the
    free plan, so this is applied at the visibility change; until then the CI
    checks are advisory.
 
-Gates 3 and 6 cannot be proven by CI alone. The scoped source review and
-validation record are in [SECURITY-REVIEW.md](SECURITY-REVIEW.md); that review
-does not claim to satisfy the independent review or production dogfooding gate.
+The scoped security review is recorded in
+[SECURITY-REVIEW.md](SECURITY-REVIEW.md). The independent source review and
+remediation are recorded in [INDEPENDENT-REVIEW.md](INDEPENDENT-REVIEW.md).
+Check the validation results against the exact release candidate commit.
 
 ## Package checks
 

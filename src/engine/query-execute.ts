@@ -7,6 +7,7 @@
  * every requested and traversed namespace before any SQL executes.
  */
 
+import { fromStoredValue } from "./value-to-api";
 import { runStaged, stagesOf } from "./query-stages";
 import type { RoleClaim } from "../claims";
 import {
@@ -767,47 +768,7 @@ function appendLinks(output: Record<string, unknown>, entity: HydratedEntity): v
   }
 }
 
-/** Converts a stored value to the API shape for its registry type. */
-export function fromStoredValue(
-  type: AttributeType,
-  value: SqlValue | undefined
-): unknown {
-  if (value === null || value === undefined) return null;
-
-  switch (type) {
-    case "string":
-      return typeof value === "string" ? value : String(value);
-    case "number":
-      return typeof value === "number" ? value : Number(value);
-    case "boolean":
-      return value !== 0;
-    case "date":
-      return toEpochMilliseconds(value);
-    case "json":
-    case "any":
-      return typeof value === "string" ? parseJson(value) : value;
-  }
-}
-
-function toEpochMilliseconds(value: SqlValue): number | null {
-  if (typeof value === "number") {
-    return Number.isFinite(value) ? value : null;
-  }
-  if (typeof value === "string") {
-    const parsed = Number(value);
-    return Number.isFinite(parsed) ? parsed : null;
-  }
-  return null;
-}
-
-function parseJson(value: string): unknown {
-  try {
-    return JSON.parse(value);
-  } catch {
-    // Stored JSON should be valid; keep the request alive if it is not.
-    return value;
-  }
-}
+export { fromStoredValue } from "./value-to-api";
 
 function uniqueIds(values: SqlValue[]): string[] {
   const ids = new Set<string>();
