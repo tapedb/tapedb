@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3 - 2026-11-16
 
 ### Fixed
 
@@ -8,6 +8,11 @@
   imports through the CLI's own build without rewriting schema values.
   Package-name strings used as field defaults remain unchanged, and relative
   helper modules can resolve their own TapeDB imports too.
+
+### Documentation
+
+- `init` prints local installation, development and studio commands before
+  the Cloudflare bucket and secret setup required for deployment.
 
 ## 0.1.2 - 2026-11-16
 
