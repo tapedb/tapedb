@@ -54,7 +54,7 @@ async function loadSchema(root: string, flags: Record<string, string | boolean>)
     const message = error instanceof Error ? error.message : String(error);
     if (/Unknown file extension|ERR_UNKNOWN_FILE_EXTENSION/.test(message)) {
       throw new Error(
-        `This Node cannot load TypeScript directly. Use Node 22.18 or newer, or run the CLI through tsx: npx tsx node_modules/tapedb/dist/cli.js ...`
+        `This Node cannot load TypeScript directly. Use Node 22.18 or newer, or run the CLI through tsx: npx tsx node_modules/@tapedb/tapedb/dist/cli.js ...`
       );
     }
     throw error;
@@ -248,11 +248,11 @@ export function checkJurisdiction(
     : `TAPEDB_JURISDICTION is "${wanted}" but R2 buckets ${names} are not. Create them with \`wrangler r2 bucket create <name> --jurisdiction ${wanted}\` and add "jurisdiction": "${wanted}" to each r2_buckets entry.`;
 }
 
-const SCHEMA_FILE = `import { model, schema, t } from "tapedb/schema";
+const SCHEMA_FILE = `import { model, schema, t } from "@tapedb/tapedb/schema";
 
 /**
  * The whole database: tables, relations, indexes and access rules. Change it,
- * then run \`npx tapedb migrate dev --name <what changed>\`.
+ * then run \`npx @tapedb/tapedb migrate dev --name <what changed>\`.
  */
 export default schema({
   board: model({
@@ -273,7 +273,7 @@ export default schema({
 });
 `;
 
-const WORKER_FILE = `import { defineTapeDB } from "tapedb/worker";
+const WORKER_FILE = `import { defineTapeDB } from "@tapedb/tapedb/worker";
 
 import schema from "./tapedb.schema";
 import { migrations } from "./tapedb/migrations.gen";
@@ -383,7 +383,7 @@ async function init(argv: string[]): Promise<number> {
     }
   } catch (error) {
     console.error(
-      `\n  Could not generate the first migration (${error instanceof Error ? error.message : String(error)}).\n  Fix the schema and run \`npx tapedb init\` again; existing files are kept.`
+      `\n  Could not generate the first migration (${error instanceof Error ? error.message : String(error)}).\n  Fix the schema and run \`npx @tapedb/tapedb init\` again; existing files are kept.`
     );
     return 1;
   }
@@ -395,8 +395,8 @@ Next:
   npx wrangler r2 bucket create ${name}-files${jurisdiction ? ` --jurisdiction ${jurisdiction}` : ""}
   npx wrangler secret put TAPEDB_CLAIM_SECRET
   npx wrangler secret put TAPEDB_KEY_SECRET
-  npx tapedb dev          # local database
-  npx tapedb deploy       # once ENVIRONMENT is "production"
+  npx @tapedb/tapedb dev          # local database
+  npx @tapedb/tapedb deploy       # once ENVIRONMENT is "production"
 
 That is the whole footprint: one Durable Object class, two R2 buckets.
 `);
@@ -626,7 +626,7 @@ export async function run(argv: string[]): Promise<number> {
 }
 
 /**
- * True when this module is the process entry point. `npx tapedb` runs it
+ * True when this module is the process entry point. `npx @tapedb/tapedb` runs it
  * through the node_modules/.bin symlink: argv[1] is the link, while
  * import.meta.url is the resolved file, so both are compared after resolving.
  */

@@ -29,15 +29,15 @@ then records the new surface with `bun run api:update`.
 
 | Import | Runs in | Contents |
 | --- | --- | --- |
-| `tapedb` | browser, Node, Workers | the client, schema builders, ids, roles |
-| `tapedb/schema` | anywhere | only what a schema file needs |
-| `tapedb/react` | browser (React 19 peer) | hooks |
-| `tapedb/worker` | Cloudflare Workers | `defineTapeDB` and claim helpers |
-| `npx tapedb` | Node 22.18+ | the CLI (a command, not an import) |
+| `@tapedb/tapedb` | browser, Node, Workers | the client, schema builders, ids, roles |
+| `@tapedb/tapedb/schema` | anywhere | only what a schema file needs |
+| `@tapedb/tapedb/react` | browser (React 19 peer) | hooks |
+| `@tapedb/tapedb/worker` | Cloudflare Workers | `defineTapeDB` and claim helpers |
+| `npx @tapedb/tapedb` | Node 22.18+ | the CLI (a command, not an import) |
 
-`tapedb` has no runtime dependencies and never imports React.
+`@tapedb/tapedb` has no runtime dependencies and never imports React.
 
-## `tapedb/schema` — stable
+## `@tapedb/tapedb/schema` — stable
 
 `schema`, `model`, `t` (field builders), `role`, `filter`, `check`,
 `fileCheck`, `attachedTo`, and the types `Schema`, `Row`, `Where`,
@@ -53,9 +53,9 @@ and `existing` the one it replaces). `attachedTo` reads need the row readable
 by the caller; writes and deletes need the caller allowed to update it. Defaults:
 read `member`, write and delete `editor`. A rule that throws denies.
 
-## `tapedb` — client
+## `@tapedb/tapedb` — client
 
-Everything in `tapedb/schema`, plus:
+Everything in `@tapedb/tapedb/schema`, plus:
 
 **`createClient({ schema, url, workspace, userId?, getToken?, onWriteRejected? })`** →
 `Client`. Without `getToken` the client asks the development claim route for a
@@ -111,7 +111,7 @@ types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 `WorkspaceRole`, `ExportRecord`, and **experimental** `BroadcastTopic` and
 `TopicSender`.
 
-## `tapedb/react` — hooks
+## `@tapedb/tapedb/react` — hooks
 
 | Hook | Returns |
 | --- | --- |
@@ -120,7 +120,7 @@ types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 | `usePresence(db, room, presence?)` | `PresencePeer[]`; publishes `presence` while mounted |
 | `useBroadcast(db, topic, onMessage?)` | **experimental**: a `send(message) => boolean \| "queued"` function |
 
-## `tapedb/worker`
+## `@tapedb/tapedb/worker`
 
 **`defineTapeDB(options)`** → `{ worker, WorkspaceRoom }`. Export `worker` as
 the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
@@ -145,7 +145,7 @@ export or erase), `ClaimError`,
 `Env`, `TapeDBSchema`, `BundledWorkspaceMigration`, and the type-only
 `TapeDBRoom` name for the class returned by `defineTapeDB`. These named types
 allow consumers to emit declarations without leaking private names.
-`ModelOptions` is also exported from `tapedb/schema`.
+`ModelOptions` is also exported from `@tapedb/tapedb/schema`.
 `TopicAction` and `TopicAuthorizer` are **experimental**.
 
 ### Bindings and settings (`Env`)
@@ -246,9 +246,9 @@ them. The protocol belongs to the client; use it directly only if you must.
 
 ## CLI
 
-`npx tapedb init | migrate dev|rollback|status|check | dev | studio | deploy | export
-| erase | move`. The exact commands and flags are in `npx tapedb --help` and are
-part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
+`npx @tapedb/tapedb init | migrate dev|rollback|status|check | dev | studio | deploy |
+export | erase | move`. The exact commands and flags are in `npx @tapedb/tapedb --help`
+and are part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside
 `TAPEDB_JURISDICTION`, or when `migrate check` fails (no migrations, schema
 changes without a migration, or a stale generated migrations file).

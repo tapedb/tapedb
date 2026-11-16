@@ -1,7 +1,7 @@
 // Unlimited findMany, and a live page loaded past 1000 rows that stays live, in workerd.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s, until } from "./common.mjs";
 const db = createClient({ schema: s, url: BASE, workspace: randomUUID() });
 for (let start = 0; start < 2500; start += 250) {

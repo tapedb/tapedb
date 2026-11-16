@@ -19,9 +19,9 @@ in-memory SQLite, and the client tests use a fake socket and a fake fetch.
 To try the product itself:
 
 ```bash
-npx tapedb init     # writes a Worker, a schema, wrangler config and .dev.vars
-npx tapedb dev      # local database with a dev claim route
-npx tapedb studio   # table browser at http://127.0.0.1:4400
+npx @tapedb/tapedb init     # writes a Worker, a schema, wrangler config and .dev.vars
+npx @tapedb/tapedb dev      # local database with a dev claim route
+npx @tapedb/tapedb studio   # table browser at http://127.0.0.1:4400
 ```
 
 ## What goes where
@@ -127,15 +127,13 @@ under `npx` and uploads refusing to run under `tapedb dev`, was invisible to
 bun run verify
 bun pm pack --destination /tmp/pack          # the published artifact
 cd $(mktemp -d) && npm init -y && npm i /tmp/pack/tapedb-*.tgz wrangler
-npx tapedb init && npx tapedb dev            # then drive it with a script:
+npx @tapedb/tapedb init && npx @tapedb/tapedb dev            # then drive it with a script:
                                              # writes, a live subscription,
                                              # an upload, a migration
 ```
 
-`tapedb` is unscoped and the name was free on npm as of 0.1.0, so no org is
-needed. `repository`, `bugs` and `homepage` already point at the GitHub repo
-and `https://tapedb.dev`.
-
-Only a scoped release (`@tapedb/*`) needs an org, and orgs are created in the
-web UI at `https://www.npmjs.com/org/create`. There is no `npm org create`
-command.
+The package publishes as `@tapedb/tapedb`, under the `tapedb` npm org: npm
+rejects the unscoped name as too similar to existing packages (`tape`,
+`typedi`). Create the org in the web UI at `https://www.npmjs.com/org/create`;
+there is no `npm org create` command. `repository`, `bugs` and `homepage`
+already point at the GitHub repo and `https://tapedb.dev`.

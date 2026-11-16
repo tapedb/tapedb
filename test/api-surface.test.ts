@@ -19,23 +19,23 @@ describe("public API surface", () => {
 
   test("covers every package entry point but the CLI binary", () => {
     const pkg = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")) as { exports: Record<string, unknown> };
-    const exported = Object.keys(pkg.exports).map((key) => (key === "." ? "tapedb" : `tapedb/${key.slice(2)}`));
+    const exported = Object.keys(pkg.exports).map((key) => (key === "." ? "@tapedb/tapedb" : `@tapedb/tapedb/${key.slice(2)}`));
     expect(exported.sort()).toEqual(Object.keys(ENTRIES).sort());
   });
 
   test("marks the experimental parts", () => {
-    expect(current.entries["tapedb/react"].useBroadcast.experimental).toBe(true);
-    expect(current.entries.tapedb.BroadcastTopic.experimental).toBe(true);
-    const model = current.entries.tapedb.ModelClient.shape as Record<string, string>;
+    expect(current.entries["@tapedb/tapedb/react"].useBroadcast.experimental).toBe(true);
+    expect(current.entries["@tapedb/tapedb"].BroadcastTopic.experimental).toBe(true);
+    const model = current.entries["@tapedb/tapedb"].ModelClient.shape as Record<string, string>;
     expect(model.aggregate).toContain("@experimental");
     expect(model.groupBy).toContain("@experimental");
     expect(model.findMany).not.toContain("@experimental");
   });
 
-  test("keeps server internals out of tapedb/worker", () => {
+  test("keeps server internals out of @tapedb/tapedb/worker", () => {
     for (const internal of ["TRUSTED_CLAIM_HEADER", "encodeTrustedRoleClaim", "authenticateEngineRequest", "extractClaimToken", "mintDevClaim", "mintClaim", "WorkspaceRoom"]) {
-      expect(current.entries["tapedb/worker"][internal]).toBeUndefined();
+      expect(current.entries["@tapedb/tapedb/worker"][internal]).toBeUndefined();
     }
-    expect(current.entries.tapedb.Env).toBeUndefined();
+    expect(current.entries["@tapedb/tapedb"].Env).toBeUndefined();
   });
 });

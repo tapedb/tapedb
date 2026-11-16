@@ -1,7 +1,7 @@
 // select over HTTP and live.
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s, until } from "./common.mjs";
 
 const db = createClient({ schema: s, url: BASE, workspace: randomUUID() });

@@ -8,7 +8,7 @@
  * live, writes are optimistic and survive going offline.
  *
  * This entry is React-free and has zero runtime dependencies. Hooks live in
- * `tapedb/react`, the Worker in `tapedb/worker`; the CLI is `npx tapedb`.
+ * `@tapedb/tapedb/react`, the Worker in `@tapedb/tapedb/worker`; the CLI is `npx @tapedb/tapedb`.
  */
 
 export { createClient, Query, PageQuery, Write } from "./model/client";

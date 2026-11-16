@@ -1,7 +1,7 @@
 # tapedb starter
 
 The smallest app: one schema, one Worker, three Cloudflare resources. It is
-what `npx tapedb init` writes, checked in so you can read it without running
+what `npx @tapedb/tapedb init` writes, checked in so you can read it without running
 anything.
 
 ```
@@ -24,7 +24,7 @@ npm run dev              # tapedb dev: wrangler dev with the dev claim route on
 Then, from any script or app:
 
 ```ts
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import schema from "./tapedb.schema";
 
 const db = createClient({

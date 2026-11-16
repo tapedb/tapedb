@@ -1,7 +1,7 @@
 // A file bigger than one request (multipart through the Worker into R2), read back whole.
 import assert from "node:assert/strict";
 import { createHash, randomUUID } from "node:crypto";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s } from "./common.mjs";
 
 const db = createClient({ schema: s, url: BASE, workspace: randomUUID() });
