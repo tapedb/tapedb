@@ -69,6 +69,8 @@ application owner is the data controller and Cloudflare is the processor; see
 The library cannot enforce these for you:
 
 - Keep `TAPEDB_CLAIM_SECRET` out of source control, logs and client bundles.
+  It must be at least 32 bytes (`openssl rand -base64 32`); a shorter one is
+  refused, because it could be found offline from any claim.
   Rotate it if it is exposed; all existing claims become invalid.
 - Implement `getSubject` and `getRole` correctly. A role returned by
   `getRole` is trusted by the engine.

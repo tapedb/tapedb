@@ -155,7 +155,7 @@ allow consumers to emit declarations without leaking private names.
 | `WORKSPACE` | Durable Object namespace | class `WorkspaceRoom` |
 | `DATA` | R2 bucket | log segments and snapshots |
 | `FILES` | R2 bucket, optional | uploads |
-| `TAPEDB_CLAIM_SECRET` | secret | HS256 key for claims |
+| `TAPEDB_CLAIM_SECRET` | secret | HS256 key for claims, at least 32 bytes |
 | `TAPEDB_KEY_SECRET` | secret | stable wrapping and HMAC key for personal fields; required when the schema has personal fields |
 | `TAPEDB_CLAIM_ISSUER`, `TAPEDB_CLAIM_AUDIENCE` | var, optional | checked when set |
 | `ENVIRONMENT` | var | `production` refuses the development claim route |

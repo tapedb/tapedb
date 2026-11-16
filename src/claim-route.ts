@@ -8,6 +8,7 @@
 
 import { apiError, discardBody, json } from "./http";
 import { isWorkspaceId } from "./engine/r2-keys";
+import { claimSecretProblem } from "./claims";
 import { mintClaim, mintDevClaim, type ClaimIdentity } from "./mint";
 import type { LimitDecision } from "./engine/claim-limits";
 
@@ -87,8 +88,9 @@ export async function handleClaimRequest(
       return apiError(400, "invalid_workspace_id", "workspaceId must be a UUID.");
     }
 
-    if (!env.TAPEDB_CLAIM_SECRET) {
-      return apiError(500, "claim_secret_missing", "TAPEDB_CLAIM_SECRET is not configured.");
+    const secretProblem = claimSecretProblem(env.TAPEDB_CLAIM_SECRET);
+    if (secretProblem !== null) {
+      return apiError(500, "claim_secret_missing", secretProblem);
     }
 
     const minted = await mintDevClaim(workspaceId, env.TAPEDB_CLAIM_SECRET);
