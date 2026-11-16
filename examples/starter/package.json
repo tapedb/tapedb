@@ -9,7 +9,7 @@
     "deploy": "tapedb deploy"
   },
   "dependencies": {
-    "tapedb": "file:../.."
+    "@tapedb/tapedb": "file:../.."
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261110.1",

@@ -219,9 +219,9 @@
   experimental (`aggregate`, `groupBy`, `$broadcast`, `useBroadcast` and the
   `topics` option) or internal. `test/api-surface.test.ts` checks exports,
   signatures, the CLI usage and the error codes against `api/surface.json`.
-- **Breaking:** the `tapedb/cli` subpath export is gone; run the CLI with
-  `npx tapedb`. `tapedb` no longer exports the Worker `Env` type (import it
-  from `tapedb/worker`). `tapedb/worker` no longer exports `WorkspaceRoom`
+- **Breaking:** the `@tapedb/tapedb/cli` subpath export is gone; run the CLI with
+  `npx @tapedb/tapedb`. `@tapedb/tapedb` no longer exports the Worker `Env` type (import it
+  from `@tapedb/tapedb/worker`). `@tapedb/tapedb/worker` no longer exports `WorkspaceRoom`
   (use `defineTapeDB(...).WorkspaceRoom`, as `tapedb init` writes),
   `authenticateEngineRequest`, `encodeTrustedRoleClaim`, `extractClaimToken`,
   `TRUSTED_CLAIM_HEADER`, `mintClaim`, `mintDevClaim` or

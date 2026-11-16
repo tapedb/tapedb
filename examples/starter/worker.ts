@@ -1,4 +1,4 @@
-import { defineTapeDB } from "tapedb/worker";
+import { defineTapeDB } from "@tapedb/tapedb/worker";
 
 import schema from "./tapedb.schema";
 import { migrations } from "./tapedb/migrations.gen";

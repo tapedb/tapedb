@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { execFileSync } from "node:child_process";
-import { createClient } from "tapedb";
+import { createClient } from "@tapedb/tapedb";
 import { BASE, s } from "./common.mjs";
 
 const workspace = randomUUID();
@@ -18,8 +18,8 @@ const call = (path, init = {}, token = owner) =>
   fetch(`${BASE}/engine/workspaces/${workspace}${path}`, { ...init, headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) } });
 
 // The CLI refuses without the id typed twice.
-assert.throws(() => execFileSync(process.execPath, ["node_modules/tapedb/dist/cli.js", "erase", "--workspace", workspace, "--url", BASE], { stdio: "pipe" }));
-execFileSync(process.execPath, ["node_modules/tapedb/dist/cli.js", "erase", "--workspace", workspace, "--confirm", workspace, "--url", BASE], { stdio: "inherit" });
+assert.throws(() => execFileSync(process.execPath, ["node_modules/@tapedb/tapedb/dist/cli.js", "erase", "--workspace", workspace, "--url", BASE], { stdio: "pipe" }));
+execFileSync(process.execPath, ["node_modules/@tapedb/tapedb/dist/cli.js", "erase", "--workspace", workspace, "--confirm", workspace, "--url", BASE], { stdio: "inherit" });
 
 for (const [path, init] of [["/status", {}], ["/export", {}], ["/files/people/alice.txt", {}], ["/transact", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ txId: "x", ops: [{ op: "insert", namespace: "task", id: "t", values: { title: "back", done: false } }] }) }]]) {
   const response = await call(path, init);
@@ -29,5 +29,5 @@ for (const [path, init] of [["/status", {}], ["/export", {}], ["/files/people/al
   assert.equal(response.status, 410, `${path} after erase`);
 }
 // Erasing again is a no-op the CLI reports as done.
-execFileSync(process.execPath, ["node_modules/tapedb/dist/cli.js", "erase", "--workspace", workspace, "--confirm", workspace, "--url", BASE], { stdio: "inherit" });
+execFileSync(process.execPath, ["node_modules/@tapedb/tapedb/dist/cli.js", "erase", "--workspace", workspace, "--confirm", workspace, "--url", BASE], { stdio: "inherit" });
 console.log("drive-erase: ok");

@@ -24,7 +24,7 @@ try {
     writeFileSync(join(dir, "package.json"), manifest);
     command("npm", ["install", archive, "--ignore-scripts", "--omit=peer", "--no-audit", "--no-fund"], dir);
     const installedManifest = readFileSync(join(dir, "package.json"), "utf8");
-    const cli = join(dir, "node_modules", "tapedb", "dist", "cli.js");
+    const cli = join(dir, "node_modules", "@tapedb/tapedb", "dist", "cli.js");
     const run = (...args) => command(process.execPath, [cli, ...args], dir);
     run("init");
     assert.ok(existsSync(join(dir, "tapedb", "migrations", "0002_entities.sql")));

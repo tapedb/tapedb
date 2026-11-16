@@ -69,8 +69,8 @@ Exercise the packed product as a consumer would:
 cd "$(mktemp -d)"
 npm init -y
 npm install /tmp/pack/tapedb-*.tgz wrangler
-npx tapedb init
-npx tapedb dev
+npx @tapedb/tapedb init
+npx @tapedb/tapedb dev
 ```
 
 Drive that project through a write, a live subscription, an upload, a
@@ -100,8 +100,8 @@ Only after the gates and checks:
 
    ```bash
    npm view tapedb version dist-tags.latest
-   cd "$(mktemp -d)" && npm init -y && npm install tapedb wrangler
-   npx tapedb init
+   cd "$(mktemp -d)" && npm init -y && npm install @tapedb/tapedb wrangler
+   npx @tapedb/tapedb init
    ```
 
 7. Make the GitHub repository public and enable branch protection and secret
