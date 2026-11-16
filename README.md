@@ -565,8 +565,12 @@ the destination and `TAPEDB_MOVE_FROM` to the source (`none`, `eu` or
 `WORKSPACE_FROM` is needed only when the source uses a different namespace.
 
 ```sh
-npx @tapedb/tapedb move --to eu --url https://db.example.com --workspaces workspaces.txt
+npx @tapedb/tapedb move --to eu --url https://tapedb-app.<account-subdomain>.workers.dev --workspaces workspaces.txt
 ```
+
+`--url` is the Worker's origin as `wrangler deploy` printed it: the
+`*.workers.dev` host from your `wrangler.jsonc`, or a custom domain you
+attached to the Worker.
 
 The file contains one workspace UUID per line. `--workspace <uuid>` moves one.
 Use an owner claim in `TAPEDB_TOKEN`; for several workspaces, `--tokens tokens.json`
@@ -719,3 +723,5 @@ Browser clients using the default persistent outbox must pass `userId`, matching
 the claim subject (`dev-user` with `tapedb dev`). Queues are isolated by backend,
 user and workspace. Close and recreate the client when switching accounts. Old
 unscoped queues remain quarantined and are never automatically replayed.
+
+
