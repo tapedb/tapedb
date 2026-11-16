@@ -83,7 +83,7 @@ run("npm", ["run", "build"], { cwd: root });
 const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", project], { cwd: root }))[0].filename;
 writeFileSync(join(project, "package.json"), JSON.stringify({ name: "tapedb-e2e", private: true, type: "module" }));
 run("npm", ["install", join(project, packed), "wrangler@4", "--no-audit", "--no-fund"], { cwd: project });
-run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "init", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], { cwd: project });
+run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "init", "--no-install", "--no-start", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], { cwd: project });
 
 const schemaSource = `import { fileCheck, model, schema, t } from "@tapedb/tapedb/schema";
 

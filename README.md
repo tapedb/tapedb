@@ -2,8 +2,8 @@
 
 **A typed database for Cloudflare.** Describe your models once; `tapedb init`
 generates the Worker and configuration for one Durable Object class and two R2
-buckets in your own account. Create the buckets with the commands printed by
-`init`, set the deployment secrets, and deploy the Worker.
+buckets in your own account. The interactive setup installs project dependencies;
+choose local development or let it provision the cloud resources and deploy.
 Each workspace gets its own SQLite database inside a Durable Object, every
 write is appended to a transaction log, the log ships to R2, and a cold start
 replays it. Reads can be awaited once or kept live over a WebSocket; writes
@@ -24,8 +24,7 @@ and what is experimental, in [API.md](API.md); the design boundaries are in
 newer; the library itself runs in Cloudflare Workers.
 
 ```bash
-npx @tapedb/tapedb init     # schema, worker, wrangler config, first migration
-npm install @tapedb/tapedb  # the library and types your Worker compiles against
+npx @tapedb/tapedb init     # interactive setup, dependencies and first migration
 npx @tapedb/tapedb dev      # local database with a dev claim route
 npx @tapedb/tapedb studio   # local table browser on http://127.0.0.1:4400
 ```

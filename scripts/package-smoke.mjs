@@ -26,11 +26,11 @@ try {
     const installedManifest = readFileSync(join(dir, "package.json"), "utf8");
     const cli = join(dir, "node_modules", "@tapedb/tapedb", "dist", "cli.js");
     const run = (...args) => command(process.execPath, [cli, ...args], dir);
-    run("init");
+    run("init", "--no-install", "--no-start");
     assert.ok(existsSync(join(dir, "tapedb", "migrations", "0002_entities.sql")));
     assert.ok(existsSync(join(dir, "tapedb", "migrations.gen.ts")));
     const secret = readFileSync(join(dir, ".dev.vars"), "utf8");
-    run("init");
+    run("init", "--no-install", "--no-start");
     assert.equal(readFileSync(join(dir, ".dev.vars"), "utf8"), secret);
     assert.equal(readFileSync(join(dir, "package.json"), "utf8"), installedManifest);
     run("migrate", "check");
@@ -63,7 +63,7 @@ try {
     // A failed init must fail the process, keep user files, and clean its copy.
     rmSync(join(dir, "tapedb"), { recursive: true });
     writeFileSync(schemaPath, "export default {};\n");
-    const failed = command(process.execPath, [cli, "init"], dir, 1);
+    const failed = command(process.execPath, [cli, "init", "--no-install", "--no-start"], dir, 1);
     assert.match(failed.stderr, /must export a schema/);
     assert.doesNotMatch(failed.stdout, /Run it locally:/);
     assert.equal(readFileSync(schemaPath, "utf8"), "export default {};\n");
@@ -78,7 +78,7 @@ try {
   const standalone = join(scratch, "standalone");
   mkdirSync(standalone);
   const outsideCli = join(scratch, "default", "node_modules", "@tapedb", "tapedb", "dist", "cli.js");
-  command(process.execPath, [outsideCli, "init"], standalone);
+  command(process.execPath, [outsideCli, "init", "--no-install", "--no-start"], standalone);
   assert.ok(
     existsSync(join(standalone, "tapedb", "migrations", "0002_entities.sql")),
     "init outside a project must still write the first migration"
@@ -99,7 +99,7 @@ try {
       : `import { schema, model, t } from "@tapedb/tapedb/schema";\nexport default schema({ note: model({${fields}}) });\n`;
     if (nested) writeFileSync(join(dir, "fields.mts"), `import { t } from "@tapedb/tapedb/schema";\nexport const fields = {${fields}};\n`);
     writeFileSync(schemaPath, source);
-    command(process.execPath, [outsideCli, "init"], dir);
+    command(process.execPath, [outsideCli, "init", "--no-install", "--no-start"], dir);
     const sql = readFileSync(join(dir, "tapedb", "migrations", "0002_entities.sql"), "utf8");
     for (const value of values) assert.ok(sql.includes(`DEFAULT '${value}'`), `schema default must remain ${value}`);
     assert.equal(readFileSync(schemaPath, "utf8"), source);
