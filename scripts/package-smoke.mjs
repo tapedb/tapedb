@@ -65,7 +65,7 @@ try {
     writeFileSync(schemaPath, "export default {};\n");
     const failed = command(process.execPath, [cli, "init"], dir, 1);
     assert.match(failed.stderr, /must export a schema/);
-    assert.doesNotMatch(failed.stdout, /Next:/);
+    assert.doesNotMatch(failed.stdout, /Run it locally:/);
     assert.equal(readFileSync(schemaPath, "utf8"), "export default {};\n");
     assert.equal(readFileSync(join(dir, ".dev.vars"), "utf8"), secret);
     assert.equal(readdirSync(dir).filter(name => /^\.tapedb\.schema\./.test(name)).length, 0);
