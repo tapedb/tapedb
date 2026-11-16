@@ -8,8 +8,7 @@
   "homepage": "https://tapedb.dev",
   "packageManager": "bun@1.4.4",
   "publishConfig": {
-    "access": "public",
-    "provenance": true
+    "access": "public"
   },
   "repository": {
     "type": "git",
