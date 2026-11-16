@@ -33,6 +33,29 @@ by the implementing assistant, not an independent audit or penetration test.
 
 No additional exploitable claim, workspace, file or erasure bypass was found
 in this scoped review. That statement is limited to the paths and tests above.
+The follow-up review below found one such bypass in the Worker's routing.
+
+## Follow-up review — 2026-11-16
+
+Scope: main at `701305a` (after the independent review) for the five gate 3
+boundaries, read again from the request's entry into the Worker to the room
+route that serves it. Same caveat: a source review with regression tests, not
+an audit or a penetration test.
+
+| # | Finding | Severity | Resolution |
+| --- | --- | --- | --- |
+| 1 | The Worker built the room URL with `new URL(path, base)`. A path starting with `//` is protocol-relative there, so `/engine/workspaces/<id>//x/files` reached the room's `/files`, past the Worker's refusal of `/move/*`, `/storage/*` and index writes. An editor could record an index entry pointing at any stored object and then read or delete it through `/files/<path>`; an owner could call the internal move controls. | High | Fixed in #1: the room URL is built from the path as is, a path with an empty segment outside `/files/` answers 404, and the room accepts only index keys stored under the file's own path. `test/worker-routing.test.ts`. |
+| 2 | Only `x-tapedb-claims` was removed from forwarded requests; SECURITY.md said every `x-tapedb-*` header was. No room route read another one, so nothing was exploitable. | Low | Fixed in #1: every client `x-tapedb-*` header is removed. |
+| 3 | `TAPEDB_CLAIM_SECRET` had no minimum length. A short HS256 key can be recovered offline from one claim, and then claims for any workspace and role can be forged. | High (operator-dependent) | Fixed in #2: signing and verifying refuse a secret under 32 bytes; the claim routes answer 500 `claim_secret_missing`. `test/claims.test.ts`. |
+| 4 | Topics and presence admit every claim holder by default, `GUEST` included; the docs said "any member", which reads as role `MEMBER` or above. | Low (documentation) | Accepted as designed: a guest holds a claim the deployment issued for that workspace, and `topics.authorize` restricts it. The wording is corrected in #2 and on tapedb.dev. Presence carries only what each client publishes, never subject ids. |
+| 5 | `DELETE /subjects/<id>` in the room throws instead of answering 403 when the trusted claim header is missing. | Informational | Accepted: only the Worker reaches the room and always sets the header, so the case cannot arise from a client. |
+
+Checked without findings: the HS256 verifier (algorithm allowlist, canonical
+base64url, signature before payload, expiry, issuer, audience, workspace);
+WebSocket claims via subprotocol, expiry enforced per message and on fan-out;
+owner-only workspace and subject erasure, with history, personal keys and file
+prefixes listed with a trailing `/`; import and move file keys confined to the
+workspace's prefix; file downloads served with `nosniff` and a sandboxing CSP.
 
 ## Operator requirements and remaining evidence
 
