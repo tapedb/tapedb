@@ -5,7 +5,10 @@ import { encodeTrustedRoleClaim } from "../src/verify";
 import { model, schema, t } from "../src/schema";
 import { FakeR2Bucket, TEST_WORKSPACE } from "./fixtures/test-support";
 
-mock.module("cloudflare:workers", () => ({ DurableObject: class {} }));
+class MockDurableObject {
+  constructor(protected ctx: unknown, protected env: unknown) {}
+}
+mock.module("cloudflare:workers", () => ({ DurableObject: MockDurableObject }));
 const { defineTapeDB } = await import("../src/worker/index");
 const secret = "boundary-test-secret-never-production";
 const app = defineTapeDB({ schema: schema({ note: model({ text: t.string() }) }) });
