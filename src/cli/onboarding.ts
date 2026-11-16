@@ -104,7 +104,7 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
     let names = known.get(jurisdiction);
     if (!names) {
       const output = requireSuccess(command(["r2", "bucket", "list", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], true), "R2 bucket lookup");
-      names = new Set(Array.from(output.matchAll(/^\s*name:\s*(\S+)\s*$/gm), match => match[1]!));
+      names = new Set(Array.from(stripVTControlCharacters(output).matchAll(/^\s*name:\s*(\S+)\s*$/gm), match => match[1]!));
       known.set(jurisdiction, names);
     }
     if (!names.has(bucket.bucket_name)) {

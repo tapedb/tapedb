@@ -34,7 +34,7 @@ test("deployment reuses a bucket and secret, scopes commands to the chosen accou
     calls.push(args);
     let stdout = "";
     if (args[0] === "whoami") stdout = JSON.stringify({ accounts: [{ id: "account", name: "My account" }] });
-    if (args[0] === "r2" && args[2] === "list") stdout = "name: app-data\ncreation_date: 2026-01-01\n";
+    if (args[0] === "r2" && args[2] === "list") stdout = "\u001b[1mname:\u001b[0m app-data\ncreation_date: 2026-01-01\n";
     if (args[0] === "secret") stdout = JSON.stringify([{ name: "TAPEDB_CLAIM_SECRET" }]);
     if (args[0] === "deploy") {
       secretFile = args[args.indexOf("--secrets-file") + 1]!;

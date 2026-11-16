@@ -2,6 +2,7 @@
 
 ## 0.1.6 - 2026-11-16
 
+- Existing R2 buckets are recognised when Wrangler colours its list output.
 - First cloud deployment recognises Wrangler’s missing-Worker message even when it omits API error code 10007. Setup generates both required secrets and deploys without a manual bootstrap. Other lookup failures still stop deployment.
 
 
