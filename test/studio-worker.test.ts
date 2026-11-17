@@ -23,6 +23,14 @@ const get = (worker: ReturnType<typeof app>, path: string, method = "GET") =>
   worker.worker.fetch(new Request(`https://app.example${path}`, { method }), env, {} as ExecutionContext);
 
 describe("/_tapedb/studio", () => {
+  test("the Worker's own address opens it, when the app opts in", async () => {
+    const response = await get(app(true), "/");
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("https://app.example/_tapedb/studio");
+    expect((await get(app(true), "/", "POST")).status).toBe(404);
+    expect((await get(app(false), "/")).status).toBe(404);
+  });
+
   test("is not there unless the app opts in", async () => {
     expect((await get(app(false), "/_tapedb/studio")).status).toBe(404);
     expect((await get(app(false), "/_tapedb/studio/fonts/inter.woff2")).status).toBe(404);

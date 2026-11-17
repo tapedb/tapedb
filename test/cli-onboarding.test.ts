@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ignoreLocalFiles, missingSecrets, olderExactVersion, provisionAndDeploy, syncTapedb, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
+import { ignoreLocalFiles, missingSecrets, olderExactVersion, provisionAndDeploy, servesStudio, syncTapedb, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
 import { devArgs } from "../src/cli/index";
 
 const roots: string[] = [];
@@ -247,4 +247,13 @@ test("dev runs as development even after deploy wrote production into wrangler.j
     TAPEDB_JURISDICTION: "",
     TAPEDB_STUDIO_URL: "http://127.0.0.1:4400",
   });
+});
+
+test("deploy knows whether the Worker serves the studio, from worker.ts", () => {
+  const root = project();
+  expect(servesStudio(root)).toBe(false);
+  writeFileSync(join(root, "worker.ts"), 'import { defineTapeDB } from "@tapedb/tapedb/worker";\n');
+  expect(servesStudio(root)).toBe(false);
+  writeFileSync(join(root, "worker.ts"), 'import { studio } from "@tapedb/tapedb/studio";\nimport { defineTapeDB } from "@tapedb/tapedb/worker";\n');
+  expect(servesStudio(root)).toBe(true);
 });
