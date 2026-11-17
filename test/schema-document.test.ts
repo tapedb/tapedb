@@ -23,6 +23,7 @@ test("the schema document names the field that stores each link, and each field'
     schema: schema({
       board: model({ name: t.string(), archived: t.boolean().default(false), rank: t.number().default(3), columns: t.hasMany("column") }),
       column: model({ name: t.string(), board: t.belongsTo("board") }),
+      card: model({ title: t.string(), column: t.belongsTo("column", { onDelete: "cascade" }) }),
     }),
   });
   const db = new Database(":memory:");
@@ -41,9 +42,10 @@ test("the schema document names the field that stores each link, and each field'
   const claim = encodeTrustedRoleClaim({ sub: "u", workspaceId: TEST_WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER, iat: 0, exp: Math.floor(Date.now() / 1000) + 60 });
   const response = await room.fetch(new Request("http://room/schema", { headers: { "x-tapedb-claims": claim } }));
   const body = (await response.json()) as { data: { links: Array<{ foreignKey: unknown; forward: { namespace: string }; reverse: { namespace: string } }> } };
-  expect(body.data.links).toHaveLength(1);
-  const [link] = body.data.links;
-  expect(link.foreignKey).toEqual({ namespace: "column", attribute: expect.any(String) });
+  expect(body.data.links).toHaveLength(2);
+  const [link, cascade] = body.data.links;
+  expect((cascade.foreignKey as { onDelete: string }).onDelete).toBe("CASCADE");
+  expect(link.foreignKey).toEqual({ namespace: "column", attribute: expect.any(String), onDelete: "SET NULL" });
   const attribute = (link.foreignKey as { attribute: string }).attribute;
   const columns = (await (await room.fetch(new Request("http://room/schema", { headers: { "x-tapedb-claims": claim } }))).json()) as { data: { namespaces: Array<{ apiName: string; attributes: Record<string, unknown> }> } };
   expect(Object.keys(columns.data.namespaces.find((n) => n.apiName === "column")!.attributes)).toContain(attribute);

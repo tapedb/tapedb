@@ -385,6 +385,12 @@ Only the edited entries change in the file; comments, rules and formatting stay
 as written. Fields written in other ways (helpers, personal fields) are shown as
 code and can be renamed or deleted; change them in the file.
 
+In the Data tab, double-click a cell to edit it; edits are marked until "Save
+changes" writes them in one transaction. Checkboxes select rows to delete
+together, and every delete first says what happens to the rows that point at
+it: deleted with it, field cleared, or refused, per the relation's `onDelete`.
+"Columns" hides columns, and search matches the start of text fields or an id.
+
 The deployed Worker serves the studio too, at `https://<your-worker>/_tapedb/studio` (its root redirects there),
 when `worker.ts` passes it in (`tapedb init` writes this):
 

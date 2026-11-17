@@ -325,6 +325,32 @@ td .date { color: var(--text-2); }
 .tape .event.fresh { animation: enter 300ms cubic-bezier(0.2, 0.7, 0.1, 1) both; }
 @keyframes enter { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* ---- Grid: selection, staged edits, columns, search ---- */
+th.pick, td.pick { width: 76px; padding: 0 0 0 16px; white-space: nowrap; }
+td.pick .open { margin-left: 8px; padding: 4px; border: 1px solid transparent; border-radius: var(--control); background: none; color: var(--text-3); cursor: pointer; vertical-align: middle; }
+td.pick .open:hover, tr:hover td.pick .open { color: var(--text); border-color: var(--line-strong); }
+th.pick input, td.pick input { width: 16px; height: 16px; accent-color: var(--accent); margin: 0; cursor: pointer; vertical-align: middle; }
+th.pick { vertical-align: middle; }
+tbody tr.picked td { background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+td.editable { cursor: text; }
+td.staged { box-shadow: inset 2px 0 0 var(--accent); background: var(--accent-soft) !important; }
+td.editing { padding: 0 6px; }
+td.editing input { width: 100%; min-width: 120px; height: 36px; padding: 0 8px; border: 1px solid var(--accent); border-radius: var(--control); background: var(--ground); color: var(--text); font: inherit; }
+.bulk { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-bottom: 12px; padding: 8px 8px 8px 14px; border: 1px solid var(--line-strong); border-radius: var(--panel); background: var(--surface-2); }
+.bulk .what { color: var(--text); }
+.bulk .spacer { flex: 1; }
+.search { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--control); background: var(--surface); color: var(--text-3); }
+.search input { width: 220px; border: 0; background: none; outline: 0; color: var(--text); font-size: 14px; }
+.search:focus-within { border-color: var(--text-3); }
+.menu { position: relative; }
+.menu .pop { position: absolute; top: calc(100% + 6px); left: 0; z-index: 4; min-width: 220px; max-height: 320px; overflow: auto; padding: 6px; border: 1px solid var(--line-strong); border-radius: var(--panel); background: var(--surface-2); }
+.menu .pop label { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--control); cursor: pointer; font: 13px var(--mono); color: var(--text); }
+.menu .pop label:hover { background: var(--surface); }
+.menu .pop input { accent-color: var(--accent); }
+.impact { margin: 0; padding-left: 18px; }
+.impact li { margin: 4px 0; }
+.impact li.refused { color: var(--accent); }
+
 /* ---- Data / Structure tabs (the landing page's code tab: underline in text colour) ---- */
 .tabs { display: flex; gap: 22px; margin: -4px 0 16px; border-bottom: 1px solid var(--line); }
 .tabs button { position: relative; padding: 0 0 10px; border: 0; background: none; cursor: pointer; color: var(--text-3); }
@@ -515,6 +541,7 @@ td .date { color: var(--text-2); }
   </div>
   <div class="structure" id="structure" hidden></div>
   <div class="filters" id="filters" hidden></div>
+  <div class="bulk" id="bulk" hidden></div>
   <div class="panel" id="panel">
     <div class="scroll" id="grid"></div>
     <div class="panel-foot label" id="foot" hidden>
@@ -596,7 +623,10 @@ var app = {
   labels: {},
   marks: {},
   view: "data",
-  structure: null
+  structure: null,
+  picked: {},
+  staged: {},
+  search: ""
 };
 
 // ---- Icons (the landing page's) -------------------------------------------
@@ -618,6 +648,7 @@ function icon(kind, size) {
     ring: ["c9,9,7.25"],
     arrow: ["pM4 9h10M10 5l4 4-4 4"],
     plus: ["pM9 4v10M4 9h10"],
+    search: ["c8,8,5", "pM12 12l3.5 3.5"],
     link: ["pM7.5 10.5l3-3", "pM8.5 5.5l1.3-1.3a2.8 2.8 0 0 1 4 4L12.5 9.5", "pM9.5 12.5l-1.3 1.3a2.8 2.8 0 0 1-4-4L5.5 8.5"]
   }[kind];
   parts.forEach(function (part) {
@@ -916,11 +947,26 @@ function loadLabels(model, rows) {
   }).catch(function () { return false; });
 }
 
+function hiddenColumns(model) {
+  try { return JSON.parse(localStorage.getItem("tapedb-hidden:" + model) || "[]"); } catch (e) { return []; }
+}
+
+/** Every column the model has, before hiding: for the Columns menu. */
+function allColumns(model) {
+  var saved = app.rows;
+  return columnsOf(model, saved);
+}
+
 function columns(model) {
+  var hidden = hiddenColumns(model);
+  return columnsOf(model, app.rows).filter(function (c) { return c === "id" || hidden.indexOf(c) < 0; });
+}
+
+function columnsOf(model, rows) {
   var attrs = namespace(model).attributes;
   var names = Object.keys(attrs);
   var seen = {};
-  app.rows.forEach(function (row) { Object.keys(row).forEach(function (k) { seen[k] = true; }); });
+  rows.forEach(function (row) { Object.keys(row).forEach(function (k) { seen[k] = true; }); });
   var system = SYSTEM.filter(function (k) { return seen[k] && !attrs[k]; });
   return ["id"].concat(names.filter(function (n) { return n !== "id"; }), system);
 }
@@ -1079,6 +1125,10 @@ function describeWrite(before, changed, transactions) {
 // ---- Table ----------------------------------------------------------------
 
 function selectModel(name) {
+  if (stagedCount() > 0 && name !== app.model) { toast("Save or discard your changes first.", true); return; }
+  app.staged = {};
+  app.picked = {};
+  app.search = "";
   app.model = name;
   app.filters = [];
   app.filtering = false;
@@ -1093,14 +1143,32 @@ function selectModel(name) {
   loadRows(false);
 }
 
+/**
+ * The search box: rows whose text fields start with what was typed (the engine
+ * matches ranges, so this is a prefix and case sensitive), or the row with that id.
+ */
+function searchClause() {
+  var q = app.search;
+  if (!q) return null;
+  var attrs = namespace(app.model).attributes;
+  var branches = Object.keys(attrs).filter(function (n) { return attrs[n].type === "string" && !referenceOf(app.model, n); }).map(function (n) {
+    var c = {}; c[n] = { $gte: q, $lt: q + "\uffff" }; return c;
+  });
+  if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(q)) branches.push({ id: q.toLowerCase() });
+  if (branches.length === 0) return { id: "00000000-0000-0000-0000-000000000000" };
+  return branches.length === 1 ? branches[0] : { $or: branches };
+}
+
 function whereClause() {
-  if (app.filters.length === 0) return undefined;
+  var search = searchClause();
+  if (app.filters.length === 0) return search || undefined;
   var all = app.filters.map(function (f) {
     var condition = {};
     if (f.op === "is") condition[f.field] = f.value;
     else { var c = {}; c[f.op] = f.value; condition[f.field] = c; }
     return condition;
   });
+  if (search) all.push(search);
   return all.length === 1 ? all[0] : { $and: all };
 }
 
@@ -1122,6 +1190,7 @@ function loadRows(append) {
     if (model !== app.model) return;
     var rows = (result.data && result.data[model]) || [];
     var info = (result.pageInfo || {})[model] || {};
+    if (!append) app.picked = {};
     app.rows = append ? app.rows.concat(rows) : rows;
     app.cursor = info.hasMore && info.nextCursor ? info.nextCursor : null;
     app.total = typeof info.count === "number" ? info.count : null;
@@ -1147,6 +1216,9 @@ function reloadRows(since) {
     app.rows = (result.data && result.data[model]) || [];
     app.cursor = info.hasMore && info.nextCursor ? info.nextCursor : null;
     app.total = typeof info.count === "number" ? info.count : null;
+    var present = {};
+    app.rows.forEach(function (row) { present[row.id] = true; });
+    Object.keys(app.picked).forEach(function (id) { if (!present[id]) delete app.picked[id]; });
     var changed = 0;
     if (typeof since === "number") {
       app.rows.forEach(function (row) {
@@ -1200,11 +1272,11 @@ function renderTable() {
   $("panel").classList.toggle("is-empty", app.rows.length === 0);
   if (app.rows.length === 0) {
     $("foot").hidden = true;
-    if (app.filters.length > 0) {
+    if (app.filters.length > 0 || app.search) {
       grid.append(el("div", { class: "empty" }, [
         stopped(el("h2"), "No rows match"),
         el("p", { text: "Change or clear the filters to see more." }),
-        el("button", { class: "btn", type: "button", text: "Clear filters", onclick: function () { app.filters = []; loadRows(false); } })
+        el("button", { class: "btn", type: "button", text: "Clear filters", onclick: function () { app.filters = []; app.search = ""; loadRows(false); } })
       ]));
     } else {
       grid.append(el("div", { class: "empty" }, [
@@ -1218,7 +1290,15 @@ function renderTable() {
   }
 
   var cols = columns(model);
-  var head = el("tr", null, cols.map(function (field) {
+  var allPicked = app.rows.length > 0 && app.rows.every(function (row) { return app.picked[row.id]; });
+  var pickAll = el("input", { type: "checkbox", "aria-label": "Select every row shown", onclick: function (event) {
+    event.stopPropagation();
+    var on = event.target.checked;
+    app.rows.forEach(function (row) { if (on) app.picked[row.id] = true; else delete app.picked[row.id]; });
+    renderTable();
+  } });
+  pickAll.checked = allPicked;
+  var head = el("tr", null, [el("th", { class: "pick" }, [pickAll])].concat(cols.map(function (field) {
     var type = typeOf(model, field);
     var target = referenceOf(model, field);
     var sorted = app.order.field === field;
@@ -1233,26 +1313,215 @@ function renderTable() {
         el("span", { class: "type", text: target ? "→ " + target : type === "id" ? "uuid" : type })
       ])
     ]);
-  }));
+  })));
   var body = el("tbody", null, app.rows.map(function (row) {
     var mark = app.marks[row.id];
+    var pick = el("input", { type: "checkbox", "aria-label": "Select this row", onclick: function (event) {
+      event.stopPropagation();
+      if (event.target.checked) app.picked[row.id] = true; else delete app.picked[row.id];
+      renderTable();
+    } });
+    pick.checked = !!app.picked[row.id];
+    var staged = app.staged[row.id] || {};
     return el("tr", {
       tabindex: "0",
-      class: mark === "new" ? "arrived" : null,
+      class: (mark === "new" ? "arrived " : "") + (app.picked[row.id] ? "picked" : ""),
       "aria-selected": app.selected && app.selected.id === row.id ? "true" : "false",
-      onclick: function () { openRow(row); },
-      onkeydown: function (event) { if (event.key === "Enter") openRow(row); }
-    }, cols.map(function (field, index) {
-      var cell = el("td", { class: field === "id" ? "id" : null }, [cellContent(model, field, row[field])]);
+      // A click on an editable cell is the first half of a double-click; other cells open the row.
+      onclick: function (event) { if (!event.target.closest("td.editable, td.editing")) openRow(row); },
+      onkeydown: function (event) { if (event.key === "Enter" && event.target.tagName === "TR") openRow(row); }
+    }, [el("td", { class: "pick", onclick: function (event) { event.stopPropagation(); } }, [pick,
+      el("button", { class: "open", type: "button", title: "Open this row", "aria-label": "Open this row", onclick: function (event) { event.stopPropagation(); openRow(row); } }, [icon("arrow", 14)])
+    ])].concat(cols.map(function (field, index) {
+      var inline = inlineEditable(model, field);
+      var value = field in staged ? staged[field] : row[field];
+      var cell = el("td", {
+        class: (field === "id" ? "id " : "") + (inline ? "editable " : "") + (field in staged ? "staged" : ""),
+        title: inline ? "Double-click to edit" : null
+      }, [cellContent(model, field, value)]);
+      if (inline) cell.addEventListener("dblclick", function (event) { event.stopPropagation(); editCell(cell, row, field); });
       if (index === 0 && mark) cell.append(el("span", { class: "tag", text: mark === "new" ? "NEW" : "CHANGED" }));
       return cell;
-    }));
+    })));
   }));
   grid.append(el("table", null, [el("thead", null, [head]), body]));
 
   $("foot").hidden = false;
   $("shown").textContent = "Showing " + app.rows.length + (app.total !== null ? " of " + app.total : "");
   $("more").hidden = !app.cursor;
+  renderBulk();
+}
+
+// ---- Inline edits, staged until saved together -----------------------------------
+
+/** Scalar fields edit in the cell; relations and JSON in the row panel. */
+function inlineEditable(model, field) {
+  var attr = namespace(model).attributes[field];
+  if (!attr || referenceOf(model, field)) return false;
+  return attr.type === "string" || attr.type === "number" || attr.type === "boolean" || attr.type === "date";
+}
+
+function stagedCount() {
+  var n = 0;
+  Object.keys(app.staged).forEach(function (id) { n += Object.keys(app.staged[id]).length; });
+  return n;
+}
+
+function editCell(cell, row, field) {
+  var attr = namespace(app.model).attributes[field];
+  var staged = app.staged[row.id] || {};
+  var current = field in staged ? staged[field] : row[field];
+  var stage = function (value) {
+    var same = value === row[field] || (value === null && row[field] === undefined);
+    app.staged[row.id] = app.staged[row.id] || {};
+    if (same) delete app.staged[row.id][field]; else app.staged[row.id][field] = value;
+    if (Object.keys(app.staged[row.id]).length === 0) delete app.staged[row.id];
+    renderTable();
+  };
+  if (attr.type === "boolean") { stage(!current); return; }
+  var input;
+  if (attr.type === "date") {
+    var local = "";
+    if (typeof current === "number") { var d = new Date(current); local = new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19); }
+    input = el("input", { type: "datetime-local", step: "1", value: local });
+  } else {
+    input = el("input", { type: attr.type === "number" ? "number" : "text", step: attr.type === "number" ? "any" : null, value: current === null || current === undefined ? "" : String(current) });
+  }
+  cell.innerHTML = "";
+  cell.className = "editing";
+  cell.append(input);
+  input.focus();
+  if (input.select) input.select();
+  var done = false;
+  var commit = function () {
+    if (done) return;
+    done = true;
+    var raw = input.value;
+    if (raw === "") { if (attr.optional) stage(null); else if (attr.type === "string") stage(""); else renderTable(); return; }
+    if (attr.type === "number") { var n = Number(raw); if (isNaN(n)) { fail(new Error(field + " must be a number.")); renderTable(); return; } stage(n); return; }
+    if (attr.type === "date") { var t = new Date(raw).getTime(); if (isNaN(t)) { renderTable(); return; } stage(t); return; }
+    stage(raw);
+  };
+  input.addEventListener("click", function (event) { event.stopPropagation(); });
+  input.addEventListener("keydown", function (event) {
+    event.stopPropagation();
+    if (event.key === "Enter") commit();
+    if (event.key === "Escape") { done = true; renderTable(); }
+  });
+  input.addEventListener("blur", commit);
+}
+
+function saveStaged() {
+  var model = app.model;
+  var ops = Object.keys(app.staged).map(function (id) { return { op: "patch", namespace: model, id: id, values: app.staged[id] }; });
+  if (ops.length === 0) return;
+  transact(ops).then(function () {
+    var n = stagedCount();
+    app.staged = {};
+    toast(n === 1 ? "1 change saved" : n + " changes saved, in one transaction");
+    return reloadRows();
+  }).catch(fail);
+}
+
+// ---- Selection and bulk actions --------------------------------------------------
+
+function renderBulk() {
+  var bar = $("bulk");
+  var picked = Object.keys(app.picked);
+  var edits = stagedCount();
+  bar.innerHTML = "";
+  bar.hidden = app.view !== "data" || (picked.length === 0 && edits === 0);
+  if (bar.hidden) return;
+  if (edits > 0) {
+    bar.append(
+      el("span", { class: "what", text: edits === 1 ? "1 unsaved change" : edits + " unsaved changes" }),
+      el("span", { class: "spacer" }),
+      el("button", { class: "quiet label", type: "button", text: "Discard", onclick: function () { app.staged = {}; renderTable(); } }),
+      el("button", { class: "btn small primary", type: "button", text: "Save changes", onclick: saveStaged })
+    );
+    return;
+  }
+  bar.append(
+    el("span", { class: "what", text: picked.length === 1 ? "1 row selected" : picked.length + " rows selected" }),
+    el("span", { class: "spacer" }),
+    el("button", { class: "quiet label", type: "button", text: "Clear selection", onclick: function () { app.picked = {}; renderTable(); } }),
+    el("button", { class: "btn small danger", type: "button", text: picked.length === 1 ? "Delete row" : "Delete " + picked.length + " rows", onclick: function () { confirmDelete(picked); } })
+  );
+}
+
+/** What deleting these rows does to rows that point at them, by each relation's onDelete. */
+function deleteImpact(model, ids) {
+  var refs = (app.schema.links || []).filter(function (link) {
+    if (!link.foreignKey) return false;
+    var owner = link.foreignKey.namespace;
+    var target = link.forward.namespace === owner ? link.reverse.namespace : link.forward.namespace;
+    return target === model;
+  });
+  if (refs.length === 0) return Promise.resolve([]);
+  return Promise.all(refs.map(function (link) {
+    var where = {};
+    where[link.foreignKey.attribute] = { $in: ids };
+    var q = {};
+    q[link.foreignKey.namespace] = { $: { where: where, count: true, limit: 0 } };
+    return query(q).then(function (result) {
+      var count = ((result.pageInfo || {})[link.foreignKey.namespace] || {}).count || 0;
+      return { link: link, count: count };
+    });
+  })).then(function (found) {
+    return found.filter(function (f) { return f.count > 0; }).map(function (f) {
+      var owner = f.link.foreignKey.namespace;
+      var field = f.link.foreignKey.attribute.replace(/Id$/, "");
+      var rows = f.count + " " + owner + (f.count === 1 ? " row" : " rows");
+      var rule = f.link.foreignKey.onDelete;
+      if (rule === "CASCADE") return { text: "Also deletes " + rows + " that belong to " + (ids.length === 1 ? "it" : "them") + ", and anything that belongs to those." };
+      if (rule === "RESTRICT") return { refused: true, text: rows + " point here, and " + owner + "." + field + " refuses the delete. Move or delete those first." };
+      return { text: "Clears " + field + " on " + rows + "." };
+    });
+  });
+}
+
+function confirmDelete(ids) {
+  var model = app.model;
+  var many = ids.length !== 1;
+  var title = many ? "Delete " + ids.length + " " + model + " rows" : "Delete this " + model;
+  openSheet(model, title, [el("p", { class: "hint", text: "Checking what points at " + (many ? "them" : "it") + "…" })], many ? "Delete " + ids.length + " rows" : "Delete row", null);
+  $("sheet-go").disabled = true;
+  deleteImpact(model, ids).then(function (impact) {
+    var refused = impact.some(function (i) { return i.refused; });
+    var body = [];
+    body.push(el("div", { class: "notice warn" }, [
+      el("span", { class: "label", text: refused ? "Cannot delete" : "Deletes data" }),
+      refused
+        ? "The schema refuses this delete:"
+        : (many ? "These " + ids.length + " rows are" : "This row is") + " deleted in one transaction. It cannot be undone here.",
+      impact.length ? el("ul", { class: "impact" }, impact.map(function (i) { return el("li", { class: i.refused ? "refused" : null, text: i.text }); })) : null
+    ]));
+    if (!many) {
+      var row = app.rows.filter(function (r) { return r.id === ids[0]; })[0];
+      var label = row && labelField(model) && row[labelField(model)];
+      body.push(el("p", { class: "hint", text: (label ? label + ", " : "") + ids[0] }));
+    }
+    $("sheet-body").innerHTML = "";
+    body.forEach(function (node) { $("sheet-body").append(node); });
+    var go = $("sheet-go");
+    go.disabled = refused;
+    sheetGo = function () {
+      if (go.dataset.armed !== "yes") {
+        go.dataset.armed = "yes";
+        go.className = "btn danger small armed";
+        go.textContent = "Delete for good";
+        return;
+      }
+      go.disabled = true;
+      transact(ids.map(function (id) { return { op: "delete", namespace: model, id: id }; })).then(function () {
+        closeSheet();
+        ids.forEach(function (id) { delete app.picked[id]; delete app.staged[id]; });
+        toast(many ? ids.length + " rows deleted" : "Row deleted");
+        reloadRows();
+        refreshCounts();
+      }).catch(function (error) { fail(error); go.disabled = false; });
+    };
+  }).catch(fail);
 }
 
 // ---- Filters --------------------------------------------------------------
@@ -1285,7 +1554,15 @@ function renderFilters() {
     ]));
   });
   if (!app.filtering) {
-    box.append(el("button", { class: "btn small", type: "button", onclick: function () { app.filtering = true; renderFilters(); box.querySelector("input").focus(); } }, [icon("plus", 14), app.filters.length ? "Add filter" : "Filter"]));
+    var input = el("input", { type: "search", placeholder: "Text starts with…", "aria-label": "Search", value: app.search });
+    var timer = null;
+    input.addEventListener("input", function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { app.search = input.value.trim(); loadRows(false).then(function () { var again = $("filters").querySelector(".search input"); if (again) { again.focus(); again.setSelectionRange(again.value.length, again.value.length); } }); }, 300);
+    });
+    box.append(el("label", { class: "search", title: "Rows whose text starts with this (case sensitive), or the row with this id" }, [icon("search", 14), input]));
+    box.append(columnsMenu(model));
+    box.append(el("button", { class: "btn small", type: "button", onclick: function () { app.filtering = true; renderFilters(); box.querySelector(".filter-form input").focus(); } }, [icon("plus", 14), app.filters.length ? "Add filter" : "Filter"]));
     if (app.filters.length > 0) box.append(el("button", { class: "quiet label", type: "button", text: "Clear", onclick: function () { app.filters = []; loadRows(false); } }));
     return;
   }
@@ -1305,6 +1582,39 @@ function renderFilters() {
   } }, [fieldSelect, opSelect, input, el("button", { class: "btn small primary", type: "submit", text: "Apply" }),
     el("button", { class: "quiet label", type: "button", text: "Cancel", onclick: function () { app.filtering = false; renderFilters(); } })]));
 }
+
+function columnsMenu(model) {
+  var wrap = el("div", { class: "menu" });
+  var hidden = hiddenColumns(model);
+  var all = allColumns(model).filter(function (c) { return c !== "id"; });
+  var button = el("button", { class: "btn small", type: "button", "aria-expanded": "false", text: hidden.length ? "Columns (" + hidden.length + " hidden)" : "Columns" });
+  var pop = el("div", { class: "pop", hidden: true });
+  all.forEach(function (column) {
+    var box = el("input", { type: "checkbox" });
+    box.checked = hidden.indexOf(column) < 0;
+    box.addEventListener("change", function () {
+      var now = hiddenColumns(model).filter(function (c) { return c !== column; });
+      if (!box.checked) now.push(column);
+      try { localStorage.setItem("tapedb-hidden:" + model, JSON.stringify(now)); } catch (e) {}
+      renderTable();
+      var reopened = $("filters").querySelector(".menu .pop");
+      if (reopened) { reopened.hidden = false; reopened.previousSibling.setAttribute("aria-expanded", "true"); }
+    });
+    pop.append(el("label", null, [box, column]));
+  });
+  button.addEventListener("click", function (event) {
+    event.stopPropagation();
+    pop.hidden = !pop.hidden;
+    button.setAttribute("aria-expanded", pop.hidden ? "false" : "true");
+  });
+  pop.addEventListener("click", function (event) { event.stopPropagation(); });
+  wrap.append(button, pop);
+  return wrap;
+}
+document.addEventListener("click", function () {
+  var pop = document.querySelector(".menu .pop");
+  if (pop && !pop.hidden) { pop.hidden = true; pop.previousSibling.setAttribute("aria-expanded", "false"); }
+});
 
 function jumpTo(model, id) {
   selectModel(model);
@@ -1515,21 +1825,9 @@ $("editor").addEventListener("submit", function (event) {
 });
 
 $("delete").addEventListener("click", function () {
-  var button = $("delete");
-  if (button.dataset.armed !== "yes") {
-    button.dataset.armed = "yes";
-    button.className = "btn danger small armed";
-    button.textContent = "Delete for good";
-    return;
-  }
-  var id = app.selected.id;
-  transact([{ op: "delete", namespace: app.model, id: id }]).then(function () {
-    toast("Row deleted");
-    closeDrawer();
-    reloadRows();
-    refreshCounts();
-  }).catch(fail);
+  if (app.selected) confirmDelete([app.selected.id]);
 });
+
 
 $("close").addEventListener("click", closeDrawer);
 $("cancel").addEventListener("click", closeDrawer);
@@ -1588,6 +1886,7 @@ function setView(view) {
   $("filters").hidden = !data;
   $("add").hidden = !data;
   $("structure").hidden = data;
+  if ($("bulk")) renderBulk();
   if (!data) renderStructure();
 }
 
