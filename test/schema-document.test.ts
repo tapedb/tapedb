@@ -53,3 +53,55 @@ test("the schema document names the field that stores each link, and each field'
   const board = columns.data.namespaces.find((n) => n.apiName === "board")!.attributes as Record<string, { default: unknown }>;
   expect([board.archived.default, board.rank.default, board.name.default]).toEqual([false, 3, null]);
 });
+
+test("the schema document says who may do what, with filter rules evaluated for the caller", async () => {
+  const { role, filter, check, attachedTo } = await import("../src/schema");
+  defineTapeDB({
+    schema: schema(
+      {
+        board: model({ name: t.string(), ownerId: t.string().index(), open: t.boolean().default(false) }).access({
+          read: filter(({ auth }) => [{ ownerId: auth.sub }, { open: true }]),
+          update: check(({ auth, row }) => row?.ownerId === auth.sub),
+          delete: role("admin"),
+        }),
+        note: model({ body: t.string() }),
+      },
+      { files: { read: attachedTo("board", (path) => path.split("/")[0]), write: role("member") } }
+    ),
+  });
+  const db = new Database(":memory:");
+  const ctx = {
+    id: { name: TEST_WORKSPACE },
+    storage: { sql: createSqlStorage(db), transactionSync: <T>(fn: () => T) => db.transaction(fn)(), getAlarm: async () => null, setAlarm: async () => {} },
+    ready: Promise.resolve() as Promise<unknown>,
+    blockConcurrencyWhile<T>(fn: () => Promise<T>) {
+      this.ready = fn();
+      return this.ready as Promise<T>;
+    },
+    getWebSockets: () => [],
+  };
+  const room = new WorkspaceRoom(ctx as never, { DATA: new FakeR2Bucket() } as never);
+  await ctx.ready;
+  const claim = encodeTrustedRoleClaim({ sub: "alice", workspaceId: TEST_WORKSPACE, role: WORKSPACE_ROLE_LEVELS.EDITOR, iat: 0, exp: Math.floor(Date.now() / 1000) + 60 });
+  const response = await room.fetch(new Request("http://room/schema", { headers: { "x-tapedb-claims": claim } }));
+  const data = ((await response.json()) as { data: { caller: unknown; files: unknown; namespaces: Array<{ apiName: string; access: unknown }> } }).data;
+  expect(data.caller).toEqual({ sub: "alice", role: WORKSPACE_ROLE_LEVELS.EDITOR });
+  expect(data.files).toEqual({
+    read: { rule: "attachedTo", model: "board" },
+    write: { rule: "role", role: WORKSPACE_ROLE_LEVELS.MEMBER },
+    delete: { rule: "role", role: WORKSPACE_ROLE_LEVELS.EDITOR },
+  });
+  const access = Object.fromEntries(data.namespaces.map((n) => [n.apiName, n.access]));
+  expect(access.board).toEqual({
+    read: { rule: "filter", where: [{ ownerId: "alice" }, { open: true }] },
+    create: { rule: "role", role: WORKSPACE_ROLE_LEVELS.EDITOR },
+    update: { rule: "check" },
+    delete: { rule: "role", role: WORKSPACE_ROLE_LEVELS.ADMIN },
+  });
+  expect(access.note).toEqual({
+    read: { rule: "role", role: WORKSPACE_ROLE_LEVELS.MEMBER },
+    create: { rule: "role", role: WORKSPACE_ROLE_LEVELS.EDITOR },
+    update: { rule: "role", role: WORKSPACE_ROLE_LEVELS.EDITOR },
+    delete: { rule: "role", role: WORKSPACE_ROLE_LEVELS.MODERATOR },
+  });
+});

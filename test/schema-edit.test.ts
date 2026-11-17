@@ -159,3 +159,35 @@ test("the preview diff shows only what changed, with context", () => {
   expect(diff.filter((l) => l.kind !== " ")).toEqual([{ kind: "-", text: "    done: t.boolean().default(false),", old: expect.any(Number) }]);
   expect(diff.some((l) => l.text === "…")).toBe(true);
 });
+
+test("access rules read back as written, per model and for files", async () => {
+  const { accessSource } = await import("../src/cli/schema-edit");
+  const source = `import { check, filter, model, role, schema, t } from "@tapedb/tapedb/schema";
+
+export default schema(
+  {
+    board: model({
+      name: t.string(),
+      ownerId: t.string().index(),
+    }).access({
+      // mine, or open ones
+      read: filter(({ auth }) => [{ ownerId: auth.sub }, { open: true }]),
+      update: check(({ auth, row }) => row?.ownerId === auth.sub),
+      delete: role("admin"),
+    }),
+    note: model({ body: t.string() }),
+  },
+  { files: { read: role("member"), write: fileCheck(({ auth, file }) => file.path.startsWith(auth.sub + "/")) } }
+);
+`;
+  expect(accessSource(source)).toEqual({
+    models: {
+      board: {
+        read: "filter(({ auth }) => [{ ownerId: auth.sub }, { open: true }])",
+        update: "check(({ auth, row }) => row?.ownerId === auth.sub)",
+        delete: 'role("admin")',
+      },
+    },
+    files: { read: 'role("member")', write: 'fileCheck(({ auth, file }) => file.path.startsWith(auth.sub + "/"))' },
+  });
+});

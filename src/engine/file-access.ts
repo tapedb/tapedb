@@ -183,3 +183,14 @@ export function readableFiles<T extends FileInfo>(sql: SqlExecutor, claim: RoleC
   );
   return files.filter((_, index) => ids[index] !== null && visible.has(ids[index]!));
 }
+
+/** How each file action is decided, for tooling: a role level, a check in code, or the rules of a model's rows. */
+export function describeFileAccess(): Record<FileAction, { rule: "role"; role: number } | { rule: "check" } | { rule: "attachedTo"; model: string }> {
+  const describe = (action: FileAction) => {
+    const rule = rules[action] ?? DEFAULTS[action];
+    if (rule.decision === "role") return { rule: "role" as const, role: rule.level };
+    if (rule.decision === "attachedTo") return { rule: "attachedTo" as const, model: rule.model };
+    return { rule: "check" as const };
+  };
+  return { read: describe("read"), write: describe("write"), delete: describe("delete") };
+}
