@@ -11,7 +11,7 @@
  */
 
 import type { ClaimLimits, LimitDecision } from "./engine/claim-limits";
-import { WORKSPACE_ROLE_LEVELS, claimSecretProblem, type RoleClaim, type WorkspaceRole } from "./claims";
+import { WORKSPACE_ROLE_LEVELS, claimSecretProblem, isRoleLevel, type RoleClaim, type WorkspaceRole } from "./claims";
 import { apiError, discardBody, json } from "./http";
 
 export const DEFAULT_CLAIM_TTL_SECONDS = 300;
@@ -201,10 +201,14 @@ export async function mintClaim(
     return apiError(400, "invalid_body", "Request body must be a JSON object.");
   }
 
-  const workspaceId =
-    typeof body === "object" && body !== null && !Array.isArray(body)
-      ? (body as Record<string, unknown>).workspaceId
-      : undefined;
+  const fields = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+  const workspaceId = fields.workspaceId;
+  // `role` asks for a claim below the caller's own role, to see the workspace
+  // as that role does (the studio's "view as"). Never above it.
+  const requested = fields.role;
+  if (requested !== undefined && !isRoleLevel(requested)) {
+    return apiError(400, "invalid_role", "role must be a role level from 0 to 8.");
+  }
 
   if (typeof workspaceId !== "string" || !UUID_PATTERN.test(workspaceId)) {
     return apiError(400, "invalid_workspace_id", "workspaceId must be a UUID.");
@@ -224,6 +228,12 @@ export async function mintClaim(
 
   if (role === null) {
     return apiError(403, "not_a_member", "You are not a member of this workspace.");
+  }
+  if (requested !== undefined) {
+    if (requested > role) {
+      return apiError(403, "role_above_membership", "A claim can ask for your own role or a lower one, not a higher one.");
+    }
+    role = requested;
   }
 
   const minted = await signRoleClaim(
@@ -257,11 +267,8 @@ export async function mintClaim(
  */
 export async function mintDevClaim(
   workspaceId: string,
-  secret: string
+  secret: string,
+  as: { sub: string; role: WorkspaceRole } = { sub: "dev-user", role: WORKSPACE_ROLE_LEVELS.OWNER }
 ): Promise<MintedClaim> {
-  return signRoleClaim(secret, {
-    sub: "dev-user",
-    workspaceId,
-    role: WORKSPACE_ROLE_LEVELS.OWNER,
-  });
+  return signRoleClaim(secret, { sub: as.sub, workspaceId, role: as.role });
 }

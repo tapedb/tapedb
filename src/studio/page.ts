@@ -123,7 +123,6 @@ body.live .top .cassette .hub { animation-play-state: running; }
 body.ff .top .cassette .hub { animation-duration: 0.4s; }
 @keyframes hub { to { transform: rotate(360deg); } }
 .top .spacer { flex: 1; }
-.who { color: var(--text-2); padding-right: 14px; border-right: 1px solid var(--line); }
 .workspace { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .workspace select {
   appearance: none;
@@ -408,6 +407,41 @@ td.editing input { width: 100%; min-width: 120px; height: 36px; padding: 0 8px; 
 .problem p { margin: 0; color: var(--text); font: 14px/22px var(--mono); white-space: pre-wrap; }
 td .many { font: 12.5px var(--mono); color: var(--text-3); }
 
+ /* ---- Access ---- */
+.access { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.access .head p { margin: 0 0 6px; max-width: 72ch; color: var(--text-3); font-size: 14px; }
+.access .panel { margin-bottom: 18px; }
+.access-table { width: 100%; table-layout: fixed; }
+.access-table th:first-child { width: 160px; }
+.access-table thead th { padding: 12px 16px; }
+.access-table tbody th { padding: 16px; text-align: left; vertical-align: top; font-weight: 400; color: var(--text); position: static; background: none; border-bottom: 1px solid var(--line); }
+.access-table td.rule { vertical-align: top; padding: 14px 16px; white-space: normal; }
+.access-table tr:last-child th, .access-table tr:last-child td { border-bottom: 0; }
+.model-link { border: 0; background: none; padding: 0; cursor: pointer; color: var(--text); font-size: 15px; }
+.model-link:hover { color: var(--accent); }
+.rule .what { display: flex; align-items: center; gap: 10px; color: var(--text); }
+.rule .you { display: flex; align-items: flex-start; gap: 6px; margin-top: 6px; font-size: 13.5px; color: var(--text-3); }
+.rule .you svg { flex: none; margin-top: 3px; }
+.rule .you.yes { color: var(--ok); }
+.rule code, .code pre, .code textarea, .json { font-variant-ligatures: none; font-feature-settings: "calt" 0, "liga" 0; }
+.rule code { display: block; margin-top: 10px; padding: 8px 10px; border-radius: var(--control); background: var(--ground); font: 12.5px/18px var(--mono); color: var(--text-2); white-space: pre-wrap; word-break: break-word; }
+.rule .default { display: inline-block; margin-top: 8px; text-transform: none; letter-spacing: 0.02em; color: var(--line-strong); }
+.ladder { display: inline-flex; gap: 2px; }
+.ladder i { display: block; width: 4px; height: 14px; background: var(--line-strong); }
+.ladder i.on { background: var(--accent); }
+.ladder i.you { height: 20px; margin: -3px 0; background: var(--text-3); }
+.ladder i.on.you { background: var(--text); }
+button.who { display: inline-flex; align-items: center; gap: 8px; min-height: 36px; padding: 0 12px; border: 1px solid var(--line-strong); border-radius: var(--control); background: none; cursor: pointer; color: var(--text); }
+button.who:hover { border-color: var(--text-3); }
+button.who .role { font-size: 14px; }
+button.who .sub { color: var(--text-3); max-width: 18ch; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+button.who.as { border-color: var(--accent); background: var(--accent-soft); }
+button.who.as .label { color: var(--accent); }
+.who-pop { min-width: 300px; padding: 10px; }
+.menu .who-pop .field { display: grid; grid-template-columns: 70px 1fr; align-items: center; gap: 10px; padding: 6px 8px; cursor: default; font: 14px var(--sans); color: var(--text-2); }
+.who-pop select, .who-pop input { min-height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: var(--control); background: var(--surface); color: var(--text); font: 13px var(--mono); }
+.who-pop .hint { margin: 6px 8px 10px; font-size: 13px; color: var(--text-3); }
+.who-pop .actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 8px 4px; }
 /* ---- Data / Structure tabs (the landing page's code tab: underline in text colour) ---- */
 .tabs { display: flex; gap: 22px; margin: -4px 0 16px; border-bottom: 1px solid var(--line); }
 .tabs button { position: relative; padding: 0 0 10px; border: 0; background: none; cursor: pointer; color: var(--text-3); }
@@ -568,7 +602,7 @@ td .many { font: 12.5px var(--mono); color: var(--text-3); }
     <span class="label">Studio</span>
   </a>
   <span class="spacer"></span>
-  <span class="label who" id="who" hidden></span>
+  <div class="menu" id="who-menu" hidden></div>
   <div class="workspace">
     <label class="label" for="workspace">Workspace</label>
     <select id="workspace"></select>
@@ -582,6 +616,7 @@ td .many { font: 12.5px var(--mono); color: var(--text-3); }
   <button class="new-model" id="new-model" type="button" hidden>+ New model</button>
   <nav class="tools" id="tools" aria-label="Tools" hidden>
     <button type="button" id="open-query" aria-current="false"></button>
+    <button type="button" id="open-access" aria-current="false"></button>
   </nav>
 </aside>
 
@@ -605,6 +640,15 @@ td .many { font: 12.5px var(--mono); color: var(--text-3); }
   <div class="structure" id="structure" hidden></div>
   <div class="filters" id="filters" hidden></div>
   <div class="bulk" id="bulk" hidden></div>
+  <section class="access" id="access" aria-label="Access" hidden>
+    <div class="head">
+      <div>
+        <h1 id="access-title"></h1>
+        <p>Who may read and change each model, from the rules in tapedb.schema.ts, and what they mean for whoever the studio is signed in as.</p>
+      </div>
+    </div>
+    <div id="access-body"></div>
+  </section>
   <section class="console" id="console" aria-label="Query" hidden>
     <div class="head">
       <div>
@@ -713,7 +757,10 @@ var app = {
   structure: null,
   picked: {},
   staged: {},
-  search: ""
+  search: "",
+  tool: "",
+  viewAs: {},
+  ownRole: null
 };
 
 // ---- Icons (the landing page's) -------------------------------------------
@@ -737,6 +784,7 @@ function icon(kind, size) {
     plus: ["pM9 4v10M4 9h10"],
     search: ["c8,8,5", "pM12 12l3.5 3.5"],
     prompt: ["pM4 5.5l3.5 3.5L4 12.5", "pM9.5 13h4.5"],
+    shield: ["pM9 2.5l5.5 2v4.2c0 3.2-2.3 5.6-5.5 6.8-3.2-1.2-5.5-3.6-5.5-6.8V4.5z"],
     link: ["pM7.5 10.5l3-3", "pM8.5 5.5l1.3-1.3a2.8 2.8 0 0 1 4 4L12.5 9.5", "pM9.5 12.5l-1.3 1.3a2.8 2.8 0 0 1-4-4L5.5 8.5"]
   }[kind];
   parts.forEach(function (part) {
@@ -800,32 +848,16 @@ function claimFor(workspace, fresh) {
     method: "POST",
     credentials: "same-origin",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspaceId: workspace })
+    body: JSON.stringify(app.viewAs.role === undefined ? { workspaceId: workspace } : { workspaceId: workspace, role: app.viewAs.role })
   }).then(readJson, function () { throw new Error("The Worker could not be reached."); }).then(function (result) {
     var seconds = typeof result.expiresIn === "number" ? result.expiresIn : 300;
     claims[workspace] = { token: result.token, until: Date.now() + (seconds - 30) * 1000 };
-    showRole(typeof result.roleLevel === "number" ? result.roleLevel : roleIn(result.token));
     return result.token;
   }).catch(function (error) {
     if (error.status === 401) throw new Error("Sign in to the app first: this studio uses its sign-in.");
     if (error.status === 403) throw new Error("Your sign-in has no access to this workspace.");
     throw error;
   });
-}
-
-/** The role a claim carries (its payload is base64url JSON); only for display. */
-function roleIn(token) {
-  try {
-    var part = String(token).split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
-    return JSON.parse(atob(part + "===".slice((part.length + 3) % 4))).role;
-  } catch (e) { return null; }
-}
-
-function showRole(level) {
-  if (typeof level !== "number") return;
-  var node = $("who");
-  node.hidden = false;
-  node.textContent = "Signed in as " + (ROLES[level] || "role " + level);
 }
 
 function engine(workspace, path, init) {
@@ -1121,7 +1153,9 @@ function openWorkspace(id) {
     $("models-head").hidden = app.schema.namespaces.length === 0;
     var first = app.schema.namespaces[0];
     renderModels();
-    if (con.open) openQuery();
+    renderWho();
+    if (app.tool === "query") openQuery();
+    else if (app.tool === "access") openAccess();
     else if (first) selectModel(first.apiName);
     else showEmpty("This schema has no models", "Add a model to tapedb.schema.ts, then run a migration.");
     refreshCounts();
@@ -1136,7 +1170,8 @@ function renderModels() {
   var nav = $("models");
   nav.innerHTML = "";
   $("tools").hidden = !app.schema;
-  $("open-query").setAttribute("aria-current", con.open ? "true" : "false");
+  $("open-query").setAttribute("aria-current", app.tool === "query" ? "true" : "false");
+  $("open-access").setAttribute("aria-current", app.tool === "access" ? "true" : "false");
   if (!app.schema) return;
   app.schema.namespaces.forEach(function (n, index) {
     var count = app.counts[n.apiName];
@@ -1219,7 +1254,7 @@ function describeWrite(before, changed, transactions) {
 
 function selectModel(name) {
   if (stagedCount() > 0 && name !== app.model) { toast("Save or discard your changes first.", true); return; }
-  if (con.open) closeQuery();
+  if (app.tool) closeTool();
   app.staged = {};
   app.picked = {};
   app.search = "";
@@ -1968,6 +2003,7 @@ function loadStructure() {
     app.structure = structure;
     $("new-model").hidden = !structure.editable;
     if (app.view === "structure") renderStructure();
+    if (app.tool === "access" && app.schema) renderAccess();
     return structure;
   }).catch(function () { app.structure = { editable: false, reason: "The studio could not read the project." }; });
 }
@@ -2355,7 +2391,7 @@ var QUERY_KEY = "tapedb-query";
 var HISTORY_KEY = "tapedb-query-history";
 var MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 var RESULT_ROWS = 500;
-var con = { open: false, result: null, view: "table", running: 0, items: [], active: 0, error: null };
+var con = { result: null, view: "table", running: 0, items: [], active: 0, error: null };
 
 var ARG_KEYS = {
   findMany: ["where", "orderBy", "take", "include", "select"],
@@ -2386,15 +2422,7 @@ function remember(source) {
 }
 
 function openQuery() {
-  if (!app.schema) return;
-  if (stagedCount() > 0) { toast("Save or discard your changes first.", true); return; }
-  closeDrawer();
-  closeSheet();
-  con.open = true;
-  app.model = "";
-  renderModels();
-  ["head", "tabs", "structure", "filters", "bulk", "panel"].forEach(function (id) { $(id).hidden = true; });
-  $("console").hidden = false;
+  if (!openTool("query")) return;
   var input = $("code-input");
   if (!input.value) {
     var saved = "";
@@ -2408,12 +2436,6 @@ function openQuery() {
   input.focus();
 }
 
-function closeQuery() {
-  con.open = false;
-  closeComplete();
-  $("console").hidden = true;
-  $("panel").hidden = false;
-}
 
 // ---- Editor: highlighting, line numbers, completion ----
 
@@ -3007,6 +3029,9 @@ function renderRecent() {
 (function wireConsole() {
   var button = $("open-query");
   button.append(icon("prompt", 16), el("span", { class: "name", text: "Query" }));
+  $("open-access").append(icon("shield", 16), el("span", { class: "name", text: "Access" }));
+  $("open-access").addEventListener("click", openAccess);
+  stopped($("access-title"), "Access");
   button.addEventListener("click", openQuery);
   $("run").append("Run", el("kbd", { text: MAC ? "⌘↵" : "Ctrl ↵" }));
   stopped($("console-title"), "Query");
@@ -3183,7 +3208,223 @@ $("import-file").addEventListener("change", function (event) {
   if (file) importFile(file);
 });
 
+// ---- Tools: the views that are not a model -----------------------------------
+
+function openTool(name) {
+  if (!app.schema) return false;
+  if (stagedCount() > 0) { toast("Save or discard your changes first.", true); return false; }
+  closeDrawer();
+  closeSheet();
+  closeComplete();
+  app.tool = name;
+  app.model = "";
+  renderModels();
+  ["head", "tabs", "structure", "filters", "bulk", "panel"].forEach(function (id) { $(id).hidden = true; });
+  $("console").hidden = name !== "query";
+  $("access").hidden = name !== "access";
+  return true;
+}
+
+function closeTool() {
+  app.tool = "";
+  closeComplete();
+  $("console").hidden = true;
+  $("access").hidden = true;
+  $("panel").hidden = false;
+}
+
+// ---- Access: who may do what, and seeing the workspace as someone else ----
+
+function roleName(level) { return ROLES[level] || "Role " + level; }
+
+/** Nine ticks, one per role from Guest to Developer: lit from the lowest role allowed; the caller's is marked. */
+function ladder(minimum) {
+  var you = app.schema.caller ? app.schema.caller.role : -1;
+  var node = el("span", { class: "ladder", title: ROLES.map(function (name, level) { return (level >= minimum ? "✓ " : "· ") + name; }).join("\n") });
+  ROLES.forEach(function (name, level) {
+    node.append(el("i", { class: (level >= minimum ? "on" : "") + (level === you ? " you" : "") }));
+  });
+  return node;
+}
+
+function scalarText(value) {
+  return typeof value === "string" ? JSON.stringify(value) : value === null ? "null" : String(value);
+}
+
+/** An engine filter in words: ownerId = "alice" or open = true. */
+function whereText(where) {
+  var parts = [];
+  Object.keys(where || {}).forEach(function (key) {
+    var value = where[key];
+    if (key === "$or") { parts.push("(" + value.map(whereText).join(" or ") + ")"); return; }
+    if (key === "$and") { parts.push(value.map(whereText).join(" and ")); return; }
+    if (key === "$not") { parts.push("not (" + whereText(value) + ")"); return; }
+    if (key === "$link") {
+      value.forEach(function (link) {
+        var mode = link.mode === "parent" ? "" : link.mode + " ";
+        parts.push(link.label + " has " + mode + "(" + whereText(link.where) + ")");
+      });
+      return;
+    }
+    if (value === null || typeof value !== "object") { parts.push(key + " = " + scalarText(value)); return; }
+    var ops = { $ne: "≠", $gt: ">", $gte: "≥", $lt: "<", $lte: "≤" };
+    Object.keys(value).forEach(function (op) {
+      if (ops[op]) parts.push(key + " " + ops[op] + " " + scalarText(value[op]));
+      else if (op === "$in") parts.push(key + " in [" + value[op].map(scalarText).join(", ") + "]");
+      else if (op === "$nin") parts.push(key + " not in [" + value[op].map(scalarText).join(", ") + "]");
+      else parts.push(key + " " + op + " " + JSON.stringify(value[op]));
+    });
+  });
+  return parts.length ? parts.join(" and ") : "every row";
+}
+
+/** One cell of the access table: the rule, what it means for the caller, and the rule's code when the studio can read the schema file. */
+function accessCell(decision, code, fallbackRole) {
+  var you = app.schema.caller ? app.schema.caller.role : null;
+  var cell = el("td", { class: "rule" });
+  if (!decision) decision = { rule: "role", role: fallbackRole };
+  if (decision.rule === "role") {
+    var allowed = you !== null && you >= decision.role;
+    cell.append(
+      el("div", { class: "what" }, [ladder(decision.role), decision.role === 0 ? "Everyone" : roleName(decision.role) + " and up"]),
+      el("div", { class: "you " + (allowed ? "yes" : "no") }, [icon(allowed ? "check" : "ring", 14), allowed ? "Allowed for " + whoText() : "Not for " + whoText()])
+    );
+  } else if (decision.rule === "filter") {
+    var where = decision.where || [];
+    cell.append(
+      el("div", { class: "what" }, ["Rows the filter allows"]),
+      el("div", { class: "you" }, [seesText(where)])
+    );
+  } else if (decision.rule === "attachedTo") {
+    cell.append(el("div", { class: "what" }, ["Follows the " + decision.model + " row it belongs to"]),
+      el("div", { class: "you" }, ["Read with the row; written and deleted by whoever may update it"]));
+  } else {
+    cell.append(el("div", { class: "what" }, ["A check in code"]), el("div", { class: "you" }, ["Decided for each row, with the caller and the row"]));
+  }
+  if (code) cell.append(el("code", { text: code }));
+  else if (app.structure && app.structure.editable) cell.append(el("span", { class: "default label", text: "Default" }));
+  return cell;
+}
+
+/** "You see rows where done = false", or "Member alice sees …" while viewing as someone. */
+function seesText(where) {
+  var subject = viewing() ? whoText() + " sees " : "You see ";
+  if (where.length === 0) return subject + "no rows";
+  var text = where.map(whereText);
+  if (text.indexOf("every row") >= 0) return subject + "every row";
+  return subject + "rows where " + text.join(", or ");
+}
+
+function whoText(capital) {
+  var caller = app.schema.caller;
+  if (!caller) return capital ? "You" : "you";
+  return viewing() ? roleName(caller.role) + " " + caller.sub : capital ? "You" : "you";
+}
+
+function openAccess() {
+  if (openTool("access")) renderAccess();
+}
+
+function renderAccess() {
+  var box = $("access-body");
+  box.innerHTML = "";
+  var source = app.structure && app.structure.access;
+  var defaults = { read: 2, create: 3, update: 3, delete: 4 };
+  var actions = ["read", "create", "update", "delete"];
+  var table = el("table", { class: "access-table" });
+  table.append(el("thead", {}, [el("tr", {}, [el("th", {}, [el("span", { class: "label", text: "Model" })])].concat(actions.map(function (action) {
+    return el("th", {}, [el("span", { class: "label", text: action.charAt(0).toUpperCase() + action.slice(1) })]);
+  })))]));
+  var body = el("tbody");
+  app.schema.namespaces.forEach(function (n) {
+    var code = source && source.models[n.apiName] || {};
+    body.append(el("tr", {}, [el("th", { scope: "row" }, [el("button", { class: "model-link", type: "button", onclick: function () { selectModel(n.apiName); } }, [n.apiName])])].concat(actions.map(function (action) {
+      return accessCell(n.access && n.access[action], code[action], defaults[action]);
+    }))));
+  });
+  table.append(body);
+  box.append(el("div", { class: "panel" }, [el("div", { class: "scroll" }, [table])]));
+
+  var files = app.schema.files;
+  if (files) {
+    var fileActions = ["read", "write", "delete"];
+    var fileDefaults = { read: 2, write: 3, delete: 3 };
+    var fileCode = source && source.files || {};
+    var fileTable = el("table", { class: "access-table" }, [
+      el("thead", {}, [el("tr", {}, [el("th", {}, [el("span", { class: "label", text: "Files" })])].concat(fileActions.map(function (action) {
+        return el("th", {}, [el("span", { class: "label", text: action.charAt(0).toUpperCase() + action.slice(1) })]);
+      })).concat([el("th")]))]),
+      el("tbody", {}, [el("tr", {}, [el("th", { scope: "row", text: "Every file" })].concat(fileActions.map(function (action) {
+        return accessCell(files[action], fileCode[action], fileDefaults[action]);
+      })).concat([el("td")]))])
+    ]);
+    box.append(el("div", { class: "panel" }, [el("div", { class: "scroll" }, [fileTable])]));
+  }
+}
+
+/** True while the studio sees the workspace as someone other than its own sign-in. */
+function viewing() { return !!(app.viewAs.role !== undefined || app.viewAs.sub); }
+
+function renderWho() {
+  var wrap = $("who-menu");
+  wrap.innerHTML = "";
+  var caller = app.schema && app.schema.caller;
+  if (!caller) { wrap.hidden = true; return; }
+  wrap.hidden = false;
+  if (!viewing()) app.ownRole = caller.role;
+  var button = el("button", { class: "who" + (viewing() ? " as" : ""), type: "button", "aria-expanded": "false", title: "See the workspace as another role" + (MODE === "local" ? " or user" : "") }, [
+    el("span", { class: "label", text: viewing() ? "Viewing as" : "Signed in as" }),
+    el("span", { class: "role", text: roleName(caller.role) }),
+    el("span", { class: "sub mono", text: caller.sub })
+  ]);
+  var pop = el("div", { class: "pop end who-pop", hidden: true });
+  var highest = MODE === "worker" ? (typeof app.ownRole === "number" ? app.ownRole : caller.role) : ROLES.length - 1;
+  var select = el("select", { "aria-label": "Role" }, ROLES.slice(0, highest + 1).map(function (name, level) {
+    var option = el("option", { value: String(level), text: name });
+    if (level === caller.role) option.selected = true;
+    return option;
+  }));
+  var user = MODE === "local" ? el("input", { type: "text", "aria-label": "User id", placeholder: "dev-user", value: caller.sub === "dev-user" ? "" : caller.sub, spellcheck: "false" }) : null;
+  pop.append(
+    el("div", { class: "pop-head label", text: "See this workspace as" }),
+    el("label", { class: "field" }, [el("span", { text: "Role" }), select]),
+    user ? el("label", { class: "field" }, [el("span", { text: "User id" }), user]) : null,
+    el("p", { class: "hint", text: MODE === "local"
+      ? "Reads and writes run with that role and user id, through the access rules."
+      : "Your own user, with your role or a lower one. Reads and writes run with it, through the access rules." }),
+    el("div", { class: "actions" }, [
+      viewing() ? el("button", { class: "btn small", type: "button", onclick: function () { setViewAs({}); } }, ["Back to me"]) : null,
+      el("button", { class: "btn primary small", type: "button", onclick: function () {
+        var role = Number(select.value);
+        var sub = user ? user.value.trim() : "";
+        var own = MODE === "local" ? role === 6 && (sub === "" || sub === "dev-user") : role === app.ownRole;
+        setViewAs(own ? {} : MODE === "local" ? { role: role, sub: sub || undefined } : { role: role });
+      } }, ["View"])
+    ])
+  );
+  button.addEventListener("click", function (event) {
+    event.stopPropagation();
+    pop.hidden = !pop.hidden;
+    button.setAttribute("aria-expanded", pop.hidden ? "false" : "true");
+    if (!pop.hidden) select.focus();
+  });
+  pop.addEventListener("click", function (event) { event.stopPropagation(); });
+  wrap.append(button, pop);
+}
+
+function setViewAs(next) {
+  if (stagedCount() > 0) { toast("Save or discard your changes first.", true); return; }
+  var applied = MODE === "local" ? api("/api/view-as", next) : Promise.resolve();
+  applied.then(function () {
+    app.viewAs = next;
+    claims = {};
+    openWorkspace(app.workspace);
+  }).catch(fail);
+}
+
 function start() {
+  // A reload starts as the studio's own sign-in, never as someone viewed before.
+  if (MODE === "local") api("/api/view-as", {}).catch(function () {});
   var saved = "";
   try { saved = localStorage.getItem(CURRENT_KEY) || ""; } catch (e) {}
   var linked = new URLSearchParams(location.search).get("workspace");

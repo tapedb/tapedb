@@ -14,7 +14,7 @@ import { join } from "node:path";
 
 import { loadSchemaSource } from "./load-schema";
 import { diffSnapshots, expandRebuilds, migrateCheck, migrateDev, readSnapshot, snapshotOf } from "./migrate";
-import { editSchemaSource, lineDiff, parseSchemaSource, readField, SchemaEditError, type DiffLine, type FieldSpec, type SchemaEdit } from "./schema-edit";
+import { accessSource, editSchemaSource, lineDiff, parseSchemaSource, readField, SchemaEditError, type AccessSource, type DiffLine, type FieldSpec, type SchemaEdit } from "./schema-edit";
 
 export interface StructureField {
   name: string;
@@ -31,6 +31,8 @@ export type Structure =
       models: Array<{ name: string; fields: StructureField[] }>;
       /** Changes in the schema file with no migration yet, from `migrate check`. */
       pending: string[];
+      /** The access rules as written, shown next to what they decide. */
+      access: AccessSource;
     }
   | { editable: false; reason: string };
 
@@ -75,7 +77,7 @@ export async function readStructure(root: string): Promise<Structure> {
     } catch (error) {
       pending = [error instanceof Error ? error.message : String(error)];
     }
-    return { editable: true, file, models, pending };
+    return { editable: true, file, models, pending, access: accessSource(source) };
   } catch (error) {
     if (error instanceof SchemaEditError) return { editable: false, reason: error.message };
     throw error;

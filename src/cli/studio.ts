@@ -33,6 +33,13 @@ export interface StudioOptions {
 interface StudioState {
   token: string | null;
   workspace: string;
+  /** Who the studio asks claims for, to see the workspace as another role or user. Empty: the default owner. */
+  viewAs: ViewAs;
+}
+
+export interface ViewAs {
+  role?: number;
+  sub?: string;
 }
 
 /** A client mistake, reported as 400 rather than as a server error. */
@@ -87,11 +94,11 @@ async function forward(response: ServerResponse, upstream: Response): Promise<vo
   sendJson(response, upstream.status, parsed);
 }
 
-export async function mintToken(base: string, workspace: string): Promise<string> {
+export async function mintToken(base: string, workspace: string, as: ViewAs = {}): Promise<string> {
   const response = await fetch(`${base}/_tapedb/claim`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ workspaceId: workspace }),
+    body: JSON.stringify({ workspaceId: workspace, ...as }),
   });
   const text = await response.text();
   if (!response.ok) {
@@ -127,7 +134,7 @@ async function engine(
   if (state.workspace.length === 0) {
     throw new Error("No workspace id. Enter one in the page.");
   }
-  if (state.token === null) state.token = await mintToken(base, state.workspace);
+  if (state.token === null) state.token = await mintToken(base, state.workspace, state.viewAs);
 
   const call = (token: string) =>
     fetch(`${base}/engine/workspaces/${state.workspace}${path}`, {
@@ -140,7 +147,7 @@ async function engine(
 
   let response = await call(state.token);
   if (response.status === 401) {
-    state.token = await mintToken(base, state.workspace);
+    state.token = await mintToken(base, state.workspace, state.viewAs);
     response = await call(state.token);
   }
   return response;
@@ -168,7 +175,7 @@ const PAGE = studioPage(PAGE_LIMIT);
 
 export function startStudio(options: StudioOptions): Promise<{ url: string; close: () => void }> {
   const base = options.url.replace(/\/+$/, "");
-  const state: StudioState = { token: null, workspace: options.workspace };
+  const state: StudioState = { token: null, workspace: options.workspace, viewAs: {} };
 
   let port = options.port;
   const server = createServer(async (request, response) => {
@@ -248,6 +255,24 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
         return;
       }
 
+
+      // Who to see the workspace as: a role level and a user id, or {} for the default owner.
+      if (url.pathname === "/api/view-as") {
+        const parsed = parseJsonBody<{ role?: unknown; sub?: unknown }>(body);
+        const next: ViewAs = {};
+        if (parsed.role !== undefined && parsed.role !== null) {
+          if (typeof parsed.role !== "number" || !Number.isInteger(parsed.role) || parsed.role < 0 || parsed.role > 8) throw new BadRequest("role must be a role level from 0 to 8.");
+          next.role = parsed.role;
+        }
+        if (parsed.sub !== undefined && parsed.sub !== null && parsed.sub !== "") {
+          if (typeof parsed.sub !== "string" || parsed.sub.length > 256) throw new BadRequest("sub must be a user id of at most 256 characters.");
+          next.sub = parsed.sub.trim();
+        }
+        state.viewAs = next;
+        state.token = null;
+        sendJson(response, 200, { viewAs: next });
+        return;
+      }
 
       if (url.pathname === "/api/schema") {
         const parsed = parseJsonBody<{ workspaceId?: string }>(body);

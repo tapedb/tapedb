@@ -174,10 +174,10 @@ the path. Bodies and answers are JSON unless stated; errors are
 | Route | |
 | --- | --- |
 | `GET /status`, `GET /health` | the Worker's health; no claim |
-| `POST /_tapedb/claim` | `{ workspaceId }` → `{ token, workspaceId, roleLevel, expiresAt, expiresIn }` from the identity adapter; the development route answers `{ token, workspaceId, expiresIn }` |
+| `POST /_tapedb/claim` | `{ workspaceId, role? }` → `{ token, workspaceId, roleLevel, expiresAt, expiresIn }` from the identity adapter. `role` asks for a claim at the caller's own role or below it (403 `role_above_membership` above it). The development route takes `{ workspaceId, role?, sub? }` (default OWNER and `dev-user`) and answers `{ token, workspaceId, roleLevel, expiresIn }` |
 | `POST /engine/workspaces/:id/transact` | a transaction: `{ txId, clientTxId?, issuedAt?, ops }` |
 | `POST /engine/workspaces/:id/query` | a one-off read |
-| `GET /engine/workspaces/:id/schema` | the schema document the workspace runs |
+| `GET /engine/workspaces/:id/schema` | the schema document the workspace runs: `namespaces` (fields with type, default and `personal`, and `access`: each action's rule, `role`, `filter` with the caller's evaluated `where`, or `check`), `links` (with each foreign key's `onDelete`), `files` (each file action's rule) and `caller` (`{ sub, role }`) |
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2. With `?after=<seq>`, it answers once a transaction lands past `seq`, or after 25 seconds |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
 | `GET /engine/workspaces/:id/history?model=…&id=…` | one row's recorded changes → `{ ok, data: HistoryEntry[] }`; ADMIN or higher; 409 `audit_disabled` without `audit: true` |
@@ -266,6 +266,7 @@ usually handles:
 | `permission_denied` | 403 | a write or read rule refused |
 | `insufficient_role` | 403 | the claim's role is too low |
 | `not_a_member` | 403 | the claim route found no role for the caller in that workspace |
+| `role_above_membership` | 403 | the claim route was asked for a role above the caller's own |
 | `rate_limited` | 429 | a claim limit or `identity.allowRequest` refused a claim request; built-in limits send `Retry-After` |
 | `unique_violation`, `foreign_key_violation` | 409 | a constraint refused the write |
 | `conflict` | 409 | a `clientTxId` reused with different operations |

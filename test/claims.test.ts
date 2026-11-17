@@ -137,6 +137,21 @@ describe("dev claims", () => {
     expect(claim.role).toBe(WORKSPACE_ROLE_LEVELS.OWNER);
   });
 
+  test("take a role and a user to mint for, so rules can be tried as anyone", async () => {
+    const devEnv = { ENVIRONMENT: "development", TAPEDB_CLAIM_SECRET: SECRET, TAPEDB_DEV_CLAIMS: "true" };
+    const ask = (fields: Record<string, unknown>) =>
+      handleClaimRequest(new Request("https://x/_tapedb/claim", { method: "POST", body: JSON.stringify({ workspaceId: WORKSPACE, ...fields }) }), { env: devEnv, devClaims: true });
+
+    const response = await ask({ role: WORKSPACE_ROLE_LEVELS.MEMBER, sub: "alice" });
+    const body = (await response.json()) as { token: string; roleLevel: number };
+    const claim = await verifyRoleClaim(body.token, env, WORKSPACE);
+    expect([claim.sub, claim.role, body.roleLevel]).toEqual(["alice", WORKSPACE_ROLE_LEVELS.MEMBER, WORKSPACE_ROLE_LEVELS.MEMBER]);
+
+    for (const bad of [{ role: 9 }, { role: 1.5 }, { role: "owner" }, { sub: "" }, { sub: "x".repeat(257) }, { sub: 4 }]) {
+      expect((await ask(bad)).status).toBe(400);
+    }
+  });
+
   test("are refused in production even when devClaims is set", async () => {
     const response = await handleClaimRequest(
       new Request("https://x/_tapedb/claim", {
@@ -239,6 +254,29 @@ describe("identity adapter", () => {
     );
 
     expect(response.status).toBe(403);
+  });
+
+  test("mints a lower role when asked, and never a higher one", async () => {
+    const ask = (role: unknown) =>
+      handleClaimRequest(
+        new Request("https://x/_tapedb/claim", { method: "POST", headers: { "x-test-user": "user-editor" }, body: JSON.stringify({ workspaceId: WORKSPACE, role }) }),
+        { env, identity }
+      );
+
+    const lower = await ask(WORKSPACE_ROLE_LEVELS.MEMBER);
+    expect(lower.status).toBe(200);
+    const body = (await lower.json()) as { token: string; roleLevel: number };
+    const claim = await verifyRoleClaim(body.token, env, WORKSPACE);
+    expect([claim.sub, claim.role, body.roleLevel]).toEqual(["user-editor", WORKSPACE_ROLE_LEVELS.MEMBER, WORKSPACE_ROLE_LEVELS.MEMBER]);
+
+    const same = await ask(WORKSPACE_ROLE_LEVELS.EDITOR);
+    expect(same.status).toBe(200);
+
+    const higher = await ask(WORKSPACE_ROLE_LEVELS.OWNER);
+    expect(higher.status).toBe(403);
+    expect(((await higher.json()) as { error: { code: string } }).error.code).toBe("role_above_membership");
+
+    expect((await ask("admin")).status).toBe(400);
   });
 
   test("mints the resolved role, not a default", async () => {
