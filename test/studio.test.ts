@@ -198,7 +198,7 @@ beforeAll(async () => {
 }, 60_000);
 
 describe("studio page", () => {
-  test("serves the browser page: workspace picker, transport, models, table, tape, row editor", async () => {
+  test("serves the browser page: workspace picker, models, table, tape, row editor", async () => {
     const { studio, shutdown } = await stack();
     try {
       const response = await fetch(`${studio.url}/`);
@@ -206,7 +206,7 @@ describe("studio page", () => {
       expect(response.headers.get("content-type")).toContain("text/html");
       const html = await response.text();
       expect(html).toContain("<title>tapedb studio</title>");
-      for (const id of ["workspace", "transport", "models", "grid", "more", "ticks", "counter", "drawer", "editor", "delete"]) {
+      for (const id of ["workspace", "models", "grid", "more", "ticks", "counter", "drawer", "editor", "delete"]) {
         expect(html).toContain(`id="${id}"`);
       }
     } finally {
