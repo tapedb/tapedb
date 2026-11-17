@@ -235,3 +235,16 @@ test("during `tapedb dev`, a workspace is listed as soon as the app claims it, b
   expect((await claim(dev, "not-a-uuid")).status).toBe(400);
   expect([...data.objects.keys()]).toEqual([]);
 });
+
+test("during `tapedb dev`, ?known= waits for a new workspace instead of answering at once", async () => {
+  const devWorker = defineTapeDB({ schema: schema({ note: model({ body: t.string() }) }), devClaims: true });
+  const data = new FakeR2Bucket();
+  const env = { ...room().env, DATA: data, TAPEDB_DEV_CLAIMS: "true", TAPEDB_STUDIO_URL: "http://127.0.0.1:4400" } as never;
+  let answered = false;
+  const pending = devWorker.worker.fetch(new Request("http://localhost:8787/_tapedb/workspaces?known=0"), env, {} as ExecutionContext)
+    .then(async (response) => { answered = true; return response.json(); });
+  await new Promise((resolve) => setTimeout(resolve, 700));
+  expect(answered).toBe(false);
+  data.seed("dev/workspaces/0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a09", "");
+  expect(await pending).toEqual({ workspaces: [{ id: "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a09", updatedAt: null }] });
+});

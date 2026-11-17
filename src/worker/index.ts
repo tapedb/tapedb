@@ -208,6 +208,9 @@ function localStudio(env: Env, devClaims: boolean): string | null {
   }
 }
 
+const WORKSPACES_WAIT_MS = 25_000;
+const WORKSPACES_POLL_MS = 500;
+
 /** Where `tapedb dev` notes the workspaces the app opened; never written deployed. */
 const LOCAL_WORKSPACES = "dev/workspaces/";
 
@@ -280,7 +283,17 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
 
       // The studio's workspace picker, during `tapedb dev` only.
       if (url.pathname === "/_tapedb/workspaces" && request.method === "GET" && localStudio(env, devClaims)) {
-        return json({ workspaces: await localWorkspaces(env.DATA) });
+        // `?known=<count>`: answer when the list grows past that, or after 25 s, so
+        // the studio waits for the first workspace with one request, not a stream.
+        const known = Number(url.searchParams.get("known"));
+        let workspaces = await localWorkspaces(env.DATA);
+        if (url.searchParams.has("known") && Number.isFinite(known)) {
+          for (const deadline = Date.now() + WORKSPACES_WAIT_MS; workspaces.length <= known && Date.now() < deadline; ) {
+            await new Promise((resolve) => setTimeout(resolve, WORKSPACES_POLL_MS));
+            workspaces = await localWorkspaces(env.DATA);
+          }
+        }
+        return json({ workspaces });
       }
 
       if (url.pathname === "/_tapedb/claim") {
