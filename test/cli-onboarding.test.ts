@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ignoreLocalFiles, missingSecrets, olderExactVersion, provisionAndDeploy, syncTapedb, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
+import { devArgs } from "../src/cli/index";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -235,4 +236,15 @@ test("a failed update stops the command with the command to run", () => {
   mkdirSync(join(root, "node_modules", "@tapedb", "tapedb"), { recursive: true });
   writeFileSync(join(root, "node_modules", "@tapedb", "tapedb", "package.json"), JSON.stringify({ version: "0.1.7" }));
   expect(() => syncTapedb(root, "0.1.9", () => 1)).toThrow("npm install @tapedb/tapedb@0.1.9");
+});
+
+test("dev runs as development even after deploy wrote production into wrangler.jsonc", () => {
+  const args = devArgs("8787", "http://127.0.0.1:4400");
+  const vars = Object.fromEntries(args.flatMap((arg, i) => (args[i - 1] === "--var" ? [arg.split(/:(.*)/s).slice(0, 2)] : [])));
+  expect(vars).toEqual({
+    ENVIRONMENT: "development",
+    TAPEDB_DEV_CLAIMS: "true",
+    TAPEDB_JURISDICTION: "",
+    TAPEDB_STUDIO_URL: "http://127.0.0.1:4400",
+  });
 });
