@@ -390,6 +390,11 @@ changes" writes them in one transaction. Checkboxes select rows to delete
 together, and every delete first says what happens to the rows that point at
 it: deleted with it, field cleared, or refused, per the relation's `onDelete`.
 "Columns" hides columns, and search matches the start of text fields or an id.
+"Export" downloads all rows, the rows a search or filter shows, or the
+selected rows as CSV or JSON (dates in ISO 8601). "Import" reads either format
+back: every value is checked against its field first, rows with an id update
+that row (or create it with that id), rows without one are created, and up to
+5,000 rows are written in one transaction.
 
 "Query" runs a call as you write it in the app, such as
 `db.task.findMany({ where: { done: false }, include: { column: true } })`, with

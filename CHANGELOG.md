@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.20 - 2026-11-17
+
+- The studio exports a model's rows as CSV or JSON: all of them, the ones a search or filter shows, or the selected ones. Every field is written, dates in ISO 8601, null as an empty CSV cell; CSV is RFC 4180 with a byte order mark, so spreadsheets read it as UTF-8.
+- The studio imports CSV and JSON into a model. Before anything is written it checks every value against its field and lists what to fix by row, and says how many rows it creates, how many existing rows it updates (by id), and which columns it leaves out. Rows with an id are upserts, rows without one are created with the field defaults; up to 5,000 rows go in one transaction, larger files in transactions of 5,000.
+
 ## 0.1.19 - 2026-11-17
 
 - The studio has a query console. It runs one client call as written in app code (`db.<model>.<method>({ ... })`), read as data and translated by the client's own model code, with the studio's sign-in and access rules. It suggests models, methods, arguments and fields as you type, marks where a call stops making sense, keeps recent calls, and shows results as a table, a count or the JSON the call returns.
