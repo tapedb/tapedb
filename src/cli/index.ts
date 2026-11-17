@@ -25,10 +25,9 @@ import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot } from "./migrate";
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
+import { loadSchema } from "./load-schema";
 import { select } from "./prompts";
 import { ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, syncTapedb, type DeployConfig } from "./onboarding";
-
-let schemaLoads = 0;
 
 /** How the docs and messages tell people to run the CLI. */
 const CLI = "npx tapedb-cli";
@@ -43,80 +42,6 @@ function ownVersion(): string {
 /** This CLI's own build: the last-resort root for the package's own specifiers. */
 function ownDistDir(): string {
   return dirname(fileURLToPath(import.meta.url));
-}
-
-/** Resolve missing package imports without changing schema source or values. */
-function schemaPackageResolution() {
-  // The packaged CLI requires Node 22.18+. Bun can still load installed
-  // schemas when running the source tests, without Node's loader hooks.
-  if (typeof nodeModule.registerHooks !== "function") return undefined;
-  const dist = ownDistDir();
-  const modules: Record<string, string> = {
-    "@tapedb/tapedb/schema": "schema.js",
-    "@tapedb/tapedb/worker": "worker.js",
-    "@tapedb/tapedb/react": "react.js",
-    "@tapedb/tapedb": "index.js",
-  };
-  return nodeModule.registerHooks({
-    resolve(specifier, context, nextResolve) {
-      try {
-        return nextResolve(specifier, context);
-      } catch (error) {
-        const file = Object.hasOwn(modules, specifier) ? modules[specifier] : undefined;
-        if (!file || !isUnresolvedPackage(error)) throw error;
-        return nextResolve(pathToFileURL(join(dist, file)).href, context);
-      }
-    },
-  });
-}
-
-/** True when the failure is "the package cannot be resolved from this project". */
-function isUnresolvedPackage(error: unknown): boolean {
-  const code = (error as { code?: string } | null)?.code;
-  const message = error instanceof Error ? error.message : String(error);
-  return (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") && message.includes("@tapedb/tapedb");
-}
-
-/** Loads the schema module: its default export, or an export named `schema`. */
-async function loadSchema(root: string, flags: Record<string, string | boolean>): Promise<TapeDBSchema> {
-  const path = resolve(root, typeof flags.schema === "string" ? flags.schema : "tapedb.schema.ts");
-  if (!existsSync(path)) throw new Error(`No schema at ${path}. Pass --schema <file>.`);
-  let loaded: Record<string, unknown>;
-  try {
-    // Import a fresh copy beside the original, so its relative imports still
-    // resolve and no runtime's module cache can hand back an older schema.
-    // (Node keys its cache on the URL; Bun ignores the query string.)
-    // A counter, not the clock: two loads within one millisecond must still
-    // get different files.
-    schemaLoads += 1;
-    // TapeDB's TypeScript schema is ESM even when the host application is
-    // CommonJS. An explicit .mts copy avoids inheriting its package type;
-    // leave explicit .cts and JavaScript module formats alone.
-    const extension = extname(path) === ".ts" ? ".mts" : extname(path);
-    const stem = `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}`;
-    const copy = join(dirname(path), `${stem}${extension}`);
-    copyFileSync(path, copy);
-    const hooks = schemaPackageResolution();
-    try {
-      loaded = (await import(pathToFileURL(copy).href)) as Record<string, unknown>;
-    } finally {
-      hooks?.deregister();
-      rmSync(copy, { force: true });
-    }
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    if (/Unknown file extension|ERR_UNKNOWN_FILE_EXTENSION/.test(message)) {
-      throw new Error(
-        `This Node cannot load TypeScript directly. Use Node 22.18 or newer, or run the CLI through tsx: npx tsx node_modules/@tapedb/tapedb/dist/cli.js ...`
-      );
-    }
-    throw error;
-  }
-  const schema = (loaded.default ?? loaded.schema) as TapeDBSchema | undefined;
-  if (!schema || !schema.registry || !Array.isArray(schema.migrations)) {
-    throw new Error(`${path} must export a schema() as its default export (or as "schema").`);
-  }
-  return schema;
 }
 
 function listFlag(argv: string[], name: string): string[] {
@@ -295,7 +220,7 @@ export function checkJurisdiction(
     : `TAPEDB_JURISDICTION is "${wanted}" but R2 buckets ${names} are not. Create them with \`wrangler r2 bucket create <name> --jurisdiction ${wanted}\` and add "jurisdiction": "${wanted}" to each r2_buckets entry.`;
 }
 
-const SCHEMA_FILE = `import { model, schema, t } from "@tapedb/tapedb/schema";
+export const SCHEMA_FILE = `import { model, schema, t } from "@tapedb/tapedb/schema";
 
 /**
  * The whole database: tables, relations, indexes and access rules. Change it,
@@ -543,8 +468,8 @@ async function dev(argv: string[]): Promise<number> {
 
   // The studio comes with the database: on 4400, or any free port when that is taken.
   const worker = `http://localhost:${port}`;
-  const studio = await startStudio({ url: worker, workspace: "", port: 4400 })
-    .catch(() => startStudio({ url: worker, workspace: "", port: 0 }));
+  const studio = await startStudio({ url: worker, workspace: "", port: 4400, project: target })
+    .catch(() => startStudio({ url: worker, workspace: "", port: 0, project: target }));
   console.log(`\n  Database  ${worker}\n  Studio    ${studio.url}   (also at ${worker}/)\n`);
 
   const child = spawn("npx", devArgs(port, studio.url), { cwd: target, stdio: "inherit" });
@@ -631,7 +556,9 @@ async function studio(argv: string[]): Promise<number> {
 
   let server: { url: string; close: () => void };
   try {
-    server = await startStudio({ url, workspace, port });
+    // From a project folder, the schema can be edited too.
+    const project = existsSync(join(process.cwd(), "tapedb.schema.ts")) ? process.cwd() : undefined;
+    server = await startStudio({ url, workspace, port, ...(project ? { project } : {}) });
   } catch (error) {
     console.error(error instanceof Error ? error.message : String(error));
     return 1;
