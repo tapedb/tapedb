@@ -24,10 +24,15 @@ and what is experimental, in [API.md](API.md); the design boundaries are in
 newer; the library itself runs in Cloudflare Workers.
 
 ```bash
-npx @tapedb/tapedb init     # interactive setup, dependencies and first migration
-npx @tapedb/tapedb dev      # local database with a dev claim route
-npx @tapedb/tapedb studio   # local table browser on http://127.0.0.1:4400
+npx tapedb-cli init     # interactive setup, dependencies and first migration
+npx tapedb-cli dev      # local database with a dev claim route
+npx tapedb-cli studio   # local table browser on http://127.0.0.1:4400
+npx tapedb-cli deploy   # your Cloudflare account: buckets, secrets, Worker
 ```
+
+No flags are needed: each command asks when it has to, and Enter takes the
+default. `npx` runs the newest `tapedb-cli`, which also brings the project's
+`@tapedb/tapedb` up to the same version.
 
 ## The schema
 
@@ -334,7 +339,7 @@ Each model's actions take one of three decisions:
 
 ```bash
 # edit tapedb.schema.ts, then
-npx @tapedb/tapedb migrate dev --name add_task_priority
+npx tapedb-cli migrate dev --name add_task_priority
 ```
 
 `migrate dev` diffs the schema against `tapedb/schema.snapshot.json` and
@@ -354,8 +359,8 @@ would leave a row pointing at nothing rolls back.
   and snapshots written under an older schema. Undeclared drift fails closed.
 
 ```bash
-npx @tapedb/tapedb migrate rollback                  # back to the schema before the last migration
-npx @tapedb/tapedb migrate rollback --to 0004_tags   # back to the schema after 0004_tags
+npx tapedb-cli migrate rollback                  # back to the schema before the last migration
+npx tapedb-cli migrate rollback --to 0004_tags   # back to the schema after 0004_tags
 ```
 
 `migrate rollback` writes the migration that takes the database back to an
@@ -457,7 +462,7 @@ for await (const record of db.$export()) {
 ```
 
 ```bash
-npx @tapedb/tapedb export --workspace <uuid> --out workspace.ndjson   # TAPEDB_TOKEN, or a dev claim
+npx tapedb-cli export --workspace <uuid> --out workspace.ndjson   # TAPEDB_TOKEN, or a dev claim
 ```
 
 The engine streams NDJSON: a `header` line (the models exported, and any the
@@ -524,7 +529,7 @@ cannot erase plaintext already held in those copies.
 ## Erasing a workspace
 
 ```bash
-npx @tapedb/tapedb erase --workspace <uuid> --confirm <uuid>   # owner claim: TAPEDB_TOKEN, or a dev claim
+npx tapedb-cli erase --workspace <uuid> --confirm <uuid>   # owner claim: TAPEDB_TOKEN, or a dev claim
 ```
 
 `DELETE /engine/workspaces/:id` with an owner's claim deletes everything the
@@ -542,7 +547,7 @@ retention is also 30 days.
 ## Data residency
 
 ```bash
-npx @tapedb/tapedb init --jurisdiction eu
+npx tapedb-cli init --jurisdiction eu
 ```
 
 writes `"TAPEDB_JURISDICTION": "eu"` into `wrangler.jsonc` vars and
@@ -565,7 +570,7 @@ the destination and `TAPEDB_MOVE_FROM` to the source (`none`, `eu` or
 `WORKSPACE_FROM` is needed only when the source uses a different namespace.
 
 ```sh
-npx @tapedb/tapedb move --to eu --url https://tapedb-app.<account-subdomain>.workers.dev --workspaces workspaces.txt
+npx tapedb-cli move --to eu --url https://tapedb-app.<account-subdomain>.workers.dev --workspaces workspaces.txt
 ```
 
 `--url` is the Worker's origin as `wrangler deploy` printed it: the
@@ -703,7 +708,7 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | `@tapedb/tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer (React 19) |
 | `@tapedb/tapedb/worker` | `defineTapeDB`, claim helpers | no |
 
-The CLI is a command, not an import: `npx @tapedb/tapedb init | migrate | dev | studio
+The CLI is a command, not an import: `npx tapedb-cli init | migrate | dev | studio
 | deploy | export | erase | move`.
 
 [API.md](API.md) is the reference: every export and signature, what is stable

@@ -1,7 +1,7 @@
 # tapedb starter
 
 The smallest app: one schema, one Worker, three Cloudflare resources. It is
-what `npx @tapedb/tapedb init` writes, checked in so you can read it without running
+what `npx tapedb-cli init` writes, checked in so you can read it without running
 anything.
 
 ```

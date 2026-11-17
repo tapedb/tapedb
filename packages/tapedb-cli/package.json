@@ -1,0 +1,27 @@
+{
+  "name": "tapedb-cli",
+  "version": "0.1.9",
+  "description": "The tapedb command line: npx tapedb-cli init, dev, deploy.",
+  "type": "module",
+  "bin": {
+    "tapedb-cli": "bin.mjs"
+  },
+  "files": [
+    "bin.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@tapedb/tapedb": "0.1.9"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tapedb/tapedb.git",
+    "directory": "packages/tapedb-cli"
+  },
+  "homepage": "https://tapedb.dev"
+}
