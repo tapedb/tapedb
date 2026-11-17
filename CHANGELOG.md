@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.23 - 2026-11-17
+
+- Literal schemas report missing relation targets, missing or ambiguous hasMany inverses, invalid inverse names, and missing or invalid personal subjects in the TypeScript editor. Subject and inverse names remain precise through their builders and modifiers. Dynamic definitions still use the existing runtime validation; emitted runtime JavaScript is unchanged.
+
+
 ## 0.1.22 - 2026-11-17
 
 - The studio has a History page: the transaction log, newest first and live, filterable by model, for admins and owners. Each transaction shows what it wrote per model ("task: 5,000 created"), and opens to its operations, row by row with links to the rows, and the values written. With `audit: true` it names the writer and role.
