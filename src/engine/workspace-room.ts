@@ -2156,7 +2156,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
           kind: link.kind,
           forward: link.forward,
           reverse: link.reverse,
-          foreignKey: { namespace: link.foreignKey.namespace, attribute: link.foreignKey.attribute },
+          foreignKey: {
+            namespace: link.foreignKey.namespace,
+            attribute: link.foreignKey.attribute,
+            // What deleting the row it points at does to this one: CASCADE, SET NULL or RESTRICT.
+            onDelete: NAMESPACES[link.foreignKey.namespace]?.attributes[link.foreignKey.attribute]?.references?.onDelete ?? "SET NULL",
+          },
         })),
       },
     });

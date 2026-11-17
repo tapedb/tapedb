@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.1.18 - 2026-11-17
+
+- The studio's table has checkboxes. Select rows, or every row shown, and delete them in one transaction.
+- Before any delete, from the table or a row, the studio says what it does to rows that point at it, from each relation's `onDelete`. It also deletes rows that belong to it (cascade), clears the field on others (set null), or is refused while rows still point at it (restrict), with the counts.
+- Text, number, true/false and date cells edit in place with a double-click. Edits are staged and marked until "Save changes" writes them all in one transaction, or "Discard" drops them. An arrow at the start of each row opens the row panel.
+- "Columns" hides and shows columns per model; the choice is kept in the browser.
+- Search finds rows whose text fields start with what you type (case sensitive), or the row with that id.
+- The schema endpoint reports each relation's `onDelete` under `links[].foreignKey`.
+
 ## 0.1.17 - 2026-11-17
 
 - With `studio` passed to `defineTapeDB`, the deployed Worker's own address (`GET /`) opens the studio instead of answering `no_route`. After deploying such a Worker, `tapedb deploy` says where the studio is.
