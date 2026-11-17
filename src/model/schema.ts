@@ -454,13 +454,49 @@ const DELETE_RULES: Record<string, DeleteRule> = {
   restrict: "RESTRICT",
 };
 
+// Validate literal schemas without expanding the recursive client row types.
+// Widened/dynamic names remain runtime-validated, as they were before.
+type MatchingParents<F, Owner extends string> = {
+  [P in BelongsToKeys<F>]: F[P] extends BelongsTo<Owner, boolean> ? P : never;
+}[BelongsToKeys<F>];
+type IsUnion<T, Whole = T> = T extends Whole ? [Whole] extends [T] ? false : true : never;
+type InverseOf<R> = R extends HasMany ? Exclude<R["inverse"], undefined> : never;
+type InverseError<R, F, Owner extends string> =
+  string extends InverseOf<R> ? never :
+  [InverseOf<R>] extends [never]
+    ? [MatchingParents<F, Owner>] extends [never] ? "has no matching belongsTo" :
+      true extends IsUnion<MatchingParents<F, Owner>> ? "needs an explicit inverse" : never
+    : InverseOf<R> extends MatchingParents<F, Owner> ? never : "has an invalid inverse";
+type SubjectError<R, F> = R extends { personalSubject: infer S extends string }
+  ? string extends S ? never : S extends "self" ? never :
+    S extends keyof F
+      ? F[S] extends Field<"string", boolean, boolean>
+        ? F[S] extends { personalSubject: string } ? "needs a non-personal string subject" : never
+        : "needs a non-personal string subject"
+      : S extends `${BelongsToKeys<F>}Id` ? never : "refers to a missing personal subject"
+  : never;
+type MemberError<R, M extends Models, Owner extends string, F> =
+  R extends BelongsTo | HasMany
+    ? string extends TargetOf<R> ? never : TargetOf<R> extends keyof M
+      ? R extends HasMany ? InverseError<R, FieldsOf<M[TargetOf<R>]>, Owner> : never
+      : "refers to a missing model"
+    : SubjectError<R, F>;
+type SchemaErrors<M extends Models> = string extends keyof M ? never : {
+  [K in keyof M & string]: {
+    [P in keyof FieldsOf<M[K]> & string]: MemberError<FieldsOf<M[K]>[P], M, K, FieldsOf<M[K]>> extends infer E extends string
+      ? `${K}.${P} ${E}` : never;
+  }[keyof FieldsOf<M[K]> & string];
+}[keyof M & string];
+type ValidSchema<M extends Models> = [SchemaErrors<M>] extends [never]
+  ? unknown : { readonly __schemaError: SchemaErrors<M> };
+
 /**
  * Compiles models into the engine schema plus the client's relation graph.
  * Throws on anything the engine would only discover later: a relation to a
  * model that does not exist, an ambiguous inverse, a reserved name.
  */
 export function schema<M extends Models>(
-  models: M,
+  models: M & ValidSchema<NoInfer<M>>,
   options: SchemaOptions<Extract<keyof M, string>> = {}
 ): Schema<M> {
   const entities: Record<string, EntityConfig> = {};
