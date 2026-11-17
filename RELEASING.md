@@ -68,9 +68,9 @@ Exercise the packed product as a consumer would:
 ```bash
 cd "$(mktemp -d)"
 npm init -y
-npm install /tmp/pack/tapedb-*.tgz wrangler
-npx @tapedb/tapedb init
-npx @tapedb/tapedb dev
+npm install /tmp/pack/tapedb-tapedb-*.tgz /tmp/pack/tapedb-cli-*.tgz wrangler
+npx tapedb-cli init
+npx tapedb-cli dev
 ```
 
 Drive that project through a write, a live subscription, an upload, a
@@ -80,7 +80,9 @@ migration and erasure. Do not release on the strength of the unit suite alone.
 
 Only after the gates and checks:
 
-1. Update `CHANGELOG.md` and set the intended version in `package.json`.
+1. Update `CHANGELOG.md` and set the intended version in `package.json`, and
+   the same version in `packages/tapedb-cli/package.json` (both its `version`
+   and its `@tapedb/tapedb` dependency). The two packages move in lockstep.
 2. Open the release pull request and remove `"private": true` there. Keep
    `publishConfig` and the repository metadata. Merge only after the checks
    pass.
@@ -90,7 +92,10 @@ Only after the gates and checks:
 
    ```bash
    npm publish --access public
+   cd packages/tapedb-cli && npm publish --access public
    ```
+
+   Publish `@tapedb/tapedb` first: `tapedb-cli` depends on that exact version.
 
    Without an npm CI service there is no OIDC token, so this publish carries no
    provenance attestation. Do not add `--provenance` unless the publish runs in
@@ -100,8 +105,8 @@ Only after the gates and checks:
 
    ```bash
    npm view @tapedb/tapedb version dist-tags.latest
-   cd "$(mktemp -d)" && npm init -y && npm install @tapedb/tapedb wrangler
-   npx @tapedb/tapedb init
+   npm view tapedb-cli version dist-tags.latest
+   cd "$(mktemp -d)" && npx tapedb-cli init
    ```
 
 7. Make the GitHub repository public and enable branch protection and secret

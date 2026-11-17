@@ -118,6 +118,25 @@ try {
     assert.equal(readdirSync(dir).filter(name => /^\.tapedb\.schema\./.test(name)).length, 0);
   }
   console.log("package smoke: standalone defaults and helper imports passed");
+
+  // `npx tapedb-cli <command>`: the wrapper package runs the CLI of the @tapedb/tapedb it pins.
+  const cliPacked = command("npm", ["pack", "--json", "--pack-destination", scratch], join(root, "packages", "tapedb-cli"));
+  const cliArchive = join(scratch, JSON.parse(cliPacked.stdout)[0].filename);
+  const wrapper = join(scratch, "tapedb-cli");
+  mkdirSync(wrapper);
+  writeFileSync(join(wrapper, "package.json"), JSON.stringify({ name: "cli-consumer", private: true }));
+  command("npm", ["install", archive, cliArchive, "--ignore-scripts", "--no-audit", "--no-fund"], wrapper);
+  const bin = join(wrapper, "node_modules", ".bin", "tapedb-cli");
+  assert.match(command(bin, ["--help"], wrapper).stdout, /npx tapedb-cli init/);
+  const app = join(scratch, "tapedb-cli-app");
+  mkdirSync(app);
+  const initialised = command(bin, ["init", "--no-install", "--no-start"], app);
+  assert.match(initialised.stdout, /Ready\. Start the database with npx tapedb-cli dev/);
+  assert.ok(existsSync(join(app, "tapedb", "migrations", "0002_entities.sql")));
+  // Exit codes pass through: a failing command fails the wrapper.
+  writeFileSync(join(app, "tapedb.schema.ts"), "export default {};\n");
+  command(bin, ["migrate", "check"], app, 1);
+  console.log("package smoke: tapedb-cli passed");
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }

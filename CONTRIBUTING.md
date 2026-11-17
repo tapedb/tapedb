@@ -19,9 +19,9 @@ in-memory SQLite, and the client tests use a fake socket and a fake fetch.
 To try the product itself:
 
 ```bash
-npx @tapedb/tapedb init     # writes a Worker, a schema, wrangler config and .dev.vars
-npx @tapedb/tapedb dev      # local database with a dev claim route
-npx @tapedb/tapedb studio   # table browser at http://127.0.0.1:4400
+npx tapedb-cli init     # writes a Worker, a schema, wrangler config and .dev.vars
+npx tapedb-cli dev      # local database with a dev claim route
+npx tapedb-cli studio   # table browser at http://127.0.0.1:4400
 ```
 
 ## What goes where
@@ -127,7 +127,7 @@ under `npx` and uploads refusing to run under `tapedb dev`, was invisible to
 bun run verify
 bun pm pack --destination /tmp/pack          # the published artifact
 cd $(mktemp -d) && npm init -y && npm i /tmp/pack/tapedb-*.tgz wrangler
-npx @tapedb/tapedb init && npx @tapedb/tapedb dev            # then drive it with a script:
+npx tapedb-cli init && npx tapedb-cli dev            # then drive it with a script:
                                              # writes, a live subscription,
                                              # an upload, a migration
 ```

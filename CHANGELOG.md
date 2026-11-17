@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.9 - 2026-11-17
+
+- New package `tapedb-cli`: run `npx tapedb-cli init`, `npx tapedb-cli dev` and `npx tapedb-cli deploy`, with no flags. `npx @tapedb/tapedb` inside a project ran the project's installed copy, which could be older; `tapedb-cli` isn't installed in the project, so `npx` fetches the newest one. It runs the `@tapedb/tapedb` release of the same version.
+- `init`, `dev` and `deploy` bring the project's `@tapedb/tapedb` up to the CLI's version, whatever the dependency says (`^0.1.7` included), using the project's package manager, and say so (`updated  @tapedb/tapedb 0.1.7 → 0.1.9`). Newer versions, `workspace:` and `file:` links are left alone. Before, only an exact older pin was moved, and only by `init`.
+- Messages and docs name `npx tapedb-cli` commands.
+
 ## 0.1.8 - 2026-11-17
 
 - Running `init` again with a newer tapedb moves the project's `@tapedb/tapedb` to that version when the project pins an exact older one, which an earlier `init` wrote, and says so (`updated  @tapedb/tapedb 0.1.4 → 0.1.8`). Before, the project kept the old version, so `npx @tapedb/tapedb deploy` and the deployed Worker ran it. Ranges, tags, links and newer versions are left as they are.

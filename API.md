@@ -33,7 +33,7 @@ then records the new surface with `bun run api:update`.
 | `@tapedb/tapedb/schema` | anywhere | only what a schema file needs |
 | `@tapedb/tapedb/react` | browser (React 19 peer) | hooks |
 | `@tapedb/tapedb/worker` | Cloudflare Workers | `defineTapeDB` and claim helpers |
-| `npx @tapedb/tapedb` | Node 22.18+ | the CLI (a command, not an import) |
+| `npx tapedb-cli` | Node 22.18+ | the CLI, a separate package that runs the matching `@tapedb/tapedb` |
 
 `@tapedb/tapedb` has no runtime dependencies and never imports React.
 
@@ -246,8 +246,8 @@ them. The protocol belongs to the client; use it directly only if you must.
 
 ## CLI
 
-`npx @tapedb/tapedb init | migrate dev|rollback|status|check | dev | studio | deploy |
-export | erase | move`. The exact commands and flags are in `npx @tapedb/tapedb --help`
+`npx tapedb-cli init | migrate dev|rollback|status|check | dev | studio | deploy |
+export | erase | move`. The exact commands and flags are in `npx tapedb-cli --help`
 and are part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside
 `TAPEDB_JURISDICTION`, or when `migrate check` fails (no migrations, schema
@@ -302,6 +302,6 @@ queueing or sending them. Multipart transmission obeys the same message bound.
 
 ### Interactive setup
 
-`npx @tapedb/tapedb init` asks for a project name and local or cloud setup, installs the library and Wrangler using the project package manager, and offers to start the local database. `--local`, `--cloud`, `--name`, `--yes`, `--no-install` and `--no-start` support scripted setup. `--yes` uses defaults and does not select cloud deployment unless `--cloud` is also supplied.
+`npx tapedb-cli init` asks for a project name and local or cloud setup, installs the library and Wrangler using the project package manager, and offers to start the local database. `--local`, `--cloud`, `--name`, `--yes`, `--no-install` and `--no-start` support scripted setup. `--yes` uses defaults and does not select cloud deployment unless `--cloud` is also supplied.
 
 `tapedb deploy` selects the Cloudflare account, shows the deployment target, creates missing R2 buckets and missing secrets, then deploys the Worker. Existing remote secrets are preserved. `--yes` accepts the displayed deployment plan for CI. Unmigrated schemas, dev-claim variables and inconsistent data jurisdictions still refuse deployment.
