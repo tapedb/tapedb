@@ -331,7 +331,7 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models>(models: M, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<M>"
+        "shape": "<M extends Models>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<M>"
       },
       "Schema": {
         "kind": "interface",
@@ -371,7 +371,7 @@
       },
       "t": {
         "kind": "value",
-        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string>(target: T, options?: HasManyOptions) => HasMany<T>; }"
+        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options?: O) => HasMany<T, \"inverse\" extends keyof O ? O[\"inverse\"] : undefined>; }"
       },
       "TopicSender": {
         "kind": "interface",
@@ -550,7 +550,7 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models>(models: M, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<M>"
+        "shape": "<M extends Models>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<M>"
       },
       "Schema": {
         "kind": "interface",
@@ -567,7 +567,7 @@
       },
       "t": {
         "kind": "value",
-        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string>(target: T, options?: HasManyOptions) => HasMany<T>; }"
+        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options?: O) => HasMany<T, \"inverse\" extends keyof O ? O[\"inverse\"] : undefined>; }"
       },
       "UpdateData": {
         "kind": "type",
@@ -957,7 +957,7 @@
           "defaultValue": "unknown",
           "isIndexed": "boolean",
           "isUnique": "boolean",
-          "personal": "(this: Field<K, O, D> & (K extends \"string\" | \"json\" ? unknown : never), options: { subject: string; }) => PersonalField<Extract<K, \"string\" | \"json\">, O, D>",
+          "personal": "<S extends string>(this: Field<K, O, D> & (K extends \"string\" | \"json\" ? unknown : never), options: { subject: S; }) => PersonalField<Extract<K, \"string\" | \"json\">, O, D, S>",
           "optional": "() => Field<K, true, D>",
           "default": "(value: KindInput[K]) => Field<K, O, true>",
           "index": "() => Field<K, O, D>",
@@ -1061,8 +1061,8 @@
         "shape": {
           "tag": "\"hasMany\"",
           "target": "T",
-          "inverse": "string | undefined",
-          "(declaration)": "<T extends string = string>"
+          "inverse": "I | undefined",
+          "(declaration)": "<T extends string = string, I extends string | undefined = string | undefined>"
         }
       },
       "HasManyInput (src/model/schema.ts)": {
@@ -1091,6 +1091,18 @@
       "InputOf (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<S> S extends Field<infer K, infer O, boolean> ? KindInput[K] | (O extends true ? null : never) : never"
+      },
+      "InverseError (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<R, F, Owner extends string> string extends InverseOf<R> ? never : [InverseOf<R>] extends [never] ? [MatchingParents<F, Owner>] extends [never] ? \"has no matching belongsTo\" : true extends IsUnion<MatchingParents<F, Owner>> ? \"needs an explicit inverse\" : never : InverseOf<R> extends MatchingParents<F, Owner> ? never : \"has an invalid inverse\""
+      },
+      "InverseOf (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<R> R extends HasMany ? Exclude<R[\"inverse\"], undefined> : never"
+      },
+      "IsUnion (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<T, Whole = T> T extends Whole ? [Whole] extends [T] ? false : true : never"
       },
       "Keys (src/model/schema.ts)": {
         "kind": "type",
@@ -1143,6 +1155,14 @@
           "none": "W | undefined",
           "(declaration)": "<W>"
         }
+      },
+      "MatchingParents (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<F, Owner extends string> { [P in BelongsToKeys<F>]: F[P] extends BelongsTo<Owner, boolean> ? P : never; }[BelongsToKeys<F>]"
+      },
+      "MemberError (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<R, M extends Models, Owner extends string, F> R extends BelongsTo | HasMany ? string extends TargetOf<R> ? never : TargetOf<R> extends keyof M ? R extends HasMany ? InverseError<R, FieldsOf<M[TargetOf<R>]>, Owner> : never : \"refers to a missing model\" : SubjectError<R, F>"
       },
       "MintClaimInput (src/mint.ts)": {
         "kind": "interface",
@@ -1427,6 +1447,10 @@
           "links": "Record<string, LinkDefinition>"
         }
       },
+      "SchemaErrors (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models> string extends keyof M ? never : { [K in keyof M & string]: { [P in keyof FieldsOf<M[K]> & string]: MemberError<FieldsOf<M[K]>[P], M, K, FieldsOf<M[K]>> extends infer E extends string ? `${K}.${P} ${E}` : never; }[keyof FieldsOf<M[K]> & string]; }[keyof M & string]"
+      },
       "SchemaOptions (src/model/schema.ts)": {
         "kind": "interface",
         "shape": {
@@ -1445,6 +1469,10 @@
       "StorageFetch (src/client/storage-client.ts)": {
         "kind": "type",
         "shape": "( input: RequestInfo | URL, init?: RequestInit ) => Promise<Response>"
+      },
+      "SubjectError (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<R, F> R extends { personalSubject: infer S extends string } ? string extends S ? never : S extends \"self\" ? never : S extends keyof F ? F[S] extends Field<\"string\", boolean, boolean> ? F[S] extends { personalSubject: string } ? \"needs a non-personal string subject\" : never : \"needs a non-personal string subject\" : S extends `${BelongsToKeys<F>}Id` ? never : \"refers to a missing personal subject\" : never"
       },
       "TargetFields (src/model/schema.ts)": {
         "kind": "type",
@@ -1582,6 +1610,10 @@
       "UnionToIntersection (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<U> (U extends unknown ? (value: U) => void : never) extends ( value: infer I ) => void ? I : never"
+      },
+      "ValidSchema (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models> [SchemaErrors<M>] extends [never] ? unknown : { readonly __schemaError: SchemaErrors<M> }"
       },
       "ViewWhereRule (src/engine/tx-permissions.ts)": {
         "kind": "interface",

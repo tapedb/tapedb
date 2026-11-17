@@ -54,6 +54,13 @@ and `existing` the one it replaces). `attachedTo` reads need the row readable
 by the caller; writes and deletes need the caller allowed to update it. Defaults:
 read `member`, write and delete `editor`. A rule that throws denies.
 
+Literal `schema()` definitions are checked by TypeScript: relation targets must
+exist, each `hasMany` must resolve to exactly one matching `belongsTo` (or name
+its `inverse`), and personal subjects must be `self`, an existing non-personal
+string field, or a generated belongs-to foreign key. Diagnostics identify the
+model and field. Widened or dynamically built definitions still use runtime
+validation. These checks do not change runtime behavior.
+
 ## `@tapedb/tapedb` — client
 
 Everything in `@tapedb/tapedb/schema`, plus:

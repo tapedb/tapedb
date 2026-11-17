@@ -46,7 +46,7 @@ export class Field<
   ) {}
 
   /** Encrypt this value under the named subject's erasable key. */
-  personal(this: Field<K, O, D> & (K extends "string" | "json" ? unknown : never), options: { subject: string }): PersonalField<Extract<K, "string" | "json">, O, D> {
+  personal<S extends string>(this: Field<K, O, D> & (K extends "string" | "json" ? unknown : never), options: { subject: S }): PersonalField<Extract<K, "string" | "json">, O, D, S> {
     if (this.isIndexed || this.isUnique) throw new Error("Personal fields cannot be indexed or unique.");
     if (!options.subject) throw new Error("A personal field needs its subject field, or self.");
     return new PersonalField(this.kind as Extract<K, "string" | "json">, this.isOptional, this.hasDefault, options.subject, this.defaultValue);
@@ -73,12 +73,12 @@ export class Field<
   }
 }
 
-export class PersonalField<K extends "string" | "json" = "string" | "json", O extends boolean = boolean, D extends boolean = boolean> extends Field<K, O, D> {
-  constructor(kind: K, optional: O, hasDefault: D, readonly personalSubject: string, defaultValue?: unknown) {
+export class PersonalField<K extends "string" | "json" = "string" | "json", O extends boolean = boolean, D extends boolean = boolean, S extends string = string> extends Field<K, O, D> {
+  constructor(kind: K, optional: O, hasDefault: D, readonly personalSubject: S, defaultValue?: unknown) {
     super(kind, optional, hasDefault, defaultValue);
   }
-  override optional(): PersonalField<K, true, D> { return new PersonalField(this.kind, true, this.hasDefault, this.personalSubject, this.defaultValue); }
-  override default(value: KindInput[K]): PersonalField<K, O, true> { return new PersonalField(this.kind, this.isOptional, true, this.personalSubject, value); }
+  override optional(): PersonalField<K, true, D, S> { return new PersonalField(this.kind, true, this.hasDefault, this.personalSubject, this.defaultValue); }
+  override default(value: KindInput[K]): PersonalField<K, O, true, S> { return new PersonalField(this.kind, this.isOptional, true, this.personalSubject, value); }
   override index(this: never): never { throw new Error("Personal fields cannot be indexed."); }
   override unique(this: never): never { throw new Error("Personal fields cannot be unique."); }
 }
@@ -115,12 +115,12 @@ export interface HasManyOptions {
 }
 
 /** The inverse of a `belongsTo`. Stores nothing; named in `include`. */
-export class HasMany<T extends string = string> {
+export class HasMany<T extends string = string, I extends string | undefined = string | undefined> {
   readonly tag = "hasMany" as const;
 
   constructor(
     readonly target: T,
-    readonly inverse?: string
+    readonly inverse?: I
   ) {}
 }
 
@@ -137,6 +137,6 @@ export const t = {
   json: () => new Field("json", false, false),
   belongsTo: <T extends string>(target: T, options: BelongsToOptions = {}) =>
     new BelongsTo(target, false, options.onDelete ?? "setNull"),
-  hasMany: <T extends string>(target: T, options: HasManyOptions = {}) =>
-    new HasMany(target, options.inverse),
+  hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options: O = {} as O) =>
+    new HasMany<T, "inverse" extends keyof O ? O["inverse"] : undefined>(target, options.inverse as "inverse" extends keyof O ? O["inverse"] : undefined),
 };
