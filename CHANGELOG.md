@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.12 - 2026-11-17
+
+- `npx tapedb-cli dev` works in a project that has been deployed. Deploying writes `"ENVIRONMENT": "production"` into `wrangler.jsonc`, and local dev read it too, so `http://localhost:8787/` answered `no_route` and the dev claim route refused every request. `dev` now always runs as `development`. Deploys still use `production`.
+
 ## 0.1.11 - 2026-11-17
 
 - A new studio. Models are listed with their row counts, and rows show in a table with typed columns: dates are readable, and relations show the related row's name and open it. Rows can be sorted by any column and filtered by field. Clicking a row opens it in an editor, which has a field for each type, a picker for relations, the rows that point to it, and two-step deletion. Rows can be added from the studio. A counter shows the workspace's transaction count, and the table refreshes as writes land. The studio follows the system's light or dark mode and works on a phone.
