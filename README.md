@@ -385,7 +385,7 @@ Only the edited entries change in the file; comments, rules and formatting stay
 as written. Fields written in other ways (helpers, personal fields) are shown as
 code and can be renamed or deleted; change them in the file.
 
-The deployed Worker serves the studio too, at `https://<your-worker>/_tapedb/studio`,
+The deployed Worker serves the studio too, at `https://<your-worker>/_tapedb/studio` (its root redirects there),
 when `worker.ts` passes it in (`tapedb init` writes this):
 
 ```ts

@@ -287,6 +287,8 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
       if (url.pathname === "/" && request.method === "GET") {
         const studio = localStudio(env, devClaims);
         if (studio) return Response.redirect(studio, 302);
+        // With the studio on, the Worker's own address opens it.
+        if (options.studio) return Response.redirect(new URL("/_tapedb/studio", url).href, 302);
       }
 
       // The studio's workspace picker, during `tapedb dev` only.

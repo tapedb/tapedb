@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.17 - 2026-11-17
+
+- With `studio` passed to `defineTapeDB`, the deployed Worker's own address (`GET /`) opens the studio instead of answering `no_route`. After deploying such a Worker, `tapedb deploy` says where the studio is.
+
 ## 0.1.16 - 2026-11-17
 
 - The studio for deployed apps: `import { studio } from "@tapedb/tapedb/studio"` and pass it to `defineTapeDB`, and the Worker serves the studio at `/_tapedb/studio`. It signs in with the app's own session through `/_tapedb/claim`, so the identity adapter decides the role (shown as "Signed in as Owner"), and every read and write passes the app's access rules. Workspaces are opened by id, from recent ones, or with `?workspace=<id>`, and the deployed Worker lists none. The structure is read-only there. The page runs under a content security policy with hashes for its one script and one stylesheet. Without `studio` nothing is served at that path, and the page and fonts are left out of the Worker. `tapedb init` adds it to new projects.
