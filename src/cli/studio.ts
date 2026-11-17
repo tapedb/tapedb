@@ -18,6 +18,8 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { studioPage } from "./studio-page";
+import { applyEdit, previewEdit, readStructure } from "./studio-structure";
+import type { SchemaEdit } from "./schema-edit";
 
 export interface StudioOptions {
   /** Base URL of the running Worker, e.g. http://localhost:8787 */
@@ -26,6 +28,8 @@ export interface StudioOptions {
   workspace: string;
   /** Port to bind. `0` asks the OS for an ephemeral port. */
   port: number;
+  /** The project folder, for editing its schema. Without it the structure is read-only. */
+  project?: string;
 }
 
 interface StudioState {
@@ -182,9 +186,26 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
   const base = options.url.replace(/\/+$/, "");
   const state: StudioState = { token: null, workspace: options.workspace };
 
+  let port = options.port;
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://localhost");
+
+      // Only the studio's own page may call it: a page on another site must not
+      // read the local database or edit the project. Requests from elsewhere
+      // carry another Host (DNS rebinding) or Origin; a JSON body cannot be
+      // sent cross-site without a preflight, which this server never grants.
+      const own = [`127.0.0.1:${port}`, `localhost:${port}`];
+      const origin = request.headers.origin;
+      if (!own.includes(request.headers.host ?? "") || (origin !== undefined && !own.some((host) => origin === `http://${host}`))) {
+        sendJson(response, 403, { error: { message: "The studio only answers its own page." } });
+        return;
+      }
+      if (request.method !== "GET" && !(request.headers["content-type"] ?? "").startsWith("application/json")) {
+        sendJson(response, 415, { error: { message: "Send JSON." } });
+        return;
+      }
+
 
       if (url.pathname === "/") {
         response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
@@ -224,7 +245,26 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
         return;
       }
 
+      if (url.pathname === "/api/structure") {
+        sendJson(response, 200, options.project ? await readStructure(options.project) : { editable: false, reason: "Start the studio from your project with npx tapedb-cli dev to change the schema here." });
+        return;
+      }
+
       const body = await readBody(request);
+
+      if (url.pathname === "/api/structure/preview" || url.pathname === "/api/structure/apply") {
+        if (!options.project) throw new BadRequest("Start the studio from your project with npx tapedb-cli dev to change the schema here.");
+        const parsed = parseJsonBody<{ edit?: SchemaEdit; base?: string }>(body);
+        if (!parsed.edit || typeof parsed.edit !== "object") throw new BadRequest("Send the edit.");
+        if (url.pathname.endsWith("/preview")) {
+          sendJson(response, 200, await previewEdit(options.project, parsed.edit));
+        } else {
+          if (typeof parsed.base !== "string") throw new BadRequest("Preview the edit first.");
+          sendJson(response, 200, await applyEdit(options.project, parsed.edit, parsed.base));
+        }
+        return;
+      }
+
 
       if (url.pathname === "/api/schema") {
         const parsed = parseJsonBody<{ workspaceId?: string }>(body);
@@ -312,6 +352,7 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
       // than assumed: tests rely on it to avoid fixed ports entirely.
       const address = server.address();
       const bound = typeof address === "object" && address !== null ? address.port : options.port;
+      port = bound;
       resolve({
         url: `http://127.0.0.1:${bound}`,
         close: () => {

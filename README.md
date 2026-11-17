@@ -375,6 +375,16 @@ migration is kept in `tapedb/snapshots/`; commit it with the migrations.
 with no migration. `tapedb deploy` refuses to ship a dev configuration or an
 unmigrated schema, then runs `wrangler deploy`.
 
+The studio (`npx tapedb-cli dev`, then `http://localhost:8787/`) makes the same
+changes without writing code: a model's Structure tab adds, edits, renames and
+deletes fields, and models are created, renamed and deleted from there too.
+Each change is shown first as the edit to `tapedb.schema.ts` and the migration
+it writes, with what it deletes and how many rows that is; applying it writes
+both, exactly as `migrate dev` would, and the local database reloads with it.
+Only the edited entries change in the file; comments, rules and formatting stay
+as written. Fields written in other ways (helpers, personal fields) are shown as
+code and can be renamed or deleted; change them in the file.
+
 ## Files and presence
 
 ```ts
