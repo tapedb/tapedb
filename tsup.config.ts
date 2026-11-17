@@ -6,6 +6,7 @@ export default defineConfig({
     schema: "src/schema-entry.ts",
     react: "src/react/index.ts",
     worker: "src/worker/index.ts",
+    studio: "src/studio/index.ts",
     cli: "src/cli/index.ts",
   },
   format: ["esm"],

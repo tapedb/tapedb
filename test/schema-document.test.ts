@@ -18,10 +18,10 @@ const { defineTapeDB } = await import("../src/worker/index");
 const { WorkspaceRoom } = await import("../src/engine/workspace-room");
 const { model, schema, t } = await import("../src/schema");
 
-test("the schema document names the field that stores each link", async () => {
+test("the schema document names the field that stores each link, and each field's default", async () => {
   defineTapeDB({
     schema: schema({
-      board: model({ name: t.string(), columns: t.hasMany("column") }),
+      board: model({ name: t.string(), archived: t.boolean().default(false), rank: t.number().default(3), columns: t.hasMany("column") }),
       column: model({ name: t.string(), board: t.belongsTo("board") }),
     }),
   });
@@ -47,4 +47,7 @@ test("the schema document names the field that stores each link", async () => {
   const attribute = (link.foreignKey as { attribute: string }).attribute;
   const columns = (await (await room.fetch(new Request("http://room/schema", { headers: { "x-tapedb-claims": claim } }))).json()) as { data: { namespaces: Array<{ apiName: string; attributes: Record<string, unknown> }> } };
   expect(Object.keys(columns.data.namespaces.find((n) => n.apiName === "column")!.attributes)).toContain(attribute);
+  // Defaults as written in the schema, for the studio's read-only structure.
+  const board = columns.data.namespaces.find((n) => n.apiName === "board")!.attributes as Record<string, { default: unknown }>;
+  expect([board.archived.default, board.rank.default, board.name.default]).toEqual([false, 3, null]);
 });

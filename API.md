@@ -33,6 +33,7 @@ then records the new surface with `bun run api:update`.
 | `@tapedb/tapedb/schema` | anywhere | only what a schema file needs |
 | `@tapedb/tapedb/react` | browser (React 19 peer) | hooks |
 | `@tapedb/tapedb/worker` | Cloudflare Workers | `defineTapeDB` and claim helpers |
+| `@tapedb/tapedb/studio` | Cloudflare Workers | `studio`: the studio at `/_tapedb/studio`, for `defineTapeDB({ studio })` |
 | `npx tapedb-cli` | Node 22.18+ | the CLI, a separate package that runs the matching `@tapedb/tapedb` |
 
 `@tapedb/tapedb` has no runtime dependencies and never imports React.

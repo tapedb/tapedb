@@ -23,6 +23,7 @@ export const ENTRIES: Record<string, string> = {
   "@tapedb/tapedb/schema": "src/schema-entry.ts",
   "@tapedb/tapedb/react": "src/react/index.ts",
   "@tapedb/tapedb/worker": "src/worker/index.ts",
+  "@tapedb/tapedb/studio": "src/studio/index.ts",
 };
 
 const FORMAT = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.WriteArrowStyleSignature;
