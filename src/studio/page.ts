@@ -442,6 +442,42 @@ button.who.as .label { color: var(--accent); }
 .who-pop select, .who-pop input { min-height: 32px; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: var(--control); background: var(--surface); color: var(--text); font: 13px var(--mono); }
 .who-pop .hint { margin: 6px 8px 10px; font-size: 13px; color: var(--text-3); }
 .who-pop .actions { display: flex; justify-content: flex-end; gap: 8px; padding: 0 8px 4px; }
+/* ---- History ---- */
+.history { flex: 1 1 auto; min-height: 0; overflow: auto; }
+.history .head p { margin: 0 0 6px; max-width: 72ch; color: var(--text-3); font-size: 14px; }
+.history .select select { min-height: 32px; padding: 0 10px; border: 1px solid var(--line-strong); border-radius: var(--control); background: var(--surface); color: var(--text); font-size: 14px; }
+.log { margin: 0; padding: 0; list-style: none; }
+.entry { border-bottom: 1px solid var(--line); }
+.entry:last-child { border-bottom: 0; }
+.entry.focus { box-shadow: inset 2px 0 0 var(--accent); }
+.entry-head { display: flex; align-items: center; gap: 14px; width: 100%; min-height: 52px; padding: 0 16px; border: 0; background: none; text-align: left; cursor: pointer; color: var(--text-2); }
+.entry-head:hover { background: var(--surface-2); }
+.entry-head .seq { font: 13px var(--mono); color: var(--text); }
+.entry.open .entry-head .seq, .entry.focus .entry-head .seq { color: var(--accent); }
+.entry-head .summary { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); }
+.entry-head .who-wrote { font: 13px var(--mono); color: var(--text-2); }
+.entry-head .when { font: 12.5px var(--mono); color: var(--text-3); min-width: 9ch; text-align: right; }
+.ops { margin: 0; padding: 4px 16px 16px 92px; list-style: none; display: grid; gap: 12px; }
+.op-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.op-head .verb { font: 500 12px/20px var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-3); }
+.op-head .verb.insert { color: var(--ok); }
+.op-head .verb.delete, .op-head .verb.deleteIds { color: var(--accent); }
+.op-head .model { color: var(--text); }
+.op-head .count { font: 12.5px var(--mono); color: var(--text-3); }
+.op-head .ref { min-height: 26px; padding: 0 8px; }
+.values { display: grid; grid-template-columns: max-content 1fr; gap: 2px 16px; margin: 8px 0 0; }
+.values dt { font: 12.5px/20px var(--mono); color: var(--text-3); }
+.values dd { margin: 0; font-size: 12.5px; line-height: 20px; color: var(--text); word-break: break-word; }
+.values dd.hidden-values { font-family: var(--sans); color: var(--text-3); }
+.history .note, .drawer .note { margin: 6px 0 0; font-size: 13px; color: var(--text-3); }
+.history .more { display: flex; justify-content: center; padding-bottom: 18px; }
+.history .panel { margin-bottom: 14px; }
+.tape .counter { border: 0; background: none; padding: 0; cursor: pointer; font: inherit; }
+.tape .counter:hover { color: var(--accent); }
+.tx-link { border: 0; background: none; padding: 0; cursor: pointer; color: var(--text); font: inherit; }
+.tx-link:hover { color: var(--accent); }
+.changes button { display: grid; grid-template-columns: 8ch 1fr auto; gap: 12px; width: 100%; font-size: 14px; }
+.changes .seq, .changes .when { font: 12.5px var(--mono); color: var(--text-3); }
 /* ---- Data / Structure tabs (the landing page's code tab: underline in text colour) ---- */
 .tabs { display: flex; gap: 22px; margin: -4px 0 16px; border-bottom: 1px solid var(--line); }
 .tabs button { position: relative; padding: 0 0 10px; border: 0; background: none; cursor: pointer; color: var(--text-3); }
@@ -617,6 +653,7 @@ button.who.as .label { color: var(--accent); }
   <nav class="tools" id="tools" aria-label="Tools" hidden>
     <button type="button" id="open-query" aria-current="false"></button>
     <button type="button" id="open-access" aria-current="false"></button>
+    <button type="button" id="open-history" aria-current="false"></button>
   </nav>
 </aside>
 
@@ -640,6 +677,15 @@ button.who.as .label { color: var(--accent); }
   <div class="structure" id="structure" hidden></div>
   <div class="filters" id="filters" hidden></div>
   <div class="bulk" id="bulk" hidden></div>
+  <section class="history" id="history" aria-label="History" hidden>
+    <div class="head">
+      <div>
+        <h1 id="history-title"></h1>
+        <p>Every transaction the workspace keeps, newest first: what it wrote, and who wrote it when audit is on.</p>
+      </div>
+    </div>
+    <div id="history-body"></div>
+  </section>
   <section class="access" id="access" aria-label="Access" hidden>
     <div class="head">
       <div>
@@ -687,7 +733,7 @@ button.who.as .label { color: var(--accent); }
     <svg><defs><pattern id="tick" width="40" height="14" patternUnits="userSpaceOnUse"><line x1="0.5" y1="1" x2="0.5" y2="13"/><line x1="8.5" y1="7" x2="8.5" y2="13"/><line x1="16.5" y1="7" x2="16.5" y2="13"/><line x1="24.5" y1="7" x2="24.5" y2="13"/><line x1="32.5" y1="7" x2="32.5" y2="13"/></pattern></defs><rect width="100%" height="14" fill="url(#tick)"/><line x1="0" y1="13.5" x2="100%" y2="13.5"/></svg>
     <span class="playhead"></span>
   </div>
-  <span class="counter num" id="counter" translate="no">tx_0000</span>
+  <button class="counter num" id="counter" type="button" translate="no" title="Open the history">tx_0000</button>
   <span class="event idle" id="event" aria-live="polite" translate="no"><span class="lamp"></span><span id="event-text">workspace.ready</span></span>
 </footer>
 
@@ -784,6 +830,7 @@ function icon(kind, size) {
     plus: ["pM9 4v10M4 9h10"],
     search: ["c8,8,5", "pM12 12l3.5 3.5"],
     prompt: ["pM4 5.5l3.5 3.5L4 12.5", "pM9.5 13h4.5"],
+    clock: ["c9,9,6.5", "pM9 5.5V9l2.5 1.5"],
     shield: ["pM9 2.5l5.5 2v4.2c0 3.2-2.3 5.6-5.5 6.8-3.2-1.2-5.5-3.6-5.5-6.8V4.5z"],
     link: ["pM7.5 10.5l3-3", "pM8.5 5.5l1.3-1.3a2.8 2.8 0 0 1 4 4L12.5 9.5", "pM9.5 12.5l-1.3 1.3a2.8 2.8 0 0 1-4-4L5.5 8.5"]
   }[kind];
@@ -815,7 +862,10 @@ function localApi(path, body) {
       try { parsed = JSON.parse(text); } catch (e) { parsed = { raw: text }; }
       if (!response.ok || (parsed && parsed.ok === false)) {
         var message = (parsed && parsed.error && parsed.error.message) || text.slice(0, 300) || ("HTTP " + response.status);
-        throw new Error(message);
+        var failure = new Error(message);
+        failure.status = response.status;
+        failure.code = parsed && parsed.error && parsed.error.code;
+        throw failure;
       }
       return parsed;
     });
@@ -835,6 +885,7 @@ function readJson(response) {
     if (!response.ok || (parsed && parsed.ok === false)) {
       var error = new Error((parsed && parsed.error && parsed.error.message) || text.slice(0, 300) || ("HTTP " + response.status));
       error.status = response.status;
+      error.code = parsed && parsed.error && parsed.error.code;
       throw error;
     }
     return parsed;
@@ -880,6 +931,12 @@ function workerApi(path, body) {
   if (path === "/api/query") return engine(ws, "/query", { method: "POST", body: JSON.stringify({ query: body.query }) });
   if (path === "/api/transact") return engine(ws, "/transact", { method: "POST", body: JSON.stringify(body.body) });
   if (path === "/api/status") return engine(ws, "/status" + (typeof body.after === "number" ? "?after=" + body.after : ""));
+  if (path === "/api/log" || path === "/api/history") {
+    var params = new URLSearchParams();
+    Object.keys(body.params || {}).forEach(function (key) { if (body.params[key] !== undefined && body.params[key] !== null) params.set(key, String(body.params[key])); });
+    var query = params.toString();
+    return engine(ws, (path === "/api/log" ? "/log" : "/history") + (query ? "?" + query : ""));
+  }
   return Promise.reject(new Error("The deployed studio cannot do that."));
 }
 
@@ -1156,6 +1213,7 @@ function openWorkspace(id) {
     renderWho();
     if (app.tool === "query") openQuery();
     else if (app.tool === "access") openAccess();
+    else if (app.tool === "history") openHistory();
     else if (first) selectModel(first.apiName);
     else showEmpty("This schema has no models", "Add a model to tapedb.schema.ts, then run a migration.");
     refreshCounts();
@@ -1172,6 +1230,7 @@ function renderModels() {
   $("tools").hidden = !app.schema;
   $("open-query").setAttribute("aria-current", app.tool === "query" ? "true" : "false");
   $("open-access").setAttribute("aria-current", app.tool === "access" ? "true" : "false");
+  $("open-history").setAttribute("aria-current", app.tool === "history" ? "true" : "false");
   if (!app.schema) return;
   app.schema.namespaces.forEach(function (n, index) {
     var count = app.counts[n.apiName];
@@ -1224,6 +1283,7 @@ function poll() {
     if (seq === previous) return;
     return Promise.all([refreshCounts(), reloadRows(previous)]).then(function (results) {
       recordOnTape(seq, describeWrite(results[0], results[1], seq - previous));
+      refreshHistory();
     });
   }).then(function () {
     if (run === watching) poll();
@@ -1881,8 +1941,13 @@ function openRow(row) {
     if (pair[1] === undefined) return;
     meta.append(el("dt", { class: "label", text: pair[0] }), el("dd", { class: "num", text: formatDate(pair[1]) }));
   });
-  if (row.updatedSeq !== undefined) meta.append(el("dt", { class: "label", text: "Last write" }), el("dd", { class: "num", text: "tx_" + pad(row.updatedSeq, 4) }));
+  if (row.updatedSeq !== undefined) {
+    meta.append(el("dt", { class: "label", text: "Last write" }), el("dd", { class: "num" }, [el("button", { class: "tx-link", type: "button", title: "Open it in the history", onclick: function () { closeDrawer(); openHistory(row.updatedSeq); } }, ["tx_" + pad(row.updatedSeq, 4)])]));
+  }
   form.append(meta);
+  var changes = el("div");
+  form.append(changes);
+  rowHistory(model, row.id, changes);
   var back = referrers(model);
   if (back.length > 0) {
     var related = el("div", { class: "related" }, [el("div", { class: "label", text: "Pointing here" })]);
@@ -3031,6 +3096,11 @@ function renderRecent() {
   button.append(icon("prompt", 16), el("span", { class: "name", text: "Query" }));
   $("open-access").append(icon("shield", 16), el("span", { class: "name", text: "Access" }));
   $("open-access").addEventListener("click", openAccess);
+  $("open-history").append(icon("clock", 16), el("span", { class: "name", text: "History" }));
+  $("open-history").addEventListener("click", function () { openHistory(); });
+  stopped($("history-title"), "History");
+  // The tape's counter opens the log it counts.
+  $("counter").addEventListener("click", function () { openHistory(); });
   stopped($("access-title"), "Access");
   button.addEventListener("click", openQuery);
   $("run").append("Run", el("kbd", { text: MAC ? "⌘↵" : "Ctrl ↵" }));
@@ -3222,6 +3292,7 @@ function openTool(name) {
   ["head", "tabs", "structure", "filters", "bulk", "panel"].forEach(function (id) { $(id).hidden = true; });
   $("console").hidden = name !== "query";
   $("access").hidden = name !== "access";
+  $("history").hidden = name !== "history";
   return true;
 }
 
@@ -3230,6 +3301,7 @@ function closeTool() {
   closeComplete();
   $("console").hidden = true;
   $("access").hidden = true;
+  $("history").hidden = true;
   $("panel").hidden = false;
 }
 
@@ -3420,6 +3492,198 @@ function setViewAs(next) {
     claims = {};
     openWorkspace(app.workspace);
   }).catch(fail);
+}
+
+// ---- History: the transaction log ------------------------------------------
+
+var hist = { entries: [], next: null, model: "", open: {}, loading: false, problem: null, focus: null };
+
+function openHistory(focusSeq) {
+  if (!openTool("history")) return;
+  hist.focus = typeof focusSeq === "number" ? focusSeq : null;
+  if (hist.focus !== null) {
+    hist.open[hist.focus] = true;
+    hist.model = "";
+  }
+  loadHistory(false);
+}
+
+function loadHistory(older) {
+  if (hist.loading) return;
+  hist.loading = true;
+  var params = { limit: 50 };
+  if (hist.model) params.model = hist.model;
+  // Focused on one transaction: start the page there, so it is first.
+  if (older && hist.next !== null) params.before = hist.next;
+  else if (!older && hist.focus !== null) params.before = hist.focus + 1;
+  var workspace = app.workspace;
+  api("/api/log", { workspaceId: workspace, params: params }).then(function (result) {
+    if (workspace !== app.workspace) return;
+    var data = result.data || { entries: [], next: null };
+    hist.entries = older ? hist.entries.concat(data.entries) : data.entries;
+    hist.next = data.next;
+    hist.problem = null;
+  }, function (error) {
+    hist.problem = error;
+  }).then(function () {
+    hist.loading = false;
+    if (app.tool === "history") renderHistory();
+  });
+}
+
+/** New transactions landed: show them at the top, unless the page is focused on an older one. */
+function refreshHistory() {
+  if (app.tool !== "history" || hist.focus !== null || hist.loading) return;
+  var known = hist.entries.length ? hist.entries[0].seq : 0;
+  var params = { limit: 50 };
+  if (hist.model) params.model = hist.model;
+  api("/api/log", { workspaceId: app.workspace, params: params }).then(function (result) {
+    var fresh = ((result.data || {}).entries || []).filter(function (entry) { return entry.seq > known; });
+    if (fresh.length === 0) return;
+    fresh.forEach(function (entry) { hist.marks = hist.marks || {}; hist.marks[entry.seq] = true; });
+    hist.entries = fresh.concat(hist.entries);
+    renderHistory();
+  }).catch(function () {});
+}
+
+var OP_WORDS = { insert: ["created", "Create"], update: ["replaced", "Replace"], patch: ["updated", "Update"], upsert: ["created or updated", "Upsert"], merge: ["updated", "Update"], delete: ["deleted", "Delete"], link: ["linked", "Link"], unlink: ["unlinked", "Unlink"], patchIds: ["updated", "Update"], deleteIds: ["deleted", "Delete"] };
+
+/** "task: 2 updated, 1 created  ·  column: 1 deleted" */
+function entrySummary(entry) {
+  return Object.keys(entry.counts || {}).map(function (model) {
+    var words = {};
+    Object.keys(entry.counts[model]).forEach(function (op) {
+      var word = (OP_WORDS[op] || [op])[0];
+      words[word] = (words[word] || 0) + entry.counts[model][op];
+    });
+    return model + ": " + Object.keys(words).map(function (word) { return words[word].toLocaleString() + " " + word; }).join(", ");
+  }).join("   ");
+}
+
+function valueText(model, field, value) {
+  if (value === null || value === undefined) return "null";
+  var type = namespace(model) && namespace(model).attributes[field] ? typeOf(model, field) : "";
+  if (type === "date" && typeof value === "number") return formatDate(value);
+  if (typeof value === "string") return JSON.stringify(value.length > 80 ? value.slice(0, 80) + "…" : value);
+  return JSON.stringify(value);
+}
+
+function rowLink(model, id) {
+  return el("button", { class: "ref unnamed", type: "button", title: "Open " + model + " " + id, onclick: function () {
+    if (namespace(model)) jumpTo(model, id);
+  } }, [el("span", { text: shortId(id) })]);
+}
+
+function opLine(op) {
+  var words = OP_WORDS[op.op] || [op.op, op.op];
+  var line = el("li", { class: "op" });
+  var head = el("div", { class: "op-head" }, [el("span", { class: "verb " + op.op, text: words[1] }), el("span", { class: "model", text: op.namespace })]);
+  if (op.id) head.append(rowLink(op.namespace, op.id));
+  if (op.ids) {
+    head.append(el("span", { class: "count", text: op.count === 1 ? "1 row" : op.count + " rows" }));
+    op.ids.forEach(function (id) { head.append(rowLink(op.namespace, id)); });
+    if (op.count > op.ids.length) head.append(el("span", { class: "count", text: "and " + (op.count - op.ids.length) + " more" }));
+  }
+  if (op.link) head.append(el("span", { class: "count", text: op.link + " → " }), rowLink("", op.targetId || ""));
+  line.append(head);
+  var values = op.values || {};
+  var fields = Object.keys(values);
+  if (fields.length || (op.hidden && op.hidden.length)) {
+    var list = el("dl", { class: "values" });
+    fields.forEach(function (field) {
+      list.append(el("dt", { text: field }), el("dd", { class: "mono", text: valueText(op.namespace, field, values[field]) }));
+    });
+    if (op.hidden && op.hidden.length) {
+      list.append(el("dt", { text: op.hidden.join(", ") }), el("dd", { class: "hidden-values", text: "Not shown: personal, or decided per row by " + op.namespace + "'s read rule" }));
+    }
+    line.append(list);
+    if (op.whole) line.append(el("p", { class: "note", text: "The whole row after this write." }));
+  }
+  return line;
+}
+
+function renderHistory() {
+  var box = $("history-body");
+  box.innerHTML = "";
+  var filter = el("select", { "aria-label": "Model", onchange: function (event) {
+    hist.model = event.target.value;
+    hist.focus = null;
+    hist.next = null;
+    loadHistory(false);
+  } }, [el("option", { value: "", text: "All models" })].concat(app.schema.namespaces.map(function (n) {
+    var option = el("option", { value: n.apiName, text: n.apiName });
+    if (hist.model === n.apiName) option.selected = true;
+    return option;
+  })));
+  var bar = el("div", { class: "filters" }, [el("label", { class: "select" }, [filter])]);
+  if (hist.focus !== null) bar.append(el("button", { class: "quiet label", type: "button", text: "Show the latest", onclick: function () { hist.focus = null; loadHistory(false); } }));
+  box.append(bar);
+
+  if (hist.problem) {
+    var forbidden = hist.problem.status === 403;
+    box.append(el("div", { class: "panel is-empty" }, [el("div", { class: "empty" }, [
+      stopped(el("h2"), forbidden ? "The log is for admins and owners" : "The log could not be read"),
+      el("p", { text: forbidden ? "It names who wrote what. Sign in as an admin or owner of this workspace to read it." : hist.problem.message })
+    ])]));
+    return;
+  }
+  if (!hist.entries.length && !hist.loading) {
+    box.append(el("div", { class: "panel is-empty" }, [el("div", { class: "empty" }, [
+      stopped(el("h2"), hist.model ? "No writes to " + hist.model : "No writes yet"),
+      el("p", { text: "Transactions appear here as they land, newest first." })
+    ])]));
+    return;
+  }
+  var list = el("ol", { class: "log" });
+  hist.entries.forEach(function (entry) {
+    var open = !!hist.open[entry.seq];
+    var item = el("li", { class: "entry" + (open ? " open" : "") + (hist.focus === entry.seq ? " focus" : "") });
+    var who = entry.sub ? [el("span", { class: "who-wrote", text: entry.sub }), entry.role !== null ? el("span", { class: "label", text: roleName(entry.role) }) : null] : [];
+    var toggle = el("button", { class: "entry-head", type: "button", "aria-expanded": open ? "true" : "false", onclick: function () {
+      hist.open[entry.seq] = !hist.open[entry.seq];
+      renderHistory();
+    } }, [
+      el("span", { class: "seq num", text: "tx_" + pad(entry.seq, 4) }),
+      el("span", { class: "summary", text: entrySummary(entry) }),
+      hist.marks && hist.marks[entry.seq] ? el("span", { class: "tag", text: "NEW" }) : null
+    ].concat(who).concat([el("span", { class: "when num", title: formatDate(entry.at), text: ago(entry.at) })]));
+    item.append(toggle);
+    if (open) {
+      var ops = el("ul", { class: "ops" }, entry.ops.map(opLine));
+      item.append(ops);
+      if (entry.more) item.append(el("p", { class: "note", text: entry.more + " more " + (entry.more === 1 ? "operation" : "operations") + " in this transaction." }));
+    }
+    list.append(item);
+  });
+  box.append(el("div", { class: "panel" }, [el("div", { class: "scroll" }, [list])]));
+  if (hist.next !== null) {
+    box.append(el("div", { class: "more" }, [el("button", { class: "btn small", type: "button", disabled: hist.loading || undefined, onclick: function () { loadHistory(true); } }, [hist.loading ? "Loading…" : "Load older"])]));
+  }
+  if (hist.marks) setTimeout(function () { hist.marks = null; }, 0);
+  var focused = box.querySelector(".entry.focus");
+  if (focused) focused.scrollIntoView({ block: "nearest" });
+}
+
+/** A row's recorded changes in its panel: who and when, each linking to its transaction. */
+function rowHistory(model, id, into) {
+  api("/api/history", { workspaceId: app.workspace, params: { model: model, id: id } }).then(function (result) {
+    var entries = (result.data || []).slice().reverse();
+    if (!entries.length) return;
+    var box = el("div", { class: "related changes" }, [el("div", { class: "label", text: "Changes" })]);
+    entries.slice(0, 12).forEach(function (entry) {
+      var verb = { insert: "Created", update: "Updated", delete: "Deleted" }[entry.action] || entry.action;
+      box.append(el("button", { type: "button", title: formatDate(entry.at), onclick: function () { closeDrawer(); openHistory(entry.seq); } }, [
+        el("span", { class: "seq num", text: "tx_" + pad(entry.seq, 4) }),
+        el("span", { text: verb + (entry.sub ? " by " + entry.sub : "") }),
+        el("span", { class: "when num", text: ago(entry.at) })
+      ]));
+    });
+    if (entries.length > 12) box.append(el("p", { class: "note", text: (entries.length - 12) + " earlier changes are in the history." }));
+    into.append(box);
+  }, function (error) {
+    // Recording writers is opt-in; say how, once, where the changes would be.
+    if (error.code === "audit_disabled") into.append(el("p", { class: "note", text: "Who changed this row is recorded with defineTapeDB({ audit: true })." }));
+  });
 }
 
 function start() {

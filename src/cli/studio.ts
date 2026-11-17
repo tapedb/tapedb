@@ -282,6 +282,20 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
         return;
       }
 
+      // The transaction log, newest first, and one row's recorded changes.
+      if (url.pathname === "/api/log" || url.pathname === "/api/history") {
+        const parsed = parseJsonBody<{ workspaceId?: string; params?: Record<string, unknown> }>(body);
+        if (typeof parsed.workspaceId === "string") setWorkspace(state, parsed.workspaceId);
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(parsed.params ?? {})) {
+          if (typeof value === "string" || typeof value === "number") params.set(key, String(value));
+        }
+        const path = url.pathname === "/api/log" ? "/log" : "/history";
+        const query = params.toString();
+        await forward(response, await engine(base, state, query ? `${path}?${query}` : path));
+        return;
+      }
+
       // The workspace's transaction count, for the page's live counter.
       if (url.pathname === "/api/status") {
         const parsed = parseJsonBody<{ workspaceId?: string; after?: number }>(body);

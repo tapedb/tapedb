@@ -1636,6 +1636,7 @@
     "invalid_json",
     "invalid_key",
     "invalid_limit",
+    "invalid_log_query",
     "invalid_message",
     "invalid_move",
     "invalid_op",
