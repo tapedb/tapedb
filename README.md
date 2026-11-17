@@ -431,6 +431,13 @@ that is: under `tapedb dev`, any role and user id; on the deployed Worker,
 your own user at your role or a lower one. The data, the query console and
 the access table then show and do exactly what that role or user can.
 
+"History" (or the counter on the transaction tape) lists every transaction the
+workspace keeps, newest first and live, for admins and owners: what each one
+wrote, row by row, with links to the rows, and who wrote it when `audit: true`
+is on. It shows values only for models whose read rule lets the caller read
+every row, and never personal values. A row's panel lists its own changes, each
+linking to its transaction.
+
 ## Files and presence
 
 ```ts

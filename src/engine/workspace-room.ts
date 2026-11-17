@@ -55,6 +55,7 @@ import { importWorkspace, assertEmpty } from "./import-workspace";
 import { readMove, readMoveWithRetries, writeMove, sourceEnvironment, jurisdiction, copyWorkspace, type MoveState } from "./workspace-move";
 import { flushPending, snapshotWorkspace } from "./durability";
 import { describeAccess, viewDependsOnSubject } from "./tx-permissions";
+import { readLog } from "./log-read";
 import { isTopic, REPLAY_MESSAGES, topicAllowed, topicReplayMs } from "./topics";
 import { auditEnabled, dropAuditCapture, rowHistory, syncAuditCapture } from "./audit";
 import { findNamespace } from "./registry";
@@ -625,6 +626,35 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const id = url.searchParams.get("id");
       if (!model || !id) return apiError(400, "invalid_history", "History needs ?model=<model>&id=<row id>.");
       return json({ ok: true, data: rowHistory(durableObjectSqlExecutor(this.ctx.storage), model.table, id) });
+    }
+
+    // The transaction log, newest first (log-read.ts). Admins and owners only:
+    // it names writers, and shows values only for models they may read in full.
+    if (url.pathname === "/log") {
+      if (request.method !== "GET") {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+        throw error;
+      }
+      if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
+        return apiError(403, "insufficient_role", "Reading the transaction log needs an admin or owner.");
+      }
+      const before = url.searchParams.get("before");
+      const limit = Number(url.searchParams.get("limit") ?? 50);
+      const modelName = url.searchParams.get("model");
+      if (before !== null && !/^\d+$/.test(before)) return apiError(400, "invalid_log_query", "before is a transaction sequence number.");
+      if (!Number.isInteger(limit) || limit < 1 || limit > 100) return apiError(400, "invalid_log_query", "limit is from 1 to 100.");
+      const model = modelName === null ? null : findNamespace(modelName);
+      if (modelName !== null && !model) return apiError(400, "invalid_log_query", `There is no model "${modelName}".`);
+      return json({
+        ok: true,
+        data: readLog(durableObjectSqlExecutor(this.ctx.storage), claim, { before: before === null ? null : Number(before), limit, model: model ? model.apiName : null }),
+      });
     }
 
     // Every row the caller may read, as NDJSON, streamed a chunk at a time.
