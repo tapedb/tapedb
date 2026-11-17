@@ -162,7 +162,7 @@ function workspaceStub(env: Env, workspaceId: string): DurableObjectStub<Workspa
       namespace = env.WORKSPACE.jurisdiction(env.TAPEDB_JURISDICTION as DurableObjectJurisdiction);
     } catch (error) {
       // Plain `wrangler dev`: workerd has no jurisdictions. `tapedb dev` clears the var.
-      throw new Error(`TAPEDB_JURISDICTION is "${env.TAPEDB_JURISDICTION}" but this runtime has no jurisdictions (${error instanceof Error ? error.message : String(error)}). Run locally with \`tapedb dev\`, which leaves it out.`);
+      throw new Error(`TAPEDB_JURISDICTION is "${env.TAPEDB_JURISDICTION}" but this runtime has no jurisdictions (${error instanceof Error ? error.message : String(error)}). Run locally with \`npx tapedb-cli dev\`, which leaves it out.`);
     }
   }
   return namespace.get(namespace.idFromName(workspaceId));

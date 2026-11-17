@@ -1,8 +1,8 @@
 import { afterEach, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ignoreLocalFiles, installProject, missingSecrets, olderExactVersion, provisionAndDeploy, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
+import { ignoreLocalFiles, missingSecrets, olderExactVersion, provisionAndDeploy, syncTapedb, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -204,19 +204,35 @@ test("only an exact older release counts as outdated", () => {
   }
 });
 
-test("init moves a project's exact older tapedb to its own version and keeps chosen ranges", () => {
-  const cases: Array<[Record<string, unknown>, string, string]> = [
-    [{ dependencies: { "@tapedb/tapedb": "0.1.4" } }, "dependencies", "0.1.7"],
-    [{ devDependencies: { "@tapedb/tapedb": "0.1.4" } }, "devDependencies", "0.1.7"],
-    [{ dependencies: { "@tapedb/tapedb": "^0.1.4" } }, "dependencies", "^0.1.4"],
-    [{ dependencies: { "@tapedb/tapedb": "0.2.0" } }, "dependencies", "0.2.0"],
+test("the CLI brings an older installed tapedb up to its own version with the project's package manager", () => {
+  const cases: Array<[Record<string, unknown>, string, string[] | null]> = [
+    [{ dependencies: { "@tapedb/tapedb": "^0.1.7" } }, "0.1.7", ["npm", "install", "@tapedb/tapedb@0.1.9"]],
+    [{ dependencies: { "@tapedb/tapedb": "0.1.4" } }, "0.1.4", ["npm", "install", "@tapedb/tapedb@0.1.9"]],
+    [{ devDependencies: { "@tapedb/tapedb": "0.1.4" } }, "0.1.4", ["npm", "install", "--save-dev", "@tapedb/tapedb@0.1.9"]],
+    [{ packageManager: "bun@1.4.4", devDependencies: { "@tapedb/tapedb": "^0.1.0" } }, "0.1.4", ["bun", "add", "--dev", "@tapedb/tapedb@0.1.9"]],
+    [{ packageManager: "pnpm@10.0.0", dependencies: { "@tapedb/tapedb": "^0.1.0" } }, "0.1.4", ["pnpm", "add", "@tapedb/tapedb@0.1.9"]],
+    [{ dependencies: { "@tapedb/tapedb": "^0.1.9" } }, "0.1.9", null],
+    [{ dependencies: { "@tapedb/tapedb": "^0.2.0" } }, "0.2.0", null],
+    [{ dependencies: { "@tapedb/tapedb": "workspace:*" } }, "0.1.4", null],
+    [{ dependencies: { "@tapedb/tapedb": "file:../tapedb" } }, "0.1.4", null],
+    [{ dependencies: { react: "19.0.0" } }, "0.1.4", null],
   ];
-  for (const [manifest, field, expected] of cases) {
+  for (const [manifest, installed, expected] of cases) {
     const root = project();
-    // An unsupported manager stops installProject after package.json is written, before any install runs.
-    writeFileSync(join(root, "package.json"), JSON.stringify({ ...manifest, packageManager: "deno@2.0.0" }));
-    expect(() => installProject(root, "0.1.7")).toThrow("Unsupported package manager");
-    const written = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-    expect(written[field]["@tapedb/tapedb"]).toBe(expected);
+    writeFileSync(join(root, "package.json"), JSON.stringify(manifest));
+    mkdirSync(join(root, "node_modules", "@tapedb", "tapedb"), { recursive: true });
+    writeFileSync(join(root, "node_modules", "@tapedb", "tapedb", "package.json"), JSON.stringify({ version: installed }));
+    let ran: string[] | null = null;
+    const from = syncTapedb(root, "0.1.9", (manager, args) => { ran = [manager, ...args]; return 0; });
+    expect(ran).toEqual(expected);
+    expect(from).toBe(expected ? installed : null);
   }
+});
+
+test("a failed update stops the command with the command to run", () => {
+  const root = project();
+  writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { "@tapedb/tapedb": "^0.1.7" } }));
+  mkdirSync(join(root, "node_modules", "@tapedb", "tapedb"), { recursive: true });
+  writeFileSync(join(root, "node_modules", "@tapedb", "tapedb", "package.json"), JSON.stringify({ version: "0.1.7" }));
+  expect(() => syncTapedb(root, "0.1.9", () => 1)).toThrow("npm install @tapedb/tapedb@0.1.9");
 });
