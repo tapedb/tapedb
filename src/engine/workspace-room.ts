@@ -42,7 +42,7 @@ import {
 import { filesPrefix, isWorkspaceId, manifestKey, workspacePrefix } from "./r2-keys";
 import { deleteR2Keys, listAllR2 } from "./r2-list";
 import { WORKSPACE_ROLE_LEVELS } from "../claims";
-import { ENGINE_TABLES, LINKS, NAMESPACES } from "./registry";
+import { ENGINE_TABLES, LINKS, NAMESPACES, type AttributeDefinition } from "./registry";
 import {
   DEFAULT_INVALIDATION_DEBOUNCE_MS,
   diffQueryResults,
@@ -2137,11 +2137,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
             indexed: definition.indexed === true,
             unique: definition.unique === true,
             // As written in the schema: booleans and dates in their API form.
-            default: definition.default === undefined || definition.personal
-              ? null
-              : definition.type === "boolean" && typeof definition.default === "number"
-                ? definition.default === 1
-                : definition.default,
+            default: apiDefault(definition),
+            // A personal field: stored apart, erasable per person, never filtered on.
+            personal: definition.personal ? { required: definition.personal.required } : null,
           },
         ])
       ),
@@ -2295,4 +2293,11 @@ function statusForQueryError(code: TxErrorCode): number {
     default:
       return 400;
   }
+}
+
+/** A field's default in its API form (booleans as booleans), or null for none. */
+function apiDefault(definition: AttributeDefinition): unknown {
+  const stored = definition.personal ? definition.personal.defaultValue : definition.default;
+  if (stored === undefined || stored === null) return null;
+  return definition.type === "boolean" && typeof stored === "number" ? stored === 1 : stored;
 }

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.19 - 2026-11-17
+
+- The studio has a query console. It runs one client call as written in app code (`db.<model>.<method>({ ... })`), read as data and translated by the client's own model code, with the studio's sign-in and access rules. It suggests models, methods, arguments and fields as you type, marks where a call stops making sense, keeps recent calls, and shows results as a table, a count or the JSON the call returns.
+- Writes from the console say what they change before they run: how many rows `updateMany` sets and to what, what a delete takes with it (cascade, cleared fields, or refused), or that no row has the id given.
+- The model client's translation of each method lives in one place, used by the client and the console alike.
+- The schema endpoint marks personal fields (`personal: { required }`) and reports their defaults.
+
 ## 0.1.18 - 2026-11-17
 
 - The studio's table has checkboxes. Select rows, or every row shown, and delete them in one transaction.
