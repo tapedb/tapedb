@@ -97,20 +97,13 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
   writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(config, null, 2) + "\n");
   command = createCommand(root, account);
   const environmentArgs = env ? ["--env", env] : [];
-  const known = new Map<string, Set<string>>();
+  const ensured = new Set<string>();
   for (const bucket of buckets) {
     if (!bucket.bucket_name) throw new Error("Every R2 binding needs a bucket_name.");
     const jurisdiction = bucket.jurisdiction ?? "";
-    let names = known.get(jurisdiction);
-    if (!names) {
-      const output = requireSuccess(command(["r2", "bucket", "list", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], true), "R2 bucket lookup");
-      names = new Set(Array.from(stripVTControlCharacters(output).matchAll(/^\s*name:\s*(\S+)\s*$/gm), match => match[1]!));
-      known.set(jurisdiction, names);
-    }
-    if (!names.has(bucket.bucket_name)) {
-      requireSuccess(command(["r2", "bucket", "create", bucket.bucket_name, ...(jurisdiction ? ["--jurisdiction", jurisdiction] : []), "--update-config=false"]), "R2 bucket creation");
-      names.add(bucket.bucket_name);
-    }
+    if (ensured.has(jurisdiction + "/" + bucket.bucket_name)) continue;
+    ensureBucket(command, bucket.bucket_name, jurisdiction);
+    ensured.add(jurisdiction + "/" + bucket.bucket_name);
   }
   const listed = command(["secret", "list", "--format", "json", ...environmentArgs], true);
   let existing: Array<{ name: string }> = [];
@@ -141,6 +134,24 @@ function workerName(config: DeployConfig, env: string | undefined): string {
 function workerNotFound(output: string, name: string): boolean {
   const plain = stripVTControlCharacters(output);
   return /\b10007\b/.test(plain) || plain.includes('Worker "' + name + '" not found');
+}
+
+/**
+ * Creates the bucket unless this account already owns it. Creating is the check: Cloudflare
+ * answers code 10004 "already exists, and you own it" for an owned bucket, while
+ * `wrangler r2 bucket list` shows only the first page of 20 buckets and would miss it on a
+ * larger account. A bucket another account owns, or any other failure, stops deployment.
+ */
+function ensureBucket(command: WranglerCommand, name: string, jurisdiction: string): void {
+  const created = command(["r2", "bucket", "create", name, ...(jurisdiction ? ["--jurisdiction", jurisdiction] : []), "--update-config=false"], true);
+  const output = stripVTControlCharacters(created.stderr + created.stdout);
+  if (created.status === 0) {
+    console.log(`  created  R2 bucket ${name}${jurisdiction ? ` (${jurisdiction})` : ""}`);
+  } else if (/\b10004\b/.test(output) && /you own it/i.test(output)) {
+    console.log(`  kept     R2 bucket ${name}${jurisdiction ? ` (${jurisdiction})` : ""}`);
+  } else {
+    requireSuccess(created, "R2 bucket creation");
+  }
 }
 
 export function missingSecrets(existing: string[]): Record<string, string> {
