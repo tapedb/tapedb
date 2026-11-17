@@ -6,8 +6,9 @@
  * text and JetBrains Mono labels (served by the studio from `assets/fonts`),
  * hairlines, tick marks and stepped motion. Light follows the docs' light theme.
  *
- * A String.raw template: the script uses no backticks and no `${`, so the only
- * substitution is the page size.
+ * A String.raw template: the script uses no backticks and no `${`. The
+ * substitutions are the page size, the mode, the font path and the query
+ * editor's translator (runner.gen.ts), which runs ahead of the page script.
  */
 
 /**
@@ -16,6 +17,8 @@
  * /_tapedb/studio, signing in the way the app does (its identity decides the role).
  */
 export type StudioMode = "local" | "worker";
+
+import { RUNNER } from "./runner.gen";
 
 export function studioPage(pageLimit: number, mode: StudioMode = "local"): string {
   const fonts = mode === "worker" ? "/_tapedb/studio/fonts/" : "/fonts/";
@@ -347,9 +350,58 @@ td.editing input { width: 100%; min-width: 120px; height: 36px; padding: 0 8px; 
 .menu .pop label { display: flex; align-items: center; gap: 10px; padding: 6px 8px; border-radius: var(--control); cursor: pointer; font: 13px var(--mono); color: var(--text); }
 .menu .pop label:hover { background: var(--surface); }
 .menu .pop input { accent-color: var(--accent); }
+.menu .pop.recent { left: auto; right: 0; width: min(520px, 70vw); }
+.pop.recent button { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: var(--control); background: none; text-align: left; cursor: pointer; font: 13px/20px var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pop.recent button:hover { background: var(--surface); }
 .impact { margin: 0; padding-left: 18px; }
 .impact li { margin: 4px 0; }
 .impact li.refused { color: var(--accent); }
+
+/* ---- Query console ---- */
+.tools { margin-top: 22px; }
+.tools button { grid-template-columns: 28px 1fr; }
+.tools button svg { color: var(--text-3); }
+.tools button[aria-current="true"] svg { color: var(--accent); }
+.console { position: relative; flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+.console .head p { margin: 0 0 6px; color: var(--text-3); font-size: 14px; }
+.run kbd { margin-left: 4px; font: 12px var(--mono); opacity: 0.75; }
+.code { position: relative; flex: none; display: grid; grid-template-columns: auto minmax(0, 1fr); height: 220px; min-height: 96px; resize: vertical; overflow: hidden; border: 1px solid var(--line-strong); border-radius: var(--panel); background: var(--ground); }
+.code:focus-within { border-color: var(--text-3); }
+.code .gutter { padding: 14px 10px 14px 14px; overflow: hidden; border-right: 1px solid var(--line); font: 13px/22px var(--mono); color: var(--line-strong); text-align: right; user-select: none; white-space: pre; }
+.code .area { position: relative; min-width: 0; }
+.code pre, .code textarea { position: absolute; inset: 0; margin: 0; padding: 14px 16px; border: 0; font: 14px/22px var(--mono); letter-spacing: 0; tab-size: 2; white-space: pre; overflow: auto; }
+.code pre { pointer-events: none; color: var(--text-2); scrollbar-width: none; }
+.code pre::-webkit-scrollbar { display: none; }
+.code textarea { resize: none; background: none; color: transparent; caret-color: var(--text); outline: 0; }
+.code textarea::selection { background: var(--accent-soft); color: transparent; }
+.code .k { color: var(--text); }
+.code .s { color: var(--ok); }
+.code .n, .code .w { color: var(--accent); }
+.code .c { color: var(--text-3); font-style: italic; }
+.code .err { text-decoration: underline wavy var(--accent); text-underline-offset: 4px; }
+.complete { position: absolute; z-index: 5; min-width: 200px; max-height: 232px; overflow: auto; padding: 4px; border: 1px solid var(--line-strong); border-radius: var(--panel); background: var(--surface-2); }
+.complete button { display: flex; width: 100%; justify-content: space-between; gap: 18px; padding: 4px 8px; border: 0; border-radius: var(--control); background: none; text-align: left; cursor: pointer; font: 13px/20px var(--mono); color: var(--text); }
+.complete button .hint { color: var(--text-3); }
+.complete button[aria-selected="true"] { background: var(--accent-soft); }
+.result-bar { display: flex; align-items: center; gap: 12px; min-height: 52px; flex-wrap: wrap; }
+.result-bar .what { color: var(--text); }
+.result-bar .what.error { color: var(--accent); }
+.result-bar .spacer { flex: 1; }
+.seg { display: inline-flex; border: 1px solid var(--line-strong); border-radius: var(--control); overflow: hidden; }
+.seg button { min-height: 30px; padding: 0 12px; border: 0; background: none; cursor: pointer; color: var(--text-3); font-size: 14px; }
+.seg button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+.console .panel { flex: 1 1 auto; }
+.json { margin: 0; padding: 14px 16px; font: 13px/20px var(--mono); color: var(--text-2); white-space: pre; }
+.figure { margin: auto; padding: 48px 24px; text-align: center; }
+.figure b { display: block; font: 500 64px/1 var(--display); letter-spacing: -0.03em; color: var(--text); font-variant-numeric: tabular-nums; }
+.figure span { display: block; margin-top: 10px; }
+.confirm { margin: auto; padding: 32px 24px; max-width: 560px; }
+.confirm h2 { margin: 0 0 10px; font: 500 26px/1.2 var(--display); letter-spacing: -0.02em; color: var(--text); }
+.confirm .impact { margin-bottom: 18px; }
+.confirm .actions { display: flex; gap: 10px; }
+.problem { margin: auto; padding: 32px 24px; max-width: 640px; }
+.problem p { margin: 0; color: var(--text); font: 14px/22px var(--mono); white-space: pre-wrap; }
+td .many { font: 12.5px var(--mono); color: var(--text-3); }
 
 /* ---- Data / Structure tabs (the landing page's code tab: underline in text colour) ---- */
 .tabs { display: flex; gap: 22px; margin: -4px 0 16px; border-bottom: 1px solid var(--line); }
@@ -523,6 +575,9 @@ td.editing input { width: 100%; min-width: 120px; height: 36px; padding: 0 8px; 
   <div class="label" id="models-head" hidden><span>Models</span><span>Rows</span></div>
   <nav id="models" aria-label="Models"></nav>
   <button class="new-model" id="new-model" type="button" hidden>+ New model</button>
+  <nav class="tools" id="tools" aria-label="Tools" hidden>
+    <button type="button" id="open-query" aria-current="false"></button>
+  </nav>
 </aside>
 
 <main>
@@ -542,6 +597,29 @@ td.editing input { width: 100%; min-width: 120px; height: 36px; padding: 0 8px; 
   <div class="structure" id="structure" hidden></div>
   <div class="filters" id="filters" hidden></div>
   <div class="bulk" id="bulk" hidden></div>
+  <section class="console" id="console" aria-label="Query" hidden>
+    <div class="head">
+      <div>
+        <h1 id="console-title"></h1>
+        <p>Calls as written in your app, run with your sign-in and its access rules.</p>
+      </div>
+      <span class="spacer"></span>
+      <div class="menu" id="recent-menu"></div>
+      <button class="btn primary run" id="run" type="button"></button>
+    </div>
+    <div class="code" id="code">
+      <div class="gutter" id="gutter" aria-hidden="true"></div>
+      <div class="area">
+        <pre id="code-view" aria-hidden="true"></pre>
+        <textarea id="code-input" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off" aria-label="Query" aria-autocomplete="list" aria-controls="complete"></textarea>
+      </div>
+    </div>
+    <div class="complete" id="complete" role="listbox" hidden></div>
+    <div class="result-bar" id="result-bar"></div>
+    <div class="panel" id="result-panel" hidden>
+      <div class="scroll" id="result"></div>
+    </div>
+  </section>
   <div class="panel" id="panel">
     <div class="scroll" id="grid"></div>
     <div class="panel-foot label" id="foot" hidden>
@@ -597,6 +675,7 @@ td.editing input { width: 100%; min-width: 120px; height: 36px; padding: 0 8px; 
 <div class="toast" id="toast" role="status" aria-live="polite"><span class="lamp"></span><span id="toast-text"></span></div>
 
 <script>
+${RUNNER}
 var PAGE = ${pageLimit};
 var MODE = "${mode}";
 var SYSTEM = ["createdAt", "updatedAt", "updatedSeq"];
@@ -649,6 +728,7 @@ function icon(kind, size) {
     arrow: ["pM4 9h10M10 5l4 4-4 4"],
     plus: ["pM9 4v10M4 9h10"],
     search: ["c8,8,5", "pM12 12l3.5 3.5"],
+    prompt: ["pM4 5.5l3.5 3.5L4 12.5", "pM9.5 13h4.5"],
     link: ["pM7.5 10.5l3-3", "pM8.5 5.5l1.3-1.3a2.8 2.8 0 0 1 4 4L12.5 9.5", "pM9.5 12.5l-1.3 1.3a2.8 2.8 0 0 1-4-4L5.5 8.5"]
   }[kind];
   parts.forEach(function (part) {
@@ -1033,7 +1113,8 @@ function openWorkspace(id) {
     $("models-head").hidden = app.schema.namespaces.length === 0;
     var first = app.schema.namespaces[0];
     renderModels();
-    if (first) selectModel(first.apiName);
+    if (con.open) openQuery();
+    else if (first) selectModel(first.apiName);
     else showEmpty("This schema has no models", "Add a model to tapedb.schema.ts, then run a migration.");
     refreshCounts();
     loadStructure();
@@ -1046,6 +1127,8 @@ function openWorkspace(id) {
 function renderModels() {
   var nav = $("models");
   nav.innerHTML = "";
+  $("tools").hidden = !app.schema;
+  $("open-query").setAttribute("aria-current", con.open ? "true" : "false");
   if (!app.schema) return;
   app.schema.namespaces.forEach(function (n, index) {
     var count = app.counts[n.apiName];
@@ -1117,6 +1200,8 @@ function describeWrite(before, changed, transactions) {
     if (delta > 0) parts.push(name + ".create" + (delta > 1 ? " ×" + delta : ""));
     if (delta < 0) parts.push(name + ".delete" + (delta < -1 ? " ×" + -delta : ""));
   });
+  if (parts.length === 0 && con.tapeLabel) parts.push(con.tapeLabel);
+  con.tapeLabel = "";
   if (parts.length === 0 && changed > 0) parts.push(app.model + ".update" + (changed > 1 ? " ×" + changed : ""));
   if (parts.length === 0) parts.push(transactions > 1 ? transactions + " writes" : "write");
   return parts.join("  ");
@@ -1126,6 +1211,7 @@ function describeWrite(before, changed, transactions) {
 
 function selectModel(name) {
   if (stagedCount() > 0 && name !== app.model) { toast("Save or discard your changes first.", true); return; }
+  if (con.open) closeQuery();
   app.staged = {};
   app.picked = {};
   app.search = "";
@@ -1612,8 +1698,9 @@ function columnsMenu(model) {
   return wrap;
 }
 document.addEventListener("click", function () {
-  var pop = document.querySelector(".menu .pop");
-  if (pop && !pop.hidden) { pop.hidden = true; pop.previousSibling.setAttribute("aria-expanded", "false"); }
+  document.querySelectorAll(".menu .pop").forEach(function (pop) {
+    if (!pop.hidden) { pop.hidden = true; pop.previousSibling.setAttribute("aria-expanded", "false"); }
+  });
 });
 
 function jumpTo(model, id) {
@@ -2245,6 +2332,695 @@ function watchWorkspaces(onFirst) {
     setTimeout(function () { watchWorkspaces(onFirst); }, 3000);
   });
 }
+
+// ---- Query console ---------------------------------------------------------
+//
+// Runs one client call, written as in app code. tapedbRunner (bundled from
+// src/studio/runner.ts) parses it as data and translates it with the client's
+// own model code; the studio sends the result with its claim, so reads and
+// writes go through the same access rules as the app's.
+
+var QUERY_KEY = "tapedb-query";
+var HISTORY_KEY = "tapedb-query-history";
+var MAC = /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+var RESULT_ROWS = 500;
+var con = { open: false, result: null, view: "table", running: 0, items: [], active: 0, error: null };
+
+var ARG_KEYS = {
+  findMany: ["where", "orderBy", "take", "include", "select"],
+  findFirst: ["where", "orderBy", "take", "include", "select"],
+  findUnique: ["where", "include", "select"],
+  findPage: ["where", "orderBy", "take", "include", "select", "after"],
+  count: ["where"],
+  aggregate: ["where", "_count", "_sum", "_avg", "_min", "_max"],
+  groupBy: ["by", "where", "orderBy", "take", "_count", "_sum", "_avg", "_min", "_max"],
+  create: ["data"],
+  update: ["where", "data"],
+  upsert: ["where", "create", "update"],
+  delete: ["where"],
+  updateMany: ["where", "data"],
+  deleteMany: ["where"]
+};
+var METHODS = Object.keys(ARG_KEYS);
+var OPERATORS = ["equals", "not", "in", "notIn", "gt", "gte", "lt", "lte"];
+
+function history() {
+  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || "[]"); } catch (e) { return []; }
+}
+
+function remember(source) {
+  var list = [source].concat(history().filter(function (other) { return other !== source; })).slice(0, 20);
+  try { localStorage.setItem(HISTORY_KEY, JSON.stringify(list)); } catch (e) {}
+  renderRecent();
+}
+
+function openQuery() {
+  if (!app.schema) return;
+  if (stagedCount() > 0) { toast("Save or discard your changes first.", true); return; }
+  closeDrawer();
+  closeSheet();
+  con.open = true;
+  app.model = "";
+  renderModels();
+  ["head", "tabs", "structure", "filters", "bulk", "panel"].forEach(function (id) { $(id).hidden = true; });
+  $("console").hidden = false;
+  var input = $("code-input");
+  if (!input.value) {
+    var saved = "";
+    try { saved = localStorage.getItem(QUERY_KEY) || ""; } catch (e) {}
+    var first = app.schema.namespaces[0];
+    input.value = saved || (first ? "db." + first.apiName + ".findMany({ take: 20 })" : "");
+  }
+  paintCode();
+  renderRecent();
+  renderResult();
+  input.focus();
+}
+
+function closeQuery() {
+  con.open = false;
+  closeComplete();
+  $("console").hidden = true;
+  $("panel").hidden = false;
+}
+
+// ---- Editor: highlighting, line numbers, completion ----
+
+var TOKEN = /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|\x60(?:[^\x60\\]|\\[\s\S])*\x60?)|(-?(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?)|\b(true|false|null|undefined|new|await)\b|([A-Za-z_$][\w$]*)(?=\s*:)/g;
+
+function paintCode() {
+  var input = $("code-input");
+  var text = input.value;
+  var view = $("code-view");
+  view.innerHTML = "";
+  var at = 0;
+  var error = con.error && typeof con.error.offset === "number" ? con.error.offset : -1;
+  var push = function (part, cls, offset) {
+    if (!part) return;
+    if (error >= offset && error < offset + part.length) {
+      // Underline the token the parser stopped at.
+      var cut = error - offset;
+      var end = cut + Math.max(1, (/^[\w$"'.]+/.exec(part.slice(cut)) || [""])[0].length);
+      if (cut > 0) view.append(cls ? el("span", { class: cls, text: part.slice(0, cut) }) : part.slice(0, cut));
+      view.append(el("span", { class: (cls ? cls + " " : "") + "err", text: part.slice(cut, end) }));
+      if (end < part.length) view.append(cls ? el("span", { class: cls, text: part.slice(end) }) : part.slice(end));
+      return;
+    }
+    view.append(cls ? el("span", { class: cls, text: part }) : part);
+  };
+  TOKEN.lastIndex = 0;
+  var match;
+  while ((match = TOKEN.exec(text))) {
+    push(text.slice(at, match.index), "", at);
+    var cls = match[1] ? "c" : match[2] ? "s" : match[3] ? "n" : match[4] ? "w" : "k";
+    push(match[0], cls, match.index);
+    at = match.index + match[0].length;
+  }
+  push(text.slice(at), "", at);
+  if (error >= text.length) view.append(el("span", { class: "err", text: " " }));
+  // A trailing newline needs a line after it to keep the two layers aligned.
+  view.append("\n");
+  var lines = text.split("\n").length;
+  var numbers = [];
+  for (var i = 1; i <= lines; i++) numbers.push(i);
+  $("gutter").textContent = numbers.join("\n");
+  syncScroll();
+}
+
+function syncScroll() {
+  var input = $("code-input");
+  $("code-view").scrollTop = input.scrollTop;
+  $("code-view").scrollLeft = input.scrollLeft;
+  $("gutter").scrollTop = input.scrollTop;
+}
+
+/** The model a call names: db.<model>.<method>( */
+function callHead(text) {
+  var match = /(?:\bdb\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\.\s*([A-Za-z_$][\w$]*)\s*\(/.exec(text);
+  if (!match || !namespace(match[1])) return null;
+  return { model: match[1], method: match[2], open: match.index + match[0].length };
+}
+
+/**
+ * The objects and arrays enclosing the end of text, outermost first, each with
+ * the key it is the value of: [{ key: "" }, { key: "where" }, { key: "column" }].
+ * An object inside an array keeps the array's key, so OR: [{ ... }] reads as where.
+ */
+function keyPath(text) {
+  var stack = [];
+  var lastKey = null;
+  var re = /(\/\/[^\n]*|\/\*[\s\S]*?(?:\*\/|$))|("(?:[^"\\\n]|\\.)*"?|'(?:[^'\\\n]|\\.)*'?|\x60(?:[^\x60\\]|\\[\s\S])*\x60?)|([A-Za-z_$][\w$]*)\s*:|([{}\[\],])/g;
+  var match;
+  while ((match = re.exec(text))) {
+    if (match[1]) continue;
+    if (match[2]) {
+      if (/^\s*:/.test(text.slice(re.lastIndex))) lastKey = match[2].slice(1, -1);
+      continue;
+    }
+    if (match[3]) { lastKey = match[3]; continue; }
+    var char = match[4];
+    if (char === "{" || char === "[") {
+      var outer = stack[stack.length - 1];
+      var key = lastKey !== null ? lastKey : outer && outer.array ? outer.key : "";
+      stack.push({ key: key, array: char === "[", item: lastKey === null && !!(outer && outer.array) });
+    } else if (char === "}" || char === "]") {
+      stack.pop();
+    }
+    lastKey = null;
+  }
+  return stack;
+}
+
+function fieldsOf(model) {
+  var attrs = namespace(model).attributes;
+  return ["id"].concat(Object.keys(attrs).filter(function (name) { return name !== "id"; }));
+}
+
+function relationsOf(model) {
+  var out = {};
+  (app.schema.links || []).forEach(function (link) {
+    if (link.reverse.namespace === model) out[link.reverse.label] = { many: false, target: link.forward.namespace, key: link.foreignKey.attribute };
+    if (link.forward.namespace === model && link.forward.label.slice(0, 2) !== "__") out[link.forward.label] = { many: true, target: link.reverse.namespace };
+  });
+  return out;
+}
+
+/** Suggestions for an object key at this path inside a call to model.method. */
+function keysAt(head, path) {
+  var model = head.model;
+  var mode = "args";
+  var keys = ARG_KEYS[head.method] || [];
+  for (var i = 1; i < path.length; i++) {
+    if (path[i].item) continue;
+    var key = path[i].key;
+    var relations = relationsOf(model);
+    if (mode === "args") {
+      if (key === "where") mode = "where";
+      else if (key === "include") mode = "include";
+      else if (key === "select") mode = "select";
+      else if (key === "orderBy") mode = "fields";
+      else if (key === "data" || key === "create" || key === "update") mode = "data";
+      else if (key.charAt(0) === "_") mode = "fields";
+      else return [];
+    } else if (mode === "where") {
+      if (key === "AND" || key === "OR" || key === "NOT") continue;
+      if (relations[key]) { model = relations[key].target; mode = relations[key].many ? "many" : "where"; }
+      else mode = "filter";
+    } else if (mode === "many") {
+      mode = "where";
+    } else if (mode === "filter") {
+      if (key !== "not") return [];
+    } else if (mode === "include" || mode === "select") {
+      if (!relations[key]) return [];
+      model = relations[key].target;
+      mode = "args";
+      keys = ARG_KEYS.findMany;
+    } else if (mode === "data") {
+      if (!relations[key]) return [];
+      mode = relations[key].many ? "dataMany" : "dataOne";
+      model = relations[key].target;
+    } else if (mode === "dataOne" || mode === "dataMany") {
+      if (key !== "create") return [];
+      mode = "data";
+    } else {
+      return [];
+    }
+  }
+  var relations = relationsOf(model);
+  var rel = Object.keys(relations);
+  var fields = fieldsOf(model);
+  var hint = function (list, text) { return list.map(function (name) { return { name: name, hint: text }; }); };
+  var system = ["createdAt", "updatedAt"].filter(function (name) { return fields.indexOf(name) < 0; });
+  if (mode === "args") return hint(keys, "argument");
+  if (mode === "where") return hint(fields.concat(system), model).concat(hint(rel, "relation"), hint(["AND", "OR", "NOT"], "combine"));
+  if (mode === "many") return hint(["some", "every", "none"], model);
+  if (mode === "filter") return hint(OPERATORS, "filter");
+  if (mode === "include") return hint(rel, "relation");
+  if (mode === "select") return hint(fields.concat(system), model).concat(hint(rel, "relation"));
+  if (mode === "fields") return hint(fields.concat(system), model);
+  if (mode === "data") return hint(fields.filter(function (name) { return name !== "id" && SYSTEM.indexOf(name) < 0; }), model).concat(hint(rel, "relation"));
+  if (mode === "dataOne") return hint(["connect", "create", "disconnect"], "relation");
+  if (mode === "dataMany") return hint(["connect", "disconnect", "create"], "relation");
+  return [];
+}
+
+/** True when the end of text is inside a string or a comment. */
+function inLiteral(text) {
+  TOKEN.lastIndex = 0;
+  var match;
+  var last = null;
+  while ((match = TOKEN.exec(text))) last = match;
+  if (!last || last.index + last[0].length !== text.length) return false;
+  var token = last[0];
+  if (last[1]) return token.slice(0, 2) === "//" || token.slice(-2) !== "*/" || token.length < 4;
+  if (last[2]) return !/^(?:"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|\x60(?:[^\x60\\]|\\[\s\S])*\x60)$/.test(token);
+  return false;
+}
+
+function suggestions(text, caret) {
+  var before = text.slice(0, caret);
+  var prefix = (/[A-Za-z_$][\w$]*$/.exec(before) || [""])[0];
+  var head = before.slice(0, before.length - prefix.length);
+  if (inLiteral(head)) return null;
+  var models = app.schema.namespaces.map(function (n) { return { name: n.apiName, hint: "model" }; });
+  var list = [];
+  var dotted = /(?:\bdb\s*\.\s*)?([A-Za-z_$][\w$]*)\s*\.\s*$/.exec(head);
+  if (/\bdb\s*\.\s*$/.test(head)) {
+    list = models;
+  } else if (dotted && namespace(dotted[1])) {
+    list = METHODS.map(function (name) { return { name: name, hint: /create|update|upsert|delete/i.test(name) ? "write" : "read" }; });
+  } else {
+    var call = callHead(before);
+    if (!call) {
+      if (/^\s*(await\s+)?$/.test(head)) list = [{ name: "db", hint: "client" }].concat(models);
+    } else if (caret >= call.open && /[{,]\s*$/.test(head)) {
+      var path = keyPath(text.slice(call.open, caret - prefix.length));
+      if (path.length === 0 || path[path.length - 1].array) return null;
+      list = keysAt(call, path);
+    }
+  }
+  var lower = prefix.toLowerCase();
+  var seen = {};
+  list = list.filter(function (item) {
+    if (seen[item.name] || item.name === prefix || item.name.toLowerCase().indexOf(lower) !== 0) return false;
+    seen[item.name] = true;
+    return true;
+  });
+  return list.length ? { items: list, prefix: prefix } : null;
+}
+
+var charWidth = 0;
+function caretPoint(input, caret) {
+  if (!charWidth) {
+    var probe = el("span", { text: "MMMMMMMMMM" });
+    probe.style.font = "14px/22px var(--mono)";
+    probe.style.position = "absolute";
+    probe.style.visibility = "hidden";
+    document.body.append(probe);
+    charWidth = probe.getBoundingClientRect().width / 10;
+    probe.remove();
+  }
+  var lines = input.value.slice(0, caret).split("\n");
+  var area = input.getBoundingClientRect();
+  var frame = $("console").getBoundingClientRect();
+  return {
+    left: area.left - frame.left + 16 + lines[lines.length - 1].length * charWidth - input.scrollLeft,
+    top: area.top - frame.top + 14 + lines.length * 22 - input.scrollTop + 4
+  };
+}
+
+function openComplete(force) {
+  var input = $("code-input");
+  if (input.selectionStart !== input.selectionEnd || !app.schema) { closeComplete(); return; }
+  var found = suggestions(input.value, input.selectionStart);
+  if (!found || (!force && found.prefix === "" && !/\.\s*$/.test(input.value.slice(0, input.selectionStart)))) { closeComplete(); return; }
+  con.items = found.items.slice(0, 50);
+  con.prefix = found.prefix;
+  con.active = 0;
+  var box = $("complete");
+  box.innerHTML = "";
+  con.items.forEach(function (item, index) {
+    box.append(el("button", {
+      type: "button",
+      role: "option",
+      id: "complete-" + index,
+      "aria-selected": index === 0 ? "true" : "false",
+      onmousedown: function (event) { event.preventDefault(); accept(index); }
+    }, [el("span", { text: item.name }), el("span", { class: "hint", text: item.hint })]));
+  });
+  var point = caretPoint(input, input.selectionStart);
+  box.style.left = Math.max(0, Math.min(point.left, $("console").clientWidth - 240)) + "px";
+  box.style.top = point.top + "px";
+  box.hidden = false;
+  input.setAttribute("aria-activedescendant", "complete-0");
+}
+
+function closeComplete() {
+  $("complete").hidden = true;
+  con.items = [];
+  $("code-input").removeAttribute("aria-activedescendant");
+}
+
+function moveComplete(step) {
+  var buttons = $("complete").children;
+  con.active = (con.active + step + con.items.length) % con.items.length;
+  for (var i = 0; i < buttons.length; i++) buttons[i].setAttribute("aria-selected", i === con.active ? "true" : "false");
+  buttons[con.active].scrollIntoView({ block: "nearest" });
+  $("code-input").setAttribute("aria-activedescendant", "complete-" + con.active);
+}
+
+function accept(index) {
+  var input = $("code-input");
+  var item = con.items[index];
+  if (!item) return;
+  var caret = input.selectionStart;
+  var start = caret - con.prefix.length;
+  input.setRangeText(item.name, start, caret, "end");
+  closeComplete();
+  codeChanged();
+}
+
+function codeChanged() {
+  con.error = null;
+  try { localStorage.setItem(QUERY_KEY, $("code-input").value); } catch (e) {}
+  paintCode();
+}
+
+// ---- Running ----
+
+function currentSource() {
+  var input = $("code-input");
+  var selected = input.value.slice(input.selectionStart, input.selectionEnd);
+  return selected.trim() ? selected : input.value;
+}
+
+function runQuery() {
+  if (!app.schema) return;
+  closeComplete();
+  var source = currentSource();
+  if (!source.trim()) return;
+  var prepared;
+  try {
+    prepared = tapedbRunner.prepare(source, app.schema);
+  } catch (error) {
+    showProblem(error, source);
+    return;
+  }
+  remember(source.trim());
+  var run = ++con.running;
+  var plan = prepared.plan;
+  if (plan.kind === "read") {
+    setResult({ busy: "Running " + prepared.model + "." + prepared.method + "…" });
+    var started = performance.now();
+    query(plan.document).then(function (result) {
+      if (run !== con.running) return;
+      var value = plan.project(result.data || {}, result.pageInfo || {});
+      setResult({ prepared: prepared, value: value, ms: Math.round(performance.now() - started) });
+      var rows = rowsOf(prepared, value);
+      if (rows && namespace(prepared.model)) loadLabels(prepared.model, rows).then(function (changed) { if (changed && run === con.running) renderResult(); });
+    }).catch(function (error) { if (run === con.running) showProblem(error); });
+    return;
+  }
+  setResult({ busy: "Checking what " + prepared.model + "." + prepared.method + " changes…" });
+  describeQueryWrite(prepared).then(function (summary) {
+    if (run === con.running) setResult({ prepared: prepared, confirm: summary });
+  }).catch(function (error) { if (run === con.running) showProblem(error); });
+}
+
+function showProblem(error, source) {
+  var message = error && error.message ? error.message : String(error);
+  con.error = null;
+  if (error && typeof error.line === "number" && source !== undefined) {
+    // Place the caret where the parser stopped.
+    var input = $("code-input");
+    var base = input.value.indexOf(source);
+    var lines = source.split("\n").slice(0, error.line - 1).join("\n");
+    var offset = Math.max(0, base) + (error.line > 1 ? lines.length + 1 : 0) + error.column - 1;
+    con.error = { offset: offset };
+    paintCode();
+    input.focus();
+    input.setSelectionRange(offset, offset);
+  }
+  setResult({ problem: message });
+}
+
+function plural(n, word) { return n + " " + word + (n === 1 ? " row" : " rows"); }
+
+/** What a write will do, in words, before it runs. Deletes list what they take with them. */
+function describeQueryWrite(prepared) {
+  var plan = prepared.plan;
+  var model = prepared.model;
+  if (plan.kind === "bulk") {
+    var where = plan.op.where;
+    var doc = {};
+    doc[model] = { $: { where: where, select: ["id"] } };
+    return query(doc).then(function (result) {
+      var ids = ((result.data || {})[model] || []).map(function (row) { return row.id; });
+      if (ids.length === 0) return { title: "No " + model + " rows match", lines: [], none: true };
+      if (plan.op.op === "patchMany") {
+        var values = plan.op.values || {};
+        var sets = Object.keys(values).map(function (field) { return field + " to " + JSON.stringify(values[field]); });
+        return { title: "Update " + plural(ids.length, model), lines: [{ text: "Sets " + sets.join(", ") + " on each, in one transaction." }], go: "Update " + (ids.length === 1 ? "1 row" : ids.length + " rows") };
+      }
+      return deleteImpact(model, ids).then(function (impact) {
+        return { title: "Delete " + plural(ids.length, model), lines: impact, refused: refusedBy(impact), danger: true, go: "Delete " + (ids.length === 1 ? "1 row" : ids.length + " rows") };
+      });
+    });
+  }
+  var counts = {};
+  plan.ops.forEach(function (op) {
+    var verb = { insert: "Creates", patch: "Updates", update: "Replaces", upsert: "Creates or updates", delete: "Deletes", link: "Links", unlink: "Unlinks" }[op.op] || op.op;
+    var key = verb + " " + op.namespace;
+    counts[key] = (counts[key] || 0) + 1;
+  });
+  var lines = Object.keys(counts).map(function (key) {
+    var parts = key.split(" ");
+    var name = parts.pop();
+    return { text: parts.join(" ") + " " + plural(counts[key], name) + "." };
+  });
+  var method = prepared.method;
+  // The title says what happens to the row itself; the lines add what else the call writes.
+  var primary = { create: "Creates", upsert: "Creates or updates", update: "Updates" }[method] + " 1 " + model + " row.";
+  lines = lines.filter(function (line) { return line.text !== primary; });
+  if (method === "create" || method === "upsert") {
+    return Promise.resolve({ title: method === "create" ? "Create a " + model + " row" : "Create or update a " + model + " row", lines: lines, go: method === "create" ? "Create" : "Write" });
+  }
+  // update and delete address one row: say so plainly when there is none.
+  var doc = {};
+  doc[model] = { $: { where: { id: plan.id }, select: ["id"], limit: 1 } };
+  return query(doc).then(function (result) {
+    if (((result.data || {})[model] || []).length === 0) return { title: "No " + model + " row has this id", lines: [{ text: plan.id }], none: true };
+    if (method === "delete") {
+      return deleteImpact(model, [plan.id]).then(function (impact) {
+        return { title: "Delete this " + model + " row", lines: [{ text: plan.id }].concat(impact), refused: refusedBy(impact), danger: true, go: "Delete row" };
+      });
+    }
+    return { title: "Update this " + model + " row", lines: [{ text: plan.id }].concat(lines), go: "Update" };
+  });
+}
+
+function refusedBy(impact) { return impact.some(function (line) { return line.refused; }); }
+
+function runWrite(prepared) {
+  var plan = prepared.plan;
+  var run = ++con.running;
+  setResult({ busy: "Writing…" });
+  var ops = plan.kind === "bulk" ? [plan.op] : plan.ops;
+  var started = performance.now();
+  transact(ops).then(function (answer) {
+    if (run !== con.running) return;
+    var result = answer && answer.result;
+    // Names the write on the tape when it lands.
+    con.tapeLabel = prepared.model + "." + prepared.method;
+    var matched = result && result.matched ? result.matched[0] : undefined;
+    var done = plan.kind === "bulk"
+      ? (plan.op.op === "patchMany" ? "Updated " : "Deleted ") + plural(matched || 0, prepared.model)
+      : { create: "Created", update: "Updated", upsert: "Wrote", delete: "Deleted" }[prepared.method] + " " + prepared.model + " " + shortId(plan.id);
+    setResult({ prepared: prepared, written: done + (result && typeof result.seq === "number" ? ", tx_" + pad(result.seq, 4) : "") + ".", ms: Math.round(performance.now() - started) });
+  }).catch(function (error) { if (run === con.running) showProblem(error); });
+}
+
+// ---- Results ----
+
+function setResult(result) {
+  con.result = result;
+  renderResult();
+}
+
+function rowsOf(prepared, value) {
+  if (!prepared || prepared.plan.kind !== "read") return null;
+  var key = prepared.plan.key;
+  if (key === "many" || key === "groupBy") return value;
+  if (key === "first") return value ? [value] : [];
+  if (key === "page") return value.rows;
+  return null;
+}
+
+function resultCell(model, field, value, row) {
+  // An aggregate row: the value has the measured field's type, except counts and averages.
+  if (row && field === "value" && "measure" in row && row.field && model && row.measure !== "_count" && row.measure !== "_avg") {
+    return value === null ? el("span", { class: "null", text: "null" }) : cellContent(model, row.field, value);
+  }
+  if (Array.isArray(value)) return el("span", { class: "many", text: value.length === 1 ? "1 row" : value.length + " rows" });
+  if (value && typeof value === "object" && model && relationsOf(model)[field]) {
+    var target = relationsOf(model)[field].target;
+    var name = labelField(target) && value[labelField(target)];
+    return el("span", { class: "many", text: name ? String(name) : shortId(String(value.id)) });
+  }
+  if (model && (field === "id" || namespace(model).attributes[field] || SYSTEM.indexOf(field) >= 0)) return cellContent(model, field, value);
+  if (value === null || value === undefined) return el("span", { class: "null", text: "null" });
+  if (typeof value === "object") return el("span", { class: "mono", text: JSON.stringify(value) });
+  if (typeof value === "number") return el("span", { class: "mono num", text: value.toLocaleString() });
+  return el("span", { text: String(value) });
+}
+
+function resultTable(model, rows) {
+  var keys = [];
+  rows.slice(0, RESULT_ROWS).forEach(function (row) {
+    Object.keys(row).forEach(function (key) { if (keys.indexOf(key) < 0) keys.push(key); });
+  });
+  if (keys.indexOf("id") > 0) { keys.splice(keys.indexOf("id"), 1); keys.unshift("id"); }
+  var flat = function (row) {
+    var out = {};
+    keys.forEach(function (key) { out[key] = row[key]; });
+    return out;
+  };
+  var table = el("table");
+  var headRow = el("tr");
+  keys.forEach(function (key) {
+    var relation = model && relationsOf(model)[key];
+    var type = relation ? (relation.many ? "many " : "one ") + relation.target : model && (key === "id" || namespace(model).attributes[key] || SYSTEM.indexOf(key) >= 0) ? typeOf(model, key) : "";
+    headRow.append(el("th", {}, [el("button", { type: "button", disabled: true }, [el("span", { class: "label", text: key }), type ? el("span", { class: "type", text: type }) : null])]));
+  });
+  table.append(el("thead", {}, [headRow]));
+  var body = el("tbody");
+  rows.slice(0, RESULT_ROWS).forEach(function (row) {
+    var shaped = flat(row);
+    body.append(el("tr", {}, keys.map(function (key) {
+      return el("td", { class: key === "id" ? "id" : "" }, [resultCell(model, key, shaped[key], row)]);
+    })));
+  });
+  table.append(body);
+  return table;
+}
+
+function figure(value, text) {
+  return el("div", { class: "figure" }, [el("b", { text: typeof value === "number" ? value.toLocaleString() : String(value) }), el("span", { class: "label", text: text })]);
+}
+
+/** aggregate: one row per measure, e.g. _sum / points / 12. */
+function measures(value) {
+  var rows = [];
+  Object.keys(value || {}).forEach(function (measure) {
+    var inner = value[measure];
+    if (inner && typeof inner === "object") Object.keys(inner).forEach(function (field) { rows.push({ measure: measure, field: field, value: inner[field] }); });
+    else rows.push({ measure: measure, field: "", value: inner });
+  });
+  return rows;
+}
+
+function renderResult() {
+  var bar = $("result-bar");
+  var panel = $("result-panel");
+  var box = $("result");
+  bar.innerHTML = "";
+  box.innerHTML = "";
+  var result = con.result;
+  panel.hidden = !result || !!result.busy;
+  if (!result) {
+    bar.append(el("span", { class: "label", text: (MAC ? "⌘" : "Ctrl") + " Enter runs the call, or the selected one. " + (MAC ? "⌃" : "Ctrl") + " Space suggests." }));
+    return;
+  }
+  if (result.busy) { bar.append(el("span", { class: "what", text: result.busy })); return; }
+  if (result.problem) {
+    bar.append(el("span", { class: "what error", text: "The call did not run" }));
+    box.append(el("div", { class: "problem" }, [el("p", { text: result.problem })]));
+    return;
+  }
+  var prepared = result.prepared;
+  var model = prepared.model;
+  if (result.confirm) {
+    var summary = result.confirm;
+    var go = summary.none ? null : el("button", {
+      class: "btn small " + (summary.danger ? "danger armed" : "primary"),
+      type: "button",
+      disabled: summary.refused || undefined,
+      onclick: function () { runWrite(prepared); }
+    }, [summary.go]);
+    box.append(el("div", { class: "confirm" }, [
+      stopped(el("h2"), summary.title),
+      summary.lines.length ? el("ul", { class: "impact" }, summary.lines.map(function (line) {
+        return el("li", { class: line.refused ? "refused" : "", text: line.text });
+      })) : null,
+      el("div", { class: "actions" }, [
+        el("button", { class: "btn small", type: "button", onclick: function () { setResult(null); $("code-input").focus(); } }, ["Cancel"]),
+        go
+      ])
+    ]));
+    return;
+  }
+  if (result.written) {
+    bar.append(el("span", { class: "what", text: result.written }), el("span", { class: "label num", text: result.ms + " ms" }));
+    panel.hidden = true;
+    return;
+  }
+  var value = result.value;
+  var key = prepared.plan.key;
+  var rows = rowsOf(prepared, value);
+  var what;
+  if (key === "count") what = plural(value, model) + " match";
+  else if (key === "aggregate") what = "Aggregate over " + model;
+  else if (key === "groupBy") what = value.length === 1 ? "1 group" : value.length + " groups";
+  else if (key === "page") what = plural(rows.length, model) + (value.hasMore ? ", more after this page" : "");
+  else what = rows.length === 0 ? "No " + model + " rows match" : plural(rows.length, model);
+  bar.append(el("span", { class: "what", text: what }), el("span", { class: "label num", text: result.ms + " ms" }));
+  if (rows && rows.length > RESULT_ROWS && con.view === "table") bar.append(el("span", { class: "label", text: "Table shows the first " + RESULT_ROWS + "; JSON has all" }));
+  bar.append(el("span", { class: "spacer" }));
+  if (key !== "count") {
+    bar.append(el("div", { class: "seg", role: "group", "aria-label": "Result view" }, ["table", "json"].map(function (view) {
+      return el("button", { type: "button", "aria-pressed": con.view === view ? "true" : "false", onclick: function () { con.view = view; renderResult(); } }, [view === "table" ? "Table" : "JSON"]);
+    })));
+  }
+  if (key === "count") { box.append(figure(value, plural(value, model).replace(/^[\d,]+ /, "") + " match")); return; }
+  if (con.view === "json") { box.append(el("pre", { class: "json", text: JSON.stringify(value, null, 2) })); return; }
+  if (key === "aggregate") {
+    if (!value) { box.append(figure("—", "No rows match")); return; }
+    box.append(resultTable(model, measures(value)));
+    return;
+  }
+  if (rows.length === 0) { panel.hidden = true; return; }
+  box.append(resultTable(model, rows));
+}
+
+function renderRecent() {
+  var menu = $("recent-menu");
+  menu.innerHTML = "";
+  var list = history();
+  if (list.length === 0) return;
+  var pop = el("div", { class: "pop recent", hidden: true });
+  list.forEach(function (source) {
+    pop.append(el("button", { type: "button", title: source, onclick: function () {
+      $("code-input").value = source;
+      pop.hidden = true;
+      codeChanged();
+      $("code-input").focus();
+    } }, [source.replace(/\s+/g, " ")]));
+  });
+  menu.append(el("button", { class: "btn small", type: "button", "aria-haspopup": "true", "aria-expanded": "false", onclick: function (event) {
+    event.stopPropagation();
+    pop.hidden = !pop.hidden;
+    event.currentTarget.setAttribute("aria-expanded", pop.hidden ? "false" : "true");
+  } }, ["Recent"]), pop);
+}
+
+(function wireConsole() {
+  var button = $("open-query");
+  button.append(icon("prompt", 16), el("span", { class: "name", text: "Query" }));
+  button.addEventListener("click", openQuery);
+  $("run").append("Run", el("kbd", { text: MAC ? "⌘↵" : "Ctrl ↵" }));
+  stopped($("console-title"), "Query");
+  $("run").addEventListener("click", runQuery);
+  var input = $("code-input");
+  input.addEventListener("input", function (event) {
+    codeChanged();
+    var typed = event.data || "";
+    if (/^[\w$.]$/.test(typed)) openComplete(false);
+    else closeComplete();
+  });
+  input.addEventListener("scroll", function () { syncScroll(); closeComplete(); });
+  input.addEventListener("blur", function () { setTimeout(closeComplete, 0); });
+  input.addEventListener("click", closeComplete);
+  input.addEventListener("keydown", function (event) {
+    var open = !$("complete").hidden && con.items.length > 0;
+    if ((event.metaKey || event.ctrlKey) && event.key === "Enter") { event.preventDefault(); runQuery(); return; }
+    if (event.ctrlKey && (event.key === " " || event.code === "Space")) { event.preventDefault(); openComplete(true); return; }
+    if (open && event.key === "ArrowDown") { event.preventDefault(); moveComplete(1); return; }
+    if (open && event.key === "ArrowUp") { event.preventDefault(); moveComplete(-1); return; }
+    if (open && (event.key === "Enter" || event.key === "Tab")) { event.preventDefault(); accept(con.active); return; }
+    if (open && event.key === "Escape") { event.preventDefault(); event.stopPropagation(); closeComplete(); return; }
+    if (event.key === "Tab" && !event.shiftKey) { event.preventDefault(); input.setRangeText("  ", input.selectionStart, input.selectionEnd, "end"); codeChanged(); }
+  });
+})();
 
 function start() {
   var saved = "";
