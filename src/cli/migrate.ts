@@ -311,7 +311,7 @@ function compareField(
 const REBUILD_MARKER = "-- tapedb:rebuild ";
 
 /** Expands rebuild markers into the create-copy-drop-rename sequence for each table. */
-function expandRebuilds(plan: MigrationPlan, after: SchemaSnapshot): void {
+export function expandRebuilds(plan: MigrationPlan, after: SchemaSnapshot): void {
   const tables = new Set<string>();
   plan.statements = plan.statements.filter((statement) => {
     if (!statement.startsWith(REBUILD_MARKER)) return true;

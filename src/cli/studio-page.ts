@@ -316,6 +316,54 @@ td .date { color: var(--text-2); }
 .tape .event.fresh { animation: enter 300ms cubic-bezier(0.2, 0.7, 0.1, 1) both; }
 @keyframes enter { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
 
+/* ---- Data / Structure tabs (the landing page's code tab: underline in text colour) ---- */
+.tabs { display: flex; gap: 22px; margin: -4px 0 16px; border-bottom: 1px solid var(--line); }
+.tabs button { position: relative; padding: 0 0 10px; border: 0; background: none; cursor: pointer; color: var(--text-3); }
+.tabs button:hover { color: var(--text); }
+.tabs button[aria-selected="true"] { color: var(--text); }
+.tabs button[aria-selected="true"]::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; height: 2px; background: var(--text); }
+
+/* ---- Structure ---- */
+.structure { display: grid; gap: 14px; align-content: start; min-height: 0; overflow: auto; }
+.structure .bar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.structure .bar .spacer { flex: 1; }
+.fields { border: 1px solid var(--line); border-radius: var(--panel); background: var(--surface); overflow: hidden; }
+.fields table { width: 100%; }
+.fields td { height: 56px; max-width: none; }
+.fields tbody tr { cursor: default; }
+.fields td.name { font: 500 14px var(--mono); letter-spacing: 0.02em; }
+.fields td.kind { color: var(--text-2); }
+.fields td.kind .target { color: var(--text); }
+.fields td.acts { width: 1%; text-align: right; }
+.fields td.acts .quiet { opacity: 0; }
+.fields tr:hover td.acts .quiet, .fields td.acts .quiet:focus-visible { opacity: 1; }
+.fields tr.system td { color: var(--text-3); height: 44px; }
+.flag { display: inline-block; margin-right: 6px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--tag); font: 11.5px/18px var(--mono); color: var(--text-2); }
+.code-note { font: 12.5px var(--mono); color: var(--text-3); }
+.notice { padding: 12px 14px; border: 1px solid var(--line-strong); border-radius: var(--panel); background: var(--surface); font-size: 14px; }
+.notice.warn { border-color: var(--accent); background: var(--accent-soft); color: var(--text); }
+.notice .label { display: block; margin-bottom: 4px; }
+.notice ul { margin: 6px 0 0; padding-left: 18px; }
+.new-model { display: flex; align-items: center; gap: 8px; width: 100%; margin-top: 10px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: var(--control); background: none; color: var(--text-2); cursor: pointer; }
+.new-model:hover { color: var(--text); border-color: var(--text-3); }
+
+/* ---- Review: the code diff and the SQL ---- */
+.code { margin: 0; padding: 10px 0; border: 1px solid var(--line); border-radius: var(--panel); background: var(--ground); font: 12.5px/1.7 var(--mono); overflow: auto; }
+.code div { padding: 0 14px; white-space: pre; }
+.code .add { background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.code .add::before { content: "+ "; color: var(--ok); }
+.code .del { background: var(--accent-soft); }
+.code .del::before { content: "- "; color: var(--accent); }
+.code .ctx::before { content: "  "; }
+.code .gap { color: var(--text-3); }
+.sheet .body { flex: 1; overflow: auto; padding: 16px 20px 24px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-content: start; }
+.sheet .body > * { min-width: 0; }
+.sheet .body .label { margin-bottom: 6px; }
+.field select { appearance: auto; }
+.check { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text); }
+.check input { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
+.row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+
 /* ---- Row drawer --------------------------------------------------------------------------- */
 .drawer {
   position: fixed;
@@ -435,6 +483,7 @@ td .date { color: var(--text-2); }
 <aside>
   <div class="label" id="models-head" hidden><span>Models</span><span>Rows</span></div>
   <nav id="models" aria-label="Models"></nav>
+  <button class="new-model" id="new-model" type="button" hidden>+ New model</button>
 </aside>
 
 <main>
@@ -447,6 +496,11 @@ td .date { color: var(--text-2); }
     <span class="spacer"></span>
     <button class="btn primary" id="add" type="button">Add row</button>
   </div>
+  <div class="tabs" id="tabs" role="tablist" hidden>
+    <button type="button" role="tab" id="tab-data" aria-selected="true">Data</button>
+    <button type="button" role="tab" id="tab-structure" aria-selected="false">Structure</button>
+  </div>
+  <div class="structure" id="structure" hidden></div>
   <div class="filters" id="filters" hidden></div>
   <div class="panel" id="panel">
     <div class="scroll" id="grid"></div>
@@ -484,6 +538,22 @@ td .date { color: var(--text-2); }
     <button class="btn primary small" id="save" type="submit" form="editor">Save changes</button>
   </footer>
 </div>
+<div class="drawer sheet" id="sheet" role="dialog" aria-modal="false" aria-labelledby="sheet-title">
+  <header>
+    <span class="label" id="sheet-label"></span>
+    <button class="close" id="sheet-close" type="button" aria-label="Close">×</button>
+  </header>
+  <div class="title">
+    <h2 id="sheet-title"></h2>
+  </div>
+  <div class="body" id="sheet-body"></div>
+  <footer>
+    <button class="btn small" id="sheet-back" type="button" hidden>Back</button>
+    <span class="spacer"></span>
+    <button class="btn small" id="sheet-cancel" type="button">Cancel</button>
+    <button class="btn primary small" id="sheet-go" type="button"></button>
+  </footer>
+</div>
 <div class="toast" id="toast" role="status" aria-live="polite"><span class="lamp"></span><span id="toast-text"></span></div>
 
 <script>
@@ -510,7 +580,9 @@ var app = {
   seq: null,
   manual: false,
   labels: {},
-  marks: {}
+  marks: {},
+  view: "data",
+  structure: null
 };
 
 // ---- Icons (the landing page's) -------------------------------------------
@@ -812,6 +884,7 @@ function openWorkspace(id) {
     if (first) selectModel(first.apiName);
     else showEmpty("This schema has no models", "Add a model to tapedb.schema.ts, then run a migration.");
     refreshCounts();
+    loadStructure();
     poll();
   }).catch(fail);
 }
@@ -908,7 +981,9 @@ function selectModel(name) {
   closeDrawer();
   renderModels();
   $("head").hidden = false;
+  $("tabs").hidden = false;
   stopped($("title"), name);
+  setView(app.view);
   loadRows(false);
 }
 
@@ -1012,7 +1087,7 @@ function renderTable() {
   var grid = $("grid");
   var model = app.model;
   grid.innerHTML = "";
-  $("filters").hidden = false;
+  $("filters").hidden = app.view !== "data";
   renderFilters();
   $("total").textContent = app.total === null ? "" : pad(app.total, 2) + (app.total === 1 ? " row" : " rows");
 
@@ -1236,6 +1311,7 @@ function drawerLabel(model, suffix) {
 }
 
 function openRow(row) {
+  $("sheet").classList.remove("open");
   var model = app.model;
   app.selected = row;
   app.creating = false;
@@ -1288,6 +1364,7 @@ function openRow(row) {
 }
 
 function startCreate() {
+  $("sheet").classList.remove("open");
   var model = app.model;
   app.selected = null;
   app.creating = true;
@@ -1352,7 +1429,11 @@ $("close").addEventListener("click", closeDrawer);
 $("cancel").addEventListener("click", closeDrawer);
 $("add").addEventListener("click", startCreate);
 $("more").addEventListener("click", function () { loadRows(true); });
-document.addEventListener("keydown", function (event) { if (event.key === "Escape" && $("drawer").classList.contains("open")) closeDrawer(); });
+document.addEventListener("keydown", function (event) {
+  if (event.key !== "Escape") return;
+  if ($("sheet").classList.contains("open")) closeSheet();
+  else if ($("drawer").classList.contains("open")) closeDrawer();
+});
 
 $("workspace").addEventListener("change", function (event) {
   var value = event.target.value;
@@ -1373,6 +1454,336 @@ $("workspace-id").addEventListener("keydown", function (event) {
   event.target.value = "";
   openWorkspace(id);
 });
+
+// ---- Structure: the models as tapedb.schema.ts defines them ------------------
+
+var KINDS = [
+  ["string", "Text"], ["number", "Number"], ["boolean", "True or false"], ["date", "Date"], ["json", "JSON"],
+  ["belongsTo", "Points to one row of"], ["hasMany", "Has many rows of"]
+];
+var ON_DELETE = [["setNull", "Clear this field"], ["cascade", "Delete this row too"], ["restrict", "Refuse the delete"]];
+
+function loadStructure() {
+  return api("/api/structure").then(function (structure) {
+    app.structure = structure;
+    $("new-model").hidden = !structure.editable;
+    if (app.view === "structure") renderStructure();
+    return structure;
+  }).catch(function () { app.structure = { editable: false, reason: "The studio could not read the project." }; });
+}
+
+function setView(view) {
+  app.view = view;
+  $("tab-data").setAttribute("aria-selected", view === "data" ? "true" : "false");
+  $("tab-structure").setAttribute("aria-selected", view === "structure" ? "true" : "false");
+  var data = view === "data";
+  $("panel").hidden = !data;
+  $("filters").hidden = !data;
+  $("add").hidden = !data;
+  $("structure").hidden = data;
+  if (!data) renderStructure();
+}
+
+function kindText(spec) {
+  if (spec.type === "belongsTo") return ["one ", el("span", { class: "target", text: spec.target })];
+  if (spec.type === "hasMany") return ["many ", el("span", { class: "target", text: spec.target })];
+  return [KINDS.filter(function (k) { return k[0] === spec.type; })[0][1]];
+}
+
+function flags(spec, name) {
+  var out = [];
+  if (spec.optional) out.push("optional");
+  if (spec.default !== undefined) out.push("default " + JSON.stringify(spec.default));
+  if (spec.unique) out.push("unique");
+  else if (spec.index) out.push("indexed");
+  if (spec.type === "belongsTo") {
+    out.push("stored as " + name + "Id");
+    if (spec.onDelete === "cascade") out.push("deleted with its " + spec.target);
+    if (spec.onDelete === "restrict") out.push("blocks deleting its " + spec.target);
+  }
+  if (spec.type === "hasMany") out.push("stores nothing");
+  return out.map(function (f) { return el("span", { class: "flag", text: f }); });
+}
+
+function renderStructure() {
+  var box = $("structure");
+  box.innerHTML = "";
+  var structure = app.structure;
+  if (!structure) { box.append(el("p", { class: "hint", text: "Reading tapedb.schema.ts…" })); return; }
+  if (!structure.editable) {
+    box.append(el("div", { class: "notice" }, [el("span", { class: "label", text: "Read only" }), structure.reason]));
+    return;
+  }
+  if (structure.pending.length > 0) {
+    box.append(el("div", { class: "notice warn" }, [
+      el("span", { class: "label", text: "Not migrated yet" }),
+      "tapedb.schema.ts has changes without a migration. Changes made here include them.",
+      el("ul", null, structure.pending.map(function (p) { return el("li", { text: p }); }))
+    ]));
+  }
+  var model = structure.models.filter(function (m) { return m.name === app.model; })[0];
+  if (!model) {
+    box.append(el("div", { class: "notice" }, ["tapedb.schema.ts has no model " + app.model + ". The local database is still on an older schema; it reloads after the next change."]));
+    return;
+  }
+  box.append(el("div", { class: "bar" }, [
+    el("span", { class: "label", text: model.fields.length + (model.fields.length === 1 ? " field" : " fields") }),
+    el("span", { class: "spacer" }),
+    el("button", { class: "btn small", type: "button", text: "Rename model", onclick: function () { modelForm(model.name); } }),
+    el("button", { class: "btn small danger", type: "button", text: "Delete model", onclick: function () {
+      review({ kind: "deleteModel", model: model.name }, "Delete " + model.name, "The model, its relations from other models, and all its rows.");
+    } }),
+    el("button", { class: "btn small primary", type: "button", onclick: function () { fieldForm(model.name, null); } }, [icon("plus", 14), "Add field"])
+  ]));
+  var rows = model.fields.map(function (field) {
+    var spec = field.spec;
+    return el("tr", null, [
+      el("td", { class: "name", text: field.name }),
+      el("td", { class: "kind" }, spec ? kindText(spec) : [el("span", { class: "code-note", text: field.code })]),
+      el("td", null, spec ? flags(spec, field.name) : [el("span", { class: "code-note", text: "written in code; change it in tapedb.schema.ts" })]),
+      el("td", { class: "acts" }, [el("div", { style: "display:flex;gap:2px;justify-content:flex-end" }, [
+        spec ? el("button", { class: "quiet label", type: "button", text: "Edit", onclick: function () { fieldForm(model.name, field); } }) : null,
+        el("button", { class: "quiet label", type: "button", text: "Rename", onclick: function () { renameFieldForm(model.name, field.name); } }),
+        el("button", { class: "quiet label", type: "button", text: "Delete", style: "color:var(--accent)", onclick: function () {
+          review({ kind: "deleteField", model: model.name, field: field.name }, "Delete " + model.name + "." + field.name, spec && spec.type === "hasMany" ? "A list relation stores nothing; no data is lost." : "The field and its value in every row.");
+        } })
+      ])])
+    ]);
+  });
+  rows.push(el("tr", { class: "system" }, [
+    el("td", { class: "name", text: "id" }), el("td", { text: "uuid" }),
+    el("td", { colspan: "2", text: "With createdAt, updatedAt and updatedSeq: kept by tapedb on every row." })
+  ]));
+  box.append(el("div", { class: "fields" }, [el("table", null, [
+    el("thead", null, [el("tr", null, ["Field", "Type", "Details", ""].map(function (h) { return el("th", null, [el("span", { class: "label", style: "display:block;padding:10px 16px", text: h })]); }))]),
+    el("tbody", null, rows)
+  ])]));
+}
+
+// ---- Sheet: forms, then the review of what the change writes -------------------
+
+var sheetGo = null;
+function openSheet(label, title, body, goText, onGo) {
+  $("sheet-label").innerHTML = "";
+  $("sheet-label").append(el("b", { text: label }));
+  stopped($("sheet-title"), title);
+  $("sheet-body").innerHTML = "";
+  body.forEach(function (node) { if (node) $("sheet-body").append(node); });
+  var go = $("sheet-go");
+  go.textContent = goText;
+  go.className = "btn primary small";
+  go.disabled = false;
+  go.dataset.armed = "";
+  sheetGo = onGo;
+  $("sheet-back").hidden = true;
+  closeDrawer();
+  $("sheet").classList.add("open");
+  var first = $("sheet-body").querySelector("input, select");
+  if (first) first.focus();
+}
+function closeSheet() { $("sheet").classList.remove("open"); sheetGo = null; }
+$("sheet-close").addEventListener("click", closeSheet);
+$("sheet-cancel").addEventListener("click", closeSheet);
+$("sheet-go").addEventListener("click", function () { if (sheetGo) sheetGo(); });
+
+function textField(id, label, value, note) {
+  return el("div", { class: "field" }, [
+    el("label", { for: id }, [el("span", { class: "label", text: label }), note ? el("span", { class: "type", text: note }) : null]),
+    el("input", { type: "text", id: id, value: value || "", autocomplete: "off", spellcheck: "false" })
+  ]);
+}
+function selectField(id, label, options, value) {
+  var select = el("select", { id: id }, options.map(function (o) { return el("option", { value: o[0], text: o[1] }); }));
+  if (value !== undefined) select.value = value;
+  return el("div", { class: "field" }, [el("label", { for: id }, [el("span", { class: "label", text: label })]), select]);
+}
+function checkField(id, label, checked) {
+  var box = el("input", { type: "checkbox", id: id });
+  box.checked = !!checked;
+  return el("label", { class: "check", for: id }, [box, label]);
+}
+
+function modelForm(renaming) {
+  var name = textField("m-name", "Name", renaming || "", "letters and digits, like task");
+  var starter = renaming ? null : checkField("m-starter", "Start with a name field (text)", true);
+  openSheet(renaming ? renaming : "new model", renaming ? "Rename " + renaming : "New model", [name, starter,
+    el("p", { class: "hint", text: renaming ? "Rows keep their data; relations that point here follow the new name." : "The model is added to tapedb.schema.ts with a migration that creates its table." })
+  ], "Review change", function () {
+    var value = $("m-name").value.trim();
+    if (renaming) {
+      if (value === renaming) { closeSheet(); return; }
+      review({ kind: "renameModel", from: renaming, to: value }, "Rename " + renaming + " to " + value, "Rows keep their data.");
+    } else {
+      var fields = $("m-starter").checked ? [{ name: "name", spec: { type: "string" } }] : [];
+      review({ kind: "addModel", model: value, fields: fields }, "Add model " + value, "Creates the table.");
+    }
+  });
+}
+
+function renameFieldForm(model, field) {
+  openSheet(model, "Rename " + field, [textField("f-new", "New name", field), el("p", { class: "hint", text: "Values are kept under the new name." })], "Review change", function () {
+    var to = $("f-new").value.trim();
+    if (to === field) { closeSheet(); return; }
+    review({ kind: "renameField", model: model, from: field, to: to }, "Rename " + model + "." + field + " to " + to, "Values are kept.");
+  });
+}
+
+function fieldForm(model, field) {
+  var spec = field ? field.spec : { type: "string" };
+  var models = app.structure.models.map(function (m) { return [m.name, m.name]; });
+  var parts = [
+    field ? null : textField("f-name", "Name", "", "letters and digits, like dueDate"),
+    selectField("f-kind", "Type", KINDS, spec.type),
+    selectField("f-target", "Model", models, spec.target),
+    checkField("f-optional", "Optional: a row may leave it empty", spec.optional),
+    textField("f-default", "Default", spec.default === undefined ? "" : String(spec.default), "used when a write leaves it out"),
+    selectField("f-index", "Lookup", [["none", "No index"], ["index", "Indexed, for filtering and sorting"], ["unique", "Unique: no two rows share a value"]], spec.unique ? "unique" : spec.index ? "index" : "none"),
+    selectField("f-ondelete", "When that row is deleted", ON_DELETE, spec.onDelete || "setNull")
+  ];
+  openSheet(model, field ? "Edit " + field.name : "Add field", parts, "Review change", function () {
+    var kind = $("f-kind").value;
+    var next;
+    if (kind === "belongsTo") next = { type: "belongsTo", target: $("f-target").value, optional: $("f-optional").checked || undefined, onDelete: $("f-ondelete").value };
+    else if (kind === "hasMany") next = { type: "hasMany", target: $("f-target").value };
+    else {
+      next = { type: kind };
+      if ($("f-optional").checked) next.optional = true;
+      var raw = $("f-default").value;
+      if (raw !== "") {
+        if (kind === "number") { next.default = Number(raw); if (isNaN(next.default)) { fail(new Error("The default must be a number.")); return; } }
+        else if (kind === "boolean") { if (raw !== "true" && raw !== "false") { fail(new Error("The default is true or false.")); return; } next.default = raw === "true"; }
+        else if (kind === "string") next.default = raw;
+        else { fail(new Error("A " + kind + " field takes no default here; set it in tapedb.schema.ts.")); return; }
+      }
+      var index = $("f-index").value;
+      if (index === "unique") next.unique = true;
+      if (index === "index") next.index = true;
+    }
+    if (field) review({ kind: "changeField", model: model, field: field.name, spec: next }, "Change " + model + "." + field.name, "");
+    else {
+      var name = $("f-name").value.trim();
+      review({ kind: "addField", model: model, field: name, spec: next }, "Add " + model + "." + name, "");
+    }
+  });
+  // Show only what applies to the chosen type.
+  function sync() {
+    var kind = $("f-kind").value;
+    var relation = kind === "belongsTo" || kind === "hasMany";
+    $("f-target").closest(".field").hidden = !relation;
+    $("f-optional").closest("label").hidden = kind === "hasMany";
+    $("f-default").closest(".field").hidden = relation || kind === "date" || kind === "json";
+    $("f-index").closest(".field").hidden = relation;
+    $("f-ondelete").closest(".field").hidden = kind !== "belongsTo";
+  }
+  $("f-kind").addEventListener("change", sync);
+  sync();
+}
+
+/** Shows what an edit writes (the schema diff, the SQL, what it deletes), then applies it. */
+function review(edit, title, what) {
+  var label = edit.model || edit.from || "schema";
+  openSheet(label, title, [el("p", { class: "hint", text: "Working out the change…" })], "Apply change", null);
+  $("sheet-go").disabled = true;
+  var refused = function (message) {
+    $("sheet-body").innerHTML = "";
+    $("sheet-body").append(el("div", { class: "notice warn" }, [el("span", { class: "label", text: "This change cannot be made" }), message]));
+    $("sheet-go").textContent = "Apply change";
+    $("sheet-go").disabled = true;
+  };
+  api("/api/structure/preview", { edit: edit }).then(function (preview) {
+    var body = [];
+    if (preview.destructive.length > 0) {
+      var rows = edit.kind === "deleteModel" && app.counts[edit.model] !== undefined ? app.counts[edit.model] : null;
+      body.push(el("div", { class: "notice warn" }, [
+        el("span", { class: "label", text: "Deletes data" }),
+        (rows !== null ? "This workspace has " + rows + (rows === 1 ? " row" : " rows") + " of " + edit.model + ". " : "") +
+          "Deployed, every workspace applies this migration when it next wakes, and loses the same data.",
+        el("ul", null, preview.destructive.map(function (d) { return el("li", { text: d }); }))
+      ]));
+    } else if (what) {
+      body.push(el("p", { class: "hint", text: what }));
+    }
+    body.push(el("div", null, [el("div", { class: "label", text: "tapedb.schema.ts" }), el("div", { class: "code" }, preview.diff.map(function (line) {
+      if (line.text === "…" && line.kind === " ") return el("div", { class: "gap", text: "  …" });
+      return el("div", { class: line.kind === "+" ? "add" : line.kind === "-" ? "del" : "ctx", text: line.text });
+    }))]));
+    body.push(el("div", null, [el("div", { class: "label", text: "Migration " + preview.migration }), el("div", { class: "code" }, preview.sql.join("\n").split("\n").map(function (l) { return el("div", { class: "ctx", text: l }); }))]));
+    $("sheet-body").innerHTML = "";
+    body.forEach(function (node) { $("sheet-body").append(node); });
+    var go = $("sheet-go");
+    go.disabled = false;
+    var destructive = preview.destructive.length > 0;
+    go.textContent = destructive ? "Apply and delete data" : "Apply change";
+    sheetGo = function () {
+      if (destructive && go.dataset.armed !== "yes") {
+        go.dataset.armed = "yes";
+        go.className = "btn danger small armed";
+        go.textContent = "Delete for good";
+        return;
+      }
+      go.disabled = true;
+      api("/api/structure/apply", { edit: edit, base: preview.base }).then(function (applied) {
+        if (!applied.ok) { fail(new Error(applied.error)); go.disabled = false; return; }
+        closeSheet();
+        toast(applied.migration ? "Wrote " + applied.migration + ". Reloading the local database…" : "Schema updated.");
+        afterSchemaChange(edit);
+      }).catch(function (error) { fail(error); go.disabled = false; });
+    };
+  }).catch(function (error) { refused(error.message); });
+}
+
+/** Whether the schema the local Worker serves has this edit in it yet. */
+function hasEdit(schema, edit) {
+  var models = {};
+  schema.namespaces.forEach(function (n) { models[n.apiName] = n.attributes; });
+  var stored = function (model, field, spec) { return spec && spec.type === "belongsTo" ? field + "Id" : field; };
+  switch (edit.kind) {
+    case "addModel": return !!models[edit.model];
+    case "deleteModel": return !models[edit.model];
+    case "renameModel": return !!models[edit.to] && !models[edit.from];
+    case "addField": return edit.spec.type === "hasMany" || (!!models[edit.model] && !!models[edit.model][stored(edit.model, edit.field, edit.spec)]);
+    case "deleteField": return !!models[edit.model] && !models[edit.model][edit.field] && !models[edit.model][edit.field + "Id"];
+    case "renameField": return !!models[edit.model] && (!!models[edit.model][edit.to] || !!models[edit.model][edit.to + "Id"]);
+    default: return true;
+  }
+}
+
+/**
+ * The local Worker reloads with the new schema (wrangler rebuilds once for the
+ * schema file and again for the migrations): wait until it serves this edit
+ * and stays on it, then show it.
+ */
+function afterSchemaChange(edit) {
+  var before = JSON.stringify(app.schema);
+  var deadline = Date.now() + 45000;
+  var seenAt = 0;
+  (function check() {
+    api("/api/schema", { workspaceId: app.workspace }).then(function (result) {
+      var text = JSON.stringify(result.data);
+      var ready = hasEdit(result.data, edit) && (edit.kind !== "changeField" || text !== before);
+      if (!ready) seenAt = 0;
+      else if (!seenAt) seenAt = Date.now();
+      if (Date.now() < deadline && (!ready || Date.now() - seenAt < 1500)) { setTimeout(check, 500); return; }
+      if (!ready) { fail(new Error("The local database has not picked up the change yet. Check the terminal running npx tapedb-cli dev.")); return; }
+      app.schema = result.data;
+      app.labels = {};
+      var names = app.schema.namespaces.map(function (n) { return n.apiName; });
+      var next = edit.kind === "renameModel" && app.model === edit.from ? edit.to
+        : edit.kind === "addModel" ? edit.model
+        : names.indexOf(app.model) >= 0 ? app.model : names[0];
+      renderModels();
+      refreshCounts();
+      loadStructure().then(function () {
+        if (next) selectModel(next);
+        toast("The local database is on the new schema.");
+      });
+    }).catch(function () { setTimeout(check, 1000); });
+  })();
+}
+
+$("tab-data").addEventListener("click", function () { setView("data"); });
+$("tab-structure").addEventListener("click", function () { setView("structure"); });
+$("new-model").addEventListener("click", function () { modelForm(null); });
 
 // ---- Start ------------------------------------------------------------------
 
