@@ -147,3 +147,30 @@ describe("the file index", () => {
     }
   });
 });
+
+describe("GET / during local dev", () => {
+  const devWorker = defineTapeDB({ schema: schema({ note: model({ body: t.string() }) }), devClaims: true });
+  const env = (extra: Record<string, string>) => ({ ...room().env, TAPEDB_DEV_CLAIMS: "true", ...extra });
+  const get = (worker: typeof tapedb, vars: Record<string, string>, method = "GET") =>
+    worker.worker.fetch(new Request("http://localhost:8787/", { method }), env(vars) as never, {} as ExecutionContext);
+
+  test("redirects to the studio `tapedb dev` started", async () => {
+    const response = await get(devWorker, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400" });
+    expect(response.status).toBe(302);
+    expect(response.headers.get("location")).toBe("http://127.0.0.1:4400/");
+  });
+
+  test("stays a 404 anywhere else", async () => {
+    const cases: Array<[typeof tapedb, Record<string, string>, string?]> = [
+      [devWorker, {}],
+      [devWorker, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400", ENVIRONMENT: "production" }],
+      [devWorker, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400", TAPEDB_DEV_CLAIMS: "false" }],
+      [devWorker, { TAPEDB_STUDIO_URL: "https://evil.example/" }],
+      [devWorker, { TAPEDB_STUDIO_URL: "http://127.0.0.1.evil.example/" }],
+      [devWorker, { TAPEDB_STUDIO_URL: "not a url" }],
+      [devWorker, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400" }, "POST"],
+      [tapedb, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400" }],
+    ];
+    for (const [worker, vars, method] of cases) expect((await get(worker, vars, method)).status).toBe(404);
+  });
+});

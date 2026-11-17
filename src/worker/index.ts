@@ -192,6 +192,22 @@ async function callRoom(
   return workspaceStub(env, workspaceId).fetch(request);
 }
 
+/**
+ * The studio `tapedb dev` started, when this is that local dev run: dev claims
+ * on in code and in the environment, not production, and a loopback address,
+ * so `/` never redirects anywhere else.
+ */
+function localStudio(env: Env, devClaims: boolean): string | null {
+  if (!devClaims || env.TAPEDB_DEV_CLAIMS !== "true" || env.ENVIRONMENT === "production") return null;
+  try {
+    const studio = new URL(env.TAPEDB_STUDIO_URL ?? "");
+    const loopback = ["127.0.0.1", "localhost", "[::1]"].includes(studio.hostname);
+    return studio.protocol === "http:" && loopback ? studio.href : null;
+  } catch {
+    return null;
+  }
+}
+
 export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   const { schema, identity, devClaims = false, migrations } = options;
   // Validated once, when the Worker is defined.
@@ -219,6 +235,11 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
 
       if (url.pathname === "/status" || url.pathname === "/health") {
         return json({ ok: true, service: "tapedb" });
+      }
+
+      if (url.pathname === "/" && request.method === "GET") {
+        const studio = localStudio(env, devClaims);
+        if (studio) return Response.redirect(studio, 302);
       }
 
       if (url.pathname === "/_tapedb/claim") {
