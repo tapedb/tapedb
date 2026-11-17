@@ -391,6 +391,15 @@ together, and every delete first says what happens to the rows that point at
 it: deleted with it, field cleared, or refused, per the relation's `onDelete`.
 "Columns" hides columns, and search matches the start of text fields or an id.
 
+"Query" runs a call as you write it in the app, such as
+`db.task.findMany({ where: { done: false }, include: { column: true } })`, with
+suggestions for models, methods and fields. It is read as data and translated
+by the client's own code, so it sends what the app would, through the same
+access rules. Results show as a table or as the JSON the call returns. A
+write (`create`, `update`, `upsert`, `delete`, `updateMany`, `deleteMany`)
+first says what it changes, including what a delete takes with it, and runs
+when you confirm it.
+
 The deployed Worker serves the studio too, at `https://<your-worker>/_tapedb/studio` (its root redirects there),
 when `worker.ts` passes it in (`tapedb init` writes this):
 
