@@ -18,7 +18,8 @@ and how to answer GDPR access and erasure requests.
 
 ## Project status
 
-0.1.0 is the first public release. The API is described, with what is stable
+Public releases are on npm as `@tapedb/tapedb` and `tapedb-cli`; see the
+[changelog](CHANGELOG.md) for the latest changes. The API is described, with what is stable
 and what is experimental, in [API.md](API.md); the design boundaries are in
 [LIMITATIONS.md](LIMITATIONS.md). The packaged CLI requires Node 22.18 or
 newer; the library itself runs in Cloudflare Workers.
@@ -34,6 +35,11 @@ default. `npx` runs the newest `tapedb-cli`, which also brings the project's
 `@tapedb/tapedb` up to the same version.
 
 ## The schema
+
+TypeScript checks literal schemas in your editor: relation targets must exist,
+each `hasMany` must have one matching `belongsTo` (or an explicit `inverse`),
+and personal fields must name a valid subject. Errors identify the model and
+field before you run the app. Dynamic schemas still use runtime validation.
 
 ```ts
 // tapedb.schema.ts
