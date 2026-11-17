@@ -12,7 +12,10 @@
  * fifty rows.
  */
 
+import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import { studioPage } from "./studio-page";
 
@@ -160,6 +163,21 @@ export function pageQuery(
 
 const PAGE = studioPage(PAGE_LIMIT);
 
+/** The brand fonts the page uses, shipped in the package's `assets/fonts`. */
+const FONTS = new Set(["space-grotesk.woff2", "inter.woff2", "jetbrains-mono.woff2"]);
+
+/** `assets/fonts` of this package, found from wherever the code runs (src or dist). */
+function fontDir(): string | null {
+  let dir = dirname(fileURLToPath(import.meta.url));
+  for (;;) {
+    const candidate = join(dir, "assets", "fonts");
+    if (existsSync(join(candidate, "inter.woff2"))) return candidate;
+    const parent = dirname(dir);
+    if (parent === dir) return null;
+    dir = parent;
+  }
+}
+
 export function startStudio(options: StudioOptions): Promise<{ url: string; close: () => void }> {
   const base = options.url.replace(/\/+$/, "");
   const state: StudioState = { token: null, workspace: options.workspace };
@@ -180,6 +198,23 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
         const upstream = await fetch(`${base}/_tapedb/workspaces`).catch(() => null);
         if (upstream?.ok) await forward(response, upstream);
         else sendJson(response, 200, { workspaces: null });
+        return;
+      }
+
+      if (url.pathname.startsWith("/fonts/")) {
+        const name = url.pathname.slice("/fonts/".length);
+        const dir = FONTS.has(name) ? fontDir() : null;
+        if (!dir) {
+          sendJson(response, 404, { error: { message: `No font ${name}` } });
+          return;
+        }
+        const bytes = readFileSync(join(dir, name));
+        response.writeHead(200, {
+          "content-type": "font/woff2",
+          "content-length": bytes.length,
+          "cache-control": "public, max-age=86400",
+        });
+        response.end(bytes);
         return;
       }
 
