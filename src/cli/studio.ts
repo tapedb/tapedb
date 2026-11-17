@@ -14,6 +14,8 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 
+import { studioPage } from "./studio-page";
+
 export interface StudioOptions {
   /** Base URL of the running Worker, e.g. http://localhost:8787 */
   url: string;
@@ -156,263 +158,7 @@ export function pageQuery(
   return { [namespace]: { $: options } };
 }
 
-const PAGE = `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8" />
-<title>tapedb studio</title>
-<style>
-  :root { color-scheme: dark; }
-  body { margin: 0; font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
-         background: #0d1117; color: #e6edf3; }
-  header { display: flex; gap: 8px; align-items: center; padding: 10px 14px;
-           border-bottom: 1px solid #21262d; flex-wrap: wrap; }
-  input, select, button, textarea { font: inherit; background: #161b22; color: #e6edf3;
-           border: 1px solid #30363d; border-radius: 6px; padding: 6px 8px; }
-  button { cursor: pointer; } button:hover { border-color: #8b949e; }
-  main { padding: 14px; display: grid; gap: 14px; }
-  table { border-collapse: collapse; width: 100%; }
-  th, td { text-align: left; padding: 4px 8px; border-bottom: 1px solid #21262d;
-           vertical-align: top; max-width: 360px; overflow: hidden; text-overflow: ellipsis; }
-  th { color: #8b949e; font-weight: 600; }
-  .muted { color: #8b949e; }
-  .err { color: #ff7b72; white-space: pre-wrap; }
-  textarea { width: 100%; min-height: 90px; }
-  #more { margin-top: 8px; }
-</style>
-</head>
-<body>
-<header>
-  <strong>tapedb</strong>
-  <select id="workspaces" title="workspaces opened before"></select>
-  <input id="workspace" placeholder="workspace uuid" size="38" />
-  <select id="namespace"><option value="">(connect)</option></select>
-  <button id="refresh">refresh</button>
-  <span id="status" class="muted"></span>
-</header>
-<main>
-  <div id="error" class="err"></div>
-  <div id="table-wrap" class="muted">no data yet</div>
-  <div>
-    <button id="more" style="display:none">load more</button>
-  </div>
-  <div>
-    <div class="muted">transact (JSON ops, sent as one transaction)</div>
-    <textarea id="ops">[{"op":"update","namespace":"boards","id":"board-1","values":{"name":"Hello"}}]</textarea>
-    <button id="send">send</button>
-  </div>
-</main>
-<script>
-const $ = (id) => document.getElementById(id);
-const LIST_KEY = "tapedb-workspaces";
-const CURRENT_KEY = "tapedb-workspace";
-const PAGE_LIMIT = ${PAGE_LIMIT};
-const MAX_REMEMBERED = 8;
-
-// The token lives on the server, keyed by workspace; the page only knows which
-// workspace is open, so switching one resets the other.
-const state = { namespace: "", cursor: null, rows: [] };
-
-function showError(message) { $("error").textContent = message || ""; }
-
-function readWorkspaces() {
-  try {
-    const parsed = JSON.parse(localStorage.getItem(LIST_KEY) || "[]");
-    if (!Array.isArray(parsed)) return [];
-    return parsed.filter((id) => typeof id === "string" && id.length > 0);
-  } catch { return []; }
-}
-
-function renderWorkspaces() {
-  const select = $("workspaces");
-  const list = [...new Set(local.concat(readWorkspaces()))];
-  select.innerHTML = "";
-  const placeholder = document.createElement("option");
-  placeholder.value = "";
-  placeholder.textContent = list.length > 0 ? "workspaces" : "no workspaces yet";
-  select.append(placeholder);
-  for (const id of list) {
-    const option = document.createElement("option");
-    option.value = id;
-    option.textContent = id.length > 12 ? id.slice(0, 8) + "…" + id.slice(-3) : id;
-    option.title = id;
-    select.append(option);
-  }
-  select.value = "";
-}
-
-function rememberWorkspace(id) {
-  if (!id) return;
-  const next = [id].concat(readWorkspaces().filter((existing) => existing !== id)).slice(0, MAX_REMEMBERED);
-  localStorage.setItem(LIST_KEY, JSON.stringify(next));
-  localStorage.setItem(CURRENT_KEY, id);
-  renderWorkspaces();
-}
-
-async function api(path, body) {
-  const response = await fetch(path, {
-    method: body === undefined ? "GET" : "POST",
-    headers: body === undefined ? {} : { "content-type": "application/json" },
-    body: body === undefined ? undefined : JSON.stringify(body),
-  });
-  const text = await response.text();
-  let parsed; try { parsed = JSON.parse(text); } catch { parsed = { raw: text }; }
-  if (!response.ok) throw new Error(parsed?.error?.message || text.slice(0, 300));
-  return parsed;
-}
-
-function workspaceId() { return $("workspace").value.trim(); }
-
-function cell(value) {
-  const text = value === null || value === undefined
-    ? ""
-    : typeof value === "object" ? JSON.stringify(value) : String(value);
-  const escaped = text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/'/g, "&#39;");
-  return "<td title='" + escaped + "'>" + escaped + "</td>";
-}
-
-// Rebuilt from every row loaded so far, so a later page can add columns the
-// first one did not have and nothing already on screen is lost.
-function renderRows() {
-  if (state.rows.length === 0) {
-    $("table-wrap").textContent = "no rows in " + state.namespace;
-    return;
-  }
-  const columns = [...new Set(state.rows.flatMap((row) => Object.keys(row)))];
-  const head = "<tr>" + columns.map((column) => "<th>" + column + "</th>").join("") + "</tr>";
-  const body = state.rows
-    .map((row) => "<tr>" + columns.map((column) => cell(row[column])).join("") + "</tr>")
-    .join("");
-  $("table-wrap").innerHTML = "<table>" + head + body + "</table>";
-}
-
-function applyPage(namespace, data, pageInfo, append) {
-  const rows = data[namespace] || [];
-  state.rows = append ? state.rows.concat(rows) : rows;
-  const info = pageInfo?.[namespace];
-  state.cursor = info && info.hasMore && info.nextCursor ? info.nextCursor : null;
-  renderRows();
-  $("more").style.display = state.cursor ? "" : "none";
-  $("status").textContent = namespace + ": " + state.rows.length + " rows" +
-    (state.cursor ? " (more available)" : "");
-}
-
-async function fetchPage(cursor) {
-  return api("/api/query", {
-    workspaceId: workspaceId(),
-    namespace: state.namespace,
-    limit: PAGE_LIMIT,
-    cursor: cursor || undefined,
-  });
-}
-
-async function loadSchema() {
-  const workspace = workspaceId();
-  if (!workspace) { showError("Enter a workspace id first."); return; }
-  showError("");
-  const { data } = await api("/api/schema", { workspaceId: workspace });
-  const select = $("namespace");
-  select.innerHTML = "";
-  for (const namespace of data.namespaces) {
-    const option = document.createElement("option");
-    option.value = namespace.apiName;
-    option.textContent = namespace.apiName + " (" + Object.keys(namespace.attributes).length + " attrs)";
-    select.append(option);
-  }
-  $("status").textContent = data.namespaces.length + " namespaces";
-  state.namespace = select.value || "";
-  state.cursor = null;
-  state.rows = [];
-  await loadRows();
-}
-
-async function loadRows() {
-  if (!state.namespace) { state.namespace = $("namespace").value; }
-  if (!state.namespace) return;
-  const { data, pageInfo } = await fetchPage(null);
-  applyPage(state.namespace, data, pageInfo, false);
-}
-
-async function loadMore() {
-  if (!state.cursor) return;
-  const { data, pageInfo } = await fetchPage(state.cursor);
-  applyPage(state.namespace, data, pageInfo, true);
-}
-
-// A workspace switch invalidates both the cached claim (server side) and the
-// rows on screen (here), so schema and first page are always fetched together.
-function connect(workspace) {
-  $("workspace").value = workspace;
-  rememberWorkspace(workspace);
-  state.cursor = null;
-  state.rows = [];
-  $("more").style.display = "none";
-  loadSchema().catch((error) => showError(error.message));
-}
-
-$("refresh").addEventListener("click", () => { loadSchema().catch((e) => showError(e.message)); });
-$("namespace").addEventListener("change", () => {
-  state.namespace = $("namespace").value;
-  state.cursor = null;
-  state.rows = [];
-  loadRows().catch((e) => showError(e.message));
-});
-$("more").addEventListener("click", () => { loadMore().catch((e) => showError(e.message)); });
-$("workspaces").addEventListener("change", () => {
-  const selected = $("workspaces").value;
-  if (selected) connect(selected);
-});
-$("workspace").addEventListener("change", () => {
-  const entered = workspaceId();
-  if (entered) connect(entered); else showError("Enter a workspace id first.");
-});
-$("send").addEventListener("click", async () => {
-  try {
-    showError("");
-    const ops = JSON.parse($("ops").value);
-    const result = await api("/api/transact", {
-      workspaceId: workspaceId(),
-      body: { txId: "studio-" + Date.now(), ops },
-    });
-    $("status").textContent = "applied seq " + (result?.result?.seq ?? "?");
-    state.cursor = null;
-    state.rows = [];
-    await loadRows();
-  } catch (error) { showError(error.message); }
-});
-
-// Local dev: open the most recently written workspace, and keep checking
-// until the first one exists. Elsewhere, the last workspace opened here.
-let local = [];
-async function loadLocal() {
-  const { workspaces } = await api("/api/workspaces");
-  if (!Array.isArray(workspaces)) return null;
-  local = workspaces.map((workspace) => workspace.id);
-  renderWorkspaces();
-  return local;
-}
-
-async function start() {
-  renderWorkspaces();
-  const saved = localStorage.getItem(CURRENT_KEY) || "";
-  const found = await loadLocal().catch(() => null);
-  if (found === null) {
-    $("workspace").value = saved;
-    if (saved) loadSchema().catch((e) => showError(e.message));
-    else showError("Enter a workspace id first.");
-    return;
-  }
-  if (found.length > 0) { connect(found.includes(saved) ? saved : found[0]); return; }
-  $("table-wrap").textContent = "No workspaces yet. Open one from your app and it shows up here.";
-  const timer = setInterval(async () => {
-    const next = await loadLocal().catch(() => []);
-    if (next && next.length > 0) { clearInterval(timer); connect(next[0]); }
-  }, 3000);
-}
-start();
-</script>
-</body>
-</html>`;
+const PAGE = studioPage(PAGE_LIMIT);
 
 export function startStudio(options: StudioOptions): Promise<{ url: string; close: () => void }> {
   const base = options.url.replace(/\/+$/, "");
@@ -449,6 +195,14 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
         if (typeof parsed.workspaceId === "string") setWorkspace(state, parsed.workspaceId);
         const upstream = await engine(base, state, "/schema");
         await forward(response, upstream);
+        return;
+      }
+
+      // The workspace's transaction count, for the page's live counter.
+      if (url.pathname === "/api/status") {
+        const parsed = parseJsonBody<{ workspaceId?: string }>(body);
+        if (typeof parsed.workspaceId === "string") setWorkspace(state, parsed.workspaceId);
+        await forward(response, await engine(base, state, "/status"));
         return;
       }
 
