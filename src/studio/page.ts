@@ -10,7 +10,15 @@
  * substitution is the page size.
  */
 
-export function studioPage(pageLimit: number): string {
+/**
+ * `local`: served by `tapedb dev`'s studio server, which signs in with the dev
+ * claim route and edits the project. `worker`: served by the deployed Worker at
+ * /_tapedb/studio, signing in the way the app does (its identity decides the role).
+ */
+export type StudioMode = "local" | "worker";
+
+export function studioPage(pageLimit: number, mode: StudioMode = "local"): string {
+  const fonts = mode === "worker" ? "/_tapedb/studio/fonts/" : "/fonts/";
   return String.raw`<!doctype html>
 <html lang="en">
 <head>
@@ -19,9 +27,9 @@ export function studioPage(pageLimit: number): string {
 <title>tapedb studio</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath fill='%23ECEEF0' fill-rule='evenodd' d='M11 10H53A7 7 0 0 1 60 17V47A7 7 0 0 1 53 54H11A7 7 0 0 1 4 47V17A7 7 0 0 1 11 10ZM13 29A8 8 0 1 0 29 29A8 8 0 1 0 13 29ZM35 29A8 8 0 1 0 51 29A8 8 0 1 0 35 29Z'/%3E%3Crect fill='%23FF6B1A' x='24' y='42' width='16' height='8' rx='1'/%3E%3C/svg%3E" />
 <style>
-@font-face { font-family: "Space Grotesk"; src: url("/fonts/space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
-@font-face { font-family: "Inter"; src: url("/fonts/inter.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
-@font-face { font-family: "JetBrains Mono"; src: url("/fonts/jetbrains-mono.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
+@font-face { font-family: "Space Grotesk"; src: url("${fonts}space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
+@font-face { font-family: "Inter"; src: url("${fonts}inter.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
+@font-face { font-family: "JetBrains Mono"; src: url("${fonts}jetbrains-mono.woff2") format("woff2"); font-weight: 100 800; font-display: swap; }
 
 /* tapedb tokens: the landing page's dark theme, and the docs' light theme. */
 :root {
@@ -112,6 +120,7 @@ body.live .top .cassette .hub { animation-play-state: running; }
 body.ff .top .cassette .hub { animation-duration: 0.4s; }
 @keyframes hub { to { transform: rotate(360deg); } }
 .top .spacer { flex: 1; }
+.who { color: var(--text-2); padding-right: 14px; border-right: 1px solid var(--line); }
 .workspace { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
 .workspace select {
   appearance: none;
@@ -337,6 +346,9 @@ td .date { color: var(--text-2); }
 .fields td.acts { width: 1%; text-align: right; }
 .fields td.acts .quiet { opacity: 0; }
 .fields tr:hover td.acts .quiet, .fields td.acts .quiet:focus-visible { opacity: 1; }
+.acts-row { display: flex; gap: 2px; justify-content: flex-end; }
+.danger-text { color: var(--accent); }
+.th-label { display: block; padding: 10px 16px; }
 .fields tr.system td { color: var(--text-3); height: 44px; }
 .flag { display: inline-block; margin-right: 6px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: var(--tag); font: 11.5px/18px var(--mono); color: var(--text-2); }
 .code-note { font: 12.5px var(--mono); color: var(--text-3); }
@@ -473,6 +485,7 @@ td .date { color: var(--text-2); }
     <span class="label">Studio</span>
   </a>
   <span class="spacer"></span>
+  <span class="label who" id="who" hidden></span>
   <div class="workspace">
     <label class="label" for="workspace">Workspace</label>
     <select id="workspace"></select>
@@ -558,6 +571,7 @@ td .date { color: var(--text-2); }
 
 <script>
 var PAGE = ${pageLimit};
+var MODE = "${mode}";
 var SYSTEM = ["createdAt", "updatedAt", "updatedSeq"];
 var CURRENT_KEY = "tapedb-workspace";
 var $ = function (id) { return document.getElementById(id); };
@@ -623,7 +637,7 @@ function icon(kind, size) {
 
 // ---- Talking to the studio server ----------------------------------------
 
-function api(path, body) {
+function localApi(path, body) {
   return fetch(path, {
     method: body === undefined ? "GET" : "POST",
     headers: body === undefined ? {} : { "content-type": "application/json" },
@@ -640,6 +654,85 @@ function api(path, body) {
     });
   });
 }
+
+
+// ---- Deployed: sign in the way the app does, call the Worker's engine routes ----
+
+var ROLES = ["Guest", "User", "Member", "Editor", "Moderator", "Admin", "Owner", "Founder", "Developer"];
+var claims = {};
+
+function readJson(response) {
+  return response.text().then(function (text) {
+    var parsed;
+    try { parsed = JSON.parse(text); } catch (e) { parsed = { raw: text }; }
+    if (!response.ok || (parsed && parsed.ok === false)) {
+      var error = new Error((parsed && parsed.error && parsed.error.message) || text.slice(0, 300) || ("HTTP " + response.status));
+      error.status = response.status;
+      throw error;
+    }
+    return parsed;
+  });
+}
+
+/** A claim for the workspace from the app's own sign-in (cookies go along). */
+function claimFor(workspace, fresh) {
+  if (!fresh && claims[workspace] && claims[workspace].until > Date.now()) return Promise.resolve(claims[workspace].token);
+  return fetch("/_tapedb/claim", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ workspaceId: workspace })
+  }).then(readJson, function () { throw new Error("The Worker could not be reached."); }).then(function (result) {
+    var seconds = typeof result.expiresIn === "number" ? result.expiresIn : 300;
+    claims[workspace] = { token: result.token, until: Date.now() + (seconds - 30) * 1000 };
+    showRole(typeof result.roleLevel === "number" ? result.roleLevel : roleIn(result.token));
+    return result.token;
+  }).catch(function (error) {
+    if (error.status === 401) throw new Error("Sign in to the app first: this studio uses its sign-in.");
+    if (error.status === 403) throw new Error("Your sign-in has no access to this workspace.");
+    throw error;
+  });
+}
+
+/** The role a claim carries (its payload is base64url JSON); only for display. */
+function roleIn(token) {
+  try {
+    var part = String(token).split(".")[1].replace(/-/g, "+").replace(/_/g, "/");
+    return JSON.parse(atob(part + "===".slice((part.length + 3) % 4))).role;
+  } catch (e) { return null; }
+}
+
+function showRole(level) {
+  if (typeof level !== "number") return;
+  var node = $("who");
+  node.hidden = false;
+  node.textContent = "Signed in as " + (ROLES[level] || "role " + level);
+}
+
+function engine(workspace, path, init) {
+  var call = function (token) {
+    var headers = { authorization: "Bearer " + token };
+    if (init && init.body) headers["content-type"] = "application/json";
+    return fetch("/engine/workspaces/" + workspace + path, { method: (init && init.method) || "GET", headers: headers, body: init && init.body });
+  };
+  return claimFor(workspace, false).then(call).then(function (response) {
+    if (response.status !== 401) return readJson(response);
+    return claimFor(workspace, true).then(call).then(readJson);
+  });
+}
+
+function workerApi(path, body) {
+  var ws = body && body.workspaceId;
+  if (path.indexOf("/api/workspaces") === 0) return Promise.resolve({ workspaces: null });
+  if (path === "/api/structure") return Promise.resolve({ editable: false, deployed: true, reason: "This is the deployed app. Change the schema in tapedb.schema.ts, then npx tapedb-cli deploy." });
+  if (path === "/api/schema") return engine(ws, "/schema");
+  if (path === "/api/query") return engine(ws, "/query", { method: "POST", body: JSON.stringify({ query: body.query }) });
+  if (path === "/api/transact") return engine(ws, "/transact", { method: "POST", body: JSON.stringify(body.body) });
+  if (path === "/api/status") return engine(ws, "/status" + (typeof body.after === "number" ? "?after=" + body.after : ""));
+  return Promise.reject(new Error("The deployed studio cannot do that."));
+}
+
+function api(path, body) { return MODE === "worker" ? workerApi(path, body) : localApi(path, body); }
 
 function query(document) { return api("/api/query", { workspaceId: app.workspace, query: document }); }
 
@@ -659,6 +752,7 @@ function el(tag, attrs, children) {
     if (value === undefined || value === null || value === false) continue;
     if (key === "text") node.textContent = value;
     else if (key === "class") node.className = value;
+    else if (key === "style") node.style.cssText = value;
     else if (key.slice(0, 2) === "on") node.addEventListener(key.slice(2), value);
     else node.setAttribute(key, value === true ? "" : value);
   }
@@ -864,10 +958,22 @@ function loadWorkspaces(known) {
   });
 }
 
+var RECENT_KEY = "tapedb-recent-workspaces";
+function recentWorkspaces() {
+  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || "[]").filter(function (id) { return typeof id === "string"; }); } catch (e) { return []; }
+}
+
 function openWorkspace(id) {
   if (!id) return;
   app.workspace = id;
   try { localStorage.setItem(CURRENT_KEY, id); } catch (e) {}
+  if (MODE === "worker") {
+    // The deployed Worker lists no workspaces: an owner of one must not learn
+    // the ids of others. The picker remembers the ones opened here.
+    var recent = [id].concat(recentWorkspaces().filter(function (other) { return other !== id; })).slice(0, 8);
+    try { localStorage.setItem(RECENT_KEY, JSON.stringify(recent)); } catch (e) {}
+    app.workspaces = recent.map(function (other) { return { id: other, updatedAt: null }; });
+  }
   app.schema = null;
   app.model = "";
   app.seq = null;
@@ -1473,6 +1579,7 @@ function loadStructure() {
 }
 
 function setView(view) {
+  if (view !== app.view) closeDrawer();
   app.view = view;
   $("tab-data").setAttribute("aria-selected", view === "data" ? "true" : "false");
   $("tab-structure").setAttribute("aria-selected", view === "structure" ? "true" : "false");
@@ -1512,6 +1619,7 @@ function renderStructure() {
   if (!structure) { box.append(el("p", { class: "hint", text: "Reading tapedb.schema.ts…" })); return; }
   if (!structure.editable) {
     box.append(el("div", { class: "notice" }, [el("span", { class: "label", text: "Read only" }), structure.reason]));
+    if (app.schema && namespace(app.model)) box.append(fieldsTable(schemaFields(app.model), null));
     return;
   }
   if (structure.pending.length > 0) {
@@ -1535,16 +1643,43 @@ function renderStructure() {
     } }),
     el("button", { class: "btn small primary", type: "button", onclick: function () { fieldForm(model.name, null); } }, [icon("plus", 14), "Add field"])
   ]));
-  var rows = model.fields.map(function (field) {
+  box.append(fieldsTable(model.fields, model.name));
+}
+
+/** The fields as the live schema has them, for the read-only view. */
+function schemaFields(model) {
+  var attrs = namespace(model).attributes;
+  var fields = [];
+  Object.keys(attrs).forEach(function (name) {
+    var attr = attrs[name];
+    var target = referenceOf(model, name);
+    var spec = target
+      ? { type: "belongsTo", target: target, optional: attr.optional || undefined }
+      : { type: attr.type, optional: attr.optional || undefined, index: attr.indexed || undefined, unique: attr.unique || undefined, default: attr.default === null ? undefined : attr.default };
+    fields.push({ name: target ? name.replace(/Id$/, "") : name, code: "", spec: spec });
+  });
+  (app.schema.links || []).forEach(function (link) {
+    if (!link.foreignKey) return;
+    var owner = link.foreignKey.namespace;
+    var other = link.forward.namespace === owner ? link.reverse : link.forward;
+    if (other.namespace === model && other.has === "many") fields.push({ name: other.label, code: "", spec: { type: "hasMany", target: owner } });
+  });
+  return fields;
+}
+
+/** The fields table; with a model name, each row offers edit, rename and delete. */
+function fieldsTable(fields, editable) {
+  var model = { name: editable };
+  var rows = fields.map(function (field) {
     var spec = field.spec;
     return el("tr", null, [
       el("td", { class: "name", text: field.name }),
       el("td", { class: "kind" }, spec ? kindText(spec) : [el("span", { class: "code-note", text: field.code })]),
       el("td", null, spec ? flags(spec, field.name) : [el("span", { class: "code-note", text: "written in code; change it in tapedb.schema.ts" })]),
-      el("td", { class: "acts" }, [el("div", { style: "display:flex;gap:2px;justify-content:flex-end" }, [
+      editable === null ? el("td") : el("td", { class: "acts" }, [el("div", { class: "acts-row" }, [
         spec ? el("button", { class: "quiet label", type: "button", text: "Edit", onclick: function () { fieldForm(model.name, field); } }) : null,
         el("button", { class: "quiet label", type: "button", text: "Rename", onclick: function () { renameFieldForm(model.name, field.name); } }),
-        el("button", { class: "quiet label", type: "button", text: "Delete", style: "color:var(--accent)", onclick: function () {
+        el("button", { class: "quiet label danger-text", type: "button", text: "Delete", onclick: function () {
           review({ kind: "deleteField", model: model.name, field: field.name }, "Delete " + model.name + "." + field.name, spec && spec.type === "hasMany" ? "A list relation stores nothing; no data is lost." : "The field and its value in every row.");
         } })
       ])])
@@ -1554,8 +1689,8 @@ function renderStructure() {
     el("td", { class: "name", text: "id" }), el("td", { text: "uuid" }),
     el("td", { colspan: "2", text: "With createdAt, updatedAt and updatedSeq: kept by tapedb on every row." })
   ]));
-  box.append(el("div", { class: "fields" }, [el("table", null, [
-    el("thead", null, [el("tr", null, ["Field", "Type", "Details", ""].map(function (h) { return el("th", null, [el("span", { class: "label", style: "display:block;padding:10px 16px", text: h })]); }))]),
+  return (el("div", { class: "fields" }, [el("table", null, [
+    el("thead", null, [el("tr", null, ["Field", "Type", "Details", ""].map(function (h) { return el("th", null, [el("span", { class: "label th-label", text: h })]); }))]),
     el("tbody", null, rows)
   ])]));
 }
@@ -1815,12 +1950,17 @@ function watchWorkspaces(onFirst) {
 function start() {
   var saved = "";
   try { saved = localStorage.getItem(CURRENT_KEY) || ""; } catch (e) {}
+  var linked = new URLSearchParams(location.search).get("workspace");
+  if (linked) saved = linked;
   loadWorkspaces().catch(function () { app.manual = true; return null; }).then(function (found) {
     renderWorkspaces();
     if (found === null) {
+      if (MODE === "worker") app.workspaces = recentWorkspaces().map(function (id) { return { id: id, updatedAt: null }; });
+      renderWorkspaces();
       if (saved) { openWorkspace(saved); return; }
       $("workspace-id").hidden = false;
-      showEmpty("Open a workspace", "Paste the id of the workspace you want to browse, at the top.");
+      var make = el("button", { class: "btn", type: "button", onclick: function () { openWorkspace(uuid7()); } }, [icon("plus", 16), "Create a workspace"]);
+      showEmpty("Open a workspace", "Paste the id of a workspace at the top, or create an empty one. Your sign-in decides what you can do in it.", make);
       return;
     }
     if (found.length > 0) {
