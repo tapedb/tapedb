@@ -195,7 +195,8 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
       // The Worker lists its local workspaces during `tapedb dev`; anywhere
       // else it has no such route and the page falls back to typing an id.
       if (url.pathname === "/api/workspaces") {
-        const upstream = await fetch(`${base}/_tapedb/workspaces`).catch(() => null);
+        const known = url.searchParams.get("known");
+        const upstream = await fetch(`${base}/_tapedb/workspaces${known === null ? "" : `?known=${encodeURIComponent(known)}`}`).catch(() => null);
         if (upstream?.ok) await forward(response, upstream);
         else sendJson(response, 200, { workspaces: null });
         return;
@@ -235,9 +236,11 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
 
       // The workspace's transaction count, for the page's live counter.
       if (url.pathname === "/api/status") {
-        const parsed = parseJsonBody<{ workspaceId?: string }>(body);
+        const parsed = parseJsonBody<{ workspaceId?: string; after?: number }>(body);
         if (typeof parsed.workspaceId === "string") setWorkspace(state, parsed.workspaceId);
-        await forward(response, await engine(base, state, "/status"));
+        // With `after`, the room answers once a transaction lands past it (or after 25 s).
+        const after = typeof parsed.after === "number" && Number.isFinite(parsed.after) ? `?after=${parsed.after}` : "";
+        await forward(response, await engine(base, state, `/status${after}`));
         return;
       }
 

@@ -135,12 +135,6 @@ body.ff .top .cassette .hub { animation-duration: 0.4s; }
   background: var(--surface);
   font: 12.5px/20px var(--mono);
 }
-.transport { display: inline-flex; align-items: center; gap: 7px; min-width: 64px; color: var(--text); }
-.transport svg { display: block; }
-.transport .rec { fill: var(--accent); }
-.transport[data-state="rec"] .rec { animation: rec 600ms steps(1, end) both; }
-.transport[data-state="stop"] { color: var(--text-3); }
-@keyframes rec { 0%, 50%, 100% { opacity: 1; } 25%, 75% { opacity: 0; } }
 
 /* ---- Sidebar -------------------------------------------------------------- */
 aside { grid-area: side; border-right: 1px solid var(--line); overflow: auto; padding: 22px 12px; }
@@ -317,6 +311,8 @@ td .date { color: var(--text-2); }
 .tape .event { display: inline-flex; align-items: center; gap: 8px; min-width: 22ch; color: var(--text); text-transform: none; letter-spacing: 0.02em; }
 .tape .event .lamp { width: 6px; height: 6px; border-radius: 1px; background: var(--accent); }
 .tape .event.idle .lamp { border-radius: 50%; background: var(--ok); }
+.tape .event.offline { color: var(--text-3); }
+.tape .event.offline .lamp { border-radius: 50%; background: var(--line-strong); }
 .tape .event.fresh { animation: enter 300ms cubic-bezier(0.2, 0.7, 0.1, 1) both; }
 @keyframes enter { from { transform: translateY(6px); opacity: 0; } to { transform: none; opacity: 1; } }
 
@@ -434,11 +430,10 @@ td .date { color: var(--text-2); }
     <select id="workspace"></select>
     <input id="workspace-id" type="text" placeholder="Paste a workspace id" hidden />
   </div>
-  <span class="transport label" id="transport" data-state="stop" role="status" aria-live="polite"></span>
 </header>
 
 <aside>
-  <div class="label"><span>Models</span><span>Rows</span></div>
+  <div class="label" id="models-head" hidden><span>Models</span><span>Rows</span></div>
   <nav id="models" aria-label="Models"></nav>
 </aside>
 
@@ -462,7 +457,7 @@ td .date { color: var(--text-2); }
   </div>
 </main>
 
-<footer class="tape label" aria-label="Transaction tape">
+<footer class="tape label" id="tape" aria-label="Transaction tape" hidden>
   <span>Transaction tape</span>
   <div class="ticks" id="ticks" aria-hidden="true">
     <svg><defs><pattern id="tick" width="40" height="14" patternUnits="userSpaceOnUse"><line x1="0.5" y1="1" x2="0.5" y2="13"/><line x1="8.5" y1="7" x2="8.5" y2="13"/><line x1="16.5" y1="7" x2="16.5" y2="13"/><line x1="24.5" y1="7" x2="24.5" y2="13"/><line x1="32.5" y1="7" x2="32.5" y2="13"/></pattern></defs><rect width="100%" height="14" fill="url(#tick)"/><line x1="0" y1="13.5" x2="100%" y2="13.5"/></svg>
@@ -513,7 +508,6 @@ var app = {
   creating: false,
   dirty: false,
   seq: null,
-  polling: null,
   manual: false,
   labels: {},
   marks: {}
@@ -657,27 +651,17 @@ function uuid7() {
 
 // ---- Transport, tape and cassette -----------------------------------------
 
-function setTransport(state) {
-  var node = $("transport");
-  node.dataset.state = state;
-  node.innerHTML = "";
-  var glyph = document.createElementNS(SVG, "svg");
-  glyph.setAttribute("width", "10"); glyph.setAttribute("height", "10"); glyph.setAttribute("viewBox", "0 0 10 10"); glyph.setAttribute("aria-hidden", "true");
-  var shape;
-  if (state === "rec") {
-    shape = document.createElementNS(SVG, "circle");
-    shape.setAttribute("cx", "5"); shape.setAttribute("cy", "5"); shape.setAttribute("r", "4"); shape.setAttribute("class", "rec");
-  } else if (state === "play") {
-    shape = document.createElementNS(SVG, "path");
-    shape.setAttribute("d", "M2.5 1.5L8.5 5L2.5 8.5Z"); shape.setAttribute("fill", "currentColor");
-  } else {
-    shape = document.createElementNS(SVG, "rect");
-    shape.setAttribute("x", "2"); shape.setAttribute("y", "2"); shape.setAttribute("width", "6"); shape.setAttribute("height", "6"); shape.setAttribute("fill", "currentColor");
+/** Connected or not: the reels turn while the studio follows the workspace. */
+function setConnected(connected) {
+  document.body.classList.toggle("live", connected);
+  var node = $("event");
+  if (!connected) {
+    node.className = "event offline";
+    $("event-text").textContent = "local database not reachable";
+  } else if (node.classList.contains("offline")) {
+    node.className = "event idle";
+    $("event-text").textContent = "workspace.ready";
   }
-  glyph.append(shape);
-  node.append(glyph, el("span", { text: state === "rec" ? "Rec" : state === "play" ? "Play" : "Stop" }));
-  node.setAttribute("aria-label", state === "play" ? "Live" : state === "rec" ? "Write received" : "Not connected");
-  document.body.classList.toggle("live", state !== "stop");
 }
 
 var recTimer = null;
@@ -693,10 +677,9 @@ function recordOnTape(seq, event) {
   ticks.classList.remove("advance");
   void ticks.offsetWidth;
   ticks.classList.add("advance");
-  setTransport("rec");
   document.body.classList.add("ff");
   clearTimeout(recTimer);
-  recTimer = setTimeout(function () { document.body.classList.remove("ff"); setTransport("play"); }, 700);
+  recTimer = setTimeout(function () { document.body.classList.remove("ff"); }, 700);
 }
 
 // ---- Schema ---------------------------------------------------------------
@@ -801,8 +784,8 @@ function renderWorkspaces() {
   select.value = app.workspace || "";
 }
 
-function loadWorkspaces() {
-  return api("/api/workspaces").then(function (result) {
+function loadWorkspaces(known) {
+  return api("/api/workspaces" + (typeof known === "number" ? "?known=" + known : "")).then(function (result) {
     if (!Array.isArray(result.workspaces)) { app.manual = true; return null; }
     app.workspaces = result.workspaces;
     return app.workspaces;
@@ -822,6 +805,8 @@ function openWorkspace(id) {
   renderWorkspaces();
   api("/api/schema", { workspaceId: id }).then(function (result) {
     app.schema = result.data;
+    $("tape").hidden = false;
+    $("models-head").hidden = app.schema.namespaces.length === 0;
     var first = app.schema.namespaces[0];
     renderModels();
     if (first) selectModel(first.apiName);
@@ -867,25 +852,34 @@ function refreshCounts() {
 
 // ---- Live: follow the workspace's sequence --------------------------------
 
+/**
+ * Follows the workspace: the room answers when a transaction lands (or after
+ * 25 s with nothing new), so this is one request per write, not a timer.
+ */
+var watching = 0;
 function poll() {
-  clearTimeout(app.polling);
-  if (!app.workspace) return;
   var workspace = app.workspace;
-  api("/api/status", { workspaceId: workspace }).then(function (result) {
-    if (workspace !== app.workspace) return;
+  var run = ++watching;
+  if (!workspace) return;
+  var body = { workspaceId: workspace };
+  if (app.seq !== null) body.after = app.seq;
+  api("/api/status", body).then(function (result) {
+    if (run !== watching) return;
+    setConnected(true);
     var seq = (result.durability && result.durability.seq) || 0;
     var previous = app.seq;
     app.seq = seq;
-    if ($("transport").dataset.state === "stop") setTransport("play");
     if (previous === null) { $("counter").textContent = "tx_" + pad(seq, 4); return; }
     if (seq === previous) return;
     return Promise.all([refreshCounts(), reloadRows(previous)]).then(function (results) {
       recordOnTape(seq, describeWrite(results[0], results[1], seq - previous));
     });
-  }).catch(function () {
-    setTransport("stop");
   }).then(function () {
-    app.polling = setTimeout(poll, document.hidden ? 6000 : 1500);
+    if (run === watching) poll();
+  }, function () {
+    if (run !== watching) return;
+    setConnected(false);
+    setTimeout(function () { if (run === watching) poll(); }, 3000);
   });
 }
 
@@ -1394,8 +1388,20 @@ function showEmpty(title, text, extra) {
   $("grid").append(el("div", { class: "empty" }, [cassette, stopped(el("h2"), title), el("p", { text: text }), extra || null]));
 }
 
+/** Waits for new local workspaces: one request per change, or per 25 s. */
+function watchWorkspaces(onFirst) {
+  if (app.manual) return;
+  loadWorkspaces(app.workspaces.length).then(function (list) {
+    if (list === null) return;
+    renderWorkspaces();
+    if (onFirst && list.length > 0) { onFirst(list[0].id); onFirst = null; }
+    watchWorkspaces(onFirst);
+  }, function () {
+    setTimeout(function () { watchWorkspaces(onFirst); }, 3000);
+  });
+}
+
 function start() {
-  setTransport("stop");
   var saved = "";
   try { saved = localStorage.getItem(CURRENT_KEY) || ""; } catch (e) {}
   loadWorkspaces().catch(function () { app.manual = true; return null; }).then(function (found) {
@@ -1408,19 +1414,13 @@ function start() {
     }
     if (found.length > 0) {
       openWorkspace(found.some(function (w) { return w.id === saved; }) ? saved : found[0].id);
+      watchWorkspaces(null);
       return;
     }
-    var snippet = el("pre", null, [el("b", { text: "await" }), " db.task.create({\n  data: { title: \"First row\" },\n});"]);
-    showEmpty("Nothing on the tape yet", "Open a workspace from your app and it shows up here, with every write as it lands.", snippet);
-    var wait = setInterval(function () {
-      loadWorkspaces().then(function (next) {
-        if (next && next.length > 0) { clearInterval(wait); renderWorkspaces(); openWorkspace(next[0].id); }
-      }).catch(function () {});
-    }, 2000);
+    var create = el("button", { class: "btn primary", type: "button", onclick: function () { openWorkspace(uuid7()); } }, [icon("plus", 16), "Create a workspace"]);
+    showEmpty("No workspaces yet", "Workspaces your app opens appear here by themselves. To look around first, create an empty one.", create);
+    watchWorkspaces(function (id) { if (!app.workspace) openWorkspace(id); });
   });
-  setInterval(function () {
-    if (!app.manual) loadWorkspaces().then(function () { renderWorkspaces(); }).catch(function () {});
-  }, 15000);
 }
 start();
 </script>

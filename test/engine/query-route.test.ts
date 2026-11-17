@@ -253,3 +253,42 @@ describe("WorkspaceRoom query route", () => {
     expect(anonymous.status).toBe(403);
   });
 });
+
+describe("GET /status?after=", () => {
+  let room: InstanceType<typeof WorkspaceRoom>;
+  beforeEach(async () => {
+    const db = new Database(":memory:");
+    db.exec(SCHEMA);
+    const context = new FakeContext(db, WORKSPACE);
+    room = new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: { get: async () => null } } as unknown as Env);
+    await context.ready;
+  });
+  const headers = (role: number) => ({ "content-type": "application/json", "x-tapedb-claims": encodeTrustedRoleClaim(claim(role)) });
+  const status = (after: number) =>
+    room.fetch(new Request(`http://test/status?after=${after}`, { headers: headers(WORKSPACE_ROLE_LEVELS.MEMBER) }));
+  const seqOf = async (response: Response) => ((await response.json()) as { durability: { seq: number } }).durability.seq;
+  const write = (name: string) =>
+    room.fetch(new Request("http://test/transact", {
+      method: "POST",
+      headers: headers(WORKSPACE_ROLE_LEVELS.EDITOR),
+      body: JSON.stringify({ txId: `t-${name}`, ops: [{ op: "update", namespace: "kanbanBoards", id: crypto.randomUUID(), values: { name } }] }),
+    }));
+
+  test("waits for the next transaction, and answers as soon as it commits", async () => {
+    let answered = false;
+    const pending = status(0).then((response) => { answered = true; return response; });
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(answered).toBe(false);
+    expect((await write("one")).status).toBe(200);
+    const response = await pending;
+    expect(answered).toBe(true);
+    expect(await seqOf(response)).toBe(1);
+  });
+
+  test("answers at once when the workspace is already past it", async () => {
+    await write("one");
+    const started = Date.now();
+    expect(await seqOf(await status(0))).toBe(1);
+    expect(Date.now() - started).toBeLessThan(50);
+  });
+});
