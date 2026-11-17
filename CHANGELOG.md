@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.14 - 2026-11-17
+
+- The studio no longer fills the `tapedb dev` log. It checked the workspace list every 2 seconds and the open workspace every 1.5 seconds, and wrangler logged each request. Both now wait for a change: `GET /engine/workspaces/:id/status?after=<seq>` answers when a transaction lands past `seq`, or after 25 seconds, and the local workspace list does the same with `?known=<count>`. An idle studio now adds one log line per 25 seconds, and writes show up sooner.
+- The studio's empty screen offers "Create a workspace" in place of a code sample. The PLAY/STOP indicator is gone. The tape and the Models heading appear once a workspace is open.
+
 ## 0.1.13 - 2026-11-17
 
 - The studio now uses the tapedb brand from tapedb.dev. It has the cassette mark, whose hubs turn while the studio is live, signal orange, and the Space Grotesk, Inter and JetBrains Mono fonts. The fonts ship in the package, so the studio works offline; they are licensed under the OFL (`assets/fonts/OFL.txt`). A PLAY/REC indicator shows the connection. A transaction tape along the bottom steps on with every write and names it (`task.create`). Rows that just arrived or changed are tagged NEW or CHANGED. True and false values show the landing page's check and ring glyphs. The studio is dark by default and follows the docs' light theme.

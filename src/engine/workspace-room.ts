@@ -92,6 +92,8 @@ type CountRow = Record<string, SqlStorageValue> & { total: number };
 
 /** Delay between a write and the first durability pass. */
 const DURABILITY_ALARM_DELAY_MS = 30_000;
+/** How long `/status?after=` waits for a new transaction before answering anyway. */
+const STATUS_WAIT_MS = 25_000;
 /** How long a recovery waits after R2 failed to answer. */
 const RECOVERY_R2_RETRY_MS = 5_000;
 
@@ -141,6 +143,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
   /** Namespaces touched since the current debounce window opened. */
   private pendingInvalidationNamespaces = new Set<string>();
+  /** Status requests waiting for the next transaction (`/status?after=`). */
+  private sequenceWaiters = new Set<() => void>();
 
   private personal?: PersonalRuntime;
   private erased = false;
@@ -539,6 +543,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
         if (error instanceof TxError) return apiError(403, error.code, error.message);
         throw error;
       }
+      // `?after=<seq>`: answer once the workspace is past that sequence, or after
+      // STATUS_WAIT_MS, so a watcher asks once per change instead of on a timer.
+      const after = Number(url.searchParams.get("after"));
+      if (url.searchParams.has("after") && Number.isFinite(after) && this.highWaterSeq() <= after) {
+        await this.waitForSequence(after, STATUS_WAIT_MS);
+      }
       return this.status();
     }
 
@@ -827,6 +837,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         });
       }
 
+      this.wakeSequenceWaiters();
       // Replays and no-op deletes changed no rows; do not re-run queries.
       const touched = touchedNamespacesFromEnvelope(envelope);
       if (result.applied > 0 && touched.size > 0) {
@@ -1673,7 +1684,35 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
   // ---- Invalidation --------------------------------------------------------
 
+  /** The workspace's transaction sequence: the last one committed. */
+  private highWaterSeq(): number {
+    const row = this.ctx.storage.sql.exec<{ seq: number | null }>(`SELECT high_water_seq AS seq FROM "_tx_state" WHERE "id" = 1`).toArray()[0];
+    return row?.seq ?? 0;
+  }
+
+  /** Resolves when the sequence passes `after`, or after `ms`. */
+  private waitForSequence(after: number, ms: number): Promise<void> {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (this.highWaterSeq() <= after) return;
+        done();
+      };
+      const done = () => {
+        clearTimeout(timer);
+        this.sequenceWaiters.delete(check);
+        resolve();
+      };
+      const timer = setTimeout(done, ms);
+      this.sequenceWaiters.add(check);
+    });
+  }
+
+  private wakeSequenceWaiters(): void {
+    for (const check of [...this.sequenceWaiters]) check();
+  }
+
   private scheduleInvalidation(namespaces: Iterable<string>): void {
+    this.wakeSequenceWaiters();
     if (this.erased) return;
     for (const namespace of namespaces) {
       this.pendingInvalidationNamespaces.add(namespace);
