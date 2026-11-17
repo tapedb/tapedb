@@ -34,7 +34,7 @@ test("deployment reuses a bucket and secret, scopes commands to the chosen accou
     calls.push(args);
     let stdout = "";
     if (args[0] === "whoami") stdout = JSON.stringify({ accounts: [{ id: "account", name: "My account" }] });
-    if (args[0] === "r2" && args[2] === "list") stdout = "\u001b[1mname:\u001b[0m app-data\ncreation_date: 2026-01-01\n";
+    if (args[0] === "r2" && args[2] === "create" && args[3] === "app-data") return { status: 1, stdout: "", stderr: "\u001b[31m✘ [ERROR]\u001b[0m The bucket you tried to create already exists, and you own it. [code: 10004]" };
     if (args[0] === "secret") stdout = JSON.stringify([{ name: "TAPEDB_CLAIM_SECRET" }]);
     if (args[0] === "deploy") {
       secretFile = args[args.indexOf("--secrets-file") + 1]!;
@@ -46,7 +46,8 @@ test("deployment reuses a bucket and secret, scopes commands to the chosen accou
   const config: DeployConfig = { account_id: "account", name: "app", vars: { ENVIRONMENT: "development" }, r2_buckets: [{ binding: "DATA", bucket_name: "app-data" }, { binding: "FILES", bucket_name: "app-files" }] };
   const factory = (_root: string, account?: string) => { if (account) expect(account).toBe("account"); return command; };
   expect(await provisionAndDeploy(root, config, undefined, true, factory)).toBe(0);
-  expect(calls.filter(args => args[0] === "r2" && args[2] === "create").map(args => args[3])).toEqual(["app-files"]);
+  expect(calls.filter(args => args[0] === "r2" && args[2] === "list")).toEqual([]);
+  expect(calls.filter(args => args[0] === "r2" && args[2] === "create").map(args => args[3])).toEqual(["app-data", "app-files"]);
   expect(config.vars!.ENVIRONMENT).toBe("production");
   expect(existsSync(secretFile)).toBe(false);
 });
@@ -147,4 +148,47 @@ test.each([
   };
   await expect(provisionAndDeploy(root, { account_id: "account", name: "app" }, undefined, true, () => command)).rejects.toThrow("Secret lookup failed");
   expect(deployed).toBe(false);
+});
+
+test("buckets the account already owns are kept, however many buckets it has", async () => {
+  // `wrangler r2 bucket list` shows only the API's first page (20 buckets), so on a larger
+  // account it omits existing ones; creating answers 10004 for a bucket the account owns.
+  const owned = "✘ [ERROR] A request to the Cloudflare API (/accounts/account/r2/buckets) failed.\n\n  The bucket you tried to create already exists, and you own it. [code: 10004]\n";
+  const root = project();
+  const created: string[] = [];
+  let deployed = false;
+  const command: WranglerCommand = (args) => {
+    if (args[0] === "whoami") return { status: 0, stdout: JSON.stringify({ accounts: [{ id: "account", name: "Account" }] }), stderr: "" };
+    if (args[0] === "r2" && args[2] === "list") return { status: 0, stdout: Array.from({ length: 20 }, (_, i) => `name: other-${i}\ncreation_date: 2026-01-01`).join("\n\n"), stderr: "" };
+    if (args[0] === "r2" && args[2] === "create") {
+      if (args[3] === "app-data") return { status: 1, stdout: "", stderr: owned };
+      created.push(args[3]!);
+    }
+    if (args[0] === "secret") return { status: 0, stdout: "[]", stderr: "" };
+    if (args[0] === "deploy") deployed = true;
+    return { status: 0, stdout: "", stderr: "" };
+  };
+  const config: DeployConfig = { account_id: "account", name: "app", r2_buckets: [{ binding: "DATA", bucket_name: "app-data" }, { binding: "FILES", bucket_name: "app-files" }] };
+  expect(await provisionAndDeploy(root, config, undefined, true, () => command)).toBe(0);
+  expect(created).toEqual(["app-files"]);
+  expect(deployed).toBe(true);
+});
+
+test("a bucket another account owns, or any other create failure, stops deployment", async () => {
+  for (const stderr of [
+    "The bucket you tried to create already exists. [code: 10004]",
+    "✘ [ERROR] Authentication error [code: 10000]",
+  ]) {
+    const root = project();
+    let deployed = false;
+    const command: WranglerCommand = (args) => {
+      if (args[0] === "whoami") return { status: 0, stdout: JSON.stringify({ accounts: [{ id: "account", name: "Account" }] }), stderr: "" };
+      if (args[0] === "r2" && args[2] === "create") return { status: 1, stdout: "", stderr };
+      if (args[0] === "deploy") deployed = true;
+      return { status: 0, stdout: "[]", stderr: "" };
+    };
+    const config: DeployConfig = { account_id: "account", name: "app", r2_buckets: [{ binding: "DATA", bucket_name: "app-data" }] };
+    await expect(provisionAndDeploy(root, config, undefined, true, () => command)).rejects.toThrow("R2 bucket creation failed");
+    expect(deployed).toBe(false);
+  }
 });

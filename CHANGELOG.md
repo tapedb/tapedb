@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.7 - 2026-11-17
+
+- Cloud setup no longer fails with "R2 bucket creation failed … already exists, and you own it" on an account with more than 20 R2 buckets. `wrangler r2 bucket list` shows only the first 20, so setup missed buckets it had created on an earlier run and created them again. It now creates each bucket and keeps one the account already owns (Cloudflare code 10004); a bucket owned by another account, or any other failure, still stops setup.
+
 ## 0.1.6 - 2026-11-16
 
 - A first cloud deploy no longer stops at "Secret lookup failed". Wrangler 4.163 reports a Worker that doesn't exist yet as `Worker "<name>" not found.` without the API's 10007 code, which setup didn't recognise; it now treats that answer, for the Worker being deployed, as "no secrets yet" and generates them.
