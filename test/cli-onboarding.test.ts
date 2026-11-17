@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ignoreLocalFiles, missingSecrets, provisionAndDeploy, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
+import { ignoreLocalFiles, installProject, missingSecrets, olderExactVersion, provisionAndDeploy, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -190,5 +190,33 @@ test("a bucket another account owns, or any other create failure, stops deployme
     const config: DeployConfig = { account_id: "account", name: "app", r2_buckets: [{ binding: "DATA", bucket_name: "app-data" }] };
     await expect(provisionAndDeploy(root, config, undefined, true, () => command)).rejects.toThrow("R2 bucket creation failed");
     expect(deployed).toBe(false);
+  }
+});
+
+test("only an exact older release counts as outdated", () => {
+  expect(olderExactVersion("0.1.4", "0.1.7")).toBe(true);
+  expect(olderExactVersion("0.1.9", "0.2.0")).toBe(true);
+  expect(olderExactVersion("0.1.10", "0.1.9")).toBe(false);
+  expect(olderExactVersion("0.1.7", "0.1.7")).toBe(false);
+  expect(olderExactVersion("0.2.0", "0.1.7")).toBe(false);
+  for (const chosen of ["^0.1.4", "~0.1.4", "latest", "workspace:*", "file:../tapedb", "0.1.4-beta.1", "", undefined]) {
+    expect(olderExactVersion(chosen, "0.1.7")).toBe(false);
+  }
+});
+
+test("init moves a project's exact older tapedb to its own version and keeps chosen ranges", () => {
+  const cases: Array<[Record<string, unknown>, string, string]> = [
+    [{ dependencies: { "@tapedb/tapedb": "0.1.4" } }, "dependencies", "0.1.7"],
+    [{ devDependencies: { "@tapedb/tapedb": "0.1.4" } }, "devDependencies", "0.1.7"],
+    [{ dependencies: { "@tapedb/tapedb": "^0.1.4" } }, "dependencies", "^0.1.4"],
+    [{ dependencies: { "@tapedb/tapedb": "0.2.0" } }, "dependencies", "0.2.0"],
+  ];
+  for (const [manifest, field, expected] of cases) {
+    const root = project();
+    // An unsupported manager stops installProject after package.json is written, before any install runs.
+    writeFileSync(join(root, "package.json"), JSON.stringify({ ...manifest, packageManager: "deno@2.0.0" }));
+    expect(() => installProject(root, "0.1.7")).toThrow("Unsupported package manager");
+    const written = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+    expect(written[field]["@tapedb/tapedb"]).toBe(expected);
   }
 });
