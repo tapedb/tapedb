@@ -1,5 +1,5 @@
 /**
- * The query editor's translator, bundled into the studio page (see
+ * The query editor's translator, and import and export, bundled into the studio page (see
  * scripts/gen-studio-runner.mjs): a call as written in app code becomes the
  * engine request the client would send for it.
  */
@@ -30,3 +30,4 @@ export function prepare(source: string, schema: SchemaDocument): Prepared {
 }
 
 export { READ_METHODS, WRITE_METHODS };
+export { toCsv, toJson, readTable, planImport } from "./table-io";
