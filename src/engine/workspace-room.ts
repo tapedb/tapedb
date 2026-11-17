@@ -2111,6 +2111,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
           kind: link.kind,
           forward: link.forward,
           reverse: link.reverse,
+          foreignKey: { namespace: link.foreignKey.namespace, attribute: link.foreignKey.attribute },
         })),
       },
     });

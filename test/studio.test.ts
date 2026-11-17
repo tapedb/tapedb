@@ -198,7 +198,7 @@ beforeAll(async () => {
 }, 60_000);
 
 describe("studio page", () => {
-  test("serves the browser page with the workspace picker and load-more control", async () => {
+  test("serves the browser page: workspace picker, models, counter, table, row editor", async () => {
     const { studio, shutdown } = await stack();
     try {
       const response = await fetch(`${studio.url}/`);
@@ -206,10 +206,9 @@ describe("studio page", () => {
       expect(response.headers.get("content-type")).toContain("text/html");
       const html = await response.text();
       expect(html).toContain("<title>tapedb studio</title>");
-      // The two controls this slice adds, by id, so the page cannot lose them.
-      expect(html).toContain('id="workspaces"');
-      expect(html).toContain('id="more"');
-      expect(html).toContain("tapedb-workspaces");
+      for (const id of ["workspace", "models", "digits", "grid", "more", "drawer", "editor", "delete"]) {
+        expect(html).toContain(`id="${id}"`);
+      }
     } finally {
       await shutdown();
     }

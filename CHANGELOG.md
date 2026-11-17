@@ -2,6 +2,8 @@
 
 ## 0.1.11 - 2026-11-17
 
+- A new studio. Models are listed with their row counts, and rows show in a table with typed columns: dates are readable, and relations show the related row's name and open it. Rows can be sorted by any column and filtered by field. Clicking a row opens it in an editor, which has a field for each type, a picker for relations, the rows that point to it, and two-step deletion. Rows can be added from the studio. A counter shows the workspace's transaction count, and the table refreshes as writes land. The studio follows the system's light or dark mode and works on a phone.
+- The schema endpoint (`GET /engine/workspaces/:id/schema`) also names the field that stores each link (`links[].foreignKey`).
 - During `npx tapedb-cli dev` the studio opens the most recent local workspace by itself, without asking for an id. A workspace is listed as soon as the app opens it, and the list holds every workspace with local data. Without workspaces the studio says so and opens the first one when it appears. Deployed Workers have no such list, so the studio still asks for an id there.
 
 ## 0.1.10 - 2026-11-17
