@@ -295,13 +295,26 @@ export class FakeR2Bucket {
     prefix?: string;
     cursor?: string;
     limit?: number;
+    delimiter?: string;
   }): Promise<{
     objects: unknown[];
     truncated: boolean;
     cursor?: string;
+    delimitedPrefixes: string[];
   }> {
     const prefix = options.prefix ?? "";
     const limit = options.limit ?? 1000;
+    if (options.delimiter) {
+      // R2 groups keys below the next delimiter into one prefix.
+      const prefixes = new Set<string>();
+      const objects: unknown[] = [];
+      for (const key of [...this.objects.keys()].filter((key) => key.startsWith(prefix)).sort()) {
+        const at = key.indexOf(options.delimiter, prefix.length);
+        if (at === -1) objects.push(this.objectFor(key));
+        else prefixes.add(key.slice(0, at + options.delimiter.length));
+      }
+      return { objects, truncated: false, delimitedPrefixes: [...prefixes] };
+    }
     const keys = [...this.objects.keys()]
       .filter((key) => key.startsWith(prefix))
       .sort();
@@ -313,6 +326,7 @@ export class FakeR2Bucket {
       objects: page.map((key) => this.objectFor(key)),
       truncated,
       ...(truncated ? { cursor: String(start + limit) } : {}),
+      delimitedPrefixes: [],
     };
   }
 

@@ -225,11 +225,11 @@ function readWorkspaces() {
 
 function renderWorkspaces() {
   const select = $("workspaces");
-  const list = readWorkspaces();
+  const list = [...new Set(local.concat(readWorkspaces()))];
   select.innerHTML = "";
   const placeholder = document.createElement("option");
   placeholder.value = "";
-  placeholder.textContent = list.length > 0 ? "recent workspaces" : "no saved workspaces";
+  placeholder.textContent = list.length > 0 ? "workspaces" : "no workspaces yet";
   select.append(placeholder);
   for (const id of list) {
     const option = document.createElement("option");
@@ -381,9 +381,35 @@ $("send").addEventListener("click", async () => {
   } catch (error) { showError(error.message); }
 });
 
-renderWorkspaces();
-$("workspace").value = localStorage.getItem(CURRENT_KEY) || "";
-loadSchema().catch((e) => showError(e.message));
+// Local dev: open the most recently written workspace, and keep checking
+// until the first one exists. Elsewhere, the last workspace opened here.
+let local = [];
+async function loadLocal() {
+  const { workspaces } = await api("/api/workspaces");
+  if (!Array.isArray(workspaces)) return null;
+  local = workspaces.map((workspace) => workspace.id);
+  renderWorkspaces();
+  return local;
+}
+
+async function start() {
+  renderWorkspaces();
+  const saved = localStorage.getItem(CURRENT_KEY) || "";
+  const found = await loadLocal().catch(() => null);
+  if (found === null) {
+    $("workspace").value = saved;
+    if (saved) loadSchema().catch((e) => showError(e.message));
+    else showError("Enter a workspace id first.");
+    return;
+  }
+  if (found.length > 0) { connect(found.includes(saved) ? saved : found[0]); return; }
+  $("table-wrap").textContent = "No workspaces yet. Open one from your app and it shows up here.";
+  const timer = setInterval(async () => {
+    const next = await loadLocal().catch(() => []);
+    if (next && next.length > 0) { clearInterval(timer); connect(next[0]); }
+  }, 3000);
+}
+start();
 </script>
 </body>
 </html>`;
@@ -399,6 +425,15 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
       if (url.pathname === "/") {
         response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         response.end(PAGE);
+        return;
+      }
+
+      // The Worker lists its local workspaces during `tapedb dev`; anywhere
+      // else it has no such route and the page falls back to typing an id.
+      if (url.pathname === "/api/workspaces") {
+        const upstream = await fetch(`${base}/_tapedb/workspaces`).catch(() => null);
+        if (upstream?.ok) await forward(response, upstream);
+        else sendJson(response, 200, { workspaces: null });
         return;
       }
 

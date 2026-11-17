@@ -174,3 +174,64 @@ describe("GET / during local dev", () => {
     for (const [worker, vars, method] of cases) expect((await get(worker, vars, method)).status).toBe(404);
   });
 });
+
+describe("the studio's workspace list during local dev", () => {
+  const devWorker = defineTapeDB({ schema: schema({ note: model({ body: t.string() }) }), devClaims: true });
+  const OLDER = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a01";
+  const NEWER = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a02";
+  function bucket() {
+    const data = new FakeR2Bucket();
+    data.seed(`ws/${OLDER}/manifest.json`, "{}", 1_000);
+    data.seed(`ws/${OLDER}/log/1-2.ndjson`, "", 1_000);
+    data.seed(`ws/${NEWER}/manifest.json`, "{}", 5_000);
+    data.seed("ws/not-a-workspace/manifest.json", "{}", 9_000);
+    data.seed("users/someone/avatar/x.png", "", 9_000);
+    return data;
+  }
+  const list = (worker: typeof tapedb, vars: Record<string, string>) =>
+    worker.worker.fetch(
+      new Request("http://localhost:8787/_tapedb/workspaces"),
+      { ...room().env, DATA: bucket(), TAPEDB_DEV_CLAIMS: "true", ...vars } as never,
+      {} as ExecutionContext
+    );
+
+  test("lists workspaces with data, most recently written first", async () => {
+    const response = await list(devWorker, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400" });
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ workspaces: [{ id: NEWER, updatedAt: 5_000 }, { id: OLDER, updatedAt: 1_000 }] });
+  });
+
+  test("is not served outside `tapedb dev`", async () => {
+    for (const [worker, vars] of [
+      [devWorker, {}],
+      [devWorker, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400", ENVIRONMENT: "production" }],
+      [devWorker, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400", TAPEDB_DEV_CLAIMS: "false" }],
+      [tapedb, { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400" }],
+    ] as Array<[typeof tapedb, Record<string, string>]>) {
+      expect((await list(worker, vars)).status).toBe(404);
+    }
+  });
+});
+
+test("during `tapedb dev`, a workspace is listed as soon as the app claims it, before any write", async () => {
+  const devWorker = defineTapeDB({ schema: schema({ note: model({ body: t.string() }) }), devClaims: true });
+  const fresh = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a03";
+  const data = new FakeR2Bucket();
+  data.clock = 7_000;
+  const env = (vars: Record<string, string>) => ({ ...room().env, DATA: data, TAPEDB_DEV_CLAIMS: "true", ...vars }) as never;
+  const claim = (vars: Record<string, string>, workspaceId: string) => devWorker.worker.fetch(
+    new Request("http://localhost:8787/_tapedb/claim", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ workspaceId }) }),
+    env(vars), {} as ExecutionContext
+  );
+  const dev = { TAPEDB_STUDIO_URL: "http://127.0.0.1:4400" };
+
+  expect((await claim(dev, fresh)).status).toBe(200);
+  const listed = await devWorker.worker.fetch(new Request("http://localhost:8787/_tapedb/workspaces"), env(dev), {} as ExecutionContext);
+  expect(await listed.json()).toEqual({ workspaces: [{ id: fresh, updatedAt: 7_000 }] });
+
+  // Nothing is noted without a `tapedb dev` studio, or for a refused claim.
+  data.objects.clear();
+  expect((await claim({}, fresh)).status).toBe(200);
+  expect((await claim(dev, "not-a-uuid")).status).toBe(400);
+  expect([...data.objects.keys()]).toEqual([]);
+});
