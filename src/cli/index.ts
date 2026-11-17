@@ -16,7 +16,7 @@
 
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { basename, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as nodeModule from "node:module";
@@ -451,7 +451,6 @@ async function init(argv: string[]): Promise<number> {
   // Choosing cloud setup already expresses the deployment decision.
   if (cloud) return deploy(["--dir", target, "--yes"]);
   console.log(`\nReady. Start the database with ${CLI} dev`);
-  console.log(`Open its table browser with ${CLI} studio`);
   if (interactive() && flags["no-start"] !== true && flags.yes !== true && await confirm("Start the local database now?", true)) {
     return dev(["--dir", target]);
   }
@@ -483,7 +482,7 @@ Commands:
   migrate status | check
           List migrations; check fails if the schema has unmigrated changes.
   deploy  [--env <name>] [--yes]  Select an account, provision missing resources and secrets, and deploy.
-  dev     Run the local database with wrangler dev on port 8787.
+  dev     Run the local database on port 8787, with the studio beside it.
   studio  Open a local table browser against a running Worker.
   export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).
   erase   Delete a workspace for good: its data, history and files (owner claim).
@@ -492,7 +491,7 @@ Commands:
   return 0;
 }
 
-function dev(argv: string[]): number {
+async function dev(argv: string[]): Promise<number> {
   const flags = parseFlags(argv);
   const target = resolve(typeof flags.dir === "string" ? flags.dir : ".");
   const port = typeof flags.port === "string" ? flags.port : "8787";
@@ -514,7 +513,13 @@ function dev(argv: string[]): number {
     return 1;
   }
 
-  const run = spawnSync(
+  // The studio comes with the database: on 4400, or any free port when that is taken.
+  const worker = `http://localhost:${port}`;
+  const studio = await startStudio({ url: worker, workspace: "", port: 4400 })
+    .catch(() => startStudio({ url: worker, workspace: "", port: 0 }));
+  console.log(`\n  Database  ${worker}\n  Studio    ${studio.url}   (also at ${worker}/)\n`);
+
+  const child = spawn(
     "npx",
     [
       "--no-install",
@@ -530,10 +535,22 @@ function dev(argv: string[]): number {
       // Deployed, TAPEDB_JURISDICTION from wrangler.jsonc applies.
       "--var",
       "TAPEDB_JURISDICTION:",
+      // GET / on the local Worker opens the studio.
+      "--var",
+      `TAPEDB_STUDIO_URL:${studio.url}`,
     ],
     { cwd: target, stdio: "inherit" }
   );
-  return run.status ?? 1;
+  // Ctrl+C reaches wrangler too; the studio closes when it exits.
+  const ignore = () => {};
+  process.on("SIGINT", ignore);
+  const status = await new Promise<number>((done) => {
+    child.on("error", () => done(1));
+    child.on("exit", (code) => done(code ?? 1));
+  });
+  process.off("SIGINT", ignore);
+  studio.close();
+  return status;
 }
 
 /**

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.10 - 2026-11-17
+
+- `npx tapedb-cli dev` starts the studio with the database and prints both addresses. Opening the local Worker's address (`http://localhost:8787/`) goes to the studio instead of answering `no_route`. The redirect needs dev claims, a non-production environment and a loopback studio address, so a deployed Worker never has it.
+
 ## 0.1.9 - 2026-11-17
 
 - New package `tapedb-cli`: run `npx tapedb-cli init`, `npx tapedb-cli dev` and `npx tapedb-cli deploy`, with no flags. `npx @tapedb/tapedb` inside a project ran the project's installed copy, which could be older; `tapedb-cli` isn't installed in the project, so `npx` fetches the newest one. It runs the `@tapedb/tapedb` release of the same version.
