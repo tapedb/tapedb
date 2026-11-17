@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.11 - 2026-11-17
+
+- During `npx tapedb-cli dev` the studio opens the most recent local workspace by itself, without asking for an id. A workspace is listed as soon as the app opens it, and the list holds every workspace with local data. Without workspaces the studio says so and opens the first one when it appears. Deployed Workers have no such list, so the studio still asks for an id there.
+
 ## 0.1.10 - 2026-11-17
 
 - `npx tapedb-cli dev` starts the studio with the database and prints both addresses. Opening the local Worker's address (`http://localhost:8787/`) goes to the studio instead of answering `no_route`. The redirect needs dev claims, a non-production environment and a loopback studio address, so a deployed Worker never has it.

@@ -41,7 +41,7 @@ async function readJson(request: IncomingMessage): Promise<any> {
 }
 
 /** A stand-in for the Worker: a claim route and the three engine routes. */
-function startFake(): Promise<FakeUpstream> {
+function startFake(listsWorkspaces = false): Promise<FakeUpstream> {
   const claims: string[] = [];
   const requests: Recorded[] = [];
   const unauthorized = { schema: 0, query: 0, transact: 0 };
@@ -68,6 +68,11 @@ function startFake(): Promise<FakeUpstream> {
     if (url.pathname === "/_tapedb/claim" && request.method === "POST") {
       claims.push(String(body?.workspaceId ?? ""));
       json(200, { token: `token-${claims.length}` });
+      return;
+    }
+
+    if (url.pathname === "/_tapedb/workspaces" && listsWorkspaces) {
+      json(200, { workspaces: [{ id: "ws-new", updatedAt: 2 }, { id: "ws-old", updatedAt: 1 }] });
       return;
     }
 
@@ -419,4 +424,18 @@ describe("pageQuery", () => {
       boards: { $: { limit: 10, order: { id: "asc" } } },
     });
   });
+});
+
+test("lists the Worker's local workspaces, or none where the Worker has no list", async () => {
+  for (const lists of [true, false]) {
+    const upstream = await startFake(lists);
+    const studio = await startStudio({ url: upstream.url, workspace: "", port: 0 });
+    try {
+      const listed = await (await fetch(`${studio.url}/api/workspaces`)).json();
+      expect(listed).toEqual({ workspaces: lists ? [{ id: "ws-new", updatedAt: 2 }, { id: "ws-old", updatedAt: 1 }] : null });
+    } finally {
+      studio.close();
+      upstream.close();
+    }
+  }
 });

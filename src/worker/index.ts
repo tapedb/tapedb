@@ -208,6 +208,42 @@ function localStudio(env: Env, devClaims: boolean): string | null {
   }
 }
 
+/** Where `tapedb dev` notes the workspaces the app opened; never written deployed. */
+const LOCAL_WORKSPACES = "dev/workspaces/";
+
+async function noteLocalWorkspace(bucket: R2Bucket, request: { json(): Promise<unknown> }): Promise<void> {
+  const body = (await request.json().catch(() => null)) as { workspaceId?: unknown } | null;
+  const id = body?.workspaceId;
+  if (typeof id === "string" && isWorkspaceId(id)) await bucket.put(`${LOCAL_WORKSPACES}${id}`, "");
+}
+
+/**
+ * The local workspaces, most recently opened or written first: those the app
+ * opened during `tapedb dev`, and those with data in the bucket.
+ */
+async function localWorkspaces(bucket: R2Bucket): Promise<Array<{ id: string; updatedAt: number | null }>> {
+  const seen = new Map<string, number | null>();
+  const note = (id: string, at: number | null) => {
+    if (!isWorkspaceId(id)) return;
+    const known = seen.get(id) ?? null;
+    seen.set(id, at === null ? known : Math.max(known ?? 0, at));
+  };
+  for (const [prefix, delimiter] of [[LOCAL_WORKSPACES, undefined], ["ws/", "/"]] as const) {
+    let cursor: string | undefined;
+    do {
+      const page = await bucket.list({ prefix, ...(delimiter ? { delimiter } : {}), ...(cursor ? { cursor } : {}) });
+      for (const object of page.objects) note(object.key.slice(prefix.length), object.uploaded.getTime());
+      for (const found of page.delimitedPrefixes ?? []) note(found.slice(prefix.length, -1), null);
+      cursor = page.truncated ? page.cursor : undefined;
+    } while (cursor && seen.size < 1000);
+  }
+  const listed = await Promise.all([...seen].map(async ([id, at]) => {
+    const manifest = await bucket.head(`ws/${id}/manifest.json`);
+    return { id, updatedAt: Math.max(at ?? 0, manifest ? manifest.uploaded.getTime() : 0) || null };
+  }));
+  return listed.sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0));
+}
+
 export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   const { schema, identity, devClaims = false, migrations } = options;
   // Validated once, when the Worker is defined.
@@ -242,13 +278,22 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
         if (studio) return Response.redirect(studio, 302);
       }
 
+      // The studio's workspace picker, during `tapedb dev` only.
+      if (url.pathname === "/_tapedb/workspaces" && request.method === "GET" && localStudio(env, devClaims)) {
+        return json({ workspaces: await localWorkspaces(env.DATA) });
+      }
+
       if (url.pathname === "/_tapedb/claim") {
-        return handleClaimRequest(request, {
+        const opened = localStudio(env, devClaims) ? request.clone() : null;
+        const claimed = await handleClaimRequest(request, {
           env,
           identity,
           devClaims,
           ...(claimLimits.ip || claimLimits.subject ? { limit: (kind, value) => takeClaimToken(env, claimLimits, kind, value) } : {}),
         });
+        // During `tapedb dev`, note the workspace so the studio lists it before its first flush.
+        if (opened && claimed.ok) await noteLocalWorkspace(env.DATA, opened);
+        return claimed;
       }
 
       if (!url.pathname.startsWith(`${ENGINE_PREFIX}/`)) {
