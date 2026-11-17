@@ -351,6 +351,11 @@ td.editing input { width: 100%; min-width: 120px; height: 36px; padding: 0 8px; 
 .menu .pop label:hover { background: var(--surface); }
 .menu .pop input { accent-color: var(--accent); }
 .menu .pop.recent { left: auto; right: 0; width: min(520px, 70vw); }
+.menu .pop.end { left: auto; right: 0; min-width: 280px; }
+.pop .pop-head { padding: 8px 8px 2px; text-transform: none; letter-spacing: 0.02em; }
+.pop .pop-item { display: flex; width: 100%; justify-content: space-between; gap: 16px; padding: 6px 8px; border: 0; border-radius: var(--control); background: none; text-align: left; cursor: pointer; color: var(--text); font-size: 14px; }
+.pop .pop-item:hover { background: var(--surface); }
+.pop .pop-item .hint { font: 12.5px var(--mono); color: var(--text-3); }
 .pop.recent button { display: block; width: 100%; padding: 6px 8px; border: 0; border-radius: var(--control); background: none; text-align: left; cursor: pointer; font: 13px/20px var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .pop.recent button:hover { background: var(--surface); }
 .impact { margin: 0; padding-left: 18px; }
@@ -588,6 +593,9 @@ td .many { font: 12.5px var(--mono); color: var(--text-3); }
     </div>
     <span class="total label num" id="total"></span>
     <span class="spacer"></span>
+    <div class="menu" id="export-menu"></div>
+    <button class="btn" id="import" type="button">Import</button>
+    <input type="file" id="import-file" accept=".csv,.json,text/csv,application/json" hidden />
     <button class="btn primary" id="add" type="button">Add row</button>
   </div>
   <div class="tabs" id="tabs" role="tablist" hidden>
@@ -1512,6 +1520,7 @@ function saveStaged() {
 // ---- Selection and bulk actions --------------------------------------------------
 
 function renderBulk() {
+  if (app.schema && app.model) exportMenu();
   var bar = $("bulk");
   var picked = Object.keys(app.picked);
   var edits = stagedCount();
@@ -1972,6 +1981,8 @@ function setView(view) {
   $("panel").hidden = !data;
   $("filters").hidden = !data;
   $("add").hidden = !data;
+  $("import").hidden = !data;
+  $("export-menu").hidden = !data;
   $("structure").hidden = data;
   if ($("bulk")) renderBulk();
   if (!data) renderStructure();
@@ -3021,6 +3032,156 @@ function renderRecent() {
     if (event.key === "Tab" && !event.shiftKey) { event.preventDefault(); input.setRangeText("  ", input.selectionStart, input.selectionEnd, "end"); codeChanged(); }
   });
 })();
+
+// ---- Import and export -------------------------------------------------------
+//
+// tapedbRunner (src/studio/table-io.ts) writes and reads the files and plans
+// the writes with the client's own code; this part fetches, downloads and runs.
+
+/** Rows per transaction on import. A file up to this size imports whole or not at all. */
+var IMPORT_CHUNK = 5000;
+
+function download(name, text, type) {
+  var url = URL.createObjectURL(new Blob([text], { type: type }));
+  var link = el("a", { href: url, download: name });
+  document.body.append(link);
+  link.click();
+  link.remove();
+  setTimeout(function () { URL.revokeObjectURL(url); }, 2000);
+}
+
+function exportRows(scope, format) {
+  var model = app.model;
+  var picked = Object.keys(app.picked);
+  var where = scope === "selected" ? { id: { $in: picked } } : scope === "view" ? whereClause() : undefined;
+  var order = {};
+  order[app.order.field] = app.order.dir;
+  var doc = {};
+  doc[model] = { $: { order: order } };
+  if (where) doc[model].$.where = where;
+  query(doc).then(function (result) {
+    var rows = (result.data || {})[model] || [];
+    var text = format === "csv" ? tapedbRunner.toCsv(app.schema, model, rows) : tapedbRunner.toJson(app.schema, model, rows);
+    download(model + "." + format, text, format === "csv" ? "text/csv;charset=utf-8" : "application/json");
+    toast("Exported " + rows.length + (rows.length === 1 ? " row" : " rows") + " to " + model + "." + format);
+  }).catch(fail);
+}
+
+function exportMenu() {
+  var wrap = $("export-menu");
+  wrap.innerHTML = "";
+  var picked = Object.keys(app.picked).length;
+  var narrowed = app.filters.length > 0 || !!app.search;
+  var scopes = [];
+  if (picked) scopes.push(["selected", picked === 1 ? "The selected row" : "The " + picked + " selected rows"]);
+  if (narrowed) scopes.push(["view", "Rows this search and filter show" + (app.total === null ? "" : " (" + app.total + ")")]);
+  scopes.push(["all", "All rows" + (app.counts[app.model] === undefined ? "" : " (" + app.counts[app.model] + ")")]);
+  var button = el("button", { class: "btn", type: "button", "aria-expanded": "false", text: "Export" });
+  var pop = el("div", { class: "pop end", hidden: true });
+  scopes.forEach(function (scope) {
+    pop.append(el("div", { class: "pop-head label", text: scope[1] }));
+    ["csv", "json"].forEach(function (format) {
+      pop.append(el("button", { class: "pop-item", type: "button", onclick: function () {
+        pop.hidden = true;
+        button.setAttribute("aria-expanded", "false");
+        exportRows(scope[0], format);
+      } }, [format === "csv" ? "CSV" : "JSON", el("span", { class: "hint", text: app.model + "." + format })]));
+    });
+  });
+  button.addEventListener("click", function (event) {
+    event.stopPropagation();
+    pop.hidden = !pop.hidden;
+    button.setAttribute("aria-expanded", pop.hidden ? "false" : "true");
+  });
+  pop.addEventListener("click", function (event) { event.stopPropagation(); });
+  wrap.append(button, pop);
+}
+
+/** How many of these ids are rows already, asked in chunks. */
+function existing(model, ids) {
+  var chunks = [];
+  for (var i = 0; i < ids.length; i += 500) chunks.push(ids.slice(i, i + 500));
+  return Promise.all(chunks.map(function (chunk) {
+    var doc = {};
+    doc[model] = { $: { where: { id: { $in: chunk } }, count: true, limit: 0 } };
+    return query(doc).then(function (result) { return ((result.pageInfo || {})[model] || {}).count || 0; });
+  })).then(function (counts) { return counts.reduce(function (a, b) { return a + b; }, 0); });
+}
+
+function importFile(file) {
+  var model = app.model;
+  file.text().then(function (text) {
+    var planned;
+    try {
+      planned = tapedbRunner.planImport(app.schema, model, tapedbRunner.readTable(file.name, text));
+    } catch (error) {
+      openSheet(model, "Cannot import " + file.name, [el("div", { class: "notice warn" }, [el("span", { class: "label", text: "Not imported" }), error.message])], "Import", null);
+      $("sheet-go").disabled = true;
+      return;
+    }
+    return existing(model, planned.ids).then(function (found) { showImport(model, file.name, planned, found); });
+  }).catch(fail);
+}
+
+function showImport(model, name, planned, found) {
+  var total = planned.rows.length;
+  var rowsText = function (n) { return n === 1 ? "1 row" : n + " rows"; };
+  var lines = [];
+  if (planned.creates) lines.push("Creates " + rowsText(planned.creates) + " without an id, with " + (planned.creates === 1 ? "a new id." : "new ids."));
+  if (found) lines.push("Updates " + rowsText(found) + " whose id exists, with the file's values.");
+  if (planned.upserts - found) lines.push("Creates " + rowsText(planned.upserts - found) + " with the ids in the file.");
+  if (planned.ignored.length) lines.push("Leaves out " + planned.ignored.join(", ") + ": " + (planned.ignored.length === 1 ? "not a field" : "not fields") + " of " + model + ".");
+  if (planned.system.length) lines.push("Keeps " + planned.system.join(", ") + " as the database sets them.");
+  var chunks = Math.ceil(total / IMPORT_CHUNK);
+  // With values to fix, only what to fix (and which columns are left out) matters.
+  if (planned.errors.length) lines = planned.ignored.length ? [lines.filter(function (line) { return /^Leaves out/.test(line); })[0]] : [];
+  else if (total) lines.push(chunks === 1 ? "Runs in one transaction: every row, or none." : "Runs as " + chunks + " transactions of up to " + IMPORT_CHUNK + " rows. If one fails, the ones before it stay.");
+  var body = [el("p", { class: "hint", text: name })];
+  if (planned.errors.length) {
+    var shown = planned.errors.slice(0, 8);
+    body.push(el("div", { class: "notice warn" }, [
+      el("span", { class: "label", text: "Fix the file first" }),
+      planned.errors.length === 1 ? "One value does not fit its field:" : planned.errors.length + " values do not fit their fields:",
+      el("ul", { class: "impact" }, shown.map(function (e) { return el("li", { class: "refused", text: "Row " + e.row + ": " + e.message }); }).concat(planned.errors.length > shown.length ? [el("li", { text: "and " + (planned.errors.length - shown.length) + " more." })] : []))
+    ]));
+  }
+  if (!planned.errors.length && total === 0) body.push(el("p", { text: "The file has no rows." }));
+  if (lines.length) body.push(el("ul", { class: "impact" }, lines.map(function (line) { return el("li", { text: line }); })));
+  var title = planned.errors.length ? "Cannot import " + name : "Import " + rowsText(total) + " into " + model;
+  openSheet(model, title, body, "Import " + rowsText(total), null);
+  var go = $("sheet-go");
+  go.disabled = planned.errors.length > 0 || total === 0;
+  sheetGo = function () {
+    go.disabled = true;
+    var done = 0;
+    var next = function () {
+      if (done >= total) return Promise.resolve();
+      var ops = [];
+      planned.rows.slice(done, done + IMPORT_CHUNK).forEach(function (rowOps) { ops = ops.concat(rowOps); });
+      go.textContent = chunks > 1 ? "Importing " + Math.min(done + IMPORT_CHUNK, total) + " of " + total + "…" : "Importing…";
+      return transact(ops).then(function () { done = Math.min(done + IMPORT_CHUNK, total); return next(); });
+    };
+    next().then(function () {
+      closeSheet();
+      toast("Imported " + rowsText(total) + " into " + model);
+      reloadRows();
+      refreshCounts();
+    }).catch(function (error) {
+      fail(done ? new Error("Imported " + rowsText(done) + ", then: " + error.message) : error);
+      go.disabled = false;
+      go.textContent = "Import " + rowsText(total - done);
+      planned.rows = planned.rows.slice(done);
+      total -= done;
+      done = 0;
+    });
+  };
+}
+
+$("import").addEventListener("click", function () { $("import-file").value = ""; $("import-file").click(); });
+$("import-file").addEventListener("change", function (event) {
+  var file = event.target.files && event.target.files[0];
+  if (file) importFile(file);
+});
 
 function start() {
   var saved = "";
