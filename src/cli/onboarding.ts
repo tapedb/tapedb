@@ -167,8 +167,18 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
     const file = join(temp, "secrets.json");
     writeFileSync(file, JSON.stringify(secrets), { mode: 0o600 });
     const result = command(["deploy", ...environmentArgs, ...(Object.keys(secrets).length ? ["--secrets-file", file] : [])]);
+    if (result.status === 0 && servesStudio(root)) console.log("\n  Studio: open the address above; it is at /_tapedb/studio.");
     return result.status ?? 1;
   } finally { rmSync(temp, { recursive: true, force: true }); }
+}
+
+/** Whether worker.ts passes the studio to defineTapeDB. */
+export function servesStudio(root: string): boolean {
+  try {
+    return /from\s+["']@tapedb\/tapedb\/studio["']/.test(readFileSync(join(root, "worker.ts"), "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 /** The name Wrangler deploys under: an environment without its own name gets `<name>-<env>`. */
