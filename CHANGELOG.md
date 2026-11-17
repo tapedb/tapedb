@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.8 - 2026-11-17
+
+- Running `init` again with a newer tapedb moves the project's `@tapedb/tapedb` to that version when the project pins an exact older one, which an earlier `init` wrote, and says so (`updated  @tapedb/tapedb 0.1.4 → 0.1.8`). Before, the project kept the old version, so `npx @tapedb/tapedb deploy` and the deployed Worker ran it. Ranges, tags, links and newer versions are left as they are.
+
 ## 0.1.7 - 2026-11-17
 
 - Cloud setup no longer fails with "R2 bucket creation failed … already exists, and you own it" on an account with more than 20 R2 buckets. `wrangler r2 bucket list` shows only the first 20, so setup missed buckets it had created on an earlier run and created them again. It now creates each bucket and keeps one the account already owns (Cloudflare code 10004); a bucket owned by another account, or any other failure, still stops setup.

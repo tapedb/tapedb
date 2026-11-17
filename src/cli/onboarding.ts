@@ -12,8 +12,17 @@ export function installProject(root: string, version: string): void {
   const pkg = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { private: true, type: "module" };
   pkg.dependencies ??= {};
   pkg.devDependencies ??= {};
-  // Preserve the host project's selected versions.
+  // Preserve the host project's selected versions, except an exact older one, which an earlier
+  // init wrote: rerunning a newer init would otherwise keep running the old package.
   if (!pkg.dependencies["@tapedb/tapedb"] && !pkg.devDependencies["@tapedb/tapedb"]) pkg.dependencies["@tapedb/tapedb"] = version;
+  else {
+    const field = pkg.dependencies["@tapedb/tapedb"] ? "dependencies" : "devDependencies";
+    const pinned = pkg[field]["@tapedb/tapedb"];
+    if (olderExactVersion(pinned, version)) {
+      pkg[field]["@tapedb/tapedb"] = version;
+      console.log(`  updated  @tapedb/tapedb ${pinned} → ${version}`);
+    }
+  }
   if (!pkg.dependencies.wrangler && !pkg.devDependencies.wrangler) pkg.devDependencies.wrangler = "^4.163.0";
   pkg.scripts ??= {};
   for (const [name, command] of Object.entries({ "tapedb:dev": "tapedb dev", "tapedb:studio": "tapedb studio", "tapedb:deploy": "tapedb deploy" })) {
@@ -26,6 +35,21 @@ export function installProject(root: string, version: string): void {
   console.log("\nInstalling project dependencies with " + manager + "...");
   const result = spawnSync(manager, ["install"], { cwd: root, stdio: "inherit" });
   if (result.status !== 0) throw new Error("Dependency installation failed; rerun init to resume.");
+}
+
+/**
+ * Whether `pinned` is an exact release (`1.2.3`) older than `current`. Ranges, tags, links and
+ * prereleases are someone's choice and are never changed.
+ */
+export function olderExactVersion(pinned: unknown, current: string): boolean {
+  const exact = /^(\d+)\.(\d+)\.(\d+)$/;
+  const a = typeof pinned === "string" ? exact.exec(pinned) : null;
+  const b = exact.exec(current);
+  if (!a || !b) return false;
+  for (let i = 1; i <= 3; i++) {
+    if (Number(a[i]) !== Number(b[i])) return Number(a[i]) < Number(b[i]);
+  }
+  return false;
 }
 
 export function ignoreLocalFiles(root: string): void {
