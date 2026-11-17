@@ -8,7 +8,7 @@
 
 import { apiError, discardBody, json } from "./http";
 import { isWorkspaceId } from "./engine/r2-keys";
-import { claimSecretProblem } from "./claims";
+import { claimSecretProblem, isRoleLevel, WORKSPACE_ROLE_LEVELS } from "./claims";
 import { mintClaim, mintDevClaim, type ClaimIdentity } from "./mint";
 import type { LimitDecision } from "./engine/claim-limits";
 
@@ -79,13 +79,19 @@ export async function handleClaimRequest(
       return apiError(400, "invalid_body", "Request body must be a JSON object.");
     }
 
-    const workspaceId =
-      typeof body === "object" && body !== null && !Array.isArray(body)
-        ? (body as Record<string, unknown>).workspaceId
-        : undefined;
+    const fields = typeof body === "object" && body !== null && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+    const workspaceId = fields.workspaceId;
 
     if (typeof workspaceId !== "string" || !isWorkspaceId(workspaceId)) {
       return apiError(400, "invalid_workspace_id", "workspaceId must be a UUID.");
+    }
+    // In development any caller is anyone: `role` and `sub` choose who, to try
+    // the access rules as another role or user. Without them: OWNER, dev-user.
+    const role = fields.role === undefined ? WORKSPACE_ROLE_LEVELS.OWNER : fields.role;
+    if (!isRoleLevel(role)) return apiError(400, "invalid_role", "role must be a role level from 0 to 8.");
+    const sub = fields.sub === undefined ? "dev-user" : fields.sub;
+    if (typeof sub !== "string" || sub.trim().length === 0 || sub.length > 256) {
+      return apiError(400, "invalid_sub", "sub must be a non-empty user id of at most 256 characters.");
     }
 
     const secretProblem = claimSecretProblem(env.TAPEDB_CLAIM_SECRET);
@@ -93,8 +99,8 @@ export async function handleClaimRequest(
       return apiError(500, "claim_secret_missing", secretProblem);
     }
 
-    const minted = await mintDevClaim(workspaceId, env.TAPEDB_CLAIM_SECRET);
-    return json({ token: minted.token, workspaceId, expiresIn: minted.expiresIn });
+    const minted = await mintDevClaim(workspaceId, env.TAPEDB_CLAIM_SECRET, { sub, role });
+    return json({ token: minted.token, workspaceId, roleLevel: role, expiresIn: minted.expiresIn });
   }
 
   if (!identity) {

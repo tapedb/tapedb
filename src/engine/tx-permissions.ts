@@ -468,3 +468,28 @@ export const PERMISSION_MATRIX = {
   defaults: DEFAULT_PERMISSIONS,
   overrides: NAMESPACE_OVERRIDES,
 } as const;
+
+/** How one action of a namespace is decided, for tooling. */
+export type AccessDescription =
+  | { rule: "role"; role: number }
+  /** The rows this caller may read: the rule's filter for them, as OR branches. None means no row (also when the rule throws). */
+  | { rule: "filter"; where: readonly QueryWhere[] }
+  | { rule: "check" };
+
+/**
+ * Each action's decision for a namespace. A `filter` rule is evaluated for
+ * the caller, so tooling can show what it narrows their reads to.
+ */
+export function describeAccess(
+  claim: RoleClaim,
+  namespace: string
+): Record<"read" | "create" | "update" | "delete", AccessDescription> {
+  const describe = (action: PermissionAction): AccessDescription => {
+    const decision = decisionFor(namespace, action);
+    if (typeof decision === "number") return { rule: "role", role: decision };
+    if (isViewWhereRule(decision)) return { rule: "filter", where: viewWhereBranches(claim, namespace) ?? [] };
+    return { rule: "check" };
+  };
+  return { read: describe("view"), create: describe("create"), update: describe("update"), delete: describe("delete") };
+}
+

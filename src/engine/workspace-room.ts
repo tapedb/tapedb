@@ -54,14 +54,14 @@ import { exportStream } from "./export";
 import { importWorkspace, assertEmpty } from "./import-workspace";
 import { readMove, readMoveWithRetries, writeMove, sourceEnvironment, jurisdiction, copyWorkspace, type MoveState } from "./workspace-move";
 import { flushPending, snapshotWorkspace } from "./durability";
-import { viewDependsOnSubject } from "./tx-permissions";
+import { describeAccess, viewDependsOnSubject } from "./tx-permissions";
 import { isTopic, REPLAY_MESSAGES, topicAllowed, topicReplayMs } from "./topics";
 import { auditEnabled, dropAuditCapture, rowHistory, syncAuditCapture } from "./audit";
 import { findNamespace } from "./registry";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { MAX_SOCKET_MESSAGE_BYTES } from "../socket-protocol";
 import { SocketLimitError, acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
-import { authorizeFile, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
+import { authorizeFile, describeFileAccess, fileRulesConfigured, readableFiles, type FileInfo } from "./file-access";
 import { readTrustedRoleClaim } from "./trusted-claim";
 import { migratePersonal } from "./personal-migrate";
 import { PersonalRuntime, hasPersonalFields, personalKeyPrefix } from "./personal";
@@ -588,7 +588,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
           `${request.method} is not supported for ${url.pathname}.`
         );
       }
-      return this.schemaDocument();
+      return this.schemaDocument(readTrustedRoleClaim(request, this.workspaceId));
     }
 
     if (url.pathname === "/query") {
@@ -2124,9 +2124,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   /** Registry snapshot for tooling: API names, attribute types and links. */
-  private schemaDocument(): Response {
+  private schemaDocument(claim: RoleClaim): Response {
     const namespaces = Object.values(NAMESPACES).map((namespace) => ({
       apiName: namespace.apiName,
+      // Who may do what, with filter rules evaluated for this caller.
+      access: describeAccess(claim, namespace.apiName),
       table: namespace.table,
       attributes: Object.fromEntries(
         Object.entries(namespace.attributes).map(([name, definition]) => [
@@ -2148,6 +2150,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     return json({
       ok: true,
       data: {
+        // Who the document was built for: filters in `access` are theirs.
+        caller: { sub: claim.sub, role: claim.role },
+        files: describeFileAccess(),
         namespaces,
         links: Object.values(LINKS).map((link) => ({
           apiName: link.apiName,
