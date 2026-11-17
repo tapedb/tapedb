@@ -493,3 +493,12 @@ export function describeAccess(
   return { read: describe("view"), create: describe("create"), update: describe("update"), delete: describe("delete") };
 }
 
+
+/**
+ * True when the caller may read every row of the namespace: its read rule is a
+ * role level they meet. Filter and check rules decide per row, so no.
+ */
+export function readsEveryRow(claim: RoleClaim, namespace: string): boolean {
+  const decision = decisionFor(namespace, "view");
+  return typeof decision === "number" && claim.role >= decision;
+}

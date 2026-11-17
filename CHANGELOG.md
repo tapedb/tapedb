@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.22 - 2026-11-17
+
+- The studio has a History page: the transaction log, newest first and live, filterable by model, for admins and owners. Each transaction shows what it wrote per model ("task: 5,000 created"), and opens to its operations, row by row with links to the rows, and the values written. With `audit: true` it names the writer and role.
+- Values in the history are shown only for models whose read rule is a role the caller meets; for a model with a filter or check read rule, only which fields were written. Personal fields never show a value. Workspaces with personal fields log whole rows after each write; the history reads those as creates, updates and deletes.
+- A row's panel lists its changes (with `audit: true`), each linking to its transaction; its last write opens the same way, and so does the counter on the transaction tape.
+- New route `GET /engine/workspaces/:id/log` (ADMIN or higher), described in API.md.
+
 ## 0.1.21 - 2026-11-17
 
 - The studio has an Access page: each model's read, create, update and delete rule and the files' rules, with the roles a role rule lets through, what a filter rule narrows reads to for the signed-in caller (as a filter in words, such as `done = false`), and under `tapedb dev` each rule as written in `tapedb.schema.ts`.
