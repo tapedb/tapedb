@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.15 - 2026-11-17
+
+- The studio edits the schema. Each model has a Structure tab listing its fields: their types, relations, defaults and indexes. From there you can add, edit, rename and delete fields, and create, rename and delete models; deleting a model also removes the relations and access rules that name it. Every change is previewed first: the edit to `tapedb.schema.ts`, the migration SQL, and what it deletes, with the row count. Applying it writes the schema and the migration as `migrate dev` does, and the local database reloads with them. Only the edited entries change in the file.
+- The studio's routes answer only the studio's own page: requests from another origin or host name, and writes without a JSON body, are refused. The studio now writes files, so a page on another site must not reach it.
+
 ## 0.1.14 - 2026-11-17
 
 - The studio no longer fills the `tapedb dev` log. It checked the workspace list every 2 seconds and the open workspace every 1.5 seconds, and wrangler logged each request. Both now wait for a change: `GET /engine/workspaces/:id/status?after=<seq>` answers when a transaction lands past `seq`, or after 25 seconds, and the local workspace list does the same with `?known=<count>`. An idle studio now adds one log line per 25 seconds, and writes show up sooner.

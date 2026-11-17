@@ -2,7 +2,7 @@ import { check, model, role, schema, t } from "@tapedb/tapedb/schema";
 
 /**
  * The whole database. After changing it, run
- *   npx @tapedb/tapedb migrate dev --name <what changed>
+ *   npx tapedb-cli migrate dev --name <what changed>
  * and commit what it writes under tapedb/.
  */
 export default schema({
