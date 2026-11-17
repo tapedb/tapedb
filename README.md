@@ -423,6 +423,14 @@ read-only there: change `tapedb.schema.ts` and deploy. The page runs under a
 content security policy that allows only its own script, styles and fonts.
 Without `studio`, nothing is served at that path.
 
+"Access" lists each model's rules for read, create, update and delete, and the
+files' rules: the roles a role rule lets through, what a filter narrows reads
+to for whoever the studio is signed in as, and, under `tapedb dev`, each rule
+as written in `tapedb.schema.ts`. The button at the top right switches who
+that is: under `tapedb dev`, any role and user id; on the deployed Worker,
+your own user at your role or a lower one. The data, the query console and
+the access table then show and do exactly what that role or user can.
+
 ## Files and presence
 
 ```ts
@@ -683,6 +691,9 @@ export default tapedb.worker;
 ```
 
 `POST /_tapedb/claim` returns `{ token, workspaceId, roleLevel, expiresAt, expiresIn }`.
+With `role` in the body it mints a claim at that role, which must be the
+caller's own role or a lower one: the studio uses this to show a workspace as
+a lower role sees it.
 The route is rate-limited out of the box: a token bucket per caller IP, checked
 before your session lookup, and one per subject, checked after it. The buckets
 live in Durable Objects, so a count is exact and global rather than per

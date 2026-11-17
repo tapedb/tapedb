@@ -34,6 +34,11 @@ export interface RoleClaim {
   aud?: string;
 }
 
+/** True for a whole role level from GUEST (0) to DEVELOPER (8). */
+export function isRoleLevel(value: unknown): value is WorkspaceRole {
+  return typeof value === "number" && Number.isInteger(value) && value >= WORKSPACE_ROLE_LEVELS.GUEST && value <= WORKSPACE_ROLE_LEVELS.DEVELOPER;
+}
+
 export function hasRoleLevel(
   role: WorkspaceRole,
   minimum: WorkspaceRole

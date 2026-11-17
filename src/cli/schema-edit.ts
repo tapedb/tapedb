@@ -198,6 +198,58 @@ export function parseSchemaSource(src: string): ParsedSchema {
   return { models, modelsObject, options };
 }
 
+// ---- Access rules as code -----------------------------------------------------
+
+export interface AccessSource {
+  /** Per model, each action's rule as written: `filter(({ auth }) => ...)`. */
+  models: Record<string, Record<string, string>>;
+  /** The `files` option's rules as written. */
+  files: Record<string, string>;
+}
+
+function entriesAsCode(src: string, object: ObjectLiteral): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const entry of object.entries) out[entry.key] = src.slice(entry.valueStart, entry.valueEnd);
+  return out;
+}
+
+/** The access rules as written in the schema file, for the studio to show next to what they decide. */
+export function accessSource(src: string): AccessSource {
+  const parsed = parseSchemaSource(src);
+  const models: AccessSource["models"] = {};
+  for (const model of parsed.models) {
+    // model({ ... }) then a chain: .access({ ... }), and whatever else follows.
+    let i = skipTrivia(src, model.fields.close + 1);
+    if (src[i] !== ")") continue;
+    i = skipTrivia(src, i + 1);
+    while (i < model.entry.valueEnd && src[i] === ".") {
+      const name = /^[A-Za-z_$][A-Za-z0-9_$]*/.exec(src.slice(skipTrivia(src, i + 1)))?.[0];
+      if (!name) break;
+      const paren = skipTrivia(src, skipTrivia(src, i + 1) + name.length);
+      if (src[paren] !== "(") break;
+      const argument = skipTrivia(src, paren + 1);
+      if (name === "access" && src[argument] === "{") {
+        try {
+          models[model.name] = entriesAsCode(src, parseObject(src, argument));
+        } catch {
+          // Written in a way this reader does not follow: the studio shows the rule's effect only.
+        }
+      }
+      i = skipTrivia(src, matching(src, paren) + 1);
+    }
+  }
+  let files: Record<string, string> = {};
+  const option = parsed.options?.entries.find((entry) => entry.key === "files");
+  if (option && src[option.valueStart] === "{") {
+    try {
+      files = entriesAsCode(src, parseObject(src, option.valueStart));
+    } catch {
+      files = {};
+    }
+  }
+  return { models, files };
+}
+
 // ---- Fields as code --------------------------------------------------------------
 
 function literal(value: string | number | boolean): string {

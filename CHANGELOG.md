@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.21 - 2026-11-17
+
+- The studio has an Access page: each model's read, create, update and delete rule and the files' rules, with the roles a role rule lets through, what a filter rule narrows reads to for the signed-in caller (as a filter in words, such as `done = false`), and under `tapedb dev` each rule as written in `tapedb.schema.ts`.
+- The studio can show a workspace as someone else. Under `tapedb dev`, pick any role and user id; on the deployed Worker, your own user at your role or a lower one. The data, counts, query console and Access page then show what that caller sees, and writes go through their rules. A reload starts as yourself again.
+- `POST /_tapedb/claim` takes an optional `role`: a claim at the caller's own role or below it, never above (403 `role_above_membership`). The development route also takes `role` and `sub`.
+- The schema endpoint reports `access` per model (filter rules evaluated for the caller), `files` rules and the `caller`.
+
 ## 0.1.20 - 2026-11-17
 
 - The studio exports a model's rows as CSV or JSON: all of them, the ones a search or filter shows, or the selected ones. Every field is written, dates in ISO 8601, null as an empty CSV cell; CSV is RFC 4180 with a byte order mark, so spreadsheets read it as UTF-8.
