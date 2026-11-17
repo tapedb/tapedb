@@ -666,6 +666,7 @@
           "migrations": "readonly BundledWorkspaceMigration[] | undefined",
           "identity": "ClaimIdentity | undefined",
           "devClaims": "boolean | undefined",
+          "studio": "TapeDBStudio | undefined",
           "topics": "TopicOptions | undefined @experimental",
           "audit": "boolean | undefined",
           "retention": "RetentionOptions | undefined"
@@ -755,6 +756,18 @@
       "WORKSPACE_ROLE_LEVELS": {
         "kind": "value",
         "shape": "{ readonly GUEST: 0; readonly USER: 1; readonly MEMBER: 2; readonly EDITOR: 3; readonly MODERATOR: 4; readonly ADMIN: 5; readonly OWNER: 6; readonly FOUNDER: 7; readonly DEVELOPER: 8; }"
+      }
+    },
+    "@tapedb/tapedb/studio": {
+      "studio": {
+        "kind": "value",
+        "shape": "TapeDBStudio"
+      },
+      "TapeDBStudio": {
+        "kind": "interface",
+        "shape": {
+          "serve": "(request: Request) => Promise<Response>"
+        }
       }
     },
     "(referenced, not exported)": {

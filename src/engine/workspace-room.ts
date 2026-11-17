@@ -2136,6 +2136,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
             optional: definition.optional === true,
             indexed: definition.indexed === true,
             unique: definition.unique === true,
+            // As written in the schema: booleans and dates in their API form.
+            default: definition.default === undefined || definition.personal
+              ? null
+              : definition.type === "boolean" && typeof definition.default === "number"
+                ? definition.default === 1
+                : definition.default,
           },
         ])
       ),

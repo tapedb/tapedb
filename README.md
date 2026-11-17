@@ -385,6 +385,24 @@ Only the edited entries change in the file; comments, rules and formatting stay
 as written. Fields written in other ways (helpers, personal fields) are shown as
 code and can be renamed or deleted; change them in the file.
 
+The deployed Worker serves the studio too, at `https://<your-worker>/_tapedb/studio`,
+when `worker.ts` passes it in (`tapedb init` writes this):
+
+```ts
+import { studio } from "@tapedb/tapedb/studio";
+
+const tapedb = defineTapeDB({ schema, migrations, identity, studio });
+```
+
+It signs in through `POST /_tapedb/claim` with the app's own session (cookies,
+or the Cloudflare Access login), so your identity adapter decides the role, and
+every read and write passes the same access rules as in the app. Open a
+workspace by its id, or link to one with `?workspace=<id>`; the Worker lists no
+workspaces, so an owner of one never learns the ids of others. The structure is
+read-only there: change `tapedb.schema.ts` and deploy. The page runs under a
+content security policy that allows only its own script, styles and fonts.
+Without `studio`, nothing is served at that path.
+
 ## Files and presence
 
 ```ts
@@ -716,6 +734,7 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | `@tapedb/tapedb/schema` | `schema`, `model`, `t`, `role`, `filter`, `check` | no |
 | `@tapedb/tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer (React 19) |
 | `@tapedb/tapedb/worker` | `defineTapeDB`, claim helpers | no |
+| `@tapedb/tapedb/studio` | `studio`, served at `/_tapedb/studio` | no |
 
 The CLI is a command, not an import: `npx tapedb-cli init | migrate | dev | studio
 | deploy | export | erase | move`.

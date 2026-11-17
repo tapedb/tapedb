@@ -12,12 +12,10 @@
  * fifty rows.
  */
 
-import { existsSync, readFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { dirname, join } from "node:path";
-import { fileURLToPath } from "node:url";
 
-import { studioPage } from "./studio-page";
+import { FONTS } from "../studio/fonts.gen";
+import { studioPage } from "../studio/page";
 import { applyEdit, previewEdit, readStructure } from "./studio-structure";
 import type { SchemaEdit } from "./schema-edit";
 
@@ -167,20 +165,6 @@ export function pageQuery(
 
 const PAGE = studioPage(PAGE_LIMIT);
 
-/** The brand fonts the page uses, shipped in the package's `assets/fonts`. */
-const FONTS = new Set(["space-grotesk.woff2", "inter.woff2", "jetbrains-mono.woff2"]);
-
-/** `assets/fonts` of this package, found from wherever the code runs (src or dist). */
-function fontDir(): string | null {
-  let dir = dirname(fileURLToPath(import.meta.url));
-  for (;;) {
-    const candidate = join(dir, "assets", "fonts");
-    if (existsSync(join(candidate, "inter.woff2"))) return candidate;
-    const parent = dirname(dir);
-    if (parent === dir) return null;
-    dir = parent;
-  }
-}
 
 export function startStudio(options: StudioOptions): Promise<{ url: string; close: () => void }> {
   const base = options.url.replace(/\/+$/, "");
@@ -225,12 +209,11 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
 
       if (url.pathname.startsWith("/fonts/")) {
         const name = url.pathname.slice("/fonts/".length);
-        const dir = FONTS.has(name) ? fontDir() : null;
-        if (!dir) {
+        if (!Object.hasOwn(FONTS, name)) {
           sendJson(response, 404, { error: { message: `No font ${name}` } });
           return;
         }
-        const bytes = readFileSync(join(dir, name));
+        const bytes = Buffer.from(FONTS[name], "base64");
         response.writeHead(200, {
           "content-type": "font/woff2",
           "content-length": bytes.length,

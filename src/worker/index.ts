@@ -10,6 +10,7 @@
  *   export default tapedb.worker;
  */
 
+import type { TapeDBStudio } from "../studio";
 import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
@@ -69,6 +70,13 @@ export interface DefineTapeDBOptions {
    * session. Always refused when `ENVIRONMENT` is `production`.
    */
   devClaims?: boolean;
+  /**
+   * The studio, served at /_tapedb/studio: `import { studio } from
+   * "@tapedb/tapedb/studio"`. It signs in through POST /_tapedb/claim with
+   * the app's own session, so `identity` decides the role, and the access
+   * rules apply as in the app. Leave it out and nothing is served there.
+   */
+  studio?: TapeDBStudio;
   /**
    * Broadcast topics. `authorize` decides whether a caller may join a topic
    * or send to it; without it anyone with a claim for the workspace may,
@@ -294,6 +302,10 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
           }
         }
         return json({ workspaces });
+      }
+
+      if (options.studio && (url.pathname === "/_tapedb/studio" || url.pathname.startsWith("/_tapedb/studio/"))) {
+        return options.studio.serve(request);
       }
 
       if (url.pathname === "/_tapedb/claim") {

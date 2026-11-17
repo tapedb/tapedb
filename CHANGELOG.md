@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.16 - 2026-11-17
+
+- The studio for deployed apps: `import { studio } from "@tapedb/tapedb/studio"` and pass it to `defineTapeDB`, and the Worker serves the studio at `/_tapedb/studio`. It signs in with the app's own session through `/_tapedb/claim`, so the identity adapter decides the role (shown as "Signed in as Owner"), and every read and write passes the app's access rules. Workspaces are opened by id, from recent ones, or with `?workspace=<id>`, and the deployed Worker lists none. The structure is read-only there. The page runs under a content security policy with hashes for its one script and one stylesheet. Without `studio` nothing is served at that path, and the page and fonts are left out of the Worker. `tapedb init` adds it to new projects.
+- The schema endpoint reports each field's default.
+- The studio's fonts are compiled into the package instead of read from `assets/fonts`; only the font licence ships there now.
+
 ## 0.1.15 - 2026-11-17
 
 - The studio edits the schema. Each model has a Structure tab listing its fields: their types, relations, defaults and indexes. From there you can add, edit, rename and delete fields, and create, rename and delete models; deleting a model also removes the relations and access rules that name it. Every change is previewed first: the edit to `tapedb.schema.ts`, the migration SQL, and what it deletes, with the row count. Applying it writes the schema and the migration as `migrate dev` does, and the local database reloads with them. Only the edited entries change in the file.
