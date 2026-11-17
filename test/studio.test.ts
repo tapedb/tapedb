@@ -198,7 +198,7 @@ beforeAll(async () => {
 }, 60_000);
 
 describe("studio page", () => {
-  test("serves the browser page: workspace picker, models, counter, table, row editor", async () => {
+  test("serves the browser page: workspace picker, transport, models, table, tape, row editor", async () => {
     const { studio, shutdown } = await stack();
     try {
       const response = await fetch(`${studio.url}/`);
@@ -206,7 +206,7 @@ describe("studio page", () => {
       expect(response.headers.get("content-type")).toContain("text/html");
       const html = await response.text();
       expect(html).toContain("<title>tapedb studio</title>");
-      for (const id of ["workspace", "models", "digits", "grid", "more", "drawer", "editor", "delete"]) {
+      for (const id of ["workspace", "transport", "models", "grid", "more", "ticks", "counter", "drawer", "editor", "delete"]) {
         expect(html).toContain(`id="${id}"`);
       }
     } finally {
@@ -436,5 +436,24 @@ test("lists the Worker's local workspaces, or none where the Worker has no list"
       studio.close();
       upstream.close();
     }
+  }
+});
+
+test("serves the brand fonts the page uses, and nothing else from disk", async () => {
+  const studio = await startStudio({ url: "http://127.0.0.1:1", workspace: "", port: 0 });
+  try {
+    const page = await (await fetch(`${studio.url}/`)).text();
+    for (const font of ["space-grotesk", "inter", "jetbrains-mono"]) {
+      expect(page).toContain(`/fonts/${font}.woff2`);
+      const response = await fetch(`${studio.url}/fonts/${font}.woff2`);
+      expect(response.status).toBe(200);
+      expect(response.headers.get("content-type")).toBe("font/woff2");
+      expect(new TextDecoder().decode((await response.arrayBuffer()).slice(0, 4))).toBe("wOF2");
+    }
+    for (const path of ["/fonts/../package.json", "/fonts/OFL.txt", "/fonts/%2e%2e%2fpackage.json"]) {
+      expect((await fetch(`${studio.url}${path}`)).status).toBe(404);
+    }
+  } finally {
+    studio.close();
   }
 });

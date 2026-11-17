@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.1.13 - 2026-11-17
+
+- The studio now uses the tapedb brand from tapedb.dev. It has the cassette mark, whose hubs turn while the studio is live, signal orange, and the Space Grotesk, Inter and JetBrains Mono fonts. The fonts ship in the package, so the studio works offline; they are licensed under the OFL (`assets/fonts/OFL.txt`). A PLAY/REC indicator shows the connection. A transaction tape along the bottom steps on with every write and names it (`task.create`). Rows that just arrived or changed are tagged NEW or CHANGED. True and false values show the landing page's check and ring glyphs. The studio is dark by default and follows the docs' light theme.
+
 ## 0.1.12 - 2026-11-17
 
 - `npx tapedb-cli dev` works in a project that has been deployed. Deploying writes `"ENVIRONMENT": "production"` into `wrangler.jsonc`, and local dev read it too, so `http://localhost:8787/` answered `no_route` and the dev claim route refused every request. `dev` now always runs as `development`. Deploys still use `production`.
