@@ -639,16 +639,16 @@ export function migrateCheck(root: string, schema: TapeDBSchema): CheckResult {
   const problems: string[] = [];
   const previous = readSnapshot(root);
   if (previous === null) {
-    problems.push("No migrations yet. Run `tapedb migrate dev --name init`.");
+    problems.push("No migrations yet. Run `npx tapedb-cli migrate dev --name init`.");
     return { ok: false, problems };
   }
   const plan = diffSnapshots(previous, snapshotOf(schema), { acceptDataLoss: true });
   if (plan.statements.length > 0 || plan.changes.length > 0 || plan.refused.length > 0) {
-    problems.push("The schema has changes with no migration. Run `tapedb migrate dev --name <what changed>`.");
+    problems.push("The schema has changes with no migration. Run `npx tapedb-cli migrate dev --name <what changed>`.");
   }
   const bundle = existsSync(bundlePath(root)) ? readFileSync(bundlePath(root), "utf8") : "";
   if (bundle !== renderBundle(readMigrations(root))) {
-    problems.push("tapedb/migrations.gen.ts is out of date with tapedb/migrations. Run `tapedb migrate dev` to regenerate it.");
+    problems.push("tapedb/migrations.gen.ts is out of date with tapedb/migrations. Run `npx tapedb-cli migrate dev` to regenerate it.");
   }
   return { ok: problems.length === 0, problems };
 }

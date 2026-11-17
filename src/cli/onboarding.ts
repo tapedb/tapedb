@@ -12,34 +12,62 @@ export function installProject(root: string, version: string): void {
   const pkg = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { private: true, type: "module" };
   pkg.dependencies ??= {};
   pkg.devDependencies ??= {};
-  // Preserve the host project's selected versions, except an exact older one, which an earlier
-  // init wrote: rerunning a newer init would otherwise keep running the old package.
+  // A project that already depends on tapedb keeps its entry; syncTapedb below brings an older
+  // installed copy up to this CLI's version after the install.
   if (!pkg.dependencies["@tapedb/tapedb"] && !pkg.devDependencies["@tapedb/tapedb"]) pkg.dependencies["@tapedb/tapedb"] = version;
-  else {
-    const field = pkg.dependencies["@tapedb/tapedb"] ? "dependencies" : "devDependencies";
-    const pinned = pkg[field]["@tapedb/tapedb"];
-    if (olderExactVersion(pinned, version)) {
-      pkg[field]["@tapedb/tapedb"] = version;
-      console.log(`  updated  @tapedb/tapedb ${pinned} → ${version}`);
-    }
-  }
   if (!pkg.dependencies.wrangler && !pkg.devDependencies.wrangler) pkg.devDependencies.wrangler = "^4.163.0";
   pkg.scripts ??= {};
   for (const [name, command] of Object.entries({ "tapedb:dev": "tapedb dev", "tapedb:studio": "tapedb studio", "tapedb:deploy": "tapedb deploy" })) {
     pkg.scripts[name] ??= command;
   }
   writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
-  const declared = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0] : undefined;
-  const manager = declared ?? (existsSync(join(root, "pnpm-lock.yaml")) ? "pnpm" : existsSync(join(root, "yarn.lock")) ? "yarn" : existsSync(join(root, "bun.lock")) || existsSync(join(root, "bun.lockb")) ? "bun" : "npm");
+  const manager = packageManager(root);
   if (!["npm", "bun", "pnpm", "yarn"].includes(manager)) throw new Error("Unsupported package manager: " + manager);
   console.log("\nInstalling project dependencies with " + manager + "...");
   const result = spawnSync(manager, ["install"], { cwd: root, stdio: "inherit" });
   if (result.status !== 0) throw new Error("Dependency installation failed; rerun init to resume.");
+  syncTapedb(root, version);
+}
+
+export type PackageRunner = (manager: string, args: string[], root: string) => number | null;
+const runPackageManager: PackageRunner = (manager, args, root) => spawnSync(manager, args, { cwd: root, stdio: "inherit" }).status;
+
+/** The package manager a project uses: its packageManager field, else its lockfile, else npm. */
+export function packageManager(root: string): string {
+  const path = join(root, "package.json");
+  const pkg = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) as { packageManager?: unknown } : {};
+  const declared = typeof pkg.packageManager === "string" ? pkg.packageManager.split("@")[0]! : undefined;
+  return declared ?? (existsSync(join(root, "pnpm-lock.yaml")) ? "pnpm" : existsSync(join(root, "yarn.lock")) ? "yarn" : existsSync(join(root, "bun.lock")) || existsSync(join(root, "bun.lockb")) ? "bun" : "npm");
 }
 
 /**
- * Whether `pinned` is an exact release (`1.2.3`) older than `current`. Ranges, tags, links and
- * prereleases are someone's choice and are never changed.
+ * Brings the project's installed @tapedb/tapedb up to this CLI's version, so `dev` and `deploy`
+ * run and bundle the runtime the CLI was built with. Only ever moves forward, never touches a
+ * `workspace:`, `file:` or `link:` dependency, and does nothing in a project without tapedb.
+ * Returns the version it moved from, or null.
+ */
+export function syncTapedb(root: string, version: string, run: PackageRunner = runPackageManager): string | null {
+  const manifestPath = join(root, "package.json");
+  if (!existsSync(manifestPath)) return null;
+  const pkg = JSON.parse(readFileSync(manifestPath, "utf8")) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  const dev = !pkg.dependencies?.["@tapedb/tapedb"] && Boolean(pkg.devDependencies?.["@tapedb/tapedb"]);
+  const spec = pkg.dependencies?.["@tapedb/tapedb"] ?? pkg.devDependencies?.["@tapedb/tapedb"];
+  if (spec === undefined || /^(workspace|file|link|portal):/.test(spec)) return null;
+  const installedPath = join(root, "node_modules", "@tapedb", "tapedb", "package.json");
+  const installed = existsSync(installedPath) ? (JSON.parse(readFileSync(installedPath, "utf8")) as { version?: string }).version : undefined;
+  if (installed === undefined || !olderExactVersion(installed, version)) return null;
+  const manager = packageManager(root);
+  if (!["npm", "bun", "pnpm", "yarn"].includes(manager)) throw new Error("Unsupported package manager: " + manager);
+  console.log(`  updated  @tapedb/tapedb ${installed} → ${version}`);
+  const args = manager === "npm" ? ["install", ...(dev ? ["--save-dev"] : []), `@tapedb/tapedb@${version}`]
+    : ["add", ...(dev ? [manager === "bun" ? "--dev" : "-D"] : []), `@tapedb/tapedb@${version}`];
+  if (run(manager, args, root) !== 0) throw new Error(`Updating @tapedb/tapedb to ${version} failed; run \`${manager} ${args.join(" ")}\` in the project.`);
+  return installed;
+}
+
+/**
+ * Whether `pinned` is an exact release (`1.2.3`) older than `current`. Anything else, a range,
+ * tag, link or prerelease, is never older.
  */
 export function olderExactVersion(pinned: unknown, current: string): boolean {
   const exact = /^(\d+)\.(\d+)\.(\d+)$/;

@@ -26,9 +26,19 @@ import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
 import { select } from "./prompts";
-import { ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, type DeployConfig } from "./onboarding";
+import { ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, syncTapedb, type DeployConfig } from "./onboarding";
 
 let schemaLoads = 0;
+
+/** How the docs and messages tell people to run the CLI. */
+const CLI = "npx tapedb-cli";
+
+/** This CLI's own version, from the package it ships in. */
+function ownVersion(): string {
+  let root = ownDistDir();
+  while (!existsSync(join(root, "package.json")) && dirname(root) !== root) root = dirname(root);
+  return (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }).version;
+}
 
 /** This CLI's own build: the last-resort root for the package's own specifiers. */
 function ownDistDir(): string {
@@ -125,7 +135,7 @@ async function migrate(argv: string[]): Promise<number> {
   if (action === "status") {
     const migrations = readMigrations(root);
     if (migrations.length === 0) {
-      console.log("No migrations yet. Run `tapedb migrate dev --name init`.");
+      console.log("No migrations yet. Run `npx tapedb-cli migrate dev --name init`.");
       return 0;
     }
     for (const migration of migrations) {
@@ -149,7 +159,7 @@ async function migrate(argv: string[]): Promise<number> {
   if (action === "dev") {
     const name = typeof flags.name === "string" ? flags.name : readSnapshot(root) === null ? "entities" : "";
     if (!name) {
-      console.error("Name the migration: tapedb migrate dev --name <what changed>");
+      console.error("Name the migration: npx tapedb-cli migrate dev --name <what changed>");
       return 1;
     }
     const result = migrateDev(root, await loadSchema(root, flags), name, {
@@ -183,13 +193,13 @@ async function migrate(argv: string[]): Promise<number> {
     }
     console.log(`Created tapedb/migrations/${result.id}.sql (${result.statements} statements): the schema after ${result.to}.`);
     if (result.schemaEdits.length > 0) {
-      console.log(`\nChange the schema to match, then \`tapedb migrate check\` passes:\n  ${result.schemaEdits.join("\n  ")}`);
+      console.log(`\nChange the schema to match, then \`npx tapedb-cli migrate check\` passes:\n  ${result.schemaEdits.join("\n  ")}`);
     }
     console.log("\nReview it, commit it, and deploy: each workspace applies it on its next wake.");
     return 0;
   }
 
-  console.error("Usage: tapedb migrate dev --name <name> | rollback [--to <id>] | status | check");
+  console.error("Usage: npx tapedb-cli migrate dev --name <name> | rollback [--to <id>] | status | check");
   return 1;
 }
 
@@ -231,6 +241,8 @@ async function deploy(argv: string[]): Promise<number> {
     console.error(`No wrangler.jsonc in ${root}.`);
     return 1;
   }
+  // The deployed Worker bundles the project's copy of the runtime; bring it up to this CLI first.
+  syncTapedb(root, ownVersion());
   const config = parseJsonc(readFileSync(configPath, "utf8")) as DeployConfig;
   const vars = env === undefined ? config.vars : config.env?.[env]?.vars;
   if (vars?.ENVIRONMENT !== "production" && !interactive() && flags.yes !== true) {
@@ -287,7 +299,7 @@ const SCHEMA_FILE = `import { model, schema, t } from "@tapedb/tapedb/schema";
 
 /**
  * The whole database: tables, relations, indexes and access rules. Change it,
- * then run \`npx @tapedb/tapedb migrate dev --name <what changed>\`.
+ * then run \`npx tapedb-cli migrate dev --name <what changed>\`.
  */
 export default schema({
   board: model({
@@ -418,10 +430,7 @@ async function init(argv: string[]): Promise<number> {
 
   ignoreLocalFiles(target);
   if (flags["no-install"] !== true) {
-    let packageRoot = ownDistDir();
-    while (!existsSync(join(packageRoot, "package.json")) && dirname(packageRoot) !== packageRoot) packageRoot = dirname(packageRoot);
-    const manifest = JSON.parse(readFileSync(join(packageRoot, "package.json"), "utf8")) as { version: string };
-    installProject(target, manifest.version);
+    installProject(target, ownVersion());
   }
 
   try {
@@ -433,16 +442,16 @@ async function init(argv: string[]): Promise<number> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const hint = message.includes("@tapedb/tapedb")
-      ? `\n  The schema imports the package by name, so it must be installable from this project.\n  Run \`npm install @tapedb/tapedb\` and then \`npx @tapedb/tapedb init\` again; existing files are kept.`
-      : `\n  Fix the schema and run \`npx @tapedb/tapedb init\` again; existing files are kept.`;
+      ? `\n  The schema imports the package by name, so it must be installable from this project.\n  Run \`npm install @tapedb/tapedb\` and then \`npx tapedb-cli init\` again; existing files are kept.`
+      : `\n  Fix the schema and run \`npx tapedb-cli init\` again; existing files are kept.`;
     console.error(`\n  Could not generate the first migration (${message}).${hint}`);
     return 1;
   }
 
   // Choosing cloud setup already expresses the deployment decision.
   if (cloud) return deploy(["--dir", target, "--yes"]);
-  console.log("\nReady. Start the database with npx @tapedb/tapedb dev");
-  console.log("Open its table browser with npx @tapedb/tapedb studio");
+  console.log(`\nReady. Start the database with ${CLI} dev`);
+  console.log(`Open its table browser with ${CLI} studio`);
   if (interactive() && flags["no-start"] !== true && flags.yes !== true && await confirm("Start the local database now?", true)) {
     return dev(["--dir", target]);
   }
@@ -453,14 +462,14 @@ function usage(): number {
   console.log(`tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out
 
 Usage:
-  tapedb init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--yes] [--no-install] [--no-start] [--force]
-  tapedb migrate dev|rollback|status|check [--dir <path>] [--schema <file>]
-  tapedb deploy [--dir <path>] [--env <name>]
-  tapedb dev  [--dir <path>] [--port <port>]
-  tapedb studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
-  tapedb export --workspace <uuid> [--url <worker-url>] [--out <file>]
-  tapedb erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]
-  tapedb move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]
+  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--yes] [--no-install] [--no-start] [--force]
+  npx tapedb-cli migrate dev|rollback|status|check [--dir <path>] [--schema <file>]
+  npx tapedb-cli deploy [--dir <path>] [--env <name>]
+  npx tapedb-cli dev  [--dir <path>] [--port <port>]
+  npx tapedb-cli studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
+  npx tapedb-cli export --workspace <uuid> [--url <worker-url>] [--out <file>]
+  npx tapedb-cli erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]
+  npx tapedb-cli move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]
 
 Commands:
   init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,
@@ -489,9 +498,10 @@ function dev(argv: string[]): number {
   const port = typeof flags.port === "string" ? flags.port : "8787";
 
   if (!existsSync(join(target, ".dev.vars"))) {
-    console.error(`No .dev.vars in ${target}. Run \`tapedb init\` first.`);
+    console.error(`No .dev.vars in ${target}. Run \`${CLI} init\` first.`);
     return 1;
   }
+  syncTapedb(target, ownVersion());
 
   const probe = spawnSync("npx", ["--no-install", "wrangler", "--version"], {
     cwd: target,
@@ -672,7 +682,7 @@ export async function run(argv: string[]): Promise<number> {
 }
 
 /**
- * True when this module is the process entry point. `npx @tapedb/tapedb` runs it
+ * True when this module is the process entry point. npx runs it
  * through the node_modules/.bin symlink: argv[1] is the link, while
  * import.meta.url is the resolved file, so both are compared after resolving.
  */
