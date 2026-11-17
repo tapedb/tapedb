@@ -1,3 +1,4 @@
+import { studio } from "@tapedb/tapedb/studio";
 import { defineTapeDB } from "@tapedb/tapedb/worker";
 
 import schema from "./tapedb.schema";
@@ -11,6 +12,9 @@ const tapedb = defineTapeDB({
   // environment: `tapedb dev` passes that on the command line, `tapedb deploy`
   // refuses to ship it, and ENVIRONMENT=production refuses the route too.
   devClaims: true,
+  // The studio at /_tapedb/studio on the deployed Worker. It signs in through
+  // /_tapedb/claim like the app, so your identity adapter decides the role.
+  studio,
 });
 
 // Cloudflare requires the Durable Object class to be exported by the Worker
