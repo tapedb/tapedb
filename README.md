@@ -25,8 +25,7 @@ newer; the library itself runs in Cloudflare Workers.
 
 ```bash
 npx tapedb-cli init     # interactive setup, dependencies and first migration
-npx tapedb-cli dev      # local database with a dev claim route
-npx tapedb-cli studio   # local table browser on http://127.0.0.1:4400
+npx tapedb-cli dev      # local database, and the studio at http://localhost:8787/
 npx tapedb-cli deploy   # your Cloudflare account: buckets, secrets, Worker
 ```
 

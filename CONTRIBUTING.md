@@ -20,8 +20,7 @@ To try the product itself:
 
 ```bash
 npx tapedb-cli init     # writes a Worker, a schema, wrangler config and .dev.vars
-npx tapedb-cli dev      # local database with a dev claim route
-npx tapedb-cli studio   # table browser at http://127.0.0.1:4400
+npx tapedb-cli dev      # local database, and the studio at http://localhost:8787/
 ```
 
 ## What goes where

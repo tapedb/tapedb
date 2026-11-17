@@ -29,6 +29,12 @@ export interface Env {
    */
   TAPEDB_JURISDICTION?: string;
 
+  /**
+   * The local studio's address, passed by `tapedb dev` on the command line.
+   * With dev claims on, outside production, `GET /` redirects there.
+   */
+  TAPEDB_STUDIO_URL?: string;
+
   /** Shared HS256 secret used to verify role claims. */
   TAPEDB_CLAIM_SECRET: string;
   /** Wraps erasable subject keys; at least 32 characters when personal fields exist. */
