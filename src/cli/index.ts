@@ -491,6 +491,34 @@ Commands:
   return 0;
 }
 
+/**
+ * The local run: `wrangler dev` with the variables only a local database gets.
+ * Passed on the command line, never written to wrangler.jsonc, so a deploy
+ * never carries them.
+ */
+export function devArgs(port: string, studioUrl: string): string[] {
+  return [
+    "--no-install",
+    "wrangler",
+    "dev",
+    "--port",
+    port,
+    // Local, whatever wrangler.jsonc says: deploy writes "production" there,
+    // which would otherwise refuse dev claims on every later local run.
+    "--var",
+    "ENVIRONMENT:development",
+    "--var",
+    "TAPEDB_DEV_CLAIMS:true",
+    // workerd has no jurisdictions: locally every object is unrestricted.
+    // Deployed, TAPEDB_JURISDICTION from wrangler.jsonc applies.
+    "--var",
+    "TAPEDB_JURISDICTION:",
+    // GET / on the local Worker opens the studio.
+    "--var",
+    `TAPEDB_STUDIO_URL:${studioUrl}`,
+  ];
+}
+
 async function dev(argv: string[]): Promise<number> {
   const flags = parseFlags(argv);
   const target = resolve(typeof flags.dir === "string" ? flags.dir : ".");
@@ -519,28 +547,7 @@ async function dev(argv: string[]): Promise<number> {
     .catch(() => startStudio({ url: worker, workspace: "", port: 0 }));
   console.log(`\n  Database  ${worker}\n  Studio    ${studio.url}   (also at ${worker}/)\n`);
 
-  const child = spawn(
-    "npx",
-    [
-      "--no-install",
-      "wrangler",
-      "dev",
-      "--port",
-      port,
-      // Passed here, never written to wrangler.jsonc: a plain `wrangler deploy`
-      // therefore has no dev claim route even if ENVIRONMENT is the default.
-      "--var",
-      "TAPEDB_DEV_CLAIMS:true",
-      // workerd has no jurisdictions: locally every object is unrestricted.
-      // Deployed, TAPEDB_JURISDICTION from wrangler.jsonc applies.
-      "--var",
-      "TAPEDB_JURISDICTION:",
-      // GET / on the local Worker opens the studio.
-      "--var",
-      `TAPEDB_STUDIO_URL:${studio.url}`,
-    ],
-    { cwd: target, stdio: "inherit" }
-  );
+  const child = spawn("npx", devArgs(port, studio.url), { cwd: target, stdio: "inherit" });
   // Ctrl+C reaches wrangler too; the studio closes when it exits.
   const ignore = () => {};
   process.on("SIGINT", ignore);
