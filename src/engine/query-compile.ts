@@ -877,13 +877,25 @@ function compileOrder(
   return compiled;
 }
 
+/**
+ * The system columns every row carries. They are readable, sortable, filterable
+ * and aggregatable like any other attribute, but they are written by the engine
+ * alone, so `select` and the read paths resolve them and the write paths refuse
+ * them (see tx-validate.ts).
+ */
+const SYSTEM_ATTRIBUTES: Record<string, ResolvedAttribute> = {
+  id: { column: "id", type: "string" },
+  createdAt: { column: "created_at", type: "date" },
+  updatedAt: { column: "updated_at", type: "date" },
+  updatedSeq: { column: "updated_seq", type: "number" },
+};
+
 function resolveAttribute(
   namespace: NamespaceDefinition,
   attribute: string
 ): ResolvedAttribute | undefined {
-  if (attribute === "id") {
-    return { column: "id", type: "string" };
-  }
+  const system = SYSTEM_ATTRIBUTES[attribute];
+  if (system) return system;
 
   const definition: AttributeDefinition | undefined =
     namespace.attributes[attribute];
