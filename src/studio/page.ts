@@ -16,6 +16,8 @@
  * claim route and edits the project. `worker`: served by the deployed Worker at
  * /_tapedb/studio, signing in the way the app does (its identity decides the role).
  */
+import { GRAPH_CSS, GRAPH_JS } from "./graph.gen";
+
 export type StudioMode = "local" | "worker";
 
 import { RUNNER } from "./runner.gen";
@@ -576,6 +578,13 @@ button.who.as .label { color: var(--accent); }
 .listbox-option[aria-selected=true]::after { content: "✓"; float: right; color: var(--accent); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
+/* The model graph: React Flow needs a sized box, and the page owns the chrome. */
+.graph { position: relative; flex: 1 1 auto; min-height: 60vh; border: 1px solid var(--line); border-radius: var(--panel); overflow: hidden; background: var(--ground); }
+.graph .react-flow__attribution { background: transparent; color: var(--text-3); }
+.graph .react-flow__controls button { background: var(--surface); border-bottom: 1px solid var(--line); color: var(--text); }
+.graph .react-flow__controls button:hover { background: var(--surface-2); }
+.graph .react-flow__controls button svg { fill: currentColor; }
+
 /* ---- Row drawer --------------------------------------------------------------------------- */
 .drawer {
   position: fixed;
@@ -669,6 +678,7 @@ button.who.as .label { color: var(--accent); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+${GRAPH_CSS}
 </style>
 </head>
 <body>
@@ -719,8 +729,10 @@ button.who.as .label { color: var(--accent); }
   <div class="tabs" id="tabs" role="tablist" hidden>
     <button type="button" role="tab" id="tab-data" aria-selected="true">Data</button>
     <button type="button" role="tab" id="tab-structure" aria-selected="false">Structure</button>
+    <button type="button" role="tab" id="tab-graph" aria-selected="false">Graph</button>
   </div>
   <div class="structure" id="structure" hidden></div>
+  <div class="graph" id="graph" hidden></div>
   <div class="filters" id="filters" hidden></div>
   <div class="bulk" id="bulk" hidden></div>
   <section class="history" id="history" aria-label="History" hidden>
@@ -819,6 +831,7 @@ button.who.as .label { color: var(--accent); }
 <div class="toast" id="toast" role="status" aria-live="polite"><span class="lamp"></span><span id="toast-text"></span></div>
 
 <script>
+${GRAPH_JS}
 ${RUNNER}
 var PAGE = ${pageLimit};
 var MODE = "${mode}";
@@ -2223,15 +2236,44 @@ function setView(view) {
   app.view = view;
   $("tab-data").setAttribute("aria-selected", view === "data" ? "true" : "false");
   $("tab-structure").setAttribute("aria-selected", view === "structure" ? "true" : "false");
+  $("tab-graph").setAttribute("aria-selected", view === "graph" ? "true" : "false");
   var data = view === "data";
   $("panel").hidden = !data;
   $("filters").hidden = !data;
   $("add").hidden = !data;
   $("import").hidden = !data;
   $("export-menu").hidden = !data;
-  $("structure").hidden = data;
+  $("structure").hidden = view !== "structure";
+  $("graph").hidden = view !== "graph";
   if ($("bulk")) renderBulk();
-  if (!data) renderStructure();
+  if (view === "structure") renderStructure();
+  if (view === "graph") renderGraph();
+  else unmountGraph();
+}
+
+/** One live React root for the graph, torn down when the tab is left. */
+var graphRoot = null;
+function unmountGraph() {
+  if (graphRoot) graphRoot();
+  graphRoot = null;
+  $("graph").innerHTML = "";
+}
+
+/** Hands the engine's schema to the React Flow bundle, which knows nothing of it. */
+function renderGraph() {
+  var host = $("graph");
+  if (!app.schema) return;
+  unmountGraph();
+  if (!window.TAPEDB_GRAPH) {
+    host.append(el("p", { class: "hint", text: "The graph bundle did not load." }));
+    return;
+  }
+  var canvas = el("div", { style: "position:absolute;inset:0" });
+  host.append(canvas);
+  graphRoot = window.TAPEDB_GRAPH.mount(canvas, app.schema, function (name) {
+    setView("data");
+    selectModel(name);
+  });
 }
 
 function kindText(spec) {
@@ -2619,6 +2661,7 @@ function afterSchemaChange(edit) {
 
 $("tab-data").addEventListener("click", function () { setView("data"); });
 $("tab-structure").addEventListener("click", function () { setView("structure"); });
+$("tab-graph").addEventListener("click", function () { setView("graph"); });
 $("new-model").addEventListener("click", function () { modelForm(null); });
 
 // ---- Start ------------------------------------------------------------------

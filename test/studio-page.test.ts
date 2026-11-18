@@ -5,9 +5,25 @@
  */
 
 import { expect, test } from "bun:test";
+import { buildGraph } from "../scripts/studio-graph-build.mjs";
 import { studioPage } from "../src/studio/page";
 
 const PAGE = studioPage(25, "local");
+
+test("the bundled graph is current", async () => {
+  // The graph is React Flow, bundled into a string so the studio stays one page
+  // with no build step for whoever installs it. A stale bundle would ship an old
+  // diagram, so the test rebuilds and compares.
+  const built = await buildGraph(new URL("..", import.meta.url).pathname);
+  expect(built).toBe(await Bun.file(new URL("../src/studio/graph.gen.ts", import.meta.url)).text());
+});
+
+test("the studio page serves the graph bundle and a tab to reach it", () => {
+  expect(PAGE).toContain("TAPEDB_GRAPH");
+  expect(PAGE).toContain('id="tab-graph"');
+  expect(PAGE).toContain('id="graph"');
+  expect(PAGE).toContain(".react-flow__");
+});
 
 test("the studio page carries a script that parses", () => {
   const scripts = [...PAGE.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
