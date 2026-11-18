@@ -28,7 +28,7 @@ export function studioPage(pageLimit: number, mode: StudioMode = "local"): strin
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>tapedb studio</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cpath fill='%23ECEEF0' fill-rule='evenodd' d='M11 10H53A7 7 0 0 1 60 17V47A7 7 0 0 1 53 54H11A7 7 0 0 1 4 47V17A7 7 0 0 1 11 10ZM13 29A8 8 0 1 0 29 29A8 8 0 1 0 13 29ZM35 29A8 8 0 1 0 51 29A8 8 0 1 0 35 29Z'/%3E%3Crect fill='%23FF6B1A' x='24' y='42' width='16' height='8' rx='1'/%3E%3C/svg%3E" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cstyle%3E.n%7Bfill:%23141516%7D.a%7Bfill:%23B8440A%7D@media(prefers-color-scheme:dark)%7B.n%7Bfill:%23ECEEF0%7D.a%7Bfill:%23FF6B1A%7D%7D%3C/style%3E%3Cpath class='n' fill-rule='evenodd' d='M11 10H53A7 7 0 0 1 60 17V47A7 7 0 0 1 53 54H11A7 7 0 0 1 4 47V17A7 7 0 0 1 11 10ZM13 29A8 8 0 1 0 29 29A8 8 0 1 0 13 29ZM35 29A8 8 0 1 0 51 29A8 8 0 1 0 35 29Z'/%3E%3Crect class='a' x='24' y='42' width='16' height='8' rx='1'/%3E%3C/svg%3E" />
 <style>
 @font-face { font-family: "Space Grotesk"; src: url("${fonts}space-grotesk.woff2") format("woff2"); font-weight: 300 700; font-display: swap; }
 @font-face { font-family: "Inter"; src: url("${fonts}inter.woff2") format("woff2"); font-weight: 100 900; font-display: swap; }
