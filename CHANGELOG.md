@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.25 - 2026-11-18
+
+- `@tapedb/tapedb/seed` and `npx tapedb-cli seed`: a seeder is a `tapedb.seed.ts` of plain TypeScript, and the library supplies the bookkeeping around its values. The context offers `create`, `insert`, `listIds`, `ref`, `unique`, `clear`, `model`, `rng`, `rngFor` and `written`; rows are written one transaction per 500 through the engine's own routes, so claims, access rules, the tape and the history behave as they do for a client. Declared defaults are filled in, because the engine wants every column named. A `personal()` field is refused rather than written in the clear, since the encryption key belongs to the application.
+- The same `--seed` writes the same rows, and `rngFor(label)` gives a stream that depends only on its label. `rng.past()` and `rng.future()` measure from now, so pass `from` to anchor a date that has to survive tomorrow.
+- `tapedb seed --workspace <uuid>` takes `--dry-run`, `--if-empty`, `--model`, `--file` and `--seed`, and refuses a target that is not localhost without `--force`. `loadSchema`'s loader is now `loadProjectModule`, so a seeder loads the same way a schema does.
+
 ## 0.1.24 - 2026-11-18
 
 - `createdAt`, `updatedAt` and `updatedSeq` resolve on every read path, not only in `select`. A read can now order, filter and group by them, and the client's `where`, `orderBy`, `groupBy` and aggregate types accept them, so a call no longer passes the client and then fails with `unknown_attribute` at the engine. `updatedSeq` gives "what changed since" as a total order. They stay engine-owned: a create or update that names one is still refused.
