@@ -229,6 +229,37 @@ checks the rows without writing, `--if-empty` skips a workspace that already has
 rows, `--model` restricts what a run may write, and `--seed <label>` chooses the
 stream. A target that is not localhost is refused unless `--force` is passed.
 
+## The studio
+
+`tapedb studio` serves one HTML page: a table browser, the schema as an editable
+outline, and a graph of the models. It needs no build step and makes no network
+request at runtime.
+
+**Structure** reads `tapedb.schema.ts` back as fields, shows an edit as a schema
+diff plus the SQL it would run, and applies it through the same migration path as
+`migrate dev`, so a change made in the browser is a change you would have
+committed.
+
+**Graph** draws the models with React Flow: one node per model listing its keys,
+foreign keys, unique and personal fields with their types, and one edge per
+`belongsTo`, labelled with the foreign-key field and `many → 1`, laid out so
+parents sit left of the rows that point at them. Clicking a node opens that
+model. The component is handed the engine's schema document, so it draws whatever
+a workspace defines.
+
+Every control is drawn by the studio rather than by the operating system: the
+selects are listboxes with arrow, home and end navigation, `aria-expanded` and
+`aria-selected`, and a hidden input so callers read `value` as before; the
+checkboxes keep their input for semantics and `.checked`, with the brand's box
+beside it.
+
+React, React DOM, React Flow and esbuild are devDependencies of this package, and
+the bundle is committed as `src/studio/graph.gen.ts`. That keeps two properties
+that matter: `@tapedb/tapedb` has no runtime dependencies, and the page is a
+single response whose script and style are covered by one hash each in the
+`/_tapedb/studio` Content Security Policy. `node scripts/gen-studio-graph.mjs`
+regenerates the bundle, and a test fails while it is out of date.
+
 ## HTTP
 
 All engine routes need `Authorization: Bearer <claim>` for the workspace in
