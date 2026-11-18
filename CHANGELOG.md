@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.1.30 - 2026-11-18
+
+- The default auth page uses the Studio brand: cassette mark, signal orange, Space Grotesk/Inter/JetBrains Mono, responsive light/dark layout and reduced-motion support. Email links, passwords, registration and resets have separate focused states.
+- A default React component in `tapedb.auth.tsx` replaces the auth page. `dev` watches its imports, `deploy` builds its browser bundle, and `auth build` supports custom pipelines. CSS and local assets are bundled. New auth scaffolds are pre-wired; React is loaded only for a custom page. Components receive a same-origin `redirectTo` prop.
+
+- Optional Better Auth adapter at `@tapedb/tapedb/auth`, backed by one dedicated SQLite AuthRoom for users, sessions, accounts and verification tokens. Single-use token consumption and counter increments are atomic. The official adapter suites run as part of verify.
+- `defineTapeDB({ auth })` serves `/api/auth/*` and derives workspace claims from sessions and stored membership. Explicit workspace creation assigns its owner; claims cannot bootstrap membership. Owners manage roles, with last-owner protection.
+- `t.belongsTo("$users")` adds managed member profiles to the workspace, using the normal taped transaction and personal-data erasure paths.
+- Cloudflare Email Service mailer at `@tapedb/tapedb/email`; local auth setup captures messages in the terminal and Studio instead of sending them.
+- `init --auth --email-from <address>` scaffolds verification, reset and magic-link mail, installs Better Auth, generates the auth secret, and adds the AUTH and EMAIL bindings. Deploy onboards the sender domain and keeps existing secrets. Studio has a Users page for sign-in, membership, sessions and account erasure.
+
 ## 0.1.29 - 2026-11-18
 
 - `migrate squash` no longer refuses a run that contains a table rebuild. Adding a constraint to an existing table cannot be done in place, so the generated migration creates `<table>__rebuild`, copies the rows into it, drops the original and renames; those inserts are migration mechanics, not a backfill, and the fold now reproduces them instead of rejecting them. Found by running the command on a real project whose run ended with a foreign-key addition.
