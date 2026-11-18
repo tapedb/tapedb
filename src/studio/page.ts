@@ -2059,6 +2059,7 @@ $("workspace-id").addEventListener("keydown", function (event) {
 
 var KINDS = [
   ["string", "Text"], ["number", "Number"], ["boolean", "True or false"], ["date", "Date"], ["json", "JSON"],
+  ["enum", "One of a set"],
   ["belongsTo", "Points to one row of"], ["hasMany", "Has many rows of"]
 ];
 var ON_DELETE = [["setNull", "Clear this field"], ["cascade", "Delete this row too"], ["restrict", "Refuse the delete"]];
@@ -2092,6 +2093,7 @@ function setView(view) {
 function kindText(spec) {
   if (spec.type === "belongsTo") return ["one ", el("span", { class: "target", text: spec.target })];
   if (spec.type === "hasMany") return ["many ", el("span", { class: "target", text: spec.target })];
+  if (spec.type === "enum") return ["one of ", el("span", { class: "target", text: (spec.values || []).join(", ") })];
   return [KINDS.filter(function (k) { return k[0] === spec.type; })[0][1]];
 }
 
@@ -2219,11 +2221,24 @@ $("sheet-close").addEventListener("click", closeSheet);
 $("sheet-cancel").addEventListener("click", closeSheet);
 $("sheet-go").addEventListener("click", function () { if (sheetGo) sheetGo(); });
 
-function textField(id, label, value, note) {
+function textField(id, label, value, note, type) {
   return el("div", { class: "field" }, [
     el("label", { for: id }, [el("span", { class: "label", text: label }), note ? el("span", { class: "type", text: note }) : null]),
-    el("input", { type: "text", id: id, value: value || "", autocomplete: "off", spellcheck: "false" })
+    el("input", { type: type || "text", id: id, value: value || "", autocomplete: "off", spellcheck: "false" })
   ]);
+}
+
+/** The default control for a type: a closed set gets a list, not a guess. */
+function defaultControl(kind, current, values) {
+  if (kind === "boolean") {
+    return selectField("f-default", "Default", [["", "No default"], ["true", "true"], ["false", "false"]], current);
+  }
+  if (kind === "enum") {
+    var options = [["", "No default"]].concat((values || []).map(function (v) { return [v, v]; }));
+    return selectField("f-default", "Default", options, current);
+  }
+  if (kind === "number") return textField("f-default", "Default", current, "a number, like 0 or 12.5", "number");
+  return textField("f-default", "Default", current, "used when a write leaves it out");
 }
 function selectField(id, label, options, value) {
   var select = el("select", { id: id }, options.map(function (o) { return el("option", { value: o[0], text: o[1] }); }));
@@ -2267,9 +2282,10 @@ function fieldForm(model, field) {
   var parts = [
     field ? null : textField("f-name", "Name", "", "letters and digits, like dueDate"),
     selectField("f-kind", "Type", KINDS, spec.type),
+    textField("f-values", "Allowed values", spec.values ? spec.values.join(", ") : "", "comma separated, like retail, business"),
     selectField("f-target", "Model", models, spec.target),
     checkField("f-optional", "Optional: a row may leave it empty", spec.optional),
-    textField("f-default", "Default", spec.default === undefined ? "" : String(spec.default), "used when a write leaves it out"),
+    el("div", { id: "default-slot" }),
     selectField("f-index", "Lookup", [["none", "No index"], ["index", "Indexed, for filtering and sorting"], ["unique", "Unique: no two rows share a value"]], spec.unique ? "unique" : spec.index ? "index" : "none"),
     selectField("f-ondelete", "When that row is deleted", ON_DELETE, spec.onDelete || "setNull")
   ];
@@ -2278,10 +2294,24 @@ function fieldForm(model, field) {
     var next;
     if (kind === "belongsTo") next = { type: "belongsTo", target: $("f-target").value, optional: $("f-optional").checked || undefined, onDelete: $("f-ondelete").value };
     else if (kind === "hasMany") next = { type: "hasMany", target: $("f-target").value };
+    else if (kind === "enum") {
+      var values = $("f-values").value.split(",").map(function (v) { return v.trim(); }).filter(Boolean);
+      if (values.length === 0) { fail(new Error("An enum needs at least one allowed value.")); return; }
+      next = { type: "enum", values: values };
+      if ($("f-optional").checked) next.optional = true;
+      var enumDefault = $("f-default") ? $("f-default").value : "";
+      if (enumDefault !== "") {
+        if (values.indexOf(enumDefault) === -1) { fail(new Error("The default must be one of the allowed values.")); return; }
+        next.default = enumDefault;
+      }
+      var enumLookup = $("f-index").value;
+      if (enumLookup === "unique") next.unique = true;
+      if (enumLookup === "index") next.index = true;
+    }
     else {
       next = { type: kind };
       if ($("f-optional").checked) next.optional = true;
-      var raw = $("f-default").value;
+      var raw = $("f-default") ? $("f-default").value : "";
       if (raw !== "") {
         if (kind === "number") { next.default = Number(raw); if (isNaN(next.default)) { fail(new Error("The default must be a number.")); return; } }
         else if (kind === "boolean") { if (raw !== "true" && raw !== "false") { fail(new Error("The default is true or false.")); return; } next.default = raw === "true"; }
@@ -2303,11 +2333,37 @@ function fieldForm(model, field) {
     var kind = $("f-kind").value;
     var relation = kind === "belongsTo" || kind === "hasMany";
     $("f-target").closest(".field").hidden = !relation;
+    $("f-values").closest(".field").hidden = kind !== "enum";
     $("f-optional").closest("label").hidden = kind === "hasMany";
-    $("f-default").closest(".field").hidden = relation || kind === "date" || kind === "json";
     $("f-index").closest(".field").hidden = relation;
     $("f-ondelete").closest(".field").hidden = kind !== "belongsTo";
+
+    // The default follows the type. A boolean or an enum can only take one of
+    // its own values, so a free text box would let the form ask for a value the
+    // field cannot hold.
+    var slot = $("default-slot");
+    var previous = $("f-default");
+    var current = previous ? previous.value : (spec.default === undefined ? "" : String(spec.default));
+    slot.innerHTML = "";
+    if (relation || kind === "date" || kind === "json") return;
+    var values = $("f-values").value.split(",").map(function (v) { return v.trim(); }).filter(Boolean);
+    slot.append(defaultControl(kind, current, values));
   }
+
+  // An enum's allowed values are typed above, so its default list follows them
+  // without discarding a choice that is still valid.
+  $("f-values").addEventListener("change", function () {
+    if ($("f-kind").value !== "enum") return;
+    var select = $("f-default");
+    if (!select || select.tagName !== "SELECT") return;
+    var keep = select.value;
+    var values = $("f-values").value.split(",").map(function (v) { return v.trim(); }).filter(Boolean);
+    select.innerHTML = "";
+    [["", "No default"]].concat(values.map(function (v) { return [v, v]; })).forEach(function (option) {
+      select.append(el("option", { value: option[0], text: option[1] }));
+    });
+    select.value = values.indexOf(keep) === -1 ? "" : keep;
+  });
   $("f-kind").addEventListener("change", sync);
   sync();
 }
