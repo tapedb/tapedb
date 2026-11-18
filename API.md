@@ -312,12 +312,27 @@ them. The protocol belongs to the client; use it directly only if you must.
 
 ## CLI
 
-`npx tapedb-cli init | migrate dev|rollback|status|check | dev | studio | deploy |
-export | seed | erase | move`. The exact commands and flags are in `npx tapedb-cli --help`
+`npx tapedb-cli init | migrate dev|rollback|status|check|squash | dev | studio |
+deploy | export | seed | erase | move`. The exact commands and flags are in `npx tapedb-cli --help`
 and are part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside
 `TAPEDB_JURISDICTION`, or when `migrate check` fails (no migrations, schema
 changes without a migration, or a stale generated migrations file).
+
+### Squashing a run
+
+`migrate squash --since <id>` folds that migration and everything after it into
+the first one. The SQL is re-derived from the snapshots at each end of the run,
+so the result is the net change rather than a concatenation, and a run that adds
+a column and later drops it is removed entirely because it applies nothing.
+
+The first migration of the run keeps its id, which is why a development database
+that already applied the run needs no repair: the id it recorded still exists and
+now carries the whole change. `--dry-run` reports without writing, and
+`--accept-data-loss` is required when the net change drops something.
+
+A run containing a statement that touched rows (an `UPDATE`, a backfill) is
+refused, because a re-derived DDL diff cannot carry it.
 
 ## Error codes
 
