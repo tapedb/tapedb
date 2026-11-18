@@ -371,7 +371,7 @@
       },
       "t": {
         "kind": "value",
-        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options?: O) => HasMany<T, \"inverse\" extends keyof O ? O[\"inverse\"] : undefined>; }"
+        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; enum: <const V extends readonly string[]>(values: V) => EnumField<V[number], boolean, boolean>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options?: O) => HasMany<T, \"inverse\" extends keyof O ? O[\"inverse\"] : undefined>; }"
       },
       "TopicSender": {
         "kind": "interface",
@@ -567,7 +567,7 @@
       },
       "t": {
         "kind": "value",
-        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options?: O) => HasMany<T, \"inverse\" extends keyof O ? O[\"inverse\"] : undefined>; }"
+        "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; enum: <const V extends readonly string[]>(values: V) => EnumField<V[number], boolean, boolean>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options?: O) => HasMany<T, \"inverse\" extends keyof O ? O[\"inverse\"] : undefined>; }"
       },
       "UpdateData": {
         "kind": "type",
@@ -851,7 +851,7 @@
         "shape": {
           "key": "string",
           "table": "string",
-          "fields": "Record<string, { kind: string; optional: boolean; hasDefault: boolean; defaultValue?: unknown; unique: boolean; personal: boolean; }>",
+          "fields": "Record<string, { kind: string; optional: boolean; hasDefault: boolean; defaultValue?: unknown; values?: readonly string[]; unique: boolean; personal: boolean; }>",
           "relations": "Record<string, RelationInfo>"
         }
       },
@@ -947,6 +947,7 @@
           "default": "string | number | null | undefined",
           "indexed": "boolean | undefined",
           "unique": "boolean | undefined",
+          "values": "readonly string[] | undefined",
           "references": "AttributeReference | undefined"
         }
       },
@@ -1046,6 +1047,25 @@
         "shape": {
           "type": "\"entity\"",
           "attrs": "Record<string, AttributeDefinition<unknown>>"
+        }
+      },
+      "EnumField (src/model/fields.ts)": {
+        "kind": "class",
+        "shape": {
+          "values": "readonly V[]",
+          "personal": "() => never",
+          "optional": "() => EnumField<V, true, D>",
+          "default": "(value: V) => EnumField<V, O, true>",
+          "index": "() => EnumField<V, O, D>",
+          "unique": "() => EnumField<V, O, D>",
+          "tag": "\"field\"",
+          "kind": "\"string\"",
+          "isOptional": "O",
+          "hasDefault": "D",
+          "defaultValue": "unknown",
+          "isIndexed": "boolean",
+          "isUnique": "boolean",
+          "(declaration)": "<V extends string = string, O extends boolean = boolean, D extends boolean = boolean> extends Field<\"string\", O, D>"
         }
       },
       "FetchLike (src/client/data-client.ts)": {
@@ -1204,7 +1224,7 @@
       },
       "InputOf (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<S> S extends Field<infer K, infer O, boolean> ? KindInput[K] | (O extends true ? null : never) : never"
+        "shape": "<S> S extends EnumField<infer V, infer O, boolean> ? V | (O extends true ? null : never) : S extends Field<infer K, infer O, boolean> ? KindInput[K] | (O extends true ? null : never) : never"
       },
       "InverseError (src/model/schema.ts)": {
         "kind": "type",
@@ -1394,7 +1414,7 @@
       },
       "OutputOf (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<S> S extends Field<infer K, infer O, boolean> ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never) : never"
+        "shape": "<S> S extends EnumField<infer V, infer O, boolean> ? V | (O extends true ? null : never) : S extends Field<infer K, infer O, boolean> ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never) : never"
       },
       "PermissionAction (src/engine/tx-permissions.ts)": {
         "kind": "type",
@@ -1552,7 +1572,7 @@
       },
       "Scalars (src/model/where.ts)": {
         "kind": "type",
-        "shape": "<F extends Fields> { [K in FilterKeys<F> | { [P in keyof F]: F[P] extends { personalSubject: string } ? P : never }[keyof F]]?: K extends FilterKeys<F> ? Scalar | FieldFilter : never; }"
+        "shape": "<F extends Fields> { [K in FilterKeys<F> | { [P in keyof F]: F[P] extends { personalSubject: string } ? P : never }[keyof F]]?: K extends FilterKeys<F> ? F[K] extends EnumField<infer V, boolean, boolean> ? V | FieldFilter<V> : Scalar | FieldFilter : never; }"
       },
       "SchemaChange (src/engine/schema-evolution.ts)": {
         "kind": "type",
