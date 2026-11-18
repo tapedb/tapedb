@@ -23,9 +23,12 @@ import * as nodeModule from "node:module";
 
 import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot } from "./migrate";
+import { migrateSquash } from "./squash";
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
 import { loadSchema } from "./load-schema";
+import { parseFlags } from "./flags";
+import { seedProject } from "./seed";
 import { select } from "./prompts";
 import { ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, syncTapedb, type DeployConfig } from "./onboarding";
 
@@ -68,6 +71,34 @@ async function migrate(argv: string[]): Promise<number> {
     }
     const result = migrateCheck(root, await loadSchema(root, flags));
     console.log(result.ok ? "\nUp to date." : `\n${result.problems.join("\n")}`);
+    return 0;
+  }
+
+  if (action === "squash") {
+    const dry = flags["dry-run"] === true || flags.dryRun === true;
+    const result = migrateSquash(root, {
+      ...(typeof flags.since === "string" ? { since: flags.since } : {}),
+      ...(typeof flags.name === "string" ? { name: flags.name } : {}),
+      ...(flags["accept-data-loss"] === true || flags.acceptDataLoss === true ? { acceptDataLoss: true } : {}),
+      ...(dry ? { dryRun: true } : {}),
+    });
+    if (result.status === "refused") {
+      for (const reason of result.reasons) console.error(reason);
+      return 1;
+    }
+    if (result.status === "cancelled") {
+      console.log(`${dry ? "Would remove" : "Removed"} ${result.folded.length} migrations that cancel out, leaving nothing to apply:`);
+      for (const id of result.folded) console.log(`  ${id}`);
+      return 0;
+    }
+    if (result.status === "would-squash") {
+      console.log(`Would fold ${result.folded.length} migrations into ${result.into}: ${result.statements} statement(s).`);
+      console.log(`  ${result.folded.join("\n  ")}`);
+      return 0;
+    }
+    console.log(`Folded ${result.folded.length} migrations into ${result.into}: ${result.statements} statement(s).`);
+    for (const id of result.removed) console.log(`  removed ${id}`);
+    console.log("Run `npx tapedb-cli migrate check` to confirm the schema still matches.");
     return 0;
   }
 
@@ -124,7 +155,7 @@ async function migrate(argv: string[]): Promise<number> {
     return 0;
   }
 
-  console.error("Usage: npx tapedb-cli migrate dev --name <name> | rollback [--to <id>] | status | check");
+  console.error("Usage: npx tapedb-cli migrate dev --name <name> | rollback [--to <id>] | status | check | squash --since <id> [--name <what>] [--dry-run] [--accept-data-loss]");
   return 1;
 }
 
@@ -301,23 +332,6 @@ function write(path: string, contents: string, force: boolean): "written" | "kep
   return "written";
 }
 
-function parseFlags(argv: string[]): Record<string, string | boolean> {
-  const flags: Record<string, string | boolean> = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-    if (!token.startsWith("--")) continue;
-    const key = token.slice(2);
-    const next = argv[index + 1];
-    if (next !== undefined && !next.startsWith("--")) {
-      flags[key] = next;
-      index += 1;
-    } else {
-      flags[key] = true;
-    }
-  }
-  return flags;
-}
-
 async function init(argv: string[]): Promise<number> {
   const flags = parseFlags(argv);
   const target = resolve(typeof flags.dir === "string" ? flags.dir : ".");
@@ -397,6 +411,7 @@ Usage:
   npx tapedb-cli dev  [--dir <path>] [--port <port>]
   npx tapedb-cli studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
   npx tapedb-cli export --workspace <uuid> [--url <worker-url>] [--out <file>]
+  npx tapedb-cli seed --workspace <uuid> [--file <tapedb.seed.ts>] [--url <worker-url>] [--seed <label>]
   npx tapedb-cli erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]
   npx tapedb-cli move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]
 
@@ -415,6 +430,8 @@ Commands:
   dev     Run the local database on port 8787, with the studio beside it.
   studio  Open a local table browser against a running Worker.
   export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).
+  seed    Run the project's seeder against a running Worker: --seed makes the
+          same seed give the same rows. --dry-run checks without writing.
   erase   Delete a workspace for good: its data, history and files (owner claim).
           --confirm must repeat the workspace id. The id answers 410 afterwards.
 `);
@@ -627,6 +644,7 @@ export async function run(argv: string[]): Promise<number> {
   if (command === "dev") return dev(argv.slice(1));
   if (command === "studio") return studio(argv.slice(1));
   if (command === "export") return exportWorkspace(argv.slice(1));
+  if (command === "seed") return seedProject(argv.slice(1));
   if (command === "erase") return eraseWorkspace(argv.slice(1));
   if (command === "move") return moveWorkspaces(argv.slice(1));
   if (command === undefined || command === "--help" || command === "-h") {

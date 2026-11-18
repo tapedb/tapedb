@@ -9,6 +9,9 @@ import type { AggregateGroup, QueryDocument, QueryPageInfo, QueryResult, TxOp } 
 import type { ModelInfo, RelationInfo } from "./schema";
 import { shapeFor, toEngineNode, toEngineWhere, type NodeArgs } from "./where";
 
+/** Columns every row carries: readable and groupable, never writable. */
+const SYSTEM_FIELDS = new Set(["createdAt", "updatedAt", "updatedSeq"]);
+
 // ---- Writes ----------------------------------------------------------------
 
 function inputValue(model: ModelInfo, field: string, value: unknown): unknown {
@@ -141,10 +144,7 @@ function requireId(model: ModelInfo, where: { id?: unknown } | undefined): strin
 // ---- Aggregates ------------------------------------------------------------
 
 function requireGroupKey(model: ModelInfo, field: unknown): string {
-  if (
-    typeof field !== "string" ||
-    !(model.filterable.has(field) || field === "createdAt" || field === "updatedAt")
-  ) {
+  if (typeof field !== "string" || !(SYSTEM_FIELDS.has(field) || model.filterable.has(field))) {
     throw new Error(`"${model.key}" cannot be grouped by "${String(field)}".`);
   }
   return field;

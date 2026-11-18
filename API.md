@@ -34,6 +34,7 @@ then records the new surface with `bun run api:update`.
 | `@tapedb/tapedb/react` | browser (React 19 peer) | hooks |
 | `@tapedb/tapedb/worker` | Cloudflare Workers | `defineTapeDB` and claim helpers |
 | `@tapedb/tapedb/studio` | Cloudflare Workers | `studio`: the studio at `/_tapedb/studio`, for `defineTapeDB({ studio })` |
+| `@tapedb/tapedb/seed` | Node (the CLI) | `defineSeeder`, `runSeeder` and the seeding context |
 | `npx tapedb-cli` | Node 22.18+ | the CLI, a separate package that runs the matching `@tapedb/tapedb` |
 
 `@tapedb/tapedb` has no runtime dependencies and never imports React.
@@ -172,6 +173,93 @@ allow consumers to emit declarations without leaking private names.
 | `TAPEDB_DEV_CLAIMS` | var or secret | development claim route on; never in production |
 | `TAPEDB_DEV_CLAIMS_TOKEN` | secret, optional | the development claim route then needs `x-tapedb-dev-token` |
 
+## `@tapedb/tapedb/seed`
+
+A seeder is application code that fills a workspace with rows. The library ships
+no fake data: names, postcodes, IBAN formats and every other domain convention
+belong to the application. What this entry point owns is the bookkeeping around
+the values.
+
+```ts
+// tapedb.seed.ts
+import { defineSeeder } from "@tapedb/tapedb/seed";
+import type app from "./tapedb.schema";
+
+export default defineSeeder<typeof app>(async ({ ctx }) => {
+  const customers = await ctx.create("customer", 12, (rng) => ({
+    email: ctx.unique("customer", "email", (r) => `customer${r.int(1, 1e6)}@mail.test`),
+    name: rng.pick(["Sanne", "Bram", "Noor"]),
+    joinedAt: rng.past({ days: 400 }),
+  }));
+
+  await ctx.create("account", 16, (rng) => ({
+    customerId: ctx.ref(customers),
+    balanceMinor: rng.int(1_000, 90_000),
+  }));
+});
+```
+
+| member | |
+| --- | --- |
+| `create(model, count, build)` | builds rows and writes them; answers the ids |
+| `insert(model, rows)` | writes rows you built yourself, for values that depend on other rows |
+| `listIds(model)`, `ref(ids)` | parent ids, for foreign keys |
+| `unique(model, field, generate)` | retries a generator until the value is unused in this run |
+| `clear(model?)` | deletes rows, children before parents when no model is named |
+| `model(name)` | fields, flags, uniqueness, personal and relations |
+| `rng`, `rngFor(label)` | a seeded stream; `rngFor` depends only on its label |
+| `written()` | rows this run wrote, per model |
+
+Guarantees. The same `--seed` and the same seeder write the same rows. Rows are
+written one transaction per 500 through the engine's own routes, so claims,
+access rules, the tape and the history behave as they do for a client. A
+`personal()` field is refused rather than written in the clear, because the
+encryption key belongs to the application. Declared defaults are filled in, so a
+row may leave them out.
+
+`rng.past()` and `rng.future()` measure from now. Pass `from` to anchor them
+(`rng.past({ days: 400, from: Date.UTC(2026, 10, 1) })`) when the same seed has to
+give the same dates tomorrow as it does today. The three engine columns
+(`createdAt`, `updatedAt`, `updatedSeq`) are written at insert, so they differ
+between runs whatever the seed.
+
+`npx tapedb-cli seed --workspace <uuid>` runs the seeder against a running
+Worker, minting a development claim the way `export` does. `--dry-run` builds and
+checks the rows without writing, `--if-empty` skips a workspace that already has
+rows, `--model` restricts what a run may write, and `--seed <label>` chooses the
+stream. A target that is not localhost is refused unless `--force` is passed.
+
+## The studio
+
+`tapedb studio` serves one HTML page: a table browser, the schema as an editable
+outline, and a graph of the models. It needs no build step and makes no network
+request at runtime.
+
+**Structure** reads `tapedb.schema.ts` back as fields, shows an edit as a schema
+diff plus the SQL it would run, and applies it through the same migration path as
+`migrate dev`, so a change made in the browser is a change you would have
+committed.
+
+**Graph** draws the models with React Flow: one node per model listing its keys,
+foreign keys, unique and personal fields with their types, and one edge per
+`belongsTo`, labelled with the foreign-key field and `many → 1`, laid out so
+parents sit left of the rows that point at them. Clicking a node opens that
+model. The component is handed the engine's schema document, so it draws whatever
+a workspace defines.
+
+Every control is drawn by the studio rather than by the operating system: the
+selects are listboxes with arrow, home and end navigation, `aria-expanded` and
+`aria-selected`, and a hidden input so callers read `value` as before; the
+checkboxes keep their input for semantics and `.checked`, with the brand's box
+beside it.
+
+React, React DOM, React Flow and esbuild are devDependencies of this package, and
+the bundle is committed as `src/studio/graph.gen.ts`. That keeps two properties
+that matter: `@tapedb/tapedb` has no runtime dependencies, and the page is a
+single response whose script and style are covered by one hash each in the
+`/_tapedb/studio` Content Security Policy. `node scripts/gen-studio-graph.mjs`
+regenerates the bundle, and a test fails while it is out of date.
+
 ## HTTP
 
 All engine routes need `Authorization: Bearer <claim>` for the workspace in
@@ -255,12 +343,27 @@ them. The protocol belongs to the client; use it directly only if you must.
 
 ## CLI
 
-`npx tapedb-cli init | migrate dev|rollback|status|check | dev | studio | deploy |
-export | erase | move`. The exact commands and flags are in `npx tapedb-cli --help`
+`npx tapedb-cli init | migrate dev|rollback|status|check|squash | dev | studio |
+deploy | export | seed | erase | move`. The exact commands and flags are in `npx tapedb-cli --help`
 and are part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside
 `TAPEDB_JURISDICTION`, or when `migrate check` fails (no migrations, schema
 changes without a migration, or a stale generated migrations file).
+
+### Squashing a run
+
+`migrate squash --since <id>` folds that migration and everything after it into
+the first one. The SQL is re-derived from the snapshots at each end of the run,
+so the result is the net change rather than a concatenation, and a run that adds
+a column and later drops it is removed entirely because it applies nothing.
+
+The first migration of the run keeps its id, which is why a development database
+that already applied the run needs no repair: the id it recorded still exists and
+now carries the whole change. `--dry-run` reports without writing, and
+`--accept-data-loss` is required when the net change drops something.
+
+A run containing a statement that touched rows (an `UPDATE`, a backfill) is
+refused, because a re-derived DDL diff cannot carry it.
 
 ## Error codes
 
@@ -289,6 +392,18 @@ usually handles:
 | `jurisdiction_mismatch` | 500 | the Worker reached a room outside `TAPEDB_JURISDICTION` |
 
 ## Personal data
+
+### Enums
+
+`t.enum([...])` is a string with a closed set. Values must be non-empty and
+unique, `.default()` takes one of them, `.index()` and `.unique()` work as they
+do on a string, and `.personal()` throws: the set is public and the check needs
+plaintext.
+
+The column is TEXT and the migration snapshot records only the type, so changing
+the list needs no migration. The engine refuses a write outside the set with
+`invalid_value`, whatever the client believed, and the values reach
+`ctx.model(name).fields[field].values` for a seeder.
 
 `t.string().personal({ subject: "self" | "<string field>" })` and
 `t.json().personal(...)` encrypt values under a subject key. Personal output

@@ -73,6 +73,58 @@ export class Field<
   }
 }
 
+/**
+ * A string with a closed set of values.
+ *
+ * The column is TEXT and the migration snapshot does not record the set, so
+ * adding or removing a value needs no migration: it changes what the engine
+ * accepts, not the table. The type narrows to the union, so the editor catches a
+ * typo before the engine has to.
+ *
+ * An enum is not personal: the set is public, and encrypting it would break the
+ * comparison the check depends on.
+ */
+export class EnumField<
+  V extends string = string,
+  O extends boolean = boolean,
+  D extends boolean = boolean,
+> extends Field<"string", O, D> {
+  constructor(
+    readonly values: readonly V[],
+    isOptional: O,
+    hasDefault: D,
+    defaultValue?: V,
+    isIndexed = false,
+    isUnique = false
+  ) {
+    super("string", isOptional, hasDefault, defaultValue, isIndexed, isUnique);
+  }
+
+  /** The set is public and the check needs plaintext, so an enum cannot be personal. */
+  override personal(): never {
+    throw new Error("t.enum() cannot be personal: its values are public and the engine compares them as text.");
+  }
+
+  override optional(): EnumField<V, true, D> {
+    return new EnumField<V, true, D>(this.values, true, this.hasDefault, this.defaultValue as V | undefined, this.isIndexed, this.isUnique);
+  }
+
+  override default(value: V): EnumField<V, O, true> {
+    if (!this.values.includes(value)) {
+      throw new Error(`Default "${String(value)}" is not one of: ${this.values.join(", ")}.`);
+    }
+    return new EnumField<V, O, true>(this.values, this.isOptional, true, value, this.isIndexed, this.isUnique);
+  }
+
+  override index(): EnumField<V, O, D> {
+    return new EnumField<V, O, D>(this.values, this.isOptional, this.hasDefault, this.defaultValue as V | undefined, true, this.isUnique);
+  }
+
+  override unique(): EnumField<V, O, D> {
+    return new EnumField<V, O, D>(this.values, this.isOptional, this.hasDefault, this.defaultValue as V | undefined, this.isIndexed, true);
+  }
+}
+
 export class PersonalField<K extends "string" | "json" = "string" | "json", O extends boolean = boolean, D extends boolean = boolean, S extends string = string> extends Field<K, O, D> {
   constructor(kind: K, optional: O, hasDefault: D, readonly personalSubject: S, defaultValue?: unknown) {
     super(kind, optional, hasDefault, defaultValue);
@@ -135,6 +187,22 @@ export const t = {
   date: () => new Field("date", false, false),
   /** Any JSON value. Not filterable or sortable. */
   json: () => new Field("json", false, false),
+  /**
+   * A string with a closed set of values. Stored as TEXT, checked on every
+   * write, narrowed to the union in `Row` and `CreateData`.
+   */
+  enum: <const V extends readonly string[]>(values: V) => {
+    if (values.length === 0) throw new Error("t.enum() needs at least one value.");
+    const seen = new Set<string>();
+    for (const value of values) {
+      if (typeof value !== "string" || value.length === 0) {
+        throw new Error("t.enum() takes non-empty strings.");
+      }
+      if (seen.has(value)) throw new Error(`t.enum() repeats "${value}".`);
+      seen.add(value);
+    }
+    return new EnumField<V[number]>([...values] as V[number][], false, false);
+  },
   belongsTo: <T extends string>(target: T, options: BelongsToOptions = {}) =>
     new BelongsTo(target, false, options.onDelete ?? "setNull"),
   hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options: O = {} as O) =>

@@ -148,9 +148,14 @@ test("field specs survive a round trip through code", () => {
     { type: "belongsTo", target: "board" },
     { type: "belongsTo", target: "board", optional: true, onDelete: "cascade" },
     { type: "hasMany", target: "task" },
+    { type: "enum", values: ["retail", "business"] },
+    { type: "enum", values: ["a"], optional: true, default: "a", unique: true },
+    { type: "enum", values: ["open", "closed"], default: "open", index: true },
   ];
   for (const spec of specs) expect(readField(renderField(spec))).toEqual(spec);
   expect(readField('t.string().personal({ subject: "self" })')).toBeNull();
+  // An enum default has to be one of its values, so it is read as a string only.
+  expect(readField('t.enum(["a", "b"]).default("c")')).toEqual({ type: "enum", values: ["a", "b"], default: "c" });
 });
 
 test("the preview diff shows only what changed, with context", () => {

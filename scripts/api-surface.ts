@@ -24,6 +24,7 @@ export const ENTRIES: Record<string, string> = {
   "@tapedb/tapedb/react": "src/react/index.ts",
   "@tapedb/tapedb/worker": "src/worker/index.ts",
   "@tapedb/tapedb/studio": "src/studio/index.ts",
+  "@tapedb/tapedb/seed": "src/seed/index.ts",
 };
 
 const FORMAT = ts.TypeFormatFlags.NoTruncation | ts.TypeFormatFlags.WriteArrowStyleSignature;
