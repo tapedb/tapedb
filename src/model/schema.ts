@@ -327,9 +327,14 @@ type TargetFields<S, M extends Models> = TargetOf<S> extends keyof M ? FieldsOf<
 /** The fields of the model a relation points at. */
 export type TargetFieldsOf<S, M extends Models> = TargetFields<S, M>;
 
+/**
+ * The columns every row carries. They are readable, sortable, filterable and
+ * groupable, and the engine writes them: no create or update accepts them.
+ */
+export type SystemKey = "createdAt" | "updatedAt" | "updatedSeq";
 export type OrderBy<F> =
-  | Partial<Record<FilterKeys<F>, "asc" | "desc">>
-  | Partial<Record<FilterKeys<F>, "asc" | "desc">>[];
+  | Partial<Record<FilterKeys<F> | SystemKey, "asc" | "desc">>
+  | Partial<Record<FilterKeys<F> | SystemKey, "asc" | "desc">>[];
 
 export interface IncludeArgs<M extends Models, F extends Fields> {
   where?: Where<F, M>;
@@ -389,7 +394,7 @@ type NumberKeys<F> = {
 }[ScalarKeys<F>];
 
 /** Fields a group can be keyed by: anything filterable, and the timestamps. */
-export type GroupKeys<F> = FilterKeys<F> | "createdAt" | "updatedAt";
+export type GroupKeys<F> = FilterKeys<F> | SystemKey;
 
 /** Fields with an order, so a minimum and maximum: not booleans or json. */
 type OrderedKeys<F> =
