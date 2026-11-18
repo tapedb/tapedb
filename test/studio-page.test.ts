@@ -54,6 +54,17 @@ test("the default control is a list for a closed set and a number for a number",
   expect(text.type).toBe("text");
 });
 
+test("the form draws its own controls instead of the system's", () => {
+  // A native select opens the OS menu and a native checkbox is the OS's box:
+  // neither follows the brand. Both are replaced, with the real input kept for
+  // the checkbox so .checked and change still work.
+  expect(PAGE).not.toContain('el("select"');
+  expect(PAGE).toContain("listbox-option");
+  expect(PAGE).toContain('"aria-haspopup": "listbox"');
+  expect(PAGE).toContain('el("span", { class: "box", "aria-hidden": "true" })');
+  expect(PAGE).toContain(".check input:checked + .box");
+});
+
 test("the field form offers an enum and a default that fits the type", () => {
   // The three pieces that make an enum editable: the type in the list, a values
   // input, and a default control that is a list rather than a text box.

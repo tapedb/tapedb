@@ -124,7 +124,7 @@ body.ff .top .cassette .hub { animation-duration: 0.4s; }
 @keyframes hub { to { transform: rotate(360deg); } }
 .top .spacer { flex: 1; }
 .workspace { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
-.workspace select {
+.workspace .listbox {
   appearance: none;
   -webkit-appearance: none;
   max-width: 300px;
@@ -137,7 +137,7 @@ body.ff .top .cassette .hub { animation-duration: 0.4s; }
   letter-spacing: 0.02em;
   cursor: pointer;
 }
-.workspace select:hover { border-color: var(--line-strong); }
+.workspace .listbox:hover { border-color: var(--line-strong); }
 .workspace input {
   width: 320px;
   padding: 6px 10px;
@@ -217,7 +217,7 @@ main { grid-area: main; min-width: 0; min-height: 0; display: flex; flex-directi
 .chip button { border: 0; background: none; color: var(--text-3); cursor: pointer; padding: 2px 6px; font-size: 16px; line-height: 1; }
 .chip button:hover { color: var(--text); }
 .filter-form { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.filter-form select, .filter-form input {
+.filter-form .listbox, .filter-form input {
   min-height: 32px;
   padding: 4px 8px;
   border: 1px solid var(--line-strong);
@@ -226,6 +226,9 @@ main { grid-area: main; min-width: 0; min-height: 0; display: flex; flex-directi
   font: 12.5px var(--mono);
 }
 .filter-form input { width: 200px; }
+.filter-form .listbox-wrap { flex: none; }
+.filter-form .listbox { min-width: 140px; }
+.who-pop .listbox { width: 100%; min-height: 34px; font-size: 14px; }
 .quiet { border: 0; background: none; cursor: pointer; padding: 4px 6px; }
 .quiet:hover { color: var(--text); }
 
@@ -524,9 +527,53 @@ button.who.as .label { color: var(--accent); }
 .sheet .body { flex: 1; overflow: auto; padding: 16px 20px 24px; display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; align-content: start; }
 .sheet .body > * { min-width: 0; }
 .sheet .body .label { margin-bottom: 6px; }
-.field select { appearance: auto; }
-.check { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text); }
-.check input { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
+.check { display: inline-flex; align-items: center; gap: 10px; font-size: 14px; color: var(--text); cursor: pointer; }
+/* The input keeps the browser's semantics and .checked; the box beside it is ours. */
+.check input { position: absolute; width: 1px; height: 1px; margin: 0; opacity: 0; pointer-events: none; }
+.check .box {
+  width: 18px; height: 18px; flex: none;
+  border: 1px solid var(--line-strong); border-radius: 5px; background: var(--ground);
+  display: inline-flex; align-items: center; justify-content: center;
+  transition: background .12s linear, border-color .12s linear;
+}
+.check input:checked + .box { background: var(--accent); border-color: var(--accent); }
+.check input:checked + .box::after {
+  content: ""; width: 9px; height: 5px;
+  border-left: 2px solid var(--on-accent); border-bottom: 2px solid var(--on-accent);
+  transform: rotate(-45deg) translateY(-1px);
+}
+.check input:focus-visible + .box { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* A native select opens the OS menu, which ignores the page's type and colour.
+   The Landing page uses a summary/details listbox; this is the same shape. */
+.listbox-wrap { position: relative; }
+.field .listbox {
+  width: 100%; min-height: 40px; padding: 8px 10px;
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  border: 1px solid var(--line); border-radius: var(--control);
+  background: var(--ground); color: var(--text); font-size: 15px; text-align: left;
+  appearance: none; cursor: pointer; transition: border-color .12s linear;
+}
+.field .listbox:hover { border-color: var(--line-strong); }
+.listbox-chev {
+  width: 7px; height: 7px; flex: none;
+  border-right: 1.5px solid var(--text-3); border-bottom: 1.5px solid var(--text-3);
+  transform: rotate(45deg) translateY(-2px); transition: transform .12s linear;
+}
+.listbox[aria-expanded=true] .listbox-chev { transform: rotate(-135deg) translateY(-2px); }
+.listbox-menu {
+  position: absolute; z-index: 60; left: 0; right: 0; margin-top: 6px; padding: 4px;
+  background: var(--surface); border: 1px solid var(--line-strong); border-radius: var(--panel);
+  box-shadow: 0 18px 40px rgb(0 0 0 / .38); max-height: 260px; overflow: auto;
+}
+.listbox-menu[hidden] { display: none; }
+.listbox-option {
+  display: block; width: 100%; min-height: 34px; padding: 0 10px;
+  border: 0; border-radius: var(--control); background: transparent;
+  color: var(--text-2); font-size: 14px; text-align: left; cursor: pointer;
+}
+.listbox-option:hover, .listbox-option:focus-visible { background: var(--surface-2); color: var(--text); outline: none; }
+.listbox-option[aria-selected=true] { color: var(--text); }
+.listbox-option[aria-selected=true]::after { content: "✓"; float: right; color: var(--accent); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 /* ---- Row drawer --------------------------------------------------------------------------- */
@@ -558,7 +605,7 @@ button.who.as .label { color: var(--accent); }
 .field label { display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; }
 .field label .label { color: var(--text-2); text-transform: none; letter-spacing: 0.02em; font-size: 13px; }
 .field label .type { font: 11.5px var(--mono); color: var(--text-3); }
-.field input[type=text], .field input[type=number], .field input[type=datetime-local], .field textarea, .field select {
+.field input[type=text], .field input[type=number], .field input[type=datetime-local], .field textarea {
   width: 100%;
   min-height: 40px;
   padding: 8px 10px;
@@ -568,9 +615,8 @@ button.who.as .label { color: var(--accent); }
   color: var(--text);
   font-size: 15px;
 }
-.field input:hover, .field textarea:hover, .field select:hover { border-color: var(--line-strong); }
+.field input:hover, .field textarea:hover { border-color: var(--line-strong); }
 .field textarea { min-height: 96px; font: 13px/1.6 var(--mono); resize: vertical; }
-.field input[type=checkbox] { width: 18px; height: 18px; accent-color: var(--accent); margin: 0; }
 .toggle { display: inline-flex; align-items: center; gap: 10px; min-height: 40px; font: 13px var(--mono); color: var(--text); }
 .hint { margin: 0; font-size: 13px; color: var(--text-3); }
 .meta { display: grid; grid-template-columns: max-content 1fr; gap: 0 18px; margin: 0; padding-top: 14px; border-top: 1px solid var(--line); }
@@ -610,7 +656,7 @@ button.who.as .label { color: var(--accent); }
   .top { flex-wrap: wrap; padding: 10px 14px; gap: 10px; }
   .brand .label { display: none; }
   .workspace { order: 3; flex-basis: 100%; }
-  .workspace select { max-width: none; flex: 1; }
+  .workspace .listbox { max-width: none; flex: 1; }
   aside { border-right: 0; border-bottom: 1px solid var(--line); padding: 10px 8px; }
   aside > .label { display: none; }
   nav { display: flex; overflow-x: auto; border-top: 0; }
@@ -640,8 +686,8 @@ button.who.as .label { color: var(--accent); }
   <span class="spacer"></span>
   <div class="menu" id="who-menu" hidden></div>
   <div class="workspace">
-    <label class="label" for="workspace">Workspace</label>
-    <select id="workspace"></select>
+    <label class="label" for="workspace-trigger">Workspace</label>
+    <span id="workspace-mount"></span>
     <input id="workspace-id" type="text" placeholder="Paste a workspace id" hidden />
   </div>
 </header>
@@ -971,6 +1017,106 @@ function el(tag, attrs, children) {
   return node;
 }
 
+/**
+ * A listbox in place of a native select.
+ *
+ * A native select opens the operating system's menu, which ignores the page's
+ * type, colour and radius. The Landing page answers this with a summary/details
+ * listbox; this is the same shape in the studio's vocabulary. The returned node
+ * mirrors the hidden input through its value property, so callers keep reading
+ * and writing it as they did, and setOptions covers lists that arrive later.
+ */
+function listboxControl(id, options, value, onchange) {
+  var items = options.slice();
+  var hidden = el("input", { type: "hidden", id: id, value: value === undefined ? "" : String(value) });
+  var shown = el("span", { class: "listbox-value" });
+  var trigger = el(
+    "button",
+    { type: "button", class: "listbox", id: id + "-trigger", "aria-haspopup": "listbox", "aria-expanded": "false" },
+    [shown, el("span", { class: "listbox-chev", "aria-hidden": "true" })]
+  );
+  var menu = el("div", { class: "listbox-menu", role: "listbox", hidden: true });
+  var wrap = el("div", { class: "listbox-wrap" }, [trigger, menu, hidden]);
+
+  function labelFor(candidate) {
+    for (var index = 0; index < items.length; index += 1) if (items[index][0] === candidate) return items[index][1];
+    return "";
+  }
+  function paint() {
+    shown.textContent = labelFor(hidden.value);
+    Array.prototype.forEach.call(menu.children, function (button) {
+      button.setAttribute("aria-selected", button.getAttribute("data-value") === hidden.value ? "true" : "false");
+    });
+  }
+  function paintMenu() {
+    menu.innerHTML = "";
+    items.forEach(function (item) {
+      menu.append(el("button", {
+        type: "button",
+        class: "listbox-option",
+        role: "option",
+        "data-value": item[0],
+        text: item[1],
+        onclick: function () { choose(item[0]); }
+      }));
+    });
+  }
+  function close() {
+    menu.hidden = true;
+    trigger.setAttribute("aria-expanded", "false");
+    document.removeEventListener("mousedown", outside, true);
+  }
+  function outside(event) {
+    if (!menu.contains(event.target) && !trigger.contains(event.target)) close();
+  }
+  function open() {
+    if (menu.children.length === 0) return;
+    menu.hidden = false;
+    trigger.setAttribute("aria-expanded", "true");
+    document.addEventListener("mousedown", outside, true);
+    var selected = menu.querySelector('[aria-selected="true"]') || menu.children[0];
+    if (selected) selected.focus();
+  }
+  function choose(next) {
+    var changed = hidden.value !== next;
+    hidden.value = next;
+    paint();
+    close();
+    trigger.focus();
+    if (changed && onchange) onchange(next);
+  }
+
+  trigger.addEventListener("click", function () { if (menu.hidden) open(); else close(); });
+  trigger.addEventListener("keydown", function (event) {
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") { event.preventDefault(); open(); }
+  });
+  menu.addEventListener("keydown", function (event) {
+    var buttons = Array.prototype.slice.call(menu.children);
+    var index = buttons.indexOf(document.activeElement);
+    if (event.key === "Escape") { event.preventDefault(); close(); trigger.focus(); }
+    else if (event.key === "ArrowDown") { event.preventDefault(); (buttons[index + 1] || buttons[0]).focus(); }
+    else if (event.key === "ArrowUp") { event.preventDefault(); (buttons[index - 1] || buttons[buttons.length - 1]).focus(); }
+    else if (event.key === "Home") { event.preventDefault(); buttons[0].focus(); }
+    else if (event.key === "End") { event.preventDefault(); buttons[buttons.length - 1].focus(); }
+  });
+
+  Object.defineProperty(wrap, "value", {
+    get: function () { return hidden.value; },
+    set: function (next) { hidden.value = next === undefined || next === null ? "" : String(next); paint(); }
+  });
+  wrap.setOptions = function (next, selected) {
+    items = next.slice();
+    if (selected !== undefined) hidden.value = String(selected);
+    paintMenu();
+    paint();
+  };
+  wrap.focus = function () { trigger.focus(); };
+
+  paintMenu();
+  paint();
+  return wrap;
+}
+
 /** Text that ends in the brand's orange full stop. */
 function stopped(node, text) {
   node.innerHTML = "";
@@ -1160,17 +1306,29 @@ function typeOf(model, field) {
 // ---- Workspaces -----------------------------------------------------------
 
 function renderWorkspaces() {
-  var select = $("workspace");
-  select.innerHTML = "";
-  if (app.workspaces.length === 0 && !app.workspace) select.append(el("option", { value: "", text: "None yet" }));
+  var options = [];
+  if (app.workspaces.length === 0 && !app.workspace) options.push(["", "None yet"]);
   var listed = app.workspaces.slice();
   if (app.workspace && !listed.some(function (w) { return w.id === app.workspace; })) listed.unshift({ id: app.workspace, updatedAt: null });
   listed.forEach(function (w) {
     var when = ago(w.updatedAt);
-    select.append(el("option", { value: w.id, text: shortId(w.id) + (when ? "  (" + when + ")" : ""), title: w.id }));
+    options.push([w.id, shortId(w.id) + (when ? "  (" + when + ")" : "")]);
   });
-  select.append(el("option", { value: "__other", text: "Open by id…" }));
-  select.value = app.workspace || "";
+  options.push(["__other", "Open by id\u2026"]);
+  var mount = $("workspace-mount");
+  mount.innerHTML = "";
+  mount.append(listboxControl("workspace", options, app.workspace || "", chooseWorkspace));
+}
+
+/** The picker's own change: __other reveals the id box instead of switching. */
+function chooseWorkspace(value) {
+  if (value === "__other") {
+    $("workspace-id").hidden = false;
+    $("workspace-id").focus();
+    $("workspace").value = app.workspace || "";
+    return;
+  }
+  openWorkspace(value);
 }
 
 function loadWorkspaces(known) {
@@ -1757,9 +1915,8 @@ function renderFilters() {
     return;
   }
   var fields = columns(model).filter(function (f) { var t = typeOf(model, f); return t !== "json" && t !== "any"; });
-  var fieldSelect = el("select", { "aria-label": "Field" }, fields.map(function (f) { return el("option", { value: f, text: f }); }));
-  if (fields.length > 1) fieldSelect.value = fields[1];
-  var opSelect = el("select", { "aria-label": "Condition" }, OPS.map(function (o) { return el("option", { value: o[0], text: o[1] }); }));
+  var fieldSelect = listboxControl("filter-field", fields.map(function (f) { return [f, f]; }), fields.length > 1 ? fields[1] : fields[0]);
+  var opSelect = listboxControl("filter-op", OPS, OPS[0][0]);
   var input = el("input", { type: "text", "aria-label": "Value", placeholder: "value" });
   box.append(el("form", { class: "filter-form", onsubmit: function (event) {
     event.preventDefault();
@@ -1818,9 +1975,7 @@ function jumpTo(model, id) {
 /** Picks a row of the target model by name; up to 500 rows, else an id box. */
 function relationPicker(id, target, value, optional) {
   var current = typeof value === "string" ? value : "";
-  var select = el("select", { id: id }, [el("option", { value: "", text: optional ? "None" : "Choose a " + target })]);
-  if (current) select.append(el("option", { value: current, text: labelFor(target, current) }));
-  select.value = current;
+  var select = listboxControl(id, [["", optional ? "None" : "Choose a " + target]], current);
   var label = labelField(target);
   var options = { limit: 500, count: true, order: {} };
   options.order[label || "id"] = "asc";
@@ -1833,12 +1988,11 @@ function relationPicker(id, target, value, optional) {
       select.replaceWith(el("input", { type: "text", id: id, class: "mono", value: current, placeholder: "id of a " + target }));
       return;
     }
-    select.innerHTML = "";
-    select.append(el("option", { value: "", text: optional ? "None" : "Choose a " + target }));
+    var list = [["", optional ? "None" : "Choose a " + target]];
     ((result.data || {})[target] || []).forEach(function (row) {
-      select.append(el("option", { value: row.id, text: label && row[label] ? row[label] : shortId(row.id), title: row.id }));
+      list.push([row.id, label && row[label] ? row[label] : shortId(row.id)]);
     });
-    select.value = current;
+    select.setOptions(list, current);
   }).catch(function () {});
   return select;
 }
@@ -2035,16 +2189,6 @@ document.addEventListener("keydown", function (event) {
   else if ($("drawer").classList.contains("open")) closeDrawer();
 });
 
-$("workspace").addEventListener("change", function (event) {
-  var value = event.target.value;
-  if (value === "__other") {
-    $("workspace-id").hidden = false;
-    $("workspace-id").focus();
-    event.target.value = app.workspace || "";
-    return;
-  }
-  openWorkspace(value);
-});
 $("workspace-id").addEventListener("keydown", function (event) {
   if (event.key === "Escape") { event.target.hidden = true; return; }
   if (event.key !== "Enter") return;
@@ -2240,15 +2384,18 @@ function defaultControl(kind, current, values) {
   if (kind === "number") return textField("f-default", "Default", current, "a number, like 0 or 12.5", "number");
   return textField("f-default", "Default", current, "used when a write leaves it out");
 }
+/** A labelled field around the listbox control. */
 function selectField(id, label, options, value) {
-  var select = el("select", { id: id }, options.map(function (o) { return el("option", { value: o[0], text: o[1] }); }));
-  if (value !== undefined) select.value = value;
-  return el("div", { class: "field" }, [el("label", { for: id }, [el("span", { class: "label", text: label })]), select]);
+  return el("div", { class: "field" }, [
+    el("label", { for: id + "-trigger" }, [el("span", { class: "label", text: label })]),
+    listboxControl(id, options, value)
+  ]);
 }
+
 function checkField(id, label, checked) {
   var box = el("input", { type: "checkbox", id: id });
   box.checked = !!checked;
-  return el("label", { class: "check", for: id }, [box, label]);
+  return el("label", { class: "check", for: id }, [box, el("span", { class: "box", "aria-hidden": "true" }), el("span", { text: label })]);
 }
 
 function modelForm(renaming) {
@@ -3507,11 +3654,9 @@ function renderWho() {
   ]);
   var pop = el("div", { class: "pop end who-pop", hidden: true });
   var highest = MODE === "worker" ? (typeof app.ownRole === "number" ? app.ownRole : caller.role) : ROLES.length - 1;
-  var select = el("select", { "aria-label": "Role" }, ROLES.slice(0, highest + 1).map(function (name, level) {
-    var option = el("option", { value: String(level), text: name });
-    if (level === caller.role) option.selected = true;
-    return option;
-  }));
+  var select = listboxControl("view-role", ROLES.slice(0, highest + 1).map(function (name, level) {
+    return [String(level), name];
+  }), String(caller.role));
   var user = MODE === "local" ? el("input", { type: "text", "aria-label": "User id", placeholder: "dev-user", value: caller.sub === "dev-user" ? "" : caller.sub, spellcheck: "false" }) : null;
   pop.append(
     el("div", { class: "pop-head label", text: "See this workspace as" }),
@@ -3661,16 +3806,14 @@ function opLine(op) {
 function renderHistory() {
   var box = $("history-body");
   box.innerHTML = "";
-  var filter = el("select", { "aria-label": "Model", onchange: function (event) {
-    hist.model = event.target.value;
+  var filter = listboxControl("history-model", [["", "All models"]].concat(app.schema.namespaces.map(function (n) {
+    return [n.apiName, n.apiName];
+  })), hist.model, function (value) {
+    hist.model = value;
     hist.focus = null;
     hist.next = null;
     loadHistory(false);
-  } }, [el("option", { value: "", text: "All models" })].concat(app.schema.namespaces.map(function (n) {
-    var option = el("option", { value: n.apiName, text: n.apiName });
-    if (hist.model === n.apiName) option.selected = true;
-    return option;
-  })));
+  });
   var bar = el("div", { class: "filters" }, [el("label", { class: "select" }, [filter])]);
   if (hist.focus !== null) bar.append(el("button", { class: "quiet label", type: "button", text: "Show the latest", onclick: function () { hist.focus = null; loadHistory(false); } }));
   box.append(bar);
