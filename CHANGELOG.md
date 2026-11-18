@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.24 - 2026-11-18
+
+- `createdAt`, `updatedAt` and `updatedSeq` resolve on every read path, not only in `select`. A read can now order, filter and group by them, and the client's `where`, `orderBy`, `groupBy` and aggregate types accept them, so a call no longer passes the client and then fails with `unknown_attribute` at the engine. `updatedSeq` gives "what changed since" as a total order. They stay engine-owned: a create or update that names one is still refused.
+- The studio's favicon carries the brand's light and dark pair and follows `prefers-color-scheme`, instead of the dark-theme colours hardcoded on a light tab strip.
+
 ## 0.1.23 - 2026-11-17
 
 - Literal schemas report missing relation targets, missing or ambiguous hasMany inverses, invalid inverse names, and missing or invalid personal subjects in the TypeScript editor. Subject and inverse names remain precise through their builders and modifiers. Dynamic definitions still use the existing runtime validation; emitted runtime JavaScript is unchanged.
