@@ -889,3 +889,19 @@ user and workspace. Close and recreate the client when switching accounts. Old
 unscoped queues remain quarantined and are never automatically replayed.
 
 
+
+
+### Built-in sign-in
+
+For a new app, choose **With Better Auth** during init, or run:
+
+```sh
+npx tapedb-cli init --auth --email-from "<sender-address>"
+```
+
+The generated `auth.ts` wires email verification, password reset and magic links to Cloudflare Email Service. Users and sessions live in one dedicated auth Durable Object; workspace roles come from stored membership. Studio's **Users** page handles sign-in, members and sessions. Local email appears in the terminal and Studio inbox without being sent.
+
+Models can reference members with `t.belongsTo("$users")`. Apps continue using Better Auth's own client. See [the auth and email API](API.md#built-in-authentication) for bindings, routes and erasure. Sending email in production requires Workers Paid and a sender domain on Cloudflare; deploy onboards the configured domain.
+
+
+To use your own React design, add **`tapedb.auth.tsx`** at the project root with a default-exported component. New auth scaffolds are already wired for it; `dev` watches it and `deploy` bundles it with its CSS. Without it, TapeDB serves the branded default. See [custom auth pages](API.md#custom-auth-page) for the component props and existing-app setup.

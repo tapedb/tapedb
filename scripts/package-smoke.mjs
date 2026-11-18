@@ -119,6 +119,27 @@ try {
   }
   console.log("package smoke: standalone defaults and helper imports passed");
 
+  // Compile an actual consumer of the auth scaffold against the packed declarations.
+  const authApp=join(scratch,"auth-app");mkdirSync(authApp);
+  writeFileSync(join(authApp,"package.json"),JSON.stringify({name:"auth-consumer",private:true,type:"module"}));
+  command("npm",["install",archive,"better-auth@1.7.25","react@19","react-dom@19","esbuild@0.28.2","--ignore-scripts","--no-audit","--no-fund"],authApp);
+  const authCli=join(authApp,"node_modules/@tapedb/tapedb/dist/cli.js");
+  command(process.execPath,[authCli,"init","--auth","--email-from","no-reply@local.test","--no-install","--no-start","--yes"],authApp);
+  const config=JSON.parse(readFileSync(join(authApp,"wrangler.jsonc"),"utf8"));
+  assert.ok(config.durable_objects.bindings.some(binding=>binding.name==="AUTH"));
+  assert.ok(config.send_email.some(binding=>binding.name==="EMAIL"));
+  assert.match(readFileSync(join(authApp,".dev.vars"),"utf8"),/^BETTER_AUTH_SECRET=.+$/m);
+  writeFileSync(join(authApp,"tsconfig.json"),JSON.stringify({compilerOptions:{target:"ES2022",module:"ESNext",moduleResolution:"Bundler",strict:true,skipLibCheck:true,noEmit:true,types:[join(root,"node_modules/@cloudflare/workers-types")]},include:["worker.ts","auth.ts","tapedb.schema.ts","tapedb/migrations.gen.ts"]}));
+  command(process.execPath,[join(root,"node_modules/typescript/bin/tsc"),"-p",authApp],authApp);
+  writeFileSync(join(authApp,"tapedb.auth.tsx"),'import "./auth.css";export default function Auth(){return <h1>Custom auth from packed CLI</h1>;}');
+  writeFileSync(join(authApp,"auth.css"),'h1{color:green}');
+  command(process.execPath,[authCli,"auth","build"],authApp);
+  const customPage=readFileSync(join(authApp,"tapedb/auth-page.gen.ts"),"utf8");
+  assert.ok(customPage.includes("Custom auth from packed CLI"));
+  assert.ok(customPage.includes('"css"'));
+  command(process.execPath,[join(root,"node_modules/typescript/bin/tsc"),"-p",authApp],authApp);
+  console.log("package smoke: auth scaffold, React override and public declarations passed");
+
   // `npx tapedb-cli <command>`: the wrapper package runs the CLI of the @tapedb/tapedb it pins.
   const cliPacked = command("npm", ["pack", "--json", "--pack-destination", scratch], join(root, "packages", "tapedb-cli"));
   const cliArchive = join(scratch, JSON.parse(cliPacked.stdout)[0].filename);

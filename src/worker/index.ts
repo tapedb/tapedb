@@ -10,6 +10,10 @@
  *   export default tapedb.worker;
  */
 
+import { capturedEmails } from "../email/dev";
+import { serveAuthPage, type TapeDBAuthPage } from "../auth/page";
+import { AuthRoom } from "../auth/room";
+import { authIdentity, authManagement, type TapeDBAuthServer } from "../auth/server";
 import type { TapeDBStudio } from "../studio";
 import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
@@ -65,6 +69,10 @@ export interface DefineTapeDBOptions {
    * must supply tokens to the client itself.
    */
   identity?: ClaimIdentity;
+  /** Browser bundle generated from the project's tapedb.auth.tsx override. */
+  authPage?: TapeDBAuthPage;
+  /** Better Auth server, or a factory using this request's bindings. */
+  auth?: TapeDBAuthServer | ((env:Env, request:Request)=>TapeDBAuthServer);
   /**
    * Development-only issuer: mints an OWNER claim for any workspace with no
    * session. Always refused when `ENVIRONMENT` is `production`.
@@ -103,6 +111,7 @@ export interface DefineTapeDBOptions {
 export interface TapeDBWorker {
   /** The database room class. Export it from the Worker entry. */
   WorkspaceRoom: typeof WorkspaceRoom;
+  AuthRoom: typeof AuthRoom;
   worker: { fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> };
 }
 
@@ -256,9 +265,12 @@ async function localWorkspaces(bucket: R2Bucket): Promise<Array<{ id: string; up
 }
 
 export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
-  const { schema, identity, devClaims = false, migrations } = options;
+  const { schema, devClaims = false, migrations } = options;
+  const usesUsers=schema.registry.namespaces.some(namespace=>namespace.apiName==="$users");
+  if(usesUsers&&!options.auth)throw new Error("$users requires built-in auth.");
+  if(options.auth && options.identity)throw new Error("Use auth or identity, not both.");
   // Validated once, when the Worker is defined.
-  const claimLimits = resolveClaimLimits(identity?.limits);
+  const claimLimits = resolveClaimLimits(options.identity?.limits);
 
   // One schema per Worker instance. Installed at module evaluation, before any
   // request or Durable Object is constructed.
@@ -279,14 +291,27 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
       }
 
       const url = new URL(request.url);
+      const auth=typeof options.auth==='function'?options.auth(env,request):options.auth;
+      const identity=auth?authIdentity(auth,request,env,usesUsers):options.identity;
+      if(auth && (url.pathname==='/api/auth' || url.pathname.startsWith('/api/auth/')))return auth.handler(request);
+      if(auth && options.authPage){const page=serveAuthPage(request,options.authPage);if(page)return page;}
+      if(auth && url.pathname==='/auth' && options.studio)return options.studio.serve(new Request(new URL('/_tapedb/studio/users'+url.search,url),request));
+      if(auth && (url.pathname==='/_tapedb/workspaces' || url.pathname==='/_tapedb/auth/members'))return authManagement(request,env,auth);
 
+      if(url.pathname==='/_tapedb/dev/emails'){
+        if(request.method!=='GET'||env.ENVIRONMENT==='production'||env.TAPEDB_DEV_CLAIMS!=='true'||!['localhost','127.0.0.1','[::1]'].includes(url.hostname))return apiError(404,"no_route","No route.");
+        return json({emails:capturedEmails()});
+      }
       if (url.pathname === "/status" || url.pathname === "/health") {
-        return json({ ok: true, service: "tapedb" });
+        return json({ ok: true, service: "tapedb", ...(auth?{auth:true}:{}) });
       }
 
+      if(auth && options.studio && (url.pathname==='/_tapedb/studio' || url.pathname==='/_tapedb/studio/' || url.pathname==='/_tapedb/studio/users')){
+        if(!await auth.api.getSession({headers:request.headers}))return Response.redirect(new URL('/auth?returnTo='+encodeURIComponent(url.pathname+url.search),url).href,302);
+      }
       if (url.pathname === "/" && request.method === "GET") {
         const studio = localStudio(env, devClaims);
-        if (studio) return Response.redirect(studio, 302);
+        if (studio && !auth) return Response.redirect(studio, 302);
         // With the studio on, the Worker's own address opens it.
         if (options.studio) return Response.redirect(new URL("/_tapedb/studio", url).href, 302);
       }
@@ -315,7 +340,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
         const claimed = await handleClaimRequest(request, {
           env,
           identity,
-          devClaims,
+          devClaims:auth?false:devClaims,
           ...(claimLimits.ip || claimLimits.subject ? { limit: (kind, value) => takeClaimToken(env, claimLimits, kind, value) } : {}),
         });
         // During `tapedb dev`, note the workspace so the studio lists it before its first flush.
@@ -410,7 +435,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
     },
   };
 
-  return { WorkspaceRoom, worker };
+  return { WorkspaceRoom, AuthRoom, worker };
 }
 
 // The public surface of `@tapedb/tapedb/worker`; see API.md. Everything else in this
@@ -427,3 +452,8 @@ export type { Env, TapeDBSchema, BundledWorkspaceMigration };
 
 // A named type for downstream declaration emission; no runtime room export.
 export type { WorkspaceRoom as TapeDBRoom };
+
+export { AuthRoom };
+export type { TapeDBAuthServer } from "../auth/server";
+
+export type { TapeDBAuthPage } from "../auth/page";

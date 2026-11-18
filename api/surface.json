@@ -331,7 +331,7 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<M>"
+        "shape": "<M extends Models>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<WithUsers<M>>"
       },
       "Schema": {
         "kind": "interface",
@@ -550,7 +550,7 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<M>"
+        "shape": "<M extends Models>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<WithUsers<M>>"
       },
       "Schema": {
         "kind": "interface",
@@ -579,6 +579,12 @@
       }
     },
     "@tapedb/tapedb/react": {
+      "AuthPageProps": {
+        "kind": "interface",
+        "shape": {
+          "redirectTo": "string"
+        }
+      },
       "LivePage": {
         "kind": "interface",
         "shape": {
@@ -612,6 +618,31 @@
       "AppMigration": {
         "kind": "type",
         "shape": "BundledWorkspaceMigration"
+      },
+      "AuthRoom": {
+        "kind": "class",
+        "shape": {
+          "adoptWorkspace": "(workspace: string, user: string) => Promise<void>",
+          "prepareUserErasure": "(user: string) => Promise<string[]>",
+          "finishUserErasure": "(user: string) => Promise<void>",
+          "createWorkspace": "(user: string) => Promise<{ id: string; role: WorkspaceRole; }>",
+          "getRole": "(workspace: string, user: string) => Promise<WorkspaceRole | null>",
+          "workspaces": "(user: string) => Promise<import(\"src/engine/tx-sql\").SqlRow[]>",
+          "listMembers": "(actor: string, workspace: string) => Promise<({ id: string; name: string; image: string | null; } | null)[]>",
+          "setMember": "(actor: string, workspace: string, user: string, role: WorkspaceRole | null) => Promise<void>",
+          "workspaceProfiles": "(workspace: string, user: string) => Promise<{ id: string; name: string; image: string | null; }[]>",
+          "profile": "(user: string) => Promise<{ id: string; name: string; image: string | null; } | null>",
+          "configure": "(tables: AuthTables) => Promise<void>",
+          "execute": "(command: AuthCommand) => Promise<unknown>",
+          "alarm": "((alarmInfo?: AlarmInvocationInfo) => void | Promise<void>) | undefined",
+          "fetch": "((request: Request) => Response | Promise<Response>) | undefined",
+          "connect": "((socket: Socket) => void | Promise<void>) | undefined",
+          "webSocketMessage": "((ws: WebSocket, message: string | ArrayBuffer) => void | Promise<void>) | undefined",
+          "webSocketClose": "((ws: WebSocket, code: number, reason: string, wasClean: boolean) => void | Promise<void>) | undefined",
+          "webSocketError": "((ws: WebSocket, error: unknown) => void | Promise<void>) | undefined",
+          "__DURABLE_OBJECT_BRAND": "never",
+          "(declaration)": "extends DurableObject<unknown>"
+        }
       },
       "BundledWorkspaceMigration": {
         "kind": "interface",
@@ -665,6 +696,8 @@
           "schema": "TapeDBSchema",
           "migrations": "readonly BundledWorkspaceMigration[] | undefined",
           "identity": "ClaimIdentity | undefined",
+          "authPage": "TapeDBAuthPage | undefined",
+          "auth": "TapeDBAuthServer | ((env: Env, request: Request) => TapeDBAuthServer) | undefined",
           "devClaims": "boolean | undefined",
           "studio": "TapeDBStudio | undefined",
           "topics": "TopicOptions | undefined @experimental",
@@ -676,6 +709,7 @@
         "kind": "interface",
         "shape": {
           "WORKSPACE": "DurableObjectNamespace<WorkspaceRoom>",
+          "AUTH": "DurableObjectNamespace<AuthRoom> | undefined",
           "DATA": "R2Bucket",
           "FILES": "R2Bucket | undefined",
           "DATA_FROM": "R2Bucket | undefined",
@@ -701,10 +735,27 @@
         "kind": "function",
         "shape": "(secret: string, input: MintClaimInput, now?: number) => Promise<MintedClaim>"
       },
+      "TapeDBAuthPage": {
+        "kind": "interface",
+        "shape": {
+          "javascript": "string",
+          "css": "string | undefined",
+          "title": "string | undefined"
+        }
+      },
+      "TapeDBAuthServer": {
+        "kind": "interface",
+        "shape": {
+          "handler": "(request: Request) => Promise<Response>",
+          "api": "{ getSession(input: { headers: Headers; }): Promise<{ user: { id: string; }; } | null>; }"
+        }
+      },
       "TapeDBRoom": {
         "kind": "class",
         "shape": {
           "fetch": "(request: Request) => Promise<Response>",
+          "eraseAuthSubject": "(user: string) => Promise<void>",
+          "syncAuthUsers": "(profiles: Array<{ id: string; name: string; image: string | null; }>) => Promise<void>",
           "webSocketMessage": "(ws: WebSocket, message: string | ArrayBuffer) => Promise<void>",
           "webSocketClose": "(ws: WebSocket, code: number, reason: string) => void",
           "webSocketError": "(ws: WebSocket) => void",
@@ -728,6 +779,7 @@
         "kind": "interface",
         "shape": {
           "WorkspaceRoom": "typeof WorkspaceRoom",
+          "AuthRoom": "typeof AuthRoom",
           "worker": "{ fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response>; }"
         }
       },
@@ -756,6 +808,102 @@
       "WORKSPACE_ROLE_LEVELS": {
         "kind": "value",
         "shape": "{ readonly GUEST: 0; readonly USER: 1; readonly MEMBER: 2; readonly EDITOR: 3; readonly MODERATOR: 4; readonly ADMIN: 5; readonly OWNER: 6; readonly FOUNDER: 7; readonly DEVELOPER: 8; }"
+      }
+    },
+    "@tapedb/tapedb/email": {
+      "CapturedEmail": {
+        "kind": "interface",
+        "shape": {
+          "from": "string",
+          "messageId": "string",
+          "createdAt": "number",
+          "to": "string",
+          "subject": "string",
+          "text": "string | undefined",
+          "html": "string | undefined",
+          "(declaration)": "extends MailMessage"
+        }
+      },
+      "EmailBinding": {
+        "kind": "interface",
+        "shape": {
+          "send": "(message: MailMessage & { from: string; }) => Promise<{ messageId: string; }>"
+        }
+      },
+      "mailer": {
+        "kind": "function",
+        "shape": "({ from, binding, development }: MailerOptions) => { send(message: MailMessage): Promise<{ messageId: string; }>; }"
+      },
+      "MailerOptions": {
+        "kind": "interface",
+        "shape": {
+          "from": "string",
+          "binding": "EmailBinding | undefined",
+          "development": "boolean | undefined"
+        }
+      },
+      "MailMessage": {
+        "kind": "interface",
+        "shape": {
+          "to": "string",
+          "subject": "string",
+          "text": "string | undefined",
+          "html": "string | undefined"
+        }
+      }
+    },
+    "@tapedb/tapedb/auth": {
+      "authDatabase": {
+        "kind": "function",
+        "shape": "(env: Env) => DurableObjectStub<import(\"src/auth/room\").AuthRoom>"
+      },
+      "AuthDatabase": {
+        "kind": "interface",
+        "shape": {
+          "configure": "(tables: AuthTables) => Promise<void>",
+          "execute": "(command: AuthCommand) => Promise<unknown>"
+        }
+      },
+      "eraseAuthUser": {
+        "kind": "function",
+        "shape": "(env: Env, userId: string) => Promise<void>"
+      },
+      "tapedbAuth": {
+        "kind": "function",
+        "shape": "({ database, debugLogs }: TapeDBAuthOptions) => import(\"node_modules/better-auth/dist/adapters/index\").AdapterFactory<import(\"node_modules/@better-auth/core/dist/index\").BetterAuthOptions>"
+      },
+      "TapeDBAuthEnv": {
+        "kind": "interface",
+        "shape": {
+          "BETTER_AUTH_SECRET": "string | undefined",
+          "EMAIL_FROM": "string | undefined",
+          "EMAIL": "EmailBinding | undefined",
+          "WORKSPACE": "DurableObjectNamespace<import(\"src/engine/workspace-room\").WorkspaceRoom>",
+          "AUTH": "DurableObjectNamespace<import(\"src/auth/room\").AuthRoom> | undefined",
+          "DATA": "R2Bucket",
+          "FILES": "R2Bucket | undefined",
+          "DATA_FROM": "R2Bucket | undefined",
+          "FILES_FROM": "R2Bucket | undefined",
+          "WORKSPACE_FROM": "DurableObjectNamespace<import(\"src/engine/workspace-room\").WorkspaceRoom> | undefined",
+          "TAPEDB_MOVE_FROM": "string | undefined",
+          "ENVIRONMENT": "string | undefined",
+          "TAPEDB_JURISDICTION": "string | undefined",
+          "TAPEDB_STUDIO_URL": "string | undefined",
+          "TAPEDB_CLAIM_SECRET": "string",
+          "TAPEDB_KEY_SECRET": "string | undefined",
+          "TAPEDB_CLAIM_ISSUER": "string | undefined",
+          "TAPEDB_CLAIM_AUDIENCE": "string | undefined",
+          "TAPEDB_DEV_CLAIMS": "string | undefined",
+          "TAPEDB_DEV_CLAIMS_TOKEN": "string | undefined",
+          "(declaration)": "extends Env"
+        }
+      },
+      "TapeDBAuthOptions": {
+        "kind": "interface",
+        "shape": {
+          "database": "AuthDatabase",
+          "debugLogs": "boolean | undefined"
+        }
       }
     },
     "@tapedb/tapedb/studio": {
@@ -966,6 +1114,44 @@
       "AttributeType (src/engine/registry.ts)": {
         "kind": "type",
         "shape": "| \"string\" | \"number\" | \"boolean\" | \"date\" | \"json\" | \"any\""
+      },
+      "AuthCommand (src/auth/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "action": "\"update\" | \"delete\" | \"create\" | \"findOne\" | \"findMany\" | \"count\" | \"updateMany\" | \"deleteMany\" | \"consumeOne\" | \"incrementOne\"",
+          "model": "string",
+          "data": "Record<string, unknown> | undefined",
+          "where": "AuthWhere[] | undefined",
+          "select": "string[] | undefined",
+          "limit": "number | undefined",
+          "offset": "number | undefined",
+          "sortBy": "{ field: string; direction: \"asc\" | \"desc\"; } | undefined",
+          "increment": "Record<string, number> | undefined"
+        }
+      },
+      "AuthField (src/auth/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "source": "string | undefined",
+          "type": "string",
+          "required": "boolean | undefined",
+          "unique": "boolean | undefined",
+          "references": "{ model: string; field: string; onDelete?: string; } | undefined"
+        }
+      },
+      "AuthTables (src/auth/types.ts)": {
+        "kind": "type",
+        "shape": "Record< string, { model?: string; fields: Record<string, AuthField> } >"
+      },
+      "AuthWhere (src/auth/types.ts)": {
+        "kind": "interface",
+        "shape": {
+          "field": "string",
+          "operator": "string",
+          "value": "unknown",
+          "connector": "string | undefined",
+          "mode": "string | undefined"
+        }
       },
       "BelongsTo (src/model/fields.ts)": {
         "kind": "class",
@@ -1296,7 +1482,7 @@
       },
       "MemberError (src/model/schema.ts)": {
         "kind": "type",
-        "shape": "<R, M extends Models, Owner extends string, F> R extends BelongsTo | HasMany ? string extends TargetOf<R> ? never : TargetOf<R> extends keyof M ? R extends HasMany ? InverseError<R, FieldsOf<M[TargetOf<R>]>, Owner> : never : \"refers to a missing model\" : SubjectError<R, F>"
+        "shape": "<R, M extends Models, Owner extends string, F> R extends BelongsTo | HasMany ? string extends TargetOf<R> ? never : TargetOf<R> extends \"$users\" ? R extends HasMany ? \"must use belongsTo for $users\" : never : TargetOf<R> extends keyof M ? R extends HasMany ? InverseError<R, FieldsOf<M[TargetOf<R>]>, Owner> : never : \"refers to a missing model\" : SubjectError<R, F>"
       },
       "MintClaimInput (src/mint.ts)": {
         "kind": "interface",
@@ -1343,6 +1529,10 @@
       "Models (src/model/schema.ts)": {
         "kind": "type",
         "shape": "Record<string, Model>"
+      },
+      "ModelTargets (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models> {[K in keyof M]:TargetOf<FieldsOf<M[K]>[keyof FieldsOf<M[K]>]>}[keyof M]"
       },
       "NamespaceDefinition (src/engine/registry.ts)": {
         "kind": "interface",
@@ -1757,6 +1947,10 @@
         "kind": "type",
         "shape": "<U> (U extends unknown ? (value: U) => void : never) extends ( value: infer I ) => void ? I : never"
       },
+      "usersModel (src/model/schema.ts)": {
+        "kind": "value",
+        "shape": "() => Model<{ name: import(\"src/model/fields\").PersonalField<\"string\", false, false, \"self\">; image: import(\"src/model/fields\").PersonalField<\"string\", true, false, \"self\">; }>"
+      },
       "ValidSchema (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<M extends Models> [SchemaErrors<M>] extends [never] ? unknown : { readonly __schemaError: SchemaErrors<M> }"
@@ -1785,10 +1979,14 @@
       "WithInclude (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<M extends Models, F extends Fields, I> I extends object ? { [K in keyof I & RelationKeys<F>]: RelationOutput<M, F[K], I[K]>; } : unknown"
+      },
+      "WithUsers (src/model/schema.ts)": {
+        "kind": "type",
+        "shape": "<M extends Models> \"$users\" extends ModelTargets<M> ? M & {\"$users\":ReturnType<typeof usersModel>} : M"
       }
     }
   },
-  "cli": "tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out\n\nUsage:\n  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--yes] [--no-install] [--no-start] [--force]\n  npx tapedb-cli migrate dev|rollback|status|check [--dir <path>] [--schema <file>]\n  npx tapedb-cli deploy [--dir <path>] [--env <name>]\n  npx tapedb-cli dev  [--dir <path>] [--port <port>]\n  npx tapedb-cli studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]\n  npx tapedb-cli export --workspace <uuid> [--url <worker-url>] [--out <file>]\n  npx tapedb-cli seed --workspace <uuid> [--file <tapedb.seed.ts>] [--url <worker-url>] [--seed <label>]\n  npx tapedb-cli erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]\n  npx tapedb-cli move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]\n\nCommands:\n  init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,\n          and the first migration. Existing files are kept unless --force.\n          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.\n  migrate dev --name <name> [--rename old=new] [--accept-data-loss]\n          Diff the schema against the last migration and write the next one.\n  migrate rollback [--to <id>] [--accept-data-loss]\n          Write the migration that takes the database back to the schema\n          after <id> (default: the one before the last).\n  migrate status | check\n          List migrations; check fails if the schema has unmigrated changes.\n  deploy  [--env <name>] [--yes]  Select an account, provision missing resources and secrets, and deploy.\n  dev     Run the local database on port 8787, with the studio beside it.\n  studio  Open a local table browser against a running Worker.\n  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).\n  seed    Run the project's seeder against a running Worker: --seed makes the\n          same seed give the same rows. --dry-run checks without writing.\n  erase   Delete a workspace for good: its data, history and files (owner claim).\n          --confirm must repeat the workspace id. The id answers 410 afterwards.",
+  "cli": "tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out\n\nUsage:\n  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--auth --email-from <address>] [--yes] [--no-install] [--no-start] [--force]\n  npx tapedb-cli auth build [--dir <path>]\n  npx tapedb-cli migrate dev|rollback|status|check [--dir <path>] [--schema <file>]\n  npx tapedb-cli deploy [--dir <path>] [--env <name>]\n  npx tapedb-cli dev  [--dir <path>] [--port <port>]\n  npx tapedb-cli studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]\n  npx tapedb-cli export --workspace <uuid> [--url <worker-url>] [--out <file>]\n  npx tapedb-cli seed --workspace <uuid> [--file <tapedb.seed.ts>] [--url <worker-url>] [--seed <label>]\n  npx tapedb-cli erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]\n  npx tapedb-cli move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]\n\nCommands:\n  init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,\n          and the first migration. Existing files are kept unless --force.\n          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.\n  migrate dev --name <name> [--rename old=new] [--accept-data-loss]\n          Diff the schema against the last migration and write the next one.\n  migrate rollback [--to <id>] [--accept-data-loss]\n          Write the migration that takes the database back to the schema\n          after <id> (default: the one before the last).\n  migrate status | check\n          List migrations; check fails if the schema has unmigrated changes.\n  deploy  [--env <name>] [--yes]  Select an account, provision missing resources and secrets, and deploy.\n  dev     Run the local database on port 8787, with the studio beside it.\n  studio  Open a local table browser against a running Worker.\n  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).\n  seed    Run the project's seeder against a running Worker: --seed makes the\n          same seed give the same rows. --dry-run checks without writing.\n  erase   Delete a workspace for good: its data, history and files (owner claim).\n          --confirm must repeat the workspace id. The id answers 410 afterwards.",
   "errorCodes": [
     "audit_disabled",
     "claim_expired",
@@ -1815,9 +2013,11 @@
     "invalid_key",
     "invalid_limit",
     "invalid_log_query",
+    "invalid_membership",
     "invalid_message",
     "invalid_move",
     "invalid_op",
+    "invalid_origin",
     "invalid_part",
     "invalid_path",
     "invalid_presence",
@@ -1832,7 +2032,10 @@
     "invalid_upload",
     "invalid_value",
     "invalid_workspace_id",
+    "json_required",
     "jurisdiction_mismatch",
+    "last_owner",
+    "membership_forbidden",
     "membership_lookup_failed",
     "message_limit_exceeded",
     "method_not_allowed",
@@ -1845,6 +2048,7 @@
     "not_a_member",
     "not_found",
     "not_in_target",
+    "not_signed_in",
     "permission_denied",
     "rate_limit_unavailable",
     "rate_limited",
@@ -1861,6 +2065,7 @@
     "unsupported_message_type",
     "upgrade_required",
     "upload_too_large",
+    "user_not_found",
     "workspace_erased",
     "workspace_importing",
     "workspace_moved",
