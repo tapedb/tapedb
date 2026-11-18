@@ -14,6 +14,7 @@ import type { PermissionDecision, PermissionOverrides } from "../engine/tx-permi
 import type { QueryWhere } from "../engine/query-types";
 import { defineSchema, type EntityConfig, type TapeDBSchema } from "../schema";
 import {
+  t,
   BelongsTo,
   EnumField,
   Field,
@@ -487,7 +488,7 @@ type SubjectError<R, F> = R extends { personalSubject: infer S extends string }
   : never;
 type MemberError<R, M extends Models, Owner extends string, F> =
   R extends BelongsTo | HasMany
-    ? string extends TargetOf<R> ? never : TargetOf<R> extends keyof M
+    ? string extends TargetOf<R> ? never : TargetOf<R> extends "$users" ? R extends HasMany ? "must use belongsTo for $users" : never : TargetOf<R> extends keyof M
       ? R extends HasMany ? InverseError<R, FieldsOf<M[TargetOf<R>]>, Owner> : never
       : "refers to a missing model"
     : SubjectError<R, F>;
@@ -500,6 +501,15 @@ type SchemaErrors<M extends Models> = string extends keyof M ? never : {
 type ValidSchema<M extends Models> = [SchemaErrors<M>] extends [never]
   ? unknown : { readonly __schemaError: SchemaErrors<M> };
 
+const usersModel=()=>model({name:t.string().personal({subject:"self"}),image:t.string().personal({subject:"self"}).optional()},{table:"tapedb_users"}).access({
+ read:role("guest"),
+ create:check(({auth})=>auth.sub==='__tapedb_auth' && auth.role===WORKSPACE_ROLE_LEVELS.DEVELOPER),
+ update:check(({auth})=>auth.sub==='__tapedb_auth' && auth.role===WORKSPACE_ROLE_LEVELS.DEVELOPER),
+ delete:check(({auth})=>auth.sub==='__tapedb_auth' && auth.role===WORKSPACE_ROLE_LEVELS.DEVELOPER),
+});
+type ModelTargets<M extends Models> = {[K in keyof M]:TargetOf<FieldsOf<M[K]>[keyof FieldsOf<M[K]>]>}[keyof M];
+type WithUsers<M extends Models> = "$users" extends ModelTargets<M> ? M & {"$users":ReturnType<typeof usersModel>} : M;
+
 /**
  * Compiles models into the engine schema plus the client's relation graph.
  * Throws on anything the engine would only discover later: a relation to a
@@ -508,14 +518,17 @@ type ValidSchema<M extends Models> = [SchemaErrors<M>] extends [never]
 export function schema<M extends Models>(
   models: M & ValidSchema<NoInfer<M>>,
   options: SchemaOptions<Extract<keyof M, string>> = {}
-): Schema<M> {
+): Schema<WithUsers<M>> {
+  if(Object.hasOwn(models,"$users"))throw new Error("$users is managed by built-in auth.");
+  const usesUsers=Object.values(models).some(definition=>Object.values(definition.fields).some(member=>member instanceof BelongsTo && member.target==='$users'));
+  const allModels:Models=usesUsers?{...models,"$users":usersModel()}:models;
   const entities: Record<string, EntityConfig> = {};
   const links: LinkDefinition[] = [];
   const graph: Record<string, ModelInfo> = {};
   const permissions: PermissionOverrides = {};
 
-  for (const [key, definition] of Object.entries(models)) {
-    if (!/^[A-Za-z][A-Za-z0-9]*$/.test(key)) {
+  for (const [key, definition] of Object.entries(allModels)) {
+    if (key!=="$users" && !/^[A-Za-z][A-Za-z0-9]*$/.test(key)) {
       throw new Error(`Model name "${key}" must be letters and digits, starting with a letter.`);
     }
     if (!(definition instanceof Model)) {
@@ -557,7 +570,7 @@ export function schema<M extends Models>(
         };
         if (member.kind !== "json" && !subject) info.filterable.add(name);
       } else if (member instanceof BelongsTo) {
-        if (!(member.target in models)) {
+        if (!(member.target in allModels)) {
           throw new Error(`"${key}.${name}" belongs to "${member.target}", which is not a model.`);
         }
         const foreignKey = `${name}Id`;
@@ -580,7 +593,7 @@ export function schema<M extends Models>(
         };
         info.filterable.add(foreignKey);
       } else if (member instanceof HasMany) {
-        if (!(member.target in models)) {
+        if (!(member.target in allModels)) {
           throw new Error(`"${key}.${name}" has many "${member.target}", which is not a model.`);
         }
         // Resolved below, once every belongsTo is known.
@@ -603,7 +616,7 @@ export function schema<M extends Models>(
   for (const info of Object.values(graph)) {
     for (const [name, relation] of Object.entries(info.relations)) {
       if (relation.kind !== "hasMany") continue;
-      const member = (models[info.key] as Model).fields[name] as HasMany;
+      const member = (allModels[info.key] as Model).fields[name] as HasMany;
       const candidates = Object.entries(graph[relation.target].relations).filter(
         ([, other]) => other.kind === "belongsTo" && other.target === info.key
       );
@@ -645,7 +658,7 @@ export function schema<M extends Models>(
   }
 
   const tables: Record<string, string> = {};
-  for (const [key, definition] of Object.entries(models)) {
+  for (const [key, definition] of Object.entries(allModels)) {
     if (definition.options.table !== undefined) tables[key] = definition.options.table;
   }
 
@@ -654,7 +667,7 @@ export function schema<M extends Models>(
     if (!["read", "write", "delete"].includes(action)) {
       throw new Error(`files.${action} is not a file action; use read, write or delete.`);
     }
-    if (rule?.decision === "attachedTo" && !(rule.model in models)) {
+    if (rule?.decision === "attachedTo" && !(rule.model in allModels)) {
       throw new Error(`files.${action} is attached to "${rule.model}", which is not a model.`);
     }
     if ((rule as { decision?: string } | undefined)?.decision === "filter") {
@@ -663,7 +676,7 @@ export function schema<M extends Models>(
   }
 
   const compiled = defineSchema({ entities, links, permissions, tables });
-  return { ...compiled, ...(files && Object.keys(files).length > 0 ? { files: files as unknown as FileRules } : {}), models, graph };
+  return { ...compiled, ...(files && Object.keys(files).length > 0 ? { files: files as unknown as FileRules } : {}), models:allModels, graph } as Schema<WithUsers<M>>;
 }
 
 /** A default in the form the column stores it. */

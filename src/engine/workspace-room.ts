@@ -479,6 +479,65 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
   }
 
+  /** Trusted RPC only, using the same personal-data erasure as DELETE /subjects/:id. */
+  async eraseAuthSubject(user: string): Promise<void> {
+    if (this.personal) {
+      try {
+        await this.ctx.storage.transaction(() => this.personal!.erase(user));
+      } finally {
+        this.personal.clearPlaintext();
+      }
+      this.subscriptionResults.clear();
+      this.scheduleInvalidation(Object.keys(NAMESPACES));
+    }
+  }
+
+  /** Trusted RPC only: mirror member profiles through the normal taped transaction path. */
+  async syncAuthUsers(profiles: Array<{ id: string; name: string; image: string | null }>): Promise<void> {
+    if (!findNamespace("$users")) return;
+    if (this.erased || this.recovering) throw new Error("Workspace is not available for profile projection.");
+    let changed = false;
+    try {
+      // Serialize the read and write with subject erasure. A missing required
+      // name on an existing profile means its personal key was erased; stale
+      // projection requests must never recreate that key.
+      await this.ctx.storage.transaction(async () => {
+        const current = await this.readPersonal(sql => {
+          const rows = sql.all('SELECT id,name,image FROM "tapedb_users"');
+          return sql.decodeRows?.("$users", rows) ?? rows;
+        });
+        const prior = new Map(current.map(row => [String(row.id), row]));
+        const ops = profiles.filter(profile => {
+          const row = prior.get(profile.id);
+          return !row || row.name !== null && (row.name !== profile.name || row.image !== profile.image);
+        }).map(profile => ({
+          op: "update" as const, namespace: "$users", id: profile.id,
+          values: { name: profile.name, image: profile.image },
+        }));
+        if (!ops.length) return;
+        const now = Math.floor(Date.now() / 1000);
+        const claim: RoleClaim = {
+          sub: "__tapedb_auth", workspaceId: this.workspaceId,
+          role: WORKSPACE_ROLE_LEVELS.DEVELOPER, iat: now, exp: now + 60,
+        };
+        const sql = durableObjectSqlExecutor(this.ctx.storage);
+        for (let index = 0; index < ops.length; index += 100) {
+          const envelope = { txId: crypto.randomUUID(), ops: ops.slice(index, index + 100) };
+          if (this.personal) await runPersonalTransaction(sql, this.personal, this.workspaceId, claim, envelope);
+          else runTransaction(sql, this.workspaceId, claim, envelope);
+        }
+        changed = true;
+      });
+      if (changed) {
+        await this.scheduleNextDurabilityAlarm(Date.now());
+        this.wakeSequenceWaiters();
+        this.scheduleInvalidation(new Set(["$users"]));
+      }
+    } finally {
+      this.personal?.clearPlaintext();
+    }
+  }
+
   private async route(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname.startsWith("/move/")) return this.moveControl(request, url.pathname);

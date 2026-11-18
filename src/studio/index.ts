@@ -9,6 +9,7 @@
  * nothing.
  */
 
+import { USERS_PAGE } from "./users-page";
 import { FONTS } from "./fonts.gen";
 import { studioPage } from "./page";
 
@@ -35,9 +36,9 @@ function inner(html: string, tag: string): string {
 }
 
 /** The page, and a policy that runs only its own script and styles. */
-async function pageWithPolicy(): Promise<{ html: string; csp: string }> {
-  if (page) return page;
-  const html = studioPage(PAGE_LIMIT, "worker");
+async function pageWithPolicy(users=false): Promise<{ html: string; csp: string }> {
+  if (page && !users) return page;
+  const html = users?USERS_PAGE:studioPage(PAGE_LIMIT, "worker");
   const csp = [
     "default-src 'none'",
     `script-src 'sha256-${await sha256(inner(html, "script"))}'`,
@@ -49,8 +50,9 @@ async function pageWithPolicy(): Promise<{ html: string; csp: string }> {
     "form-action 'none'",
     "frame-ancestors 'none'",
   ].join("; ");
-  page = { html, csp };
-  return page;
+  const result={html,csp};
+  if(!users)page=result;
+  return result;
 }
 
 function fontBytes(base64: string): ArrayBuffer {
@@ -67,8 +69,8 @@ export const studio: TapeDBStudio = {
     if (request.method !== "GET" && request.method !== "HEAD") {
       return new Response("Method not allowed", { status: 405, headers: { allow: "GET, HEAD" } });
     }
-    if (path === PREFIX || path === `${PREFIX}/`) {
-      const { html, csp } = await pageWithPolicy();
+    if (path === PREFIX || path === `${PREFIX}/` || path===`${PREFIX}/users`) {
+      const { html, csp } = await pageWithPolicy(path.endsWith("/users"));
       return new Response(request.method === "HEAD" ? null : html, {
         headers: {
           "content-type": "text/html; charset=utf-8",
