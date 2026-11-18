@@ -37,6 +37,8 @@ export interface SeedModel {
       hasDefault: boolean;
       /** The declared default, as the client would send it. */
       defaultValue?: unknown;
+      /** For an enum field: the values a row may carry. */
+      values?: readonly string[];
       unique: boolean;
       personal: boolean;
     }
@@ -92,6 +94,7 @@ export class SeedContext<M extends Models = Models> {
         optional: attribute.optional === true,
         hasDefault: attribute.default !== undefined && attribute.default !== null,
         defaultValue: scalar?.hasDefault === true ? scalar.defaultValue : attribute.default,
+        ...(attribute.values === undefined ? {} : { values: attribute.values }),
         unique: attribute.unique === true,
         personal: attribute.personal !== undefined,
       };

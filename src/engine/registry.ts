@@ -40,6 +40,8 @@ export interface AttributeDefinition {
   default?: string | number | null;
   indexed?: boolean;
   unique?: boolean;
+  /** For `t.enum(...)`: the values a write may carry. Absent for a plain string. */
+  values?: readonly string[];
   references?: AttributeReference;
 }
 
