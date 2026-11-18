@@ -789,6 +789,22 @@ and `tapedb deploy` refuses to ship the flag. A deployed test Worker that
 needs the route sets a random `TAPEDB_DEV_CLAIMS_TOKEN` secret first; the route
 then mints only for requests carrying it in `x-tapedb-dev-token`.
 
+## The studio
+
+`tapedb studio` is one HTML page: a table browser, your schema as an editable
+outline, and a graph of the models. No build step, no network at runtime.
+
+The Graph tab draws the models with React Flow, one node per model with its keys
+and types, one edge per foreign key labelled `many → 1`, parents to the left of
+the rows that point at them. Clicking a node opens it. Every control in the
+studio is the studio's own: listboxes with keyboard navigation instead of native
+selects, the brand's checkboxes instead of the system's.
+
+React Flow is bundled at build time into a committed string, so the package keeps
+zero runtime dependencies and the page stays a single response under one hash per
+script and style. `node scripts/gen-studio-graph.mjs` rebuilds it; a test fails
+while the bundle is stale.
+
 ## Architecture
 
 One Durable Object per workspace is the only writer, which is what makes
