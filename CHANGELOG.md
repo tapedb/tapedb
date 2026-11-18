@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.26 - 2026-11-18
+
+- `t.enum([...])`: a string with a closed set of values. The column stays TEXT and the migration snapshot records only the type, so adding or removing a value needs no migration; the engine refuses a write outside the set with `invalid_value` and lists the values it accepts. `Row`, `CreateData` and `where` narrow to the union, so a typo fails in the editor before the engine sees it.
+- `default`, `index`, `unique` and `optional` work on an enum as they do on a string, `default()` rejects a value outside the set, and `personal()` throws: the set is public and the check compares plaintext. A seeder reads the set from `ctx.model(name).fields[field].values`.
+- Use it for sets the application owns (status, kind, channel) and not for codes an external standard owns (currency, country), where every addition would be a schema edit.
+
 ## 0.1.25 - 2026-11-18
 
 - `@tapedb/tapedb/seed` and `npx tapedb-cli seed`: a seeder is a `tapedb.seed.ts` of plain TypeScript, and the library supplies the bookkeeping around its values. The context offers `create`, `insert`, `listIds`, `ref`, `unique`, `clear`, `model`, `rng`, `rngFor` and `written`; rows are written one transaction per 500 through the engine's own routes, so claims, access rules, the tape and the history behave as they do for a client. Declared defaults are filled in, because the engine wants every column named. A `personal()` field is refused rather than written in the clear, since the encryption key belongs to the application.
