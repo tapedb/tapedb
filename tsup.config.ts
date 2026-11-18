@@ -7,6 +7,8 @@ export default defineConfig({
     seed: "src/seed/index.ts",
     react: "src/react/index.ts",
     worker: "src/worker/index.ts",
+    email: "src/email/index.ts",
+    auth: "src/auth/index.ts",
     studio: "src/studio/index.ts",
     cli: "src/cli/index.ts",
   },
@@ -18,5 +20,5 @@ export default defineConfig({
   clean: true,
   // The client entry must never pull React or any UI dependency. React lives
   // behind the `./react` subpath only, and is never bundled.
-  external: ["react", "cloudflare:workers"],
+  external: ["react", "cloudflare:workers", "better-auth", "better-auth/adapters"],
 });

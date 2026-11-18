@@ -1,0 +1,21 @@
+/* Your page owns all of its styling. TapeDB adds no surrounding UI. */
+:root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+body { margin: 0; min-height: 100svh; display: grid; place-items: center; background: #f7f7f5; color: #191a1b; }
+* { box-sizing: border-box; }
+.company-auth { width: min(420px, calc(100vw - 40px)); padding: 36px; border: 1px solid #deded9; border-radius: 12px; background: white; }
+.company-auth__brand { font-size: 12px; letter-spacing: .08em; text-transform: uppercase; color: #666; }
+h1 { margin: 20px 0 28px; font-weight: 550; letter-spacing: -.04em; }
+label { display: grid; gap: 8px; margin: 18px 0; font-size: 13px; }
+input, button { padding: 12px; font: inherit; border: 1px solid #c9c9c4; border-radius: 6px; background: white; color: inherit; }
+button { width: 100%; margin-top: 8px; background: #191a1b; color: white; cursor: pointer; }
+button:disabled { opacity: .6; cursor: wait; }
+:focus-visible { outline: 2px solid #315cff; outline-offset: 3px; }
+p[role="status"] { font-size: 12px; line-height: 1.5; color: #a12e25; }
+@media (prefers-color-scheme: dark) {
+  body { background: #151617; color: #f0f0ed; }
+  .company-auth { background: #1d1f21; border-color: #393b3d; }
+  input { background: #151617; border-color: #515356; }
+  button { background: #e5e6e2; color: #151617; }
+  .company-auth__brand { color: #b4b5b0; }
+  p[role="status"] { color: #f0a094; }
+}

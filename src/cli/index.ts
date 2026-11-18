@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+import { prepareAuthPage } from "./auth-page";
+import { AUTH_FILE, AUTH_WORKER_FILE } from "./auth-template";
 /**
  * tapedb CLI.
  *
@@ -223,6 +225,7 @@ async function deploy(argv: string[]): Promise<number> {
     return 1;
   }
 
+  if(existsSync(join(root,"auth.ts"))||existsSync(join(root,"tapedb.auth.tsx")))await prepareAuthPage(root);
   return provisionAndDeploy(root, config, env, flags.yes === true);
 }
 
@@ -301,7 +304,7 @@ export const WorkspaceRoom = tapedb.WorkspaceRoom;
 export default tapedb.worker;
 `;
 
-function wrangler(name: string, jurisdiction?: string): string {
+function wrangler(name: string, jurisdiction?: string, auth=false, sender=""): string {
   const vars = jurisdiction ? `{ "ENVIRONMENT": "development", "TAPEDB_JURISDICTION": "${jurisdiction}" }` : `{ "ENVIRONMENT": "development" }`;
   const where = jurisdiction ? `, "jurisdiction": "${jurisdiction}"` : "";
   return `{
@@ -312,12 +315,12 @@ function wrangler(name: string, jurisdiction?: string): string {
   "compatibility_flags": ["nodejs_compat"],
   "workers_dev": true,
   "observability": { "enabled": true, "traces": { "enabled": true } },
-  "vars": ${vars},
+  "vars": ${auth?JSON.stringify({...JSON.parse(vars),EMAIL_FROM:sender}):vars},
   "durable_objects": {
-    "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceRoom" }]
+    "bindings": [{ "name": "WORKSPACE", "class_name": "WorkspaceRoom" }${auth?', { "name": "AUTH", "class_name": "AuthRoom" }':""}]
   },
-  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceRoom"] }],
-  "r2_buckets": [
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["WorkspaceRoom"${auth?', "AuthRoom"':""}] }],
+  ${auth?'"send_email": [{ "name": "EMAIL" }],\n  ':""}"r2_buckets": [
     { "binding": "DATA", "bucket_name": "${name}-data"${where} },
     { "binding": "FILES", "bucket_name": "${name}-files"${where} }
   ]
@@ -342,6 +345,11 @@ async function init(argv: string[]): Promise<number> {
   if (!/^[a-z0-9][a-z0-9-]{0,50}$/.test(name)) throw new Error("Use a project name of 1–51 lowercase letters, numbers or hyphens.");
   if (flags.local === true && flags.cloud === true) throw new Error("Choose --local or --cloud.");
   const cloud = flags.cloud === true || (interactive() && flags.local !== true && flags.yes !== true && (await select("How do you want to run TapeDB?", ["Run locally", "Deploy to Cloudflare"])) === 1);
+  const hasAuth=existsSync(join(target,"auth.ts"));
+  const withAuth=hasAuth || flags.auth===true || (interactive() && flags["no-auth"]!==true && flags.yes!==true && await select("Sign-in",["No built-in sign-in","With Better Auth"])===1);
+  const sender=withAuth?(typeof flags["email-from"]==='string'?flags["email-from"]:await ask("Sender email",existingConfig?.vars?.EMAIL_FROM??"")):"";
+  if(withAuth && (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender)))throw new Error("With auth, provide --email-from <address> on your sending domain.");
+  if(withAuth && existingConfig && !hasAuth && !flags.force)throw new Error("Auth setup keeps existing projects safe: use a fresh directory or explicitly --force to replace the scaffold.");
   const force = flags.force === true;
   const jurisdiction = typeof flags.jurisdiction === "string" ? flags.jurisdiction : undefined;
   if (jurisdiction !== undefined && !JURISDICTIONS.includes(jurisdiction)) {
@@ -359,14 +367,19 @@ async function init(argv: string[]): Promise<number> {
 
   const results: Array<[string, string]> = [
     ["tapedb.schema.ts", write(join(target, "tapedb.schema.ts"), SCHEMA_FILE, force)],
-    ["worker.ts", write(join(target, "worker.ts"), WORKER_FILE, force)],
-    ["wrangler.jsonc", write(join(target, "wrangler.jsonc"), wrangler(name, jurisdiction), force)],
+    ["worker.ts", write(join(target, "worker.ts"), withAuth?AUTH_WORKER_FILE:WORKER_FILE, force)],
+    ["wrangler.jsonc", write(join(target, "wrangler.jsonc"), wrangler(name, jurisdiction,withAuth,sender), force)],
     [
       ".dev.vars",
       write(devVarsPath, `TAPEDB_CLAIM_SECRET=${secret}\nTAPEDB_KEY_SECRET=${randomBytes(32).toString("base64url")}\n`, force),
     ],
   ];
 
+  if(withAuth){
+    results.push(["auth.ts",write(join(target,"auth.ts"),AUTH_FILE,force)]);
+    const current=readFileSync(devVarsPath,"utf8");
+    if(!/^BETTER_AUTH_SECRET=/m.test(current))appendFileSync(devVarsPath,`BETTER_AUTH_SECRET=${randomBytes(32).toString("base64url")}\n`);
+  }
   console.log(`tapedb init in ${target}\n`);
   for (const [file, status] of results) {
     console.log(`  ${status === "written" ? "created" : "kept   "}  ${file}`);
@@ -374,9 +387,10 @@ async function init(argv: string[]): Promise<number> {
 
   ignoreLocalFiles(target);
   if (flags["no-install"] !== true) {
-    installProject(target, ownVersion());
+    installProject(target, ownVersion(), withAuth);
   }
 
+  if(withAuth)await prepareAuthPage(target);
   try {
     if (readSnapshot(target) === null) {
       const schema = await loadSchema(target, {});
@@ -405,7 +419,8 @@ function usage(): number {
   console.log(`tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out
 
 Usage:
-  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--yes] [--no-install] [--no-start] [--force]
+  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--auth --email-from <address>] [--yes] [--no-install] [--no-start] [--force]
+  npx tapedb-cli auth build [--dir <path>]
   npx tapedb-cli migrate dev|rollback|status|check [--dir <path>] [--schema <file>]
   npx tapedb-cli deploy [--dir <path>] [--env <name>]
   npx tapedb-cli dev  [--dir <path>] [--port <port>]
@@ -488,6 +503,8 @@ async function dev(argv: string[]): Promise<number> {
     return 1;
   }
 
+  const authPage=existsSync(join(target,"auth.ts"))||existsSync(join(target,"tapedb.auth.tsx"))?await prepareAuthPage(target,true):undefined;
+
   // The studio comes with the database: on 4400, or any free port when that is taken.
   const worker = `http://localhost:${port}`;
   const studio = await startStudio({ url: worker, workspace: "", port: 4400, project: target })
@@ -504,6 +521,7 @@ async function dev(argv: string[]): Promise<number> {
   });
   process.off("SIGINT", ignore);
   studio.close();
+  await authPage?.close();
   return status;
 }
 
@@ -638,6 +656,14 @@ export async function eraseWorkspace(argv: string[]): Promise<number> {
 export async function run(argv: string[]): Promise<number> {
   const command = argv[0];
 
+  if (command === "auth") {
+    if(argv[1]!=="build")throw new Error("Use tapedb auth build [--dir <path>].");
+    const flags=parseFlags(argv.slice(2));
+    const root=resolve(typeof flags.dir==='string'?flags.dir:'.');
+    await(await prepareAuthPage(root)).close();
+    console.log(existsSync(join(root,'tapedb.auth.tsx'))?'Built tapedb.auth.tsx.':'Using the built-in TapeDB auth page.');
+    return 0;
+  }
   if (command === "init") return init(argv.slice(1));
   if (command === "migrate") return migrate(argv.slice(1));
   if (command === "deploy") return deploy(argv.slice(1));
