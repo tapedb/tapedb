@@ -78,6 +78,7 @@ async function migrate(argv: string[]): Promise<number> {
     const dry = flags["dry-run"] === true || flags.dryRun === true;
     const result = migrateSquash(root, {
       ...(typeof flags.since === "string" ? { since: flags.since } : {}),
+      ...(typeof flags.name === "string" ? { name: flags.name } : {}),
       ...(flags["accept-data-loss"] === true || flags.acceptDataLoss === true ? { acceptDataLoss: true } : {}),
       ...(dry ? { dryRun: true } : {}),
     });
@@ -154,7 +155,7 @@ async function migrate(argv: string[]): Promise<number> {
     return 0;
   }
 
-  console.error("Usage: npx tapedb-cli migrate dev --name <name> | rollback [--to <id>] | status | check | squash --since <id> [--dry-run] [--accept-data-loss]");
+  console.error("Usage: npx tapedb-cli migrate dev --name <name> | rollback [--to <id>] | status | check | squash --since <id> [--name <what>] [--dry-run] [--accept-data-loss]");
   return 1;
 }
 

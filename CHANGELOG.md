@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.29 - 2026-11-18
+
+- `migrate squash` no longer refuses a run that contains a table rebuild. Adding a constraint to an existing table cannot be done in place, so the generated migration creates `<table>__rebuild`, copies the rows into it, drops the original and renames; those inserts are migration mechanics, not a backfill, and the fold now reproduces them instead of rejecting them. Found by running the command on a real project whose run ended with a foreign-key addition.
+- The fold expands rebuilds the way `migrate dev` does, so a net change that adds a reference or changes a type comes out as the same statements a fresh migration would contain.
+- `migrate squash --name <what>` renames the folded migration, because the first migration of a run is often a name that no longer describes it.
+
 ## 0.1.28 - 2026-11-18
 
 - The studio draws its own controls: one listbox replaces every native select (the field sheet, the filters, the relation picker, the role picker, the history filter and the workspace picker), with Arrow/Home/End/Escape, aria-expanded and aria-selected, and a hidden input so existing callers keep reading `value`. The checkbox keeps the real input for semantics and `.checked`, with the brand's box beside it.
