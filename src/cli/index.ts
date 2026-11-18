@@ -23,6 +23,7 @@ import * as nodeModule from "node:module";
 
 import type { TapeDBSchema } from "../schema";
 import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot } from "./migrate";
+import { migrateSquash } from "./squash";
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
 import { loadSchema } from "./load-schema";
@@ -70,6 +71,33 @@ async function migrate(argv: string[]): Promise<number> {
     }
     const result = migrateCheck(root, await loadSchema(root, flags));
     console.log(result.ok ? "\nUp to date." : `\n${result.problems.join("\n")}`);
+    return 0;
+  }
+
+  if (action === "squash") {
+    const dry = flags["dry-run"] === true || flags.dryRun === true;
+    const result = migrateSquash(root, {
+      ...(typeof flags.since === "string" ? { since: flags.since } : {}),
+      ...(flags["accept-data-loss"] === true || flags.acceptDataLoss === true ? { acceptDataLoss: true } : {}),
+      ...(dry ? { dryRun: true } : {}),
+    });
+    if (result.status === "refused") {
+      for (const reason of result.reasons) console.error(reason);
+      return 1;
+    }
+    if (result.status === "cancelled") {
+      console.log(`${dry ? "Would remove" : "Removed"} ${result.folded.length} migrations that cancel out, leaving nothing to apply:`);
+      for (const id of result.folded) console.log(`  ${id}`);
+      return 0;
+    }
+    if (result.status === "would-squash") {
+      console.log(`Would fold ${result.folded.length} migrations into ${result.into}: ${result.statements} statement(s).`);
+      console.log(`  ${result.folded.join("\n  ")}`);
+      return 0;
+    }
+    console.log(`Folded ${result.folded.length} migrations into ${result.into}: ${result.statements} statement(s).`);
+    for (const id of result.removed) console.log(`  removed ${id}`);
+    console.log("Run `npx tapedb-cli migrate check` to confirm the schema still matches.");
     return 0;
   }
 
@@ -126,7 +154,7 @@ async function migrate(argv: string[]): Promise<number> {
     return 0;
   }
 
-  console.error("Usage: npx tapedb-cli migrate dev --name <name> | rollback [--to <id>] | status | check");
+  console.error("Usage: npx tapedb-cli migrate dev --name <name> | rollback [--to <id>] | status | check | squash --since <id> [--dry-run] [--accept-data-loss]");
   return 1;
 }
 
