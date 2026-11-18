@@ -76,8 +76,23 @@ export default schema({
 
 One `schema()` call produces the engine's table registry, the SQL migrations
 and the client's types. Fields: `t.string()`, `t.number()`, `t.boolean()`,
-`t.date()` (stored as epoch milliseconds), `t.json()`. Modifiers:
+`t.date()` (stored as epoch milliseconds), `t.json()`, and `t.enum([...])` for a
+string with a closed set of values. Modifiers:
 `.optional()`, `.default(v)`, `.index()`, `.unique()`. Relations:
+`t.enum` is a string whose values are checked. The column is TEXT and the set is
+not part of the migration, so adding or removing a value needs no migration: it
+changes what the engine accepts. `Row` and `CreateData` narrow to the union, so a
+typo fails in the editor, and `where` narrows too.
+
+```ts
+status: t.enum(["pending", "paid", "shipped"]).default("pending"),
+kind: t.enum(["current", "savings"]).index(),
+```
+
+Use it for sets your own logic defines, not for codes an external standard owns
+(currency, country): those change without you, and every change would be a
+schema edit.
+
 `t.belongsTo("model")` owns the foreign key (`board` stores `boardId`);
 `t.hasMany("model")` is its inverse. Every row carries `id` (client-generated,
 time-ordered), `createdAt` and `updatedAt`.
@@ -444,6 +459,18 @@ is on. It shows values only for models whose read rule lets the caller read
 every row, and never personal values. A row's panel lists its own changes, each
 linking to its transaction.
 
+### Folding a run before a deploy
+
+A run of small migrations is normal while working and noise in a deployment.
+`npx tapedb-cli migrate squash --since <id>` folds that migration and everything
+after it into the first one, re-deriving the SQL from the snapshots at each end
+of the run, so the result is the net change rather than a concatenation. The
+first migration of the run keeps its id, which is why a development database
+that already applied the run needs no repair. A run that adds and later drops
+the same thing is removed rather than left as an empty file, a run containing a
+statement that touched rows is refused, `--name` renames the result and
+`--dry-run` reports without writing.
+
 ## Files and presence
 
 ```ts
@@ -594,6 +621,49 @@ workspace serves requests. Older plaintext logs, snapshots and Cloudflare
 recovery copies still follow their original retention windows; encryption
 cannot erase plaintext already held in those copies.
 
+## Seeding
+
+`tapedb` ships no fake names, postcodes or IBAN formats, and it should not: those
+are conventions of your domain, and a library that guesses them is right about one
+country. What it ships is the runner, so a seeder is a short file of plain
+TypeScript instead of an insertion script.
+
+```ts
+// tapedb.seed.ts
+import { defineSeeder } from "@tapedb/tapedb/seed";
+import type app from "./tapedb.schema";
+
+export default defineSeeder<typeof app>(async ({ ctx }) => {
+  const users = await ctx.create("user", 20, (rng) => ({
+    email: ctx.unique("user", "email", (r) => `user${r.int(1, 1e6)}@mail.test`),
+    name: rng.pick(["Sanne", "Bram", "Noor"]),
+  }));
+
+  await ctx.create("post", 100, (rng) => ({
+    authorId: ctx.ref(users),
+    title: rng.pick(["First", "Second"]),
+  }));
+});
+```
+
+```bash
+npx tapedb-cli seed --workspace <uuid>             # against `tapedb dev`
+npx tapedb-cli seed --workspace <uuid> --dry-run   # check the rows, write none
+npx tapedb-cli seed --workspace <uuid> --seed lab  # the same rows every time
+```
+
+Dates are the one thing a seed cannot pin on its own: `rng.past()` measures from
+now, so pass `from` when the same seed has to give the same dates tomorrow. The
+engine's own `createdAt`, `updatedAt` and `updatedSeq` are written at insert, so
+they differ between runs whatever the seed.
+
+The same seed writes the same rows, and `rngFor(label)` gives a stream that
+depends only on its label, so a row keeps its values whatever else the run did
+first. Rows go through the engine's own routes in batches of 500, so access
+rules, the tape and the history see them exactly as they see a client's writes.
+A `personal()` field is refused: seeded personal data has to go through the app's
+own write path, which owns the encryption key.
+
 ## Erasing a workspace
 
 ```bash
@@ -727,6 +797,22 @@ and `tapedb deploy` refuses to ship the flag. A deployed test Worker that
 needs the route sets a random `TAPEDB_DEV_CLAIMS_TOKEN` secret first; the route
 then mints only for requests carrying it in `x-tapedb-dev-token`.
 
+## The studio
+
+`tapedb studio` is one HTML page: a table browser, your schema as an editable
+outline, and a graph of the models. No build step, no network at runtime.
+
+The Graph tab draws the models with React Flow, one node per model with its keys
+and types, one edge per foreign key labelled `many → 1`, parents to the left of
+the rows that point at them. Clicking a node opens it. Every control in the
+studio is the studio's own: listboxes with keyboard navigation instead of native
+selects, the brand's checkboxes instead of the system's.
+
+React Flow is bundled at build time into a committed string, so the package keeps
+zero runtime dependencies and the page stays a single response under one hash per
+script and style. `node scripts/gen-studio-graph.mjs` rebuilds it; a test fails
+while the bundle is stale.
+
 ## Architecture
 
 One Durable Object per workspace is the only writer, which is what makes
@@ -779,9 +865,10 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | `@tapedb/tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer (React 19) |
 | `@tapedb/tapedb/worker` | `defineTapeDB`, claim helpers | no |
 | `@tapedb/tapedb/studio` | `studio`, served at `/_tapedb/studio` | no |
+| `@tapedb/tapedb/seed` | `defineSeeder`, `runSeeder` | no |
 
 The CLI is a command, not an import: `npx tapedb-cli init | migrate | dev | studio
-| deploy | export | erase | move`.
+| deploy | export | seed | erase | move`.
 
 [API.md](API.md) is the reference: every export and signature, what is stable
 and what is experimental, the HTTP routes, the export format and the error

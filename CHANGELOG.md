@@ -1,5 +1,43 @@
 # Changelog
 
+## 0.1.29 - 2026-11-18
+
+- `migrate squash` no longer refuses a run that contains a table rebuild. Adding a constraint to an existing table cannot be done in place, so the generated migration creates `<table>__rebuild`, copies the rows into it, drops the original and renames; those inserts are migration mechanics, not a backfill, and the fold now reproduces them instead of rejecting them. Found by running the command on a real project whose run ended with a foreign-key addition.
+- The fold expands rebuilds the way `migrate dev` does, so a net change that adds a reference or changes a type comes out as the same statements a fresh migration would contain.
+- `migrate squash --name <what>` renames the folded migration, because the first migration of a run is often a name that no longer describes it.
+- The model graph is a workspace view, opened from the tools beside Query, Access and History, instead of a tab inside a model. A global diagram filed under a model claimed a scope it did not have: the tab did nothing when another model was chosen.
+- The graph's layout stacks each column from the heights already placed in it and centres the columns, so nodes no longer overlap; edge labels carry their own background at a readable contrast; the minimap is replaced by a footer strip with the reading key and the model and relation counts, which cannot cover a node.
+
+## 0.1.28 - 2026-11-18
+
+- The studio draws its own controls: one listbox replaces every native select (the field sheet, the filters, the relation picker, the role picker, the history filter and the workspace picker), with Arrow/Home/End/Escape, aria-expanded and aria-selected, and a hidden input so existing callers keep reading `value`. The checkbox keeps the real input for semantics and `.checked`, with the brand's box beside it.
+- The studio has a Graph tab: React Flow renders a node per model with its fields, keys, foreign keys and types, and an edge per foreign key labelled with the field and `many → 1`, laid out by dependency depth. Clicking a node opens that model. React, React DOM, React Flow and esbuild are devDependencies and the bundle is committed as a string, so the studio is still one response with no build step and no network, and `@tapedb/tapedb` still has no runtime dependencies.
+- The graph's stylesheet joins the page's single style element, because the studio ships a hash-based Content Security Policy; literal script tags inside the bundle are escaped so they cannot end the page's script element early.
+
+## 0.1.27 - 2026-11-18
+
+- `tapedb migrate squash --since <id>` folds that migration and everything after it into the first one, re-deriving the SQL from the snapshots at each end of the run so the result is the net change. The first migration keeps its id, so a development database that already applied the run needs no repair. A run whose net change is nothing is removed rather than left as an empty file, and a run containing a statement that touched rows is refused because a re-derived diff cannot carry it.
+- The studio reads and writes `t.enum([...])`: the Structure tab shows the allowed values instead of the field's source, the field form offers the enum type with a values input, and a default outside the set is refused.
+- The default control in the field form follows the type: a list for `boolean` and `enum`, a number control for `number`. A text box let the form ask for a value the field cannot hold.
+- A test now parses the studio page's inline script, which nothing type-checks.
+
+## 0.1.26 - 2026-11-18
+
+- `t.enum([...])`: a string with a closed set of values. The column stays TEXT and the migration snapshot records only the type, so adding or removing a value needs no migration; the engine refuses a write outside the set with `invalid_value` and lists the values it accepts. `Row`, `CreateData` and `where` narrow to the union, so a typo fails in the editor before the engine sees it.
+- `default`, `index`, `unique` and `optional` work on an enum as they do on a string, `default()` rejects a value outside the set, and `personal()` throws: the set is public and the check compares plaintext. A seeder reads the set from `ctx.model(name).fields[field].values`.
+- Use it for sets the application owns (status, kind, channel) and not for codes an external standard owns (currency, country), where every addition would be a schema edit.
+
+## 0.1.25 - 2026-11-18
+
+- `@tapedb/tapedb/seed` and `npx tapedb-cli seed`: a seeder is a `tapedb.seed.ts` of plain TypeScript, and the library supplies the bookkeeping around its values. The context offers `create`, `insert`, `listIds`, `ref`, `unique`, `clear`, `model`, `rng`, `rngFor` and `written`; rows are written one transaction per 500 through the engine's own routes, so claims, access rules, the tape and the history behave as they do for a client. Declared defaults are filled in, because the engine wants every column named. A `personal()` field is refused rather than written in the clear, since the encryption key belongs to the application.
+- The same `--seed` writes the same rows, and `rngFor(label)` gives a stream that depends only on its label. `rng.past()` and `rng.future()` measure from now, so pass `from` to anchor a date that has to survive tomorrow.
+- `tapedb seed --workspace <uuid>` takes `--dry-run`, `--if-empty`, `--model`, `--file` and `--seed`, and refuses a target that is not localhost without `--force`. `loadSchema`'s loader is now `loadProjectModule`, so a seeder loads the same way a schema does.
+
+## 0.1.24 - 2026-11-18
+
+- `createdAt`, `updatedAt` and `updatedSeq` resolve on every read path, not only in `select`. A read can now order, filter and group by them, and the client's `where`, `orderBy`, `groupBy` and aggregate types accept them, so a call no longer passes the client and then fails with `unknown_attribute` at the engine. `updatedSeq` gives "what changed since" as a total order. They stay engine-owned: a create or update that names one is still refused.
+- The studio's favicon carries the brand's light and dark pair and follows `prefers-color-scheme`, instead of the dark-theme colours hardcoded on a light tab strip.
+
 ## 0.1.23 - 2026-11-17
 
 - Literal schemas report missing relation targets, missing or ambiguous hasMany inverses, invalid inverse names, and missing or invalid personal subjects in the TypeScript editor. Subject and inverse names remain precise through their builders and modifiers. Dynamic definitions still use the existing runtime validation; emitted runtime JavaScript is unchanged.

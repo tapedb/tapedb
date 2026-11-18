@@ -206,7 +206,7 @@ describe("studio page", () => {
       expect(response.headers.get("content-type")).toContain("text/html");
       const html = await response.text();
       expect(html).toContain("<title>tapedb studio</title>");
-      for (const id of ["workspace", "models", "grid", "more", "ticks", "counter", "drawer", "editor", "delete"]) {
+      for (const id of ["workspace-mount", "models", "grid", "more", "ticks", "counter", "drawer", "editor", "delete"]) {
         expect(html).toContain(`id="${id}"`);
       }
     } finally {

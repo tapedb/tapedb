@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     schema: "src/schema-entry.ts",
+    seed: "src/seed/index.ts",
     react: "src/react/index.ts",
     worker: "src/worker/index.ts",
     studio: "src/studio/index.ts",

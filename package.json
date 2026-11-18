@@ -1,6 +1,6 @@
 {
   "name": "@tapedb/tapedb",
-  "version": "0.1.23",
+  "version": "0.1.29",
   "description": "A log-structured database for Cloudflare Durable Objects. One SQLite database per workspace, transactions appended to a tape, replayed from R2 on cold start, with live queries and an offline-capable client.",
   "license": "MIT",
   "type": "module",
@@ -46,6 +46,10 @@
       "types": "./dist/schema.d.ts",
       "import": "./dist/schema.js"
     },
+    "./seed": {
+      "types": "./dist/seed.d.ts",
+      "import": "./dist/seed.js"
+    },
     "./react": {
       "types": "./dist/react.d.ts",
       "import": "./dist/react.js"
@@ -87,12 +91,13 @@
     "@happy-dom/global-registrator": "^21.0.4",
     "@playwright/test": "1.65.1",
     "@types/node": "^26.6.6",
-    "@types/react": "19",
-    "@types/react-dom": "19",
-    "esbuild": "0.28.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@xyflow/react": "^13.0.2",
+    "esbuild": "^0.28.2",
     "fake-indexeddb": "6.2.8",
-    "react": "19",
-    "react-dom": "19",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1",
     "tsup": "^9.0.0",
     "typescript": "^5.7.2"
   },
