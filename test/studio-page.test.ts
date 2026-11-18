@@ -15,7 +15,7 @@ test("the bundled graph is current", async () => {
   // with no build step for whoever installs it. A stale bundle would ship an old
   // diagram, so the test rebuilds and compares.
   const built = await buildGraph(new URL("..", import.meta.url).pathname);
-  expect(built).toBe(await Bun.file(new URL("../src/studio/graph.gen.ts", import.meta.url)).text());
+  expect(built).toBe(await Bun.file(new URL("../src/studio/model-graph.gen.ts", import.meta.url)).text());
 });
 
 test("the studio page serves the graph bundle and a tab to reach it", () => {

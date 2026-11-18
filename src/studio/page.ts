@@ -16,7 +16,7 @@
  * claim route and edits the project. `worker`: served by the deployed Worker at
  * /_tapedb/studio, signing in the way the app does (its identity decides the role).
  */
-import { GRAPH_CSS, GRAPH_JS } from "./graph.gen";
+import { GRAPH_CSS, GRAPH_JS } from "./model-graph.gen";
 
 export type StudioMode = "local" | "worker";
 
