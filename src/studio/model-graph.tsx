@@ -265,4 +265,6 @@ declare global {
   }
 }
 
-window.TAPEDB_GRAPH = { mount };
+// The page is the only place that mounts this, but a test or a type check may
+// import the module outside a browser, so the global is set only where it exists.
+if (typeof window !== "undefined") window.TAPEDB_GRAPH = { mount };

@@ -169,6 +169,56 @@ test("a run that cancels out is removed rather than left empty", () => {
   expect(migrateCheck(root, v1).ok).toBe(true);
 });
 
+test("a fold that adds a foreign key keeps the reference in the SQL", () => {
+  const root = project();
+  const base = schema({ task: task() });
+  const withBoard = schema({ task: task(), board: model({ name: t.string() }) });
+  const linked = schema({
+    task: model({ title: t.string(), board: t.belongsTo("board").optional() }),
+    board: model({ name: t.string() }),
+  });
+  migrateDev(root, base, "init");
+  migrateDev(root, withBoard, "add_board");
+  migrateDev(root, linked, "link_board");
+
+  const result = migrateSquash(root, { since: "0003" });
+  expect(result.status).toBe("squashed");
+  if (result.status !== "squashed") return;
+  const sql = readFileSync(join(root, "tapedb", "migrations", `${result.into}.sql`), "utf8");
+  expect(sql).toContain('"board_id" TEXT REFERENCES "board"("id")');
+  expect(sql).toContain('CREATE TABLE IF NOT EXISTS "board"');
+  expect(migrateCheck(root, linked).ok).toBe(true);
+});
+
+test("a table rebuild's own copy statements fold instead of counting as a backfill", () => {
+  // Adding a constraint to an existing column cannot be done in place, so the
+  // generated migration creates <table>__rebuild, copies the rows into it, drops
+  // the original and renames. Those inserts are migration mechanics: refusing
+  // them would make the fold unusable on any run that adds a reference.
+  const root = project();
+  fourMigrations(root);
+  const target = join(root, "tapedb", "migrations", "0004_add_due_at.sql");
+  writeFileSync(
+    target,
+    `${readFileSync(target, "utf8")}INSERT INTO "task__rebuild" ("id") SELECT "id" FROM "task";\n`
+  );
+
+  const result = migrateSquash(root, { since: "0003" });
+  expect(result.status).toBe("squashed");
+});
+
+test("--name renames the folded migration", () => {
+  const root = project();
+  fourMigrations(root);
+  const result = migrateSquash(root, { since: "0003", name: "declare relations" });
+  expect(result.status).toBe("squashed");
+  if (result.status !== "squashed") return;
+  expect(result.into).toBe("0003_declare_relations");
+  expect(readMigrations(root).map((m) => m.id.slice(0, 4))).toEqual(["0002", "0003"]);
+  expect(readMigrations(root).some((m) => m.id === "0003_declare_relations")).toBe(true);
+  expect(migrateCheck(root, v4).ok).toBe(true);
+});
+
 test("--dry-run reports the fold and writes nothing", () => {
   const root = project();
   fourMigrations(root);
