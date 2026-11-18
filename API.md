@@ -347,6 +347,18 @@ usually handles:
 
 ## Personal data
 
+### Enums
+
+`t.enum([...])` is a string with a closed set. Values must be non-empty and
+unique, `.default()` takes one of them, `.index()` and `.unique()` work as they
+do on a string, and `.personal()` throws: the set is public and the check needs
+plaintext.
+
+The column is TEXT and the migration snapshot records only the type, so changing
+the list needs no migration. The engine refuses a write outside the set with
+`invalid_value`, whatever the client believed, and the values reach
+`ctx.model(name).fields[field].values` for a seeder.
+
 `t.string().personal({ subject: "self" | "<string field>" })` and
 `t.json().personal(...)` encrypt values under a subject key. Personal output
 fields are nullable and erased fields appear in the row's `$erased: string[]`.

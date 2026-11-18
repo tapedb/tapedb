@@ -15,6 +15,7 @@ import type { QueryWhere } from "../engine/query-types";
 import { defineSchema, type EntityConfig, type TapeDBSchema } from "../schema";
 import {
   BelongsTo,
+  EnumField,
   Field,
   HasMany,
   type KindInput,
@@ -205,9 +206,11 @@ export type BelongsToKeys<F> = Keys<F, BelongsTo>;
 export type HasManyKeys<F> = Keys<F, HasMany>;
 export type RelationKeys<F> = BelongsToKeys<F> | HasManyKeys<F>;
 
-type OutputOf<S> = S extends Field<infer K, infer O, boolean>
-  ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never)
-  : never;
+type OutputOf<S> = S extends EnumField<infer V, infer O, boolean>
+  ? V | (O extends true ? null : never)
+  : S extends Field<infer K, infer O, boolean>
+    ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never)
+    : never;
 
 type ForeignKeyOf<S> = S extends BelongsTo<string, infer O>
   ? string | (O extends true ? null : never)
@@ -226,9 +229,11 @@ export type FilterKeys<F> =
   | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string } ? never : F[K] extends Field<"json", boolean, boolean> ? never : K }[ScalarKeys<F>]
   | `${BelongsToKeys<F>}Id`;
 
-type InputOf<S> = S extends Field<infer K, infer O, boolean>
-  ? KindInput[K] | (O extends true ? null : never)
-  : never;
+type InputOf<S> = S extends EnumField<infer V, infer O, boolean>
+  ? V | (O extends true ? null : never)
+  : S extends Field<infer K, infer O, boolean>
+    ? KindInput[K] | (O extends true ? null : never)
+    : never;
 
 type RequiredScalarKeys<F> = {
   [K in ScalarKeys<F>]: F[K] extends Field<ScalarKind, false, false> ? K : never;
@@ -541,6 +546,7 @@ export function schema<M extends Models>(
           ...(subject ? { personal: { subject, required: !member.isOptional, ...(member.hasDefault ? { defaultValue: storedDefault(member.kind, member.defaultValue) } : {}) } } : {}),
           indexed: member.isIndexed || undefined,
           unique: member.isUnique || undefined,
+          ...(member instanceof EnumField ? { values: member.values } : {}),
           ...(member.hasDefault && !subject ? { default: storedDefault(member.kind, member.defaultValue) } : {}),
         } as AttributeDefinition;
         info.scalars[name] = {

@@ -70,8 +70,23 @@ export default schema({
 
 One `schema()` call produces the engine's table registry, the SQL migrations
 and the client's types. Fields: `t.string()`, `t.number()`, `t.boolean()`,
-`t.date()` (stored as epoch milliseconds), `t.json()`. Modifiers:
+`t.date()` (stored as epoch milliseconds), `t.json()`, and `t.enum([...])` for a
+string with a closed set of values. Modifiers:
 `.optional()`, `.default(v)`, `.index()`, `.unique()`. Relations:
+`t.enum` is a string whose values are checked. The column is TEXT and the set is
+not part of the migration, so adding or removing a value needs no migration: it
+changes what the engine accepts. `Row` and `CreateData` narrow to the union, so a
+typo fails in the editor, and `where` narrows too.
+
+```ts
+status: t.enum(["pending", "paid", "shipped"]).default("pending"),
+kind: t.enum(["current", "savings"]).index(),
+```
+
+Use it for sets your own logic defines, not for codes an external standard owns
+(currency, country): those change without you, and every change would be a
+schema edit.
+
 `t.belongsTo("model")` owns the foreign key (`board` stores `boardId`);
 `t.hasMany("model")` is its inverse. Every row carries `id` (client-generated,
 time-ordered), `createdAt` and `updatedAt`.

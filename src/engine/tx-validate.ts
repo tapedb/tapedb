@@ -400,6 +400,12 @@ function normaliseValue(
           context
         );
       }
+      if (definition.values !== undefined && !definition.values.includes(value)) {
+        throw invalidValue(
+          `Attribute "${attribute}" must be one of: ${definition.values.join(", ")}.`,
+          context
+        );
+      }
       return value;
     case "number":
       if (typeof value !== "number" || !Number.isFinite(value)) {

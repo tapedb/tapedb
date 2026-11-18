@@ -9,7 +9,7 @@
  */
 
 import type { QueryWhere } from "../engine/query-types";
-import type { HasMany } from "./fields";
+import type { EnumField, HasMany } from "./fields";
 import type {
   BelongsToKeys,
   FilterKeys,
@@ -47,7 +47,11 @@ export interface ManyFilter<W> {
  * columns hold boards) are unfolded only as far as a filter actually goes.
  */
 type Scalars<F extends Fields> = {
-  [K in FilterKeys<F> | { [P in keyof F]: F[P] extends { personalSubject: string } ? P : never }[keyof F]]?: K extends FilterKeys<F> ? Scalar | FieldFilter : never;
+  [K in FilterKeys<F> | { [P in keyof F]: F[P] extends { personalSubject: string } ? P : never }[keyof F]]?: K extends FilterKeys<F>
+    ? F[K] extends EnumField<infer V, boolean, boolean>
+      ? V | FieldFilter<V>
+      : Scalar | FieldFilter
+    : never;
 };
 
 /**
