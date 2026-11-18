@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.28 - 2026-11-18
+
+- The studio draws its own controls: one listbox replaces every native select (the field sheet, the filters, the relation picker, the role picker, the history filter and the workspace picker), with Arrow/Home/End/Escape, aria-expanded and aria-selected, and a hidden input so existing callers keep reading `value`. The checkbox keeps the real input for semantics and `.checked`, with the brand's box beside it.
+- The studio has a Graph tab: React Flow renders a node per model with its fields, keys, foreign keys and types, and an edge per foreign key labelled with the field and `many → 1`, laid out by dependency depth. Clicking a node opens that model. React, React DOM, React Flow and esbuild are devDependencies and the bundle is committed as a string, so the studio is still one response with no build step and no network, and `@tapedb/tapedb` still has no runtime dependencies.
+- The graph's stylesheet joins the page's single style element, because the studio ships a hash-based Content Security Policy; literal script tags inside the bundle are escaped so they cannot end the page's script element early.
+
 ## 0.1.27 - 2026-11-18
 
 - `tapedb migrate squash --since <id>` folds that migration and everything after it into the first one, re-deriving the SQL from the snapshots at each end of the run so the result is the net change. The first migration keeps its id, so a development database that already applied the run needs no repair. A run whose net change is nothing is removed rather than left as an empty file, and a run containing a statement that touched rows is refused because a re-derived diff cannot carry it.
