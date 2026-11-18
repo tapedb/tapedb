@@ -709,6 +709,7 @@ ${GRAPH_CSS}
   <nav class="tools" id="tools" aria-label="Tools" hidden>
     <button type="button" id="open-query" aria-current="false"></button>
     <button type="button" id="open-access" aria-current="false"></button>
+    <button type="button" id="open-users" hidden>Users</button>
     <button type="button" id="open-history" aria-current="false"></button>
     <button type="button" id="open-graph" aria-current="false"></button>
   </nav>
@@ -936,6 +937,7 @@ function localApi(path, body) {
 
 var ROLES = ["Guest", "User", "Member", "Editor", "Moderator", "Admin", "Owner", "Founder", "Developer"];
 var claims = {};
+var builtinAuth=false;
 
 function readJson(response) {
   return response.text().then(function (text) {
@@ -984,7 +986,7 @@ function engine(workspace, path, init) {
 
 function workerApi(path, body) {
   var ws = body && body.workspaceId;
-  if (path.indexOf("/api/workspaces") === 0) return Promise.resolve({ workspaces: null });
+  if (path.indexOf("/api/workspaces") === 0) return fetch("/_tapedb/workspaces").then(function(response){if(response.status===404)return {workspaces:null};return readJson(response);});
   if (path === "/api/structure") return Promise.resolve({ editable: false, deployed: true, reason: "This is the deployed app. Change the schema in tapedb.schema.ts, then npx tapedb-cli deploy." });
   if (path === "/api/schema") return engine(ws, "/schema");
   if (path === "/api/query") return engine(ws, "/query", { method: "POST", body: JSON.stringify({ query: body.query }) });
@@ -3936,6 +3938,7 @@ function rowHistory(model, id, into) {
 }
 
 function start() {
+  if(MODE === "worker")fetch("/status").then(readJson).then(function(status){if(status.auth){builtinAuth=true;$("open-users").hidden=false;$("open-users").onclick=function(){location.href="/_tapedb/studio/users?workspace="+encodeURIComponent(app.workspace||"");};}}).catch(function(){});
   // A reload starts as the studio's own sign-in, never as someone viewed before.
   if (MODE === "local") api("/api/view-as", {}).catch(function () {});
   var saved = "";
@@ -3949,7 +3952,7 @@ function start() {
       renderWorkspaces();
       if (saved) { openWorkspace(saved); return; }
       $("workspace-id").hidden = false;
-      var make = el("button", { class: "btn", type: "button", onclick: function () { openWorkspace(uuid7()); } }, [icon("plus", 16), "Create a workspace"]);
+      var make = el("button", { class: "btn", type: "button", onclick: function () { if(builtinAuth)fetch("/_tapedb/workspaces",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(readJson).then(function(workspace){openWorkspace(workspace.id);}).catch(fail);else openWorkspace(uuid7()); } }, [icon("plus", 16), "Create a workspace"]);
       showEmpty("Open a workspace", "Paste the id of a workspace at the top, or create an empty one. Your sign-in decides what you can do in it.", make);
       return;
     }
@@ -3958,7 +3961,7 @@ function start() {
       watchWorkspaces(null);
       return;
     }
-    var create = el("button", { class: "btn primary", type: "button", onclick: function () { openWorkspace(uuid7()); } }, [icon("plus", 16), "Create a workspace"]);
+    var create = el("button", { class: "btn primary", type: "button", onclick: function () { if(builtinAuth)fetch("/_tapedb/workspaces",{method:"POST",headers:{"content-type":"application/json"},body:"{}"}).then(readJson).then(function(workspace){openWorkspace(workspace.id);}).catch(fail);else openWorkspace(uuid7()); } }, [icon("plus", 16), "Create a workspace"]);
     showEmpty("No workspaces yet", "Workspaces your app opens appear here by themselves. To look around first, create an empty one.", create);
     watchWorkspaces(function (id) { if (!app.workspace) openWorkspace(id); });
   });

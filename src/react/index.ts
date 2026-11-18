@@ -106,3 +106,6 @@ export function useBroadcast<T = unknown>(
   );
   return useCallback((message: T) => handle.send(message), [handle]);
 }
+
+/** Props supplied to the default export of tapedb.auth.tsx. */
+export interface AuthPageProps { redirectTo: string }
