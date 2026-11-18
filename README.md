@@ -357,16 +357,6 @@ Each model's actions take one of three decisions:
 
 ## Migrations
 
-A run of small migrations is normal while working and noise in a deployment.
-`npx tapedb-cli migrate squash --since <id>` folds that migration and everything
-after it into the first one, re-deriving the SQL from the snapshots at each end
-of the run so the result is the net change. The first migration of the run keeps
-its id, so a development database that already applied the run needs no repair.
-A run that adds and later drops the same thing applies nothing and is removed
-rather than left as an empty file.
-
-## Migrations
-
 ```bash
 # edit tapedb.schema.ts, then
 npx tapedb-cli migrate dev --name add_task_priority
@@ -468,6 +458,18 @@ wrote, row by row, with links to the rows, and who wrote it when `audit: true`
 is on. It shows values only for models whose read rule lets the caller read
 every row, and never personal values. A row's panel lists its own changes, each
 linking to its transaction.
+
+### Folding a run before a deploy
+
+A run of small migrations is normal while working and noise in a deployment.
+`npx tapedb-cli migrate squash --since <id>` folds that migration and everything
+after it into the first one, re-deriving the SQL from the snapshots at each end
+of the run, so the result is the net change rather than a concatenation. The
+first migration of the run keeps its id, which is why a development database
+that already applied the run needs no repair. A run that adds and later drops
+the same thing is removed rather than left as an empty file, a run containing a
+statement that touched rows is refused, `--name` renames the result and
+`--dry-run` reports without writing.
 
 ## Files and presence
 
