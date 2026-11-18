@@ -7,7 +7,7 @@ import { stripVTControlCharacters } from "node:util";
 import { confirm, interactive, select } from "./prompts";
 export { ask, confirm, interactive } from "./prompts";
 
-export function installProject(root: string, version: string): void {
+export function installProject(root: string, version: string, auth=false): void {
   const path = join(root, "package.json");
   const pkg = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { private: true, type: "module" };
   pkg.dependencies ??= {};
@@ -16,6 +16,13 @@ export function installProject(root: string, version: string): void {
   // installed copy up to this CLI's version after the install.
   if (!pkg.dependencies["@tapedb/tapedb"] && !pkg.devDependencies["@tapedb/tapedb"]) pkg.dependencies["@tapedb/tapedb"] = version;
   if (!pkg.dependencies.wrangler && !pkg.devDependencies.wrangler) pkg.devDependencies.wrangler = "^4.163.0";
+  if(auth){
+    pkg.dependencies["better-auth"] ??= "^1.7.25";
+    pkg.devDependencies.esbuild ??= "0.28.2";
+    pkg.scripts ??= {};
+    pkg.scripts["tapedb:auth:build"] ??= "tapedb auth build";
+    if(existsSync(join(root,"tapedb.auth.tsx"))){pkg.dependencies.react??="^19.0.0";pkg.dependencies["react-dom"]??="^19.0.0";pkg.devDependencies["@types/react"]??="19";pkg.devDependencies["@types/react-dom"]??="19";}
+  }
   pkg.scripts ??= {};
   for (const [name, command] of Object.entries({ "tapedb:dev": "tapedb dev", "tapedb:studio": "tapedb studio", "tapedb:deploy": "tapedb deploy" })) {
     pkg.scripts[name] ??= command;
@@ -83,7 +90,7 @@ export function olderExactVersion(pinned: unknown, current: string): boolean {
 export function ignoreLocalFiles(root: string): void {
   const path = join(root, ".gitignore");
   const current = existsSync(path) ? readFileSync(path, "utf8") : "";
-  const entries = ["node_modules/", ".wrangler/", ".dev.vars", ".dev.vars.*"];
+  const entries = ["node_modules/", ".wrangler/", ".dev.vars", ".dev.vars.*", "tapedb/auth-page.gen.ts"];
   const missing = entries.filter(entry => !current.split(/\r?\n/).includes(entry));
   if (missing.length) appendFileSync(path, "\n" + missing.join("\n") + "\n");
 }
@@ -149,6 +156,11 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
   writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(config, null, 2) + "\n");
   command = createCommand(root, account);
   const environmentArgs = env ? ["--env", env] : [];
+  if(existsSync(join(root,"auth.ts"))){
+    const sender=selected.vars?.EMAIL_FROM??config.vars?.EMAIL_FROM;
+    if(!sender||!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(sender))throw new Error("EMAIL_FROM must be an address on your sending domain.");
+    requireSuccess(command(["email","sending","enable",sender.split("@")[1]!]),"Email sending domain setup");
+  }
   const ensured = new Set<string>();
   for (const bucket of buckets) {
     if (!bucket.bucket_name) throw new Error("Every R2 binding needs a bucket_name.");
@@ -162,6 +174,7 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
   if (listed.status === 0) existing = JSON.parse(listed.stdout);
   else if (!workerNotFound(listed.stderr + listed.stdout, workerName(config, env))) requireSuccess(listed, "Secret lookup");
   const secrets = missingSecrets(existing.map(item => item.name));
+  if(existsSync(join(root,"auth.ts"))&&!existing.some(item=>item.name==="BETTER_AUTH_SECRET"))secrets.BETTER_AUTH_SECRET=randomBytes(32).toString("base64url");
   const temp = mkdtempSync(join(tmpdir(), "tapedb-deploy-"));
   try {
     const file = join(temp, "secrets.json");

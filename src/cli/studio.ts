@@ -199,6 +199,8 @@ export function startStudio(options: StudioOptions): Promise<{ url: string; clos
 
 
       if (url.pathname === "/") {
+        const status=await fetch(`${base}/status`).then(response=>response.json()).catch(()=>null) as {auth?:boolean}|null;
+        if(status?.auth){response.writeHead(302,{location:`${base}/_tapedb/studio`});response.end();return;}
         response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
         response.end(PAGE);
         return;

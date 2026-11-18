@@ -1,3 +1,4 @@
+import type { AuthRoom } from "./auth/room";
 import type { WorkspaceRoom } from "./engine/workspace-room";
 
 /**
@@ -10,6 +11,8 @@ import type { WorkspaceRoom } from "./engine/workspace-room";
 export interface Env {
   /** The database room. One instance per workspace. */
   WORKSPACE: DurableObjectNamespace<WorkspaceRoom>;
+  /** Dedicated app-wide auth database, when built-in auth is enabled. */
+  AUTH?: DurableObjectNamespace<AuthRoom>;
   /** Transaction log segments and snapshots. */
   DATA: R2Bucket;
   /** Uploaded files. Optional unless `db.$files` is used. */
