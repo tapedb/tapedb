@@ -579,7 +579,7 @@ button.who.as .label { color: var(--accent); }
 .row2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
 
 /* The model graph: React Flow needs a sized box, and the page owns the chrome. */
-.graph { position: relative; flex: 1 1 auto; min-height: 60vh; border: 1px solid var(--line); border-radius: var(--panel); overflow: hidden; background: var(--ground); }
+.graph { position: relative; flex: 1 1 auto; min-height: 0; border: 1px solid var(--line); border-radius: var(--panel); overflow: hidden; background: var(--ground); }
 .graph .react-flow__attribution { background: transparent; color: var(--text-3); }
 .graph .react-flow__controls button { background: var(--surface); border-bottom: 1px solid var(--line); color: var(--text); }
 .graph .react-flow__controls button:hover { background: var(--surface-2); }
@@ -710,6 +710,7 @@ ${GRAPH_CSS}
     <button type="button" id="open-query" aria-current="false"></button>
     <button type="button" id="open-access" aria-current="false"></button>
     <button type="button" id="open-history" aria-current="false"></button>
+    <button type="button" id="open-graph" aria-current="false"></button>
   </nav>
 </aside>
 
@@ -729,10 +730,8 @@ ${GRAPH_CSS}
   <div class="tabs" id="tabs" role="tablist" hidden>
     <button type="button" role="tab" id="tab-data" aria-selected="true">Data</button>
     <button type="button" role="tab" id="tab-structure" aria-selected="false">Structure</button>
-    <button type="button" role="tab" id="tab-graph" aria-selected="false">Graph</button>
   </div>
   <div class="structure" id="structure" hidden></div>
-  <div class="graph" id="graph" hidden></div>
   <div class="filters" id="filters" hidden></div>
   <div class="bulk" id="bulk" hidden></div>
   <section class="history" id="history" aria-label="History" hidden>
@@ -753,6 +752,7 @@ ${GRAPH_CSS}
     </div>
     <div id="access-body"></div>
   </section>
+  <section class="graph" id="graph" aria-label="Graph" hidden></section>
   <section class="console" id="console" aria-label="Query" hidden>
     <div class="head">
       <div>
@@ -1402,6 +1402,7 @@ function renderModels() {
   $("open-query").setAttribute("aria-current", app.tool === "query" ? "true" : "false");
   $("open-access").setAttribute("aria-current", app.tool === "access" ? "true" : "false");
   $("open-history").setAttribute("aria-current", app.tool === "history" ? "true" : "false");
+  $("open-graph").setAttribute("aria-current", app.tool === "graph" ? "true" : "false");
   if (!app.schema) return;
   app.schema.namespaces.forEach(function (n, index) {
     var count = app.counts[n.apiName];
@@ -2236,7 +2237,6 @@ function setView(view) {
   app.view = view;
   $("tab-data").setAttribute("aria-selected", view === "data" ? "true" : "false");
   $("tab-structure").setAttribute("aria-selected", view === "structure" ? "true" : "false");
-  $("tab-graph").setAttribute("aria-selected", view === "graph" ? "true" : "false");
   var data = view === "data";
   $("panel").hidden = !data;
   $("filters").hidden = !data;
@@ -2244,14 +2244,16 @@ function setView(view) {
   $("import").hidden = !data;
   $("export-menu").hidden = !data;
   $("structure").hidden = view !== "structure";
-  $("graph").hidden = view !== "graph";
   if ($("bulk")) renderBulk();
   if (view === "structure") renderStructure();
-  if (view === "graph") renderGraph();
-  else unmountGraph();
 }
 
-/** One live React root for the graph, torn down when the tab is left. */
+/** The graph is a workspace view, so it opens as a tool and names no model. */
+function openGraph() {
+  openTool("graph");
+}
+
+/** One live React root for the graph, torn down when the view is left. */
 var graphRoot = null;
 function unmountGraph() {
   if (graphRoot) graphRoot();
@@ -2271,7 +2273,6 @@ function renderGraph() {
   var canvas = el("div", { style: "position:absolute;inset:0" });
   host.append(canvas);
   graphRoot = window.TAPEDB_GRAPH.mount(canvas, app.schema, function (name) {
-    setView("data");
     selectModel(name);
   });
 }
@@ -2661,7 +2662,6 @@ function afterSchemaChange(edit) {
 
 $("tab-data").addEventListener("click", function () { setView("data"); });
 $("tab-structure").addEventListener("click", function () { setView("structure"); });
-$("tab-graph").addEventListener("click", function () { setView("graph"); });
 $("new-model").addEventListener("click", function () { modelForm(null); });
 
 // ---- Start ------------------------------------------------------------------
@@ -3341,6 +3341,8 @@ function renderRecent() {
   var button = $("open-query");
   button.append(icon("prompt", 16), el("span", { class: "name", text: "Query" }));
   $("open-access").append(icon("shield", 16), el("span", { class: "name", text: "Access" }));
+  $("open-graph").append(icon("link", 16), el("span", { class: "name", text: "Graph" }));
+  $("open-graph").addEventListener("click", openGraph);
   $("open-access").addEventListener("click", openAccess);
   $("open-history").append(icon("clock", 16), el("span", { class: "name", text: "History" }));
   $("open-history").addEventListener("click", function () { openHistory(); });
@@ -3539,6 +3541,9 @@ function openTool(name) {
   $("console").hidden = name !== "query";
   $("access").hidden = name !== "access";
   $("history").hidden = name !== "history";
+  $("graph").hidden = name !== "graph";
+  if (name === "graph") renderGraph();
+  else unmountGraph();
   return true;
 }
 
@@ -3548,6 +3553,8 @@ function closeTool() {
   $("console").hidden = true;
   $("access").hidden = true;
   $("history").hidden = true;
+  $("graph").hidden = true;
+  unmountGraph();
   $("panel").hidden = false;
 }
 

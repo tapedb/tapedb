@@ -18,11 +18,18 @@ test("the bundled graph is current", async () => {
   expect(built).toBe(await Bun.file(new URL("../src/studio/model-graph.gen.ts", import.meta.url)).text());
 });
 
-test("the studio page serves the graph bundle and a tab to reach it", () => {
+test("the graph is a workspace view, not a tab inside a model", () => {
+  // The graph draws every model at once, so it cannot live in a model's tab bar:
+  // a global view filed under a model claims a scope it does not have, and its
+  // tab does nothing when another model is chosen. It is a tool beside Query,
+  // Access and History, which are already workspace-wide.
   expect(PAGE).toContain("TAPEDB_GRAPH");
-  expect(PAGE).toContain('id="tab-graph"');
+  expect(PAGE).toContain('id="open-graph"');
   expect(PAGE).toContain('id="graph"');
+  expect(PAGE).not.toContain('id="tab-graph"');
   expect(PAGE).toContain(".react-flow__");
+  // Opening it hides the model chrome, so nothing suggests a selected model.
+  expect(PAGE).toContain('["head", "tabs", "structure", "filters", "bulk", "panel"]');
 });
 
 test("the studio page carries a script that parses", () => {

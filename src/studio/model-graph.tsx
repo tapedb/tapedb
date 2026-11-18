@@ -2,9 +2,9 @@
  * The studio's model graph, in React Flow.
  *
  * This file is not shipped as source: `scripts/gen-studio-graph.mjs` bundles it
- * into `graph.gen.ts` as a string, and the studio serves that string inside its
- * own page. That keeps the studio one HTML response with no build step for the
- * consumer and no network at runtime, which is the same arrangement the query
+ * into `model-graph.gen.ts` as a string, and the studio serves that string inside
+ * its own page. That keeps the studio one HTML response with no build step for
+ * the consumer and no network at runtime, which is the same arrangement the query
  * runner already uses.
  *
  * The component knows nothing about a particular schema: it is mounted with the
@@ -18,7 +18,7 @@ import {
   Background,
   Controls,
   Handle,
-  MiniMap,
+  MarkerType,
   Position,
   ReactFlow,
   type Edge,
@@ -57,10 +57,19 @@ interface ModelNode extends Record<string, unknown> {
   fields: Array<{ name: string; type: string; flags: string[] }>;
 }
 
-const NODE_WIDTH = 260;
-const COLUMN_GAP = 110;
-const ROW_GAP = 26;
+// Geometry lives here because the layout needs it: a column is stacked from the
+// heights of the nodes already in it, so those heights have to be known before
+// anything is positioned.
+const NODE_WIDTH = 264;
+const HEADER_HEIGHT = 36;
 const FIELD_HEIGHT = 22;
+const BODY_PADDING = 8;
+const COLUMN_GAP = 190;
+const ROW_GAP = 48;
+
+function heightOf(fieldCount: number): number {
+  return HEADER_HEIGHT + BODY_PADDING * 2 + fieldCount * FIELD_HEIGHT;
+}
 
 function flagsOf(name: string, attribute: Attribute, foreignKeys: Set<string>): string[] {
   const flags: string[] = [];
@@ -116,18 +125,20 @@ function ModelNodeView({ data, selected }: NodeProps) {
         border: `1px solid ${selected ? "var(--accent)" : "var(--line-strong)"}`,
         borderRadius: "var(--panel)",
         background: "var(--surface)",
-        boxShadow: selected ? "inset 2px 0 0 var(--accent)" : "none",
         overflow: "hidden",
-        font: "13px/1.4 var(--mono)",
+        font: "12.5px/1.4 var(--mono)",
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ opacity: 0 }} />
+      <Handle type="target" position={Position.Left} style={{ opacity: 0, top: "50%" }} />
       <div
         style={{
           display: "flex",
+          alignItems: "baseline",
           justifyContent: "space-between",
           gap: 8,
-          padding: "8px 12px",
+          height: HEADER_HEIGHT,
+          padding: "0 12px",
+          boxSizing: "border-box",
           borderBottom: "1px solid var(--line)",
           background: "var(--surface-2)",
           color: "var(--text)",
@@ -135,44 +146,54 @@ function ModelNodeView({ data, selected }: NodeProps) {
           letterSpacing: "0.01em",
         }}
       >
-        <span>{model.name}</span>
-        <span style={{ color: "var(--text-3)", font: "11px var(--mono)" }}>{model.fields.length}</span>
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{model.name}</span>
+        <span style={{ color: "var(--text-3)", font: "10.5px var(--mono)", flex: "none" }}>
+          {model.fields.length}
+        </span>
       </div>
-      <div style={{ padding: "4px 0" }}>
-        {model.fields.map((field) => (
-          <div
-            key={field.name}
-            style={{
-              display: "flex",
-              alignItems: "baseline",
-              justifyContent: "space-between",
-              gap: 10,
-              height: FIELD_HEIGHT,
-              padding: "0 12px",
-              color: field.flags.includes("key") ? "var(--text)" : "var(--text-2)",
-            }}
-          >
-            <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{field.name}</span>
-            <span style={{ display: "flex", gap: 6, flex: "none" }}>
-              {field.flags.map((flag) => (
-                <span
-                  key={flag}
-                  style={{
-                    color: flag === "key" || flag === "fk" ? "var(--accent)" : "var(--text-3)",
-                    font: "10.5px var(--mono)",
-                    letterSpacing: "0.06em",
-                    textTransform: "uppercase",
-                  }}
-                >
-                  {flag}
-                </span>
-              ))}
-              <span style={{ color: "var(--text-3)", font: "10.5px var(--mono)" }}>{field.type}</span>
-            </span>
-          </div>
-        ))}
+      <div style={{ padding: `${BODY_PADDING}px 0`, boxSizing: "border-box" }}>
+        {model.fields.map((field) => {
+          const isKey = field.flags.includes("key") || field.flags.includes("fk");
+          return (
+            <div
+              key={field.name}
+              style={{
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "space-between",
+                gap: 10,
+                height: FIELD_HEIGHT,
+                padding: "0 12px",
+                boxSizing: "border-box",
+                color: isKey ? "var(--text)" : "var(--text-2)",
+              }}
+            >
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {field.name}
+              </span>
+              <span style={{ display: "flex", alignItems: "center", gap: 6, flex: "none" }}>
+                {field.flags
+                  .filter((flag) => flag !== "key")
+                  .map((flag) => (
+                    <span
+                      key={flag}
+                      style={{
+                        color: flag === "fk" ? "var(--accent)" : "var(--text-3)",
+                        font: "10px var(--mono)",
+                        letterSpacing: "0.06em",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {flag}
+                    </span>
+                  ))}
+                <span style={{ color: "var(--text-3)", font: "10.5px var(--mono)" }}>{field.type}</span>
+              </span>
+            </div>
+          );
+        })}
       </div>
-      <Handle type="source" position={Position.Right} style={{ opacity: 0 }} />
+      <Handle type="source" position={Position.Right} style={{ opacity: 0, top: "50%" }} />
     </div>
   );
 }
@@ -183,76 +204,136 @@ function Graph({ doc, open }: { doc: SchemaDocument; open: (model: string) => vo
   const { nodes, edges } = useMemo(() => {
     const relations = relationsOf(doc);
     const depth = depthsOf(doc, relations);
+
     const foreignKeys = new Map<string, Set<string>>();
+    const degree = new Map<string, number>();
     for (const relation of relations) {
       const set = foreignKeys.get(relation.child) ?? new Set<string>();
       set.add(relation.field);
       foreignKeys.set(relation.child, set);
+      degree.set(relation.child, (degree.get(relation.child) ?? 0) + 1);
+      degree.set(relation.parent, (degree.get(relation.parent) ?? 0) + 1);
     }
 
-    const perColumn = new Map<number, number>();
-    const nodes: Array<Node> = doc.namespaces.map((namespace) => {
-      const level = depth.get(namespace.apiName) ?? 0;
-      const row = perColumn.get(level) ?? 0;
-      perColumn.set(level, row + 1);
-      const fields = Object.entries(namespace.attributes).map(([name, attribute]) => ({
+    const fieldsOf = (namespace: Namespace) =>
+      Object.entries(namespace.attributes).map(([name, attribute]) => ({
         name,
         type: attribute.type,
         flags: flagsOf(name, attribute, foreignKeys.get(namespace.apiName) ?? new Set()),
       }));
-      return {
-        id: namespace.apiName,
-        type: "model",
-        position: {
-          x: level * (NODE_WIDTH + COLUMN_GAP),
-          y: row * (Math.max(fields.length, 3) * FIELD_HEIGHT + 120 + ROW_GAP),
-        },
-        data: { name: namespace.apiName, fields },
-      } satisfies Node;
-    });
+
+    // One bucket per depth, richest node first: the tables everything points at
+    // end up near the vertical middle rather than the top.
+    const columns = new Map<number, Namespace[]>();
+    for (const namespace of doc.namespaces) {
+      const level = depth.get(namespace.apiName) ?? 0;
+      columns.set(level, [...(columns.get(level) ?? []), namespace]);
+    }
+    for (const [level, members] of columns) {
+      columns.set(
+        level,
+        [...members].sort(
+          (a, b) => (degree.get(b.apiName) ?? 0) - (degree.get(a.apiName) ?? 0) || a.apiName.localeCompare(b.apiName)
+        )
+      );
+    }
+
+    // Each column is stacked from a cursor advanced by the real height of what
+    // was placed before it, then centred against the tallest column. Placing a
+    // node from its own height alone is what produced the overlaps.
+    const totals = new Map<number, number>();
+    for (const [level, members] of columns) {
+      const height = members.reduce((sum, member) => sum + heightOf(member.attributes ? Object.keys(member.attributes).length : 0), 0);
+      totals.set(level, height + ROW_GAP * Math.max(members.length - 1, 0));
+    }
+    const tallest = Math.max(...[...totals.values()], 0);
+
+    const nodes: Array<Node> = [];
+    for (const level of [...columns.keys()].sort((a, b) => a - b)) {
+      const members = columns.get(level) ?? [];
+      let cursor = (tallest - (totals.get(level) ?? 0)) / 2;
+      for (const namespace of members) {
+        const fields = fieldsOf(namespace);
+        nodes.push({
+          id: namespace.apiName,
+          type: "model",
+          position: { x: level * (NODE_WIDTH + COLUMN_GAP), y: cursor },
+          data: { name: namespace.apiName, fields },
+          sourcePosition: Position.Right,
+          targetPosition: Position.Left,
+        } satisfies Node);
+        cursor += heightOf(fields.length) + ROW_GAP;
+      }
+    }
 
     const edges: Array<Edge> = relations.map((relation) => ({
       id: `${relation.child}.${relation.field}->${relation.parent}`,
       source: relation.child,
       target: relation.parent,
       type: "smoothstep",
-      animated: false,
-      label: `${relation.field}  many → 1`,
-      labelStyle: { fill: "var(--text-3)", font: "10.5px var(--mono)" },
-      labelBgStyle: { fill: "var(--ground)" },
+      label: relation.field,
+      labelShowBg: true,
+      labelBgPadding: [5, 3] as [number, number],
+      labelBgBorderRadius: 3,
+      labelBgStyle: { fill: "var(--ground)", fillOpacity: 0.92 },
+      labelStyle: { fill: "var(--text-2)", font: "10.5px var(--mono)" },
       style: { stroke: "var(--line-strong)", strokeWidth: 1.2 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: "var(--line-strong)", width: 14, height: 14 },
     }));
 
     return { nodes, edges };
   }, [doc]);
 
   return (
+    <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column" }}>
+    <div style={{ position: "relative", flex: "1 1 auto", minHeight: 0 }}>
     <ReactFlow
       nodes={nodes}
       edges={edges}
       nodeTypes={NODE_TYPES}
       fitView
+      fitViewOptions={{ padding: 0.26 }}
       minZoom={0.2}
       maxZoom={1.6}
       nodesConnectable={false}
+      edgesFocusable={false}
       onNodeClick={(_, node) => open(node.id)}
-      proOptions={{ hideAttribution: false }}
       style={{ background: "var(--ground)" }}
     >
-      <Background color="var(--line)" gap={18} size={1} />
+      <Background color="var(--line)" gap={20} size={1} />
       <Controls showInteractive={false} />
-      <MiniMap
-        pannable
-        zoomable
-        style={{ background: "var(--surface)", border: "1px solid var(--line)" }}
-        nodeColor="var(--line-strong)"
-        maskColor="color-mix(in srgb, var(--ground) 70%, transparent)"
-      />
     </ReactFlow>
+    </div>
+    <div
+      data-graph-legend="true"
+      style={{
+        flex: "none",
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "space-between",
+        gap: 16,
+        height: 56,
+        padding: "0 16px",
+        boxSizing: "border-box",
+        borderTop: "1px solid var(--line)",
+        background: "var(--surface)",
+        color: "var(--text-3)",
+        font: "11.5px/1.45 var(--display)",
+      }}
+    >
+      <span style={{ minWidth: 0 }}>
+        One node per model, one edge per foreign key. The arrow points at the row being referenced, so
+        many rows to one. Click a node to open that model.
+      </span>
+      <span style={{ flex: "none", color: "var(--text-2)", font: "11px var(--mono)" }}>
+        {nodes.length} models · {edges.length} relations
+      </span>
+    </div>
+    </div>
   );
 }
 
-/** Mounted by the studio page when the graph tab opens; unmounted when it closes. */
+/** Mounted when the Graph tool opens; unmounted when it closes. */
 function mount(container: HTMLElement, doc: SchemaDocument, open: (model: string) => void): () => void {
   const root = createRoot(container);
   root.render(<Graph doc={doc} open={open} />);
