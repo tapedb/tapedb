@@ -588,6 +588,49 @@ workspace serves requests. Older plaintext logs, snapshots and Cloudflare
 recovery copies still follow their original retention windows; encryption
 cannot erase plaintext already held in those copies.
 
+## Seeding
+
+`tapedb` ships no fake names, postcodes or IBAN formats, and it should not: those
+are conventions of your domain, and a library that guesses them is right about one
+country. What it ships is the runner, so a seeder is a short file of plain
+TypeScript instead of an insertion script.
+
+```ts
+// tapedb.seed.ts
+import { defineSeeder } from "@tapedb/tapedb/seed";
+import type app from "./tapedb.schema";
+
+export default defineSeeder<typeof app>(async ({ ctx }) => {
+  const users = await ctx.create("user", 20, (rng) => ({
+    email: ctx.unique("user", "email", (r) => `user${r.int(1, 1e6)}@mail.test`),
+    name: rng.pick(["Sanne", "Bram", "Noor"]),
+  }));
+
+  await ctx.create("post", 100, (rng) => ({
+    authorId: ctx.ref(users),
+    title: rng.pick(["First", "Second"]),
+  }));
+});
+```
+
+```bash
+npx tapedb-cli seed --workspace <uuid>             # against `tapedb dev`
+npx tapedb-cli seed --workspace <uuid> --dry-run   # check the rows, write none
+npx tapedb-cli seed --workspace <uuid> --seed lab  # the same rows every time
+```
+
+Dates are the one thing a seed cannot pin on its own: `rng.past()` measures from
+now, so pass `from` when the same seed has to give the same dates tomorrow. The
+engine's own `createdAt`, `updatedAt` and `updatedSeq` are written at insert, so
+they differ between runs whatever the seed.
+
+The same seed writes the same rows, and `rngFor(label)` gives a stream that
+depends only on its label, so a row keeps its values whatever else the run did
+first. Rows go through the engine's own routes in batches of 500, so access
+rules, the tape and the history see them exactly as they see a client's writes.
+A `personal()` field is refused: seeded personal data has to go through the app's
+own write path, which owns the encryption key.
+
 ## Erasing a workspace
 
 ```bash
@@ -773,9 +816,10 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | `@tapedb/tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer (React 19) |
 | `@tapedb/tapedb/worker` | `defineTapeDB`, claim helpers | no |
 | `@tapedb/tapedb/studio` | `studio`, served at `/_tapedb/studio` | no |
+| `@tapedb/tapedb/seed` | `defineSeeder`, `runSeeder` | no |
 
 The CLI is a command, not an import: `npx tapedb-cli init | migrate | dev | studio
-| deploy | export | erase | move`.
+| deploy | export | seed | erase | move`.
 
 [API.md](API.md) is the reference: every export and signature, what is stable
 and what is experimental, the HTTP routes, the export format and the error
