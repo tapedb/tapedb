@@ -16,6 +16,44 @@ test("the studio page carries a script that parses", () => {
   expect(() => new Function(scripts[0] as string)).not.toThrow();
 });
 
+test("the default control is a list for a closed set and a number for a number", () => {
+  // The shipped function, not a copy of it: pulled out of the page and run with
+  // just enough DOM to see what it builds.
+  const source = /function defaultControl\([\s\S]*?\n}/.exec(PAGE)?.[0];
+  expect(source).toBeDefined();
+  const shims = `
+    function el(tag, attrs) { return { tag: tag, id: attrs && attrs.id, type: attrs && attrs.type, children: [] }; }
+    function textField(id, label, value, note, type) {
+      return { tag: "div", children: [{ tag: "input", id: id, type: type || "text" }] };
+    }
+    function selectField(id, label, options, value) {
+      return { tag: "div", children: [{ tag: "select", id: id, options: options.map(function (o) { return o[0]; }), value: value }] };
+    }
+  `;
+  const build = new Function(`${shims}${source}; return defaultControl;`)() as (
+    kind: string,
+    current: string,
+    values: string[]
+  ) => { children: Array<{ tag: string; type?: string; options?: string[]; value?: string }> };
+
+  const boolean = build("boolean", "true", []).children[0]!;
+  expect(boolean.tag).toBe("select");
+  expect(boolean.options).toEqual(["", "true", "false"]);
+  expect(boolean.value).toBe("true");
+
+  const fromEnum = build("enum", "business", ["retail", "business"]).children[0]!;
+  expect(fromEnum.tag).toBe("select");
+  expect(fromEnum.options).toEqual(["", "retail", "business"]);
+
+  const number = build("number", "3", []).children[0]!;
+  expect(number.tag).toBe("input");
+  expect(number.type).toBe("number");
+
+  const text = build("string", "hi", []).children[0]!;
+  expect(text.tag).toBe("input");
+  expect(text.type).toBe("text");
+});
+
 test("the field form offers an enum and a default that fits the type", () => {
   // The three pieces that make an enum editable: the type in the list, a values
   // input, and a default control that is a list rather than a text box.

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.27 - 2026-11-18
+
+- `tapedb migrate squash --since <id>` folds that migration and everything after it into the first one, re-deriving the SQL from the snapshots at each end of the run so the result is the net change. The first migration keeps its id, so a development database that already applied the run needs no repair. A run whose net change is nothing is removed rather than left as an empty file, and a run containing a statement that touched rows is refused because a re-derived diff cannot carry it.
+- The studio reads and writes `t.enum([...])`: the Structure tab shows the allowed values instead of the field's source, the field form offers the enum type with a values input, and a default outside the set is refused.
+- The default control in the field form follows the type: a list for `boolean` and `enum`, a number control for `number`. A text box let the form ask for a value the field cannot hold.
+- A test now parses the studio page's inline script, which nothing type-checks.
+
 ## 0.1.26 - 2026-11-18
 
 - `t.enum([...])`: a string with a closed set of values. The column stays TEXT and the migration snapshot records only the type, so adding or removing a value needs no migration; the engine refuses a write outside the set with `invalid_value` and lists the values it accepts. `Row`, `CreateData` and `where` narrow to the union, so a typo fails in the editor before the engine sees it.
