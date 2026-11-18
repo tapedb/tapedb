@@ -34,6 +34,7 @@ then records the new surface with `bun run api:update`.
 | `@tapedb/tapedb/react` | browser (React 19 peer) | hooks |
 | `@tapedb/tapedb/worker` | Cloudflare Workers | `defineTapeDB` and claim helpers |
 | `@tapedb/tapedb/studio` | Cloudflare Workers | `studio`: the studio at `/_tapedb/studio`, for `defineTapeDB({ studio })` |
+| `@tapedb/tapedb/seed` | Node (the CLI) | `defineSeeder`, `runSeeder` and the seeding context |
 | `npx tapedb-cli` | Node 22.18+ | the CLI, a separate package that runs the matching `@tapedb/tapedb` |
 
 `@tapedb/tapedb` has no runtime dependencies and never imports React.
@@ -172,6 +173,62 @@ allow consumers to emit declarations without leaking private names.
 | `TAPEDB_DEV_CLAIMS` | var or secret | development claim route on; never in production |
 | `TAPEDB_DEV_CLAIMS_TOKEN` | secret, optional | the development claim route then needs `x-tapedb-dev-token` |
 
+## `@tapedb/tapedb/seed`
+
+A seeder is application code that fills a workspace with rows. The library ships
+no fake data: names, postcodes, IBAN formats and every other domain convention
+belong to the application. What this entry point owns is the bookkeeping around
+the values.
+
+```ts
+// tapedb.seed.ts
+import { defineSeeder } from "@tapedb/tapedb/seed";
+import type app from "./tapedb.schema";
+
+export default defineSeeder<typeof app>(async ({ ctx }) => {
+  const customers = await ctx.create("customer", 12, (rng) => ({
+    email: ctx.unique("customer", "email", (r) => `customer${r.int(1, 1e6)}@mail.test`),
+    name: rng.pick(["Sanne", "Bram", "Noor"]),
+    joinedAt: rng.past({ days: 400 }),
+  }));
+
+  await ctx.create("account", 16, (rng) => ({
+    customerId: ctx.ref(customers),
+    balanceMinor: rng.int(1_000, 90_000),
+  }));
+});
+```
+
+| member | |
+| --- | --- |
+| `create(model, count, build)` | builds rows and writes them; answers the ids |
+| `insert(model, rows)` | writes rows you built yourself, for values that depend on other rows |
+| `listIds(model)`, `ref(ids)` | parent ids, for foreign keys |
+| `unique(model, field, generate)` | retries a generator until the value is unused in this run |
+| `clear(model?)` | deletes rows, children before parents when no model is named |
+| `model(name)` | fields, flags, uniqueness, personal and relations |
+| `rng`, `rngFor(label)` | a seeded stream; `rngFor` depends only on its label |
+| `written()` | rows this run wrote, per model |
+
+Guarantees. The same `--seed` and the same seeder write the same rows. Rows are
+written one transaction per 500 through the engine's own routes, so claims,
+access rules, the tape and the history behave as they do for a client. A
+`personal()` field is refused rather than written in the clear, because the
+encryption key belongs to the application. Declared defaults are filled in, so a
+row may leave them out.
+
+`rng.past()` and `rng.future()` measure from now. Pass `from` to anchor them
+(`rng.past({ days: 400, from: Date.UTC(2026, 10, 1) })`) when the same seed has to
+give the same dates tomorrow as it does today. The three engine columns
+(`createdAt`, `updatedAt`, `updatedSeq`) are written at insert, so they differ
+between runs whatever the seed.
+
+`npx tapedb-cli seed --workspace <uuid>` runs the seeder against a running
+Worker, minting a development claim the way `export` does. `--dry-run` builds and
+checks the rows without writing, `--if-empty` skips a workspace that already has
+rows, `--model` restricts what a run may write, and `--seed <label>` chooses the
+stream. A target that is not localhost is refused unless `--force` is passed.
+
 ## HTTP
 
 All engine routes need `Authorization: Bearer <claim>` for the workspace in
@@ -256,7 +313,7 @@ them. The protocol belongs to the client; use it directly only if you must.
 ## CLI
 
 `npx tapedb-cli init | migrate dev|rollback|status|check | dev | studio | deploy |
-export | erase | move`. The exact commands and flags are in `npx tapedb-cli --help`
+export | seed | erase | move`. The exact commands and flags are in `npx tapedb-cli --help`
 and are part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside
 `TAPEDB_JURISDICTION`, or when `migrate check` fails (no migrations, schema
