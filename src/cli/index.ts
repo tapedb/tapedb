@@ -26,6 +26,8 @@ import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
 import { loadSchema } from "./load-schema";
+import { parseFlags } from "./flags";
+import { seedProject } from "./seed";
 import { select } from "./prompts";
 import { ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, syncTapedb, type DeployConfig } from "./onboarding";
 
@@ -301,23 +303,6 @@ function write(path: string, contents: string, force: boolean): "written" | "kep
   return "written";
 }
 
-function parseFlags(argv: string[]): Record<string, string | boolean> {
-  const flags: Record<string, string | boolean> = {};
-  for (let index = 0; index < argv.length; index += 1) {
-    const token = argv[index];
-    if (!token.startsWith("--")) continue;
-    const key = token.slice(2);
-    const next = argv[index + 1];
-    if (next !== undefined && !next.startsWith("--")) {
-      flags[key] = next;
-      index += 1;
-    } else {
-      flags[key] = true;
-    }
-  }
-  return flags;
-}
-
 async function init(argv: string[]): Promise<number> {
   const flags = parseFlags(argv);
   const target = resolve(typeof flags.dir === "string" ? flags.dir : ".");
@@ -397,6 +382,7 @@ Usage:
   npx tapedb-cli dev  [--dir <path>] [--port <port>]
   npx tapedb-cli studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
   npx tapedb-cli export --workspace <uuid> [--url <worker-url>] [--out <file>]
+  npx tapedb-cli seed --workspace <uuid> [--file <tapedb.seed.ts>] [--url <worker-url>] [--seed <label>]
   npx tapedb-cli erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]
   npx tapedb-cli move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]
 
@@ -415,6 +401,8 @@ Commands:
   dev     Run the local database on port 8787, with the studio beside it.
   studio  Open a local table browser against a running Worker.
   export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).
+  seed    Run the project's seeder against a running Worker: --seed makes the
+          same seed give the same rows. --dry-run checks without writing.
   erase   Delete a workspace for good: its data, history and files (owner claim).
           --confirm must repeat the workspace id. The id answers 410 afterwards.
 `);
@@ -627,6 +615,7 @@ export async function run(argv: string[]): Promise<number> {
   if (command === "dev") return dev(argv.slice(1));
   if (command === "studio") return studio(argv.slice(1));
   if (command === "export") return exportWorkspace(argv.slice(1));
+  if (command === "seed") return seedProject(argv.slice(1));
   if (command === "erase") return eraseWorkspace(argv.slice(1));
   if (command === "move") return moveWorkspaces(argv.slice(1));
   if (command === undefined || command === "--help" || command === "-h") {
