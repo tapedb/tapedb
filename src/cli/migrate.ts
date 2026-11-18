@@ -28,7 +28,7 @@ import type { SchemaChange } from "../engine/schema-evolution";
 import { entityDdl, SQL_TYPE, sqlLiteral, type TapeDBSchema } from "../schema";
 
 export const FIRST_MIGRATION_ID = "0002_entities";
-const CHANGES_PREFIX = "-- tapedb:changes ";
+export const CHANGES_PREFIX = "-- tapedb:changes ";
 
 export interface SnapshotAttribute {
   type: AttributeDefinition["type"];

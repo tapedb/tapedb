@@ -20,6 +20,14 @@ export type FieldSpec =
       index?: boolean;
       unique?: boolean;
     }
+  | {
+      type: "enum";
+      values: string[];
+      optional?: boolean;
+      default?: string;
+      index?: boolean;
+      unique?: boolean;
+    }
   | { type: "belongsTo"; target: string; optional?: boolean; onDelete?: "setNull" | "cascade" | "restrict" }
   | { type: "hasMany"; target: string };
 
@@ -263,6 +271,14 @@ export function renderField(spec: FieldSpec): string {
     return `t.belongsTo(${JSON.stringify(spec.target)}${options})${spec.optional ? ".optional()" : ""}`;
   }
   if (spec.type === "hasMany") return `t.hasMany(${JSON.stringify(spec.target)})`;
+  if (spec.type === "enum") {
+    let code = `t.enum([${spec.values.map((value) => JSON.stringify(value)).join(", ")}])`;
+    if (spec.optional) code += ".optional()";
+    if (spec.default !== undefined) code += `.default(${JSON.stringify(spec.default)})`;
+    if (spec.unique) code += ".unique()";
+    else if (spec.index) code += ".index()";
+    return code;
+  }
   let code = `t.${spec.type}()`;
   if (spec.optional) code += ".optional()";
   if (spec.default !== undefined) code += `.default(${literal(spec.default)})`;
@@ -278,6 +294,18 @@ export function readField(code: string): FieldSpec | null {
   if (m) return { type: "belongsTo", target: m[1].slice(1, -1), ...(m[3] ? { optional: true } : {}), ...(m[2] && m[2] !== "setNull" ? { onDelete: m[2] as "cascade" | "restrict" } : {}) };
   m = /^t\.hasMany\(("[A-Za-z][A-Za-z0-9]*"|'[A-Za-z][A-Za-z0-9]*')\)$/.exec(text);
   if (m) return { type: "hasMany", target: m[1].slice(1, -1) };
+  m = /^t\.enum\(\[((?:"(?:[^"\\]|\\.)*")(?:,"(?:[^"\\]|\\.)*")*)\]\)((?:\.(?:optional|index|unique)\(\)|\.default\("(?:[^"\\]|\\.)*"\))*)$/.exec(text);
+  if (m) {
+    const values = (m[1].match(/"(?:[^"\\]|\\.)*"/g) ?? []).map((quoted) => JSON.parse(quoted) as string);
+    const spec: Extract<FieldSpec, { type: "enum" }> = { type: "enum", values };
+    for (const part of m[2].match(/\.[a-z]+\([^)]*\)/g) ?? []) {
+      if (part === ".optional()") spec.optional = true;
+      else if (part === ".index()") spec.index = true;
+      else if (part === ".unique()") spec.unique = true;
+      else spec.default = JSON.parse(part.slice(".default(".length, -1)) as string;
+    }
+    return spec;
+  }
   m = /^t\.(string|number|boolean|date|json)\(\)((?:\.(?:optional|index|unique)\(\)|\.default\((?:-?\d+(?:\.\d+)?|true|false|"(?:[^"\\]|\\.)*")\))*)$/.exec(text);
   if (!m) return null;
   const spec: Extract<FieldSpec, { type: ScalarType }> = { type: m[1] as ScalarType };

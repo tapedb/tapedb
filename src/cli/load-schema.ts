@@ -48,32 +48,28 @@ function isUnresolvedPackage(error: unknown): boolean {
   return (code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND") && message.includes("@tapedb/tapedb");
 }
 
-/** Loads the schema module: its default export, or an export named `schema`. */
-export async function loadSchema(root: string, flags: Record<string, string | boolean>): Promise<TapeDBSchema> {
-  const path = resolve(root, typeof flags.schema === "string" ? flags.schema : "tapedb.schema.ts");
-  if (!existsSync(path)) throw new Error(`No schema at ${path}. Pass --schema <file>.`);
-  let loaded: Record<string, unknown>;
+/**
+ * Loads one of the project's own modules from beside itself, so its relative
+ * imports still resolve. Node keys its module cache on the URL and Bun ignores
+ * the query string, so the fresh copy is what makes a second load see current
+ * code.
+ */
+export async function loadProjectModule(root: string, file: string): Promise<Record<string, unknown>> {
+  const path = resolve(root, file);
+  if (!existsSync(path)) throw new Error(`No module at ${path}.`);
+  // A counter, not the clock: two loads within one millisecond must still get
+  // different files.
+  schemaLoads += 1;
+  // TapeDB's source is ESM even when the host application is CommonJS. An
+  // explicit .mts copy avoids inheriting its package type; leave explicit .cts
+  // and JavaScript module formats alone.
+  const extension = extname(path) === ".ts" ? ".mts" : extname(path);
+  const stem = `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}`;
+  const copy = join(dirname(path), `${stem}${extension}`);
+  copyFileSync(path, copy);
+  const hooks = schemaPackageResolution();
   try {
-    // Import a fresh copy beside the original, so its relative imports still
-    // resolve and no runtime's module cache can hand back an older schema.
-    // (Node keys its cache on the URL; Bun ignores the query string.)
-    // A counter, not the clock: two loads within one millisecond must still
-    // get different files.
-    schemaLoads += 1;
-    // TapeDB's TypeScript schema is ESM even when the host application is
-    // CommonJS. An explicit .mts copy avoids inheriting its package type;
-    // leave explicit .cts and JavaScript module formats alone.
-    const extension = extname(path) === ".ts" ? ".mts" : extname(path);
-    const stem = `.${basename(path, extname(path))}.${process.pid}.${schemaLoads}`;
-    const copy = join(dirname(path), `${stem}${extension}`);
-    copyFileSync(path, copy);
-    const hooks = schemaPackageResolution();
-    try {
-      loaded = (await import(pathToFileURL(copy).href)) as Record<string, unknown>;
-    } finally {
-      hooks?.deregister();
-      rmSync(copy, { force: true });
-    }
+    return (await import(pathToFileURL(copy).href)) as Record<string, unknown>;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     if (/Unknown file extension|ERR_UNKNOWN_FILE_EXTENSION/.test(message)) {
@@ -82,7 +78,18 @@ export async function loadSchema(root: string, flags: Record<string, string | bo
       );
     }
     throw error;
+  } finally {
+    hooks?.deregister();
+    rmSync(copy, { force: true });
   }
+}
+
+/** Loads the schema module: its default export, or an export named `schema`. */
+export async function loadSchema(root: string, flags: Record<string, string | boolean>): Promise<TapeDBSchema> {
+  const file = typeof flags.schema === "string" ? flags.schema : "tapedb.schema.ts";
+  const path = resolve(root, file);
+  if (!existsSync(path)) throw new Error(`No schema at ${path}. Pass --schema <file>.`);
+  const loaded = await loadProjectModule(root, file);
   const schema = (loaded.default ?? loaded.schema) as TapeDBSchema | undefined;
   if (!schema || !schema.registry || !Array.isArray(schema.migrations)) {
     throw new Error(`${path} must export a schema() as its default export (or as "schema").`);

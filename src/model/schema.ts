@@ -15,6 +15,7 @@ import type { QueryWhere } from "../engine/query-types";
 import { defineSchema, type EntityConfig, type TapeDBSchema } from "../schema";
 import {
   BelongsTo,
+  EnumField,
   Field,
   HasMany,
   type KindInput,
@@ -205,9 +206,11 @@ export type BelongsToKeys<F> = Keys<F, BelongsTo>;
 export type HasManyKeys<F> = Keys<F, HasMany>;
 export type RelationKeys<F> = BelongsToKeys<F> | HasManyKeys<F>;
 
-type OutputOf<S> = S extends Field<infer K, infer O, boolean>
-  ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never)
-  : never;
+type OutputOf<S> = S extends EnumField<infer V, infer O, boolean>
+  ? V | (O extends true ? null : never)
+  : S extends Field<infer K, infer O, boolean>
+    ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never)
+    : never;
 
 type ForeignKeyOf<S> = S extends BelongsTo<string, infer O>
   ? string | (O extends true ? null : never)
@@ -226,9 +229,11 @@ export type FilterKeys<F> =
   | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string } ? never : F[K] extends Field<"json", boolean, boolean> ? never : K }[ScalarKeys<F>]
   | `${BelongsToKeys<F>}Id`;
 
-type InputOf<S> = S extends Field<infer K, infer O, boolean>
-  ? KindInput[K] | (O extends true ? null : never)
-  : never;
+type InputOf<S> = S extends EnumField<infer V, infer O, boolean>
+  ? V | (O extends true ? null : never)
+  : S extends Field<infer K, infer O, boolean>
+    ? KindInput[K] | (O extends true ? null : never)
+    : never;
 
 type RequiredScalarKeys<F> = {
   [K in ScalarKeys<F>]: F[K] extends Field<ScalarKind, false, false> ? K : never;
@@ -327,9 +332,14 @@ type TargetFields<S, M extends Models> = TargetOf<S> extends keyof M ? FieldsOf<
 /** The fields of the model a relation points at. */
 export type TargetFieldsOf<S, M extends Models> = TargetFields<S, M>;
 
+/**
+ * The columns every row carries. They are readable, sortable, filterable and
+ * groupable, and the engine writes them: no create or update accepts them.
+ */
+export type SystemKey = "createdAt" | "updatedAt" | "updatedSeq";
 export type OrderBy<F> =
-  | Partial<Record<FilterKeys<F>, "asc" | "desc">>
-  | Partial<Record<FilterKeys<F>, "asc" | "desc">>[];
+  | Partial<Record<FilterKeys<F> | SystemKey, "asc" | "desc">>
+  | Partial<Record<FilterKeys<F> | SystemKey, "asc" | "desc">>[];
 
 export interface IncludeArgs<M extends Models, F extends Fields> {
   where?: Where<F, M>;
@@ -389,7 +399,7 @@ type NumberKeys<F> = {
 }[ScalarKeys<F>];
 
 /** Fields a group can be keyed by: anything filterable, and the timestamps. */
-export type GroupKeys<F> = FilterKeys<F> | "createdAt" | "updatedAt";
+export type GroupKeys<F> = FilterKeys<F> | SystemKey;
 
 /** Fields with an order, so a minimum and maximum: not booleans or json. */
 type OrderedKeys<F> =
@@ -536,6 +546,7 @@ export function schema<M extends Models>(
           ...(subject ? { personal: { subject, required: !member.isOptional, ...(member.hasDefault ? { defaultValue: storedDefault(member.kind, member.defaultValue) } : {}) } } : {}),
           indexed: member.isIndexed || undefined,
           unique: member.isUnique || undefined,
+          ...(member instanceof EnumField ? { values: member.values } : {}),
           ...(member.hasDefault && !subject ? { default: storedDefault(member.kind, member.defaultValue) } : {}),
         } as AttributeDefinition;
         info.scalars[name] = {

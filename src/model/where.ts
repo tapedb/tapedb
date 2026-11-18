@@ -9,7 +9,7 @@
  */
 
 import type { QueryWhere } from "../engine/query-types";
-import type { HasMany } from "./fields";
+import type { EnumField, HasMany } from "./fields";
 import type {
   BelongsToKeys,
   FilterKeys,
@@ -47,10 +47,24 @@ export interface ManyFilter<W> {
  * columns hold boards) are unfolded only as far as a filter actually goes.
  */
 type Scalars<F extends Fields> = {
-  [K in FilterKeys<F> | { [P in keyof F]: F[P] extends { personalSubject: string } ? P : never }[keyof F]]?: K extends FilterKeys<F> ? Scalar | FieldFilter : never;
+  [K in FilterKeys<F> | { [P in keyof F]: F[P] extends { personalSubject: string } ? P : never }[keyof F]]?: K extends FilterKeys<F>
+    ? F[K] extends EnumField<infer V, boolean, boolean>
+      ? V | FieldFilter<V>
+      : Scalar | FieldFilter
+    : never;
 };
 
-export type Where<F extends Fields = Fields, M extends Models = Models> = Scalars<F> & {
+/**
+ * Filters on the columns every row carries: epoch milliseconds for the
+ * timestamps, the transaction sequence for `updatedSeq`.
+ */
+type SystemFilters = {
+  createdAt?: Date | number | FieldFilter<Date | number>;
+  updatedAt?: Date | number | FieldFilter<Date | number>;
+  updatedSeq?: number | FieldFilter<number>;
+};
+
+export type Where<F extends Fields = Fields, M extends Models = Models> = Scalars<F> & SystemFilters & {
   [K in RelationKeys<F>]?: F[K] extends HasMany
     ? ManyFilter<Where<TargetFieldsOf<F[K], M>, M>>
     : Where<TargetFieldsOf<F[K], M>, M> | null;
@@ -186,7 +200,7 @@ export function toEngineWhere(
       for (const branch of asList(value as Where | Where[])) {
         conditions.push({ $not: toEngineWhere(model, branch, graph) });
       }
-    } else if (model.filterable.has(key)) {
+    } else if (readableField(model, key)) {
       conditions.push(...fieldConditions(key, value));
     } else if (key in model.relations) {
       conditions.push(relationCondition(graph, model, key, value));
@@ -222,6 +236,17 @@ export function toEngineWhere(
   return merged as QueryWhere;
 }
 
+/**
+ * Columns every row carries. They can be read, filtered, ordered and grouped,
+ * and they cannot be written: the engine keeps them in step with the log.
+ */
+const SYSTEM_FIELDS = new Set(["createdAt", "updatedAt", "updatedSeq"]);
+
+/** True when `field` names something a read can address. */
+function readableField(model: ModelInfo, field: string): boolean {
+  return SYSTEM_FIELDS.has(field) || model.filterable.has(field);
+}
+
 export function toEngineOrder(
   model: ModelInfo,
   orderBy: unknown
@@ -230,7 +255,7 @@ export function toEngineOrder(
   const order: Record<string, "asc" | "desc"> = {};
   for (const entry of asList(orderBy as Record<string, string> | Record<string, string>[])) {
     for (const [field, direction] of Object.entries(entry)) {
-      if (!model.filterable.has(field)) {
+      if (!readableField(model, field)) {
         throw new Error(`"${model.key}" cannot be ordered by "${field}".`);
       }
       if (direction !== "asc" && direction !== "desc") {
