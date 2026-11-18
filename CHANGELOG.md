@@ -5,6 +5,8 @@
 - `migrate squash` no longer refuses a run that contains a table rebuild. Adding a constraint to an existing table cannot be done in place, so the generated migration creates `<table>__rebuild`, copies the rows into it, drops the original and renames; those inserts are migration mechanics, not a backfill, and the fold now reproduces them instead of rejecting them. Found by running the command on a real project whose run ended with a foreign-key addition.
 - The fold expands rebuilds the way `migrate dev` does, so a net change that adds a reference or changes a type comes out as the same statements a fresh migration would contain.
 - `migrate squash --name <what>` renames the folded migration, because the first migration of a run is often a name that no longer describes it.
+- The model graph is a workspace view, opened from the tools beside Query, Access and History, instead of a tab inside a model. A global diagram filed under a model claimed a scope it did not have: the tab did nothing when another model was chosen.
+- The graph's layout stacks each column from the heights already placed in it and centres the columns, so nodes no longer overlap; edge labels carry their own background at a readable contrast; the minimap is replaced by a footer strip with the reading key and the model and relation counts, which cannot cover a node.
 
 ## 0.1.28 - 2026-11-18
 
