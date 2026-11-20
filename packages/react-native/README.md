@@ -39,7 +39,8 @@ const db = createReactNativeClient({
   workspace,
   userId,
   getToken,
-  storage: myKeyValueStore, // getItem, setItem, removeItem, getAllKeys, multiRemove
+  storage: myKeyValueStore, // getItem, setItem, removeItem, getAllKeys, plus a batch delete:
+                            // multiRemove on v1/v2, removeMany on v3, or neither
 });
 ```
 
@@ -58,6 +59,21 @@ import { useLive } from "@tapedb/react-native";      // preferred
 import { useLive } from "@tapedb/tapedb/react";      // same module, still supported
 ```
 
-`react` and `@react-native-async-storage/async-storage` are peer dependencies.
-`@tapedb/react-native` never imports `react-native`, so it installs and imports
-in Node — its own queue is exercised there against a fake store.
+`react` and `@react-native-async-storage/async-storage` are peer dependencies, the
+latter accepted as `^1.17.0 || ^2.0.0 || ^3.0.0`.
+
+`@tapedb/react-native` never imports `react-native`, so it installs and imports in
+Node. That is all Node proves about it. The storage contract is checked against the
+vendor's own shipped mocks for both majors — 2.2.0 (`multiRemove`) and 3.1.1, where
+v3 renamed the batch delete to `removeMany` — and the client itself is exercised on
+a device, because Node cannot see a platform global that is simply absent on Hermes:
+
+| phase | result, verified on 0.2.3 in the iOS simulator |
+| --- | --- |
+| write with the server down | the queue holds one entry, the write is not acknowledged |
+| terminate the process, relaunch, still offline | the queue still holds it, read back from storage, and nothing is enqueued twice |
+| server back, relaunch | the queue drains, the write is acknowledged, the server logs the transact 200 |
+
+`$flush()` resolves after one attempt rather than on acknowledgement, so a client
+that needs to know a write landed has to look at its own state — offline, a resolved
+flush leaves the entry queued.

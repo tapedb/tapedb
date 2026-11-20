@@ -144,13 +144,15 @@ at most once.
 | --- | --- |
 | `Outbox` | `add(entry)`, `list(workspaceId)`, `remove(clientTxId)`, `clear(workspaceId?)` — implement these four and a runtime has a durable queue |
 | `OutboxEntry` | `{ clientTxId, txId, workspaceId, ops, createdAt, attempts }`; ordering is by `createdAt`, not by storage order |
-| `MemoryOutbox` | in-memory, for tests and server rendering |
+| `MemoryOutbox` | in-memory, for tests and server rendering. Anything still queued is **lost when the process exits**, so it is not a durable queue |
 | `IndexedDbOutbox` | the browser default, scoped to `userId` |
 | `AsyncStorageOutbox` | any async key-value store: `getItem`, `setItem`, `removeItem`, `getAllKeys`, and a batch delete (`multiRemove` on v1/v2, `removeMany` on v3, or neither — it then removes one key at a time). Keys are `prefix + clientTxId`, so two accounts on one device stay apart. Pass `prefix: scopedOutboxName(url, userId) + ":"` to scope it the way the browser does |
 
 `@tapedb/react-native` is the packaged form of this: `createReactNativeClient({ schema, url, workspace, userId })`
 wires an `AsyncStorageOutbox` for you and re-exports the React hooks. A store that fails a write does
-not lose it — the entry is held in memory and a later flush still sees it.
+not lose it — the entry stays in the outbox it was written to and a later flush still sees it. That is
+durable only if the outbox is: with the default `MemoryOutbox` the entry survives the failed write but
+not the process, which is why a browser or device client needs `IndexedDbOutbox` or `AsyncStorageOutbox`.
 
 ### Filters
 
