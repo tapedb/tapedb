@@ -96,7 +96,7 @@
       },
       "Client": {
         "kind": "type",
-        "shape": "<M extends Models> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\" | \"$history\"> & { $export(): AsyncIterable<ExportRecord<M>>; $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>; $across(workspaceIds: string[], options?: AcrossOptions): Across<M>; }"
+        "shape": "<M extends Models> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\" | \"$history\"> & { readonly clientId: string | undefined; $export(): AsyncIterable<ExportRecord<M>>; $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>; $across(workspaceIds: string[], options?: AcrossOptions): Across<M>; }"
       },
       "ClientConfig": {
         "kind": "interface",
@@ -270,7 +270,8 @@
           "clientId": "string",
           "presence": "unknown",
           "cursor": "unknown",
-          "drag": "unknown"
+          "drag": "unknown",
+          "isSelf": "true | undefined"
         }
       },
       "PresenceRoom": {
@@ -280,7 +281,8 @@
           "cursor": "(cursor: unknown) => void",
           "drag": "(drag: unknown) => void",
           "clearDrag": "() => void",
-          "subscribe": "(listener: (peers: PresencePeer[]) => void) => () => void",
+          "peers": "(options?: PresencePeersOptions) => Promise<PresencePeer[]>",
+          "subscribe": "(listener: (peers: PresencePeer[]) => void, options?: PresencePeersOptions) => () => void",
           "leave": "() => void"
         }
       },
@@ -617,7 +619,7 @@
       },
       "usePresence": {
         "kind": "function",
-        "shape": "(db: { $presence(room: string): PresenceRoom; }, room: string, presence?: unknown) => PresencePeer[]"
+        "shape": "(db: { $presence(room: string): PresenceRoom; }, room: string, presence?: unknown, options?: PresencePeersOptions) => PresencePeer[]"
       }
     },
     "@tapedb/tapedb/worker": {
@@ -706,6 +708,7 @@
           "auth": "TapeDBAuthServer | ((env: Env, request: Request) => TapeDBAuthServer) | undefined",
           "devClaims": "boolean | undefined",
           "studio": "TapeDBStudio | undefined",
+          "realtime": "RealtimeOptions | undefined @experimental",
           "topics": "TopicOptions | undefined @experimental",
           "audit": "boolean | undefined",
           "retention": "RetentionOptions | undefined"
@@ -736,6 +739,33 @@
       "MAX_UPLOAD_BYTES": {
         "kind": "value",
         "shape": "number"
+      },
+      "RealtimeAuthorizeContext": {
+        "kind": "interface",
+        "shape": {
+          "auth": "{ sub: string; role: number; workspaceId: string; }",
+          "kind": "RealtimeKind",
+          "target": "string",
+          "action": "TopicAction"
+        }
+      },
+      "RealtimeAuthorizer": {
+        "kind": "type",
+        "experimental": true,
+        "shape": "( context: RealtimeAuthorizeContext ) => boolean | Promise<boolean>"
+      },
+      "RealtimeKind": {
+        "kind": "type",
+        "shape": "\"presence\" | \"topic\""
+      },
+      "RealtimeOptions": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "authorize": "RealtimeAuthorizer | undefined",
+          "maxPresenceRooms": "number | undefined",
+          "replaySeconds": "number | undefined"
+        }
       },
       "signRoleClaim": {
         "kind": "function",
@@ -1651,6 +1681,13 @@
         "kind": "type",
         "shape": "(context: PermissionContext) => boolean"
       },
+      "PresencePeersOptions (src/client/types.ts)": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "includeSelf": "boolean | undefined"
+        }
+      },
       "QueryComparison (src/engine/query-types.ts)": {
         "kind": "interface",
         "shape": {
@@ -2056,9 +2093,12 @@
     "no_route",
     "not_a_member",
     "not_found",
-    "not_in_target",
     "not_signed_in",
     "permission_denied",
+    "presence_denied",
+    "presence_rooms_exceeded",
+    "presence_state_too_large",
+    "presence_target_unknown",
     "rate_limit_unavailable",
     "rate_limited",
     "retry_expired",

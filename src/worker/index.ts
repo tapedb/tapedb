@@ -18,7 +18,7 @@ import type { TapeDBStudio } from "../studio";
 import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
-import { configureTopics, type TopicOptions } from "../engine/topics";
+import { configureRealtime, type RealtimeOptions, type TopicOptions } from "../engine/topics";
 import { configureAudit } from "../engine/audit";
 import { configureFileAccess, fileRulesConfigured } from "../engine/file-access";
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
@@ -86,12 +86,24 @@ export interface DefineTapeDBOptions {
    */
   studio?: TapeDBStudio;
   /**
-   * Broadcast topics. `authorize` decides whether a caller may join a topic
-   * or send to it; without it anyone with a claim for the workspace may,
-   * guests included, as with presence. `replaySeconds` (default 60) is how
-   * much of each topic the room keeps for clients that reconnect.
+   * Realtime channels: presence rooms and broadcast topics.
+   *
+   * `authorize` decides whether a caller may join a presence room or a topic,
+   * or send to one, and may answer asynchronously; presence is checked before
+   * anything is stored. `maxPresenceRooms` (default 4) is how many presence
+   * rooms one socket may hold. `replaySeconds` (default 60) is how much of
+   * each topic the room keeps for clients that reconnect.
    *
    * @experimental May change in a minor release.
+   */
+  realtime?: RealtimeOptions;
+  /**
+   * Broadcast topics. Kept as a deprecated alias: `authorize` applies to
+   * topic kinds only, and only when `realtime.authorize` is absent;
+   * `replaySeconds` still works on its own.
+   *
+   * @experimental May change in a minor release.
+   * @deprecated Use `realtime`.
    */
   topics?: TopicOptions;
   /**
@@ -279,7 +291,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
     migrations === undefined ? schema.migrations : [schema.migrations[0], ...migrations]
   );
   configurePermissions(schema.permissions);
-  configureTopics(options.topics);
+  configureRealtime(options.realtime, options.topics);
   configureAudit(options.audit);
   configureFileAccess(schema.files);
   configureRetention(options.retention);
@@ -447,6 +459,12 @@ export { signRoleClaim } from "../mint";
 export type { ClaimIdentity } from "../mint";
 export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
 export type { TopicAction, TopicAuthorizer, TopicOptions } from "../engine/topics";
+export type {
+  RealtimeAuthorizeContext,
+  RealtimeAuthorizer,
+  RealtimeKind,
+  RealtimeOptions,
+} from "../engine/topics";
 export { WORKSPACE_ROLE_LEVELS };
 export type { Env, TapeDBSchema, BundledWorkspaceMigration };
 

@@ -21,6 +21,7 @@ import type { StorageObject } from "../client/storage-client";
 import type {
   AggregateGroup,
   PresencePeer,
+  PresencePeersOptions,
   TopicSender,
   QueryDocument,
   QueryError,
@@ -175,7 +176,19 @@ export interface PresenceRoom {
   cursor(cursor: unknown): void;
   drag(drag: unknown): void;
   clearDrag(): void;
-  subscribe(listener: (peers: PresencePeer[]) => void): () => void;
+  /**
+   * The other peers in the room now. Your own entry is left out; pass
+   * `{ includeSelf: false }` to leave it out again.
+   */
+  peers(options?: PresencePeersOptions): Promise<PresencePeer[]>;
+  /**
+   * Listens for the room's peers until the returned function is called, with
+   * the same self-exclusion as `peers()`.
+   */
+  subscribe(
+    listener: (peers: PresencePeer[]) => void,
+    options?: PresencePeersOptions
+  ): () => void;
   leave(): void;
 }
 
@@ -288,6 +301,13 @@ export interface AcrossOptions {
 export type Client<M extends Models> = {
   [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>;
 } & Omit<ClientExtras, "$export" | "$history"> & {
+  /**
+   * This socket's session id, assigned by the server on `session:ready` and
+   * the same id a peer entry carries. Use it to tell which peer is you when
+   * something needs the whole room. `undefined` until the socket opens, and
+   * against a Worker that predates multiple presence rooms.
+   */
+  readonly clientId: string | undefined;
   $export(): AsyncIterable<ExportRecord<M>>;
   $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>;
   /**
@@ -482,7 +502,8 @@ export function createClient<M extends Models>(
       cursor: (cursor) => impl.publishCursor(room, cursor),
       drag: (drag) => impl.publishDrag(room, drag),
       clearDrag: () => impl.clearDrag(room),
-      subscribe: (listener) => impl.subscribePresence(room, listener),
+      peers: (options) => impl.presencePeers(room, options),
+      subscribe: (listener, options) => impl.subscribePresence(room, listener, options),
       leave: () => impl.clearPresence(room),
     }),
     $broadcast: <T>(topic: string): BroadcastTopic<T> => {
@@ -550,7 +571,13 @@ export function createClient<M extends Models>(
     return out as Across<M>;
   };
 
-  const client: Record<string, unknown> = { ...extras, $across: across };
+  const client: Record<string, unknown> = {
+    ...extras,
+    $across: across,
+    get clientId() {
+      return impl.clientId;
+    },
+  };
   for (const [key, info] of Object.entries(config.schema.graph)) {
     client[key] = modelClient(runtime, info);
   }
