@@ -1,6 +1,6 @@
 {
   "name": "@tapedb/email",
-  "version": "0.1.30",
+  "version": "0.2.0",
   "description": "Email sending for tapedb: one mailer over Cloudflare Email Service, with a local inbox in development.",
   "type": "module",
   "exports": {
@@ -19,7 +19,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@tapedb/tapedb": "0.1.30"
+    "@tapedb/tapedb": "0.2.0"
   },
   "engines": {
     "node": ">=22.18"
