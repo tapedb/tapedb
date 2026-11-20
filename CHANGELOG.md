@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.3 - 2026-11-20
+
+- The client runs on Hermes. `topicOrigin` was initialised with `crypto.randomUUID()` and the socket id generator did the same, and React Native has no Web Crypto — so constructing a client threw before the first render. Both now use the fallback the id generator already had. Found by running the offline queue on a simulator, which is the only place it could be found: every test runs in Node, where `crypto` exists.
+- The React Native examples now pass the required `workspace`, and `$flush()` is described as it behaves: one delivery attempt that resolves when it finishes, not a wait for acknowledgement. Offline it resolves with the queue unchanged, so it is "try now", not "is synced".
+
 ## 0.2.2 - 2026-11-20
 
 - React Native clears its queue again on `@react-native-async-storage/async-storage` v3. v3 renamed the batch delete from `multiRemove` to `removeMany`, so `clear()` threw, was caught by the fallback, and left every entry on disk while reporting an empty queue — a silent leak of queued writes in an app that looks clean. The adapter now takes whichever batch delete the installed release offers, or neither and deletes one key at a time, and the peer range covers v1, v2 and v3. The suite runs the whole contract through the mock each of those releases ships rather than through a fake written here — the fake encoded the adapter's own assumption and could not have caught this.

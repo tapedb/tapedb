@@ -1,6 +1,6 @@
 {
   "name": "@tapedb/react",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "React bindings for tapedb: useLive, useLivePage, usePresence, useBroadcast.",
   "type": "module",
   "exports": {
@@ -19,7 +19,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@tapedb/tapedb": "0.2.2"
+    "@tapedb/tapedb": "0.2.3"
   },
   "peerDependencies": {
     "react": "^19.0.0"
