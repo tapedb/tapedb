@@ -149,8 +149,19 @@ Only after the gates and checks.
    cd "$(mktemp -d)" && npx @tapedb/cli init
    ```
 
-8. Update the package pages, the documentation links and the site's version
-   badge, then deprecate anything this release supersedes.
+8. Regenerate the site's API pages from this release and deploy it, then
+   deprecate anything this release supersedes:
+
+   ```bash
+   cd ../Landing-page
+   node scripts/generate-api-docs.mjs ../tapedb   # reads ../tapedb/dist/*.d.ts
+   SITE_URL=https://tapedb.dev bun run deploy
+   ```
+
+   The badge is not edited by hand: the site reads `dist-tags.latest` from the
+   npm registry during its build, so a release becomes visible on tapedb.dev
+   when that deploy runs and not before. A release with no site deploy leaves
+   the badge on the previous version and the API pages on the previous `.d.ts`.
 
 ## After publishing
 
