@@ -21,17 +21,6 @@ import type { SqlExecutor } from "./tx-sql";
 
 export const AUDIT_TABLE = "_tx_audit";
 
-let enabled = false;
-
-/** Installed by `defineTapeDB({ audit })`. */
-export function configureAudit(on: boolean | undefined): void {
-  enabled = on === true;
-}
-
-export function auditEnabled(): boolean {
-  return enabled;
-}
-
 const triggerName = (table: string, action: string) => `_tapedb_audit_${table}_${action}`;
 
 /**
@@ -48,14 +37,17 @@ export function dropAuditCapture(sql: SqlExecutor): void {
 }
 
 /**
- * Creates the capture triggers when audit is on and drops them when it is
- * off, so turning audit off stops recording at the next boot.
+ * Creates the capture triggers when the deployment audits and drops them when
+ * it does not, so turning audit off stops recording at the next boot.
+ *
+ * `on` is the deployment's own `audit` flag, passed in by its room: a second
+ * deployment in the same process cannot turn this one's capture on or off.
  */
-export function syncAuditCapture(sql: SqlExecutor): void {
+export function syncAuditCapture(sql: SqlExecutor, on: boolean): void {
   for (const table of namespaceTables()) {
     for (const action of ["INSERT", "UPDATE", "DELETE"] as const) {
       const name = triggerName(table, action);
-      if (!enabled) {
+      if (!on) {
         sql.exec(`DROP TRIGGER IF EXISTS "${name}"`);
         continue;
       }

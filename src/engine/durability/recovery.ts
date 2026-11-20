@@ -12,7 +12,7 @@
  * therefore safe.
  */
 
-import { auditEnabled } from "../audit";
+import { defaultDeploymentConfig, type DeploymentConfig } from "../config";
 import { applyFileOps, isFileOpList } from "../file-index";
 import {
   changesAfter,
@@ -78,6 +78,12 @@ export interface RecoverWorkspaceOptions {
   shouldPause?: () => boolean;
   /** Called as each unit (a chunk, a segment, a part of an entry) starts, with its name. */
   onUnit?: (unit: string) => void;
+  /**
+   * The deployment being restored. Its audit flag decides whether a replayed
+   * log line keeps the writer it was flushed with; absent means the frozen
+   * unconfigured default, whose segments carry no writer either.
+   */
+  config?: DeploymentConfig;
 }
 
 /** Thrown between steps when the time budget is spent; never escapes. */
@@ -917,18 +923,19 @@ function toTxSql(sql: RecoverySqlExecutor): TxSqlExecutor {
 function replayLine(
   sql: RecoverySqlExecutor,
   txSql: TxSqlExecutor,
-  line: LogLine
+  line: LogLine,
+  config: DeploymentConfig
 ): boolean {
   // File-index entries are engine ops, not client transactions: they are
   // last-writer-wins on path, so applying them in order is the whole replay.
   if (isFileOpList(line.ops)) {
-    recordReplayedLine(sql, line);
+    recordReplayedLine(sql, line, config);
     applyFileOps(txSql, line.ops, line.at);
     return true;
   }
 
   if (line.ops.some(op => isPlainRecord(op) && (op.op === "import:row" || typeof op.op === "string" && op.op.startsWith("state:") || op.op === "import:begin" || op.op === "import:end"))) {
-    recordReplayedLine(sql, line);
+    recordReplayedLine(sql, line, config);
     for (const raw of line.ops as Array<{ op: string; table: string; row: RestorableRow; id?: string }>) {
       if (raw.op === "file:put" || raw.op === "file:forget") { applyFileOps(txSql, [raw as never], line.at); continue; }
       if (raw.op === "state:delete") {
@@ -953,7 +960,7 @@ function replayLine(
   const ops = evolveOps(expandLogOps(line.ops), changesAfter(line.schemaVersion));
   // Receipts survive even when a migration removed every referenced model.
   if (ops.length === 0) {
-    recordReplayedLine(sql, line);
+    recordReplayedLine(sql, line, config);
     return false;
   }
   const tx = validateEnvelope({ txId: "recovery", ops });
@@ -964,7 +971,7 @@ function replayLine(
   // cold start for as long as the segments are retained. Without this the
   // engine forgets every transaction it just restored, and a client retrying
   // across an eviction re-applies its write.
-  recordReplayedLine(sql, line);
+  recordReplayedLine(sql, line, config);
 
   for (const op of tx.ops) {
     const target = targetFor(op);
@@ -1000,7 +1007,7 @@ function replayLine(
  * recomputing keeps the idempotency check byte-identical to the original
  * insert.
  */
-function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
+function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine, config: DeploymentConfig): void {
   const ops = line.ops as readonly unknown[];
   if (line.clientTxId) {
     sql.exec(`INSERT OR IGNORE INTO "_tx_receipts" (id, seq, ops_hash, at) VALUES (?, ?, ?, ?)`,
@@ -1018,8 +1025,8 @@ function recordReplayedLine(sql: RecoverySqlExecutor, line: LogLine): void {
     // write's stored ops are the rows it resolved, whose hash is not the
     // client's, which is why newer segments carry the original.
     line.opsHash ?? opsHash(ops),
-    auditEnabled() && typeof line.userId === "string" ? line.userId : null,
-    auditEnabled() && typeof line.role === "number" ? line.role : null,
+    config.audit && typeof line.userId === "string" ? line.userId : null,
+    config.audit && typeof line.role === "number" ? line.role : null,
     line.at,
     line.schemaVersion ?? "unknown"
   );
@@ -1041,7 +1048,8 @@ async function replayLogs(
   baseSeq: number,
   logSeq: number,
   snapshotHasFiles: boolean,
-  pause: (unit: string) => void
+  pause: (unit: string) => void,
+  config: DeploymentConfig
 ): Promise<{ replayed: number; maxSeq: number }> {
   const segments = await listLogSegments(bucket, workspaceId);
   let replayed = 0;
@@ -1094,7 +1102,7 @@ async function replayLogs(
         // idempotency keys are another matter: the snapshot does not carry
         // them, so this line is the only copy left.
         if (line.seq <= baseSeq) {
-          recordReplayedLine(sql, line);
+          recordReplayedLine(sql, line, config);
           // Snapshots taken before the file index was snapshotted do not
           // hold it, so the segments are its only copy below the base. File
           // ops are last-writer-wins on path, so applying them is safe.
@@ -1105,8 +1113,8 @@ async function replayLogs(
         }
 
         maxSeq = Math.max(maxSeq, line.seq);
-        if (line.ops.length === 0) recordReplayedLine(sql, line);
-        else if (replayLine(sql, txSql, line)) replayed += 1;
+        if (line.ops.length === 0) recordReplayedLine(sql, line, config);
+        else if (replayLine(sql, txSql, line, config)) replayed += 1;
       }
     });
 
@@ -1123,7 +1131,7 @@ async function replayLogs(
       await importForeignKeys(sql, false);
       try {
         sql.transactionSync(() => {
-          for (const line of run) replayLine(sql, txSql, line);
+          for (const line of run) replayLine(sql, txSql, line, config);
           markLine(run[run.length - 1].seq);
         });
         foreignKeyCheck(sql);
@@ -1154,7 +1162,7 @@ async function replayLogs(
       // this step applied something (or a resumed step could not move on).
       if (worked) pause(`entry ${line.seq}`);
       worked = true;
-      if (await replayParts(bucket, sql, txSql, workspaceId, line, baseSeq, pause)) replayed += 1;
+      if (await replayParts(bucket, sql, txSql, workspaceId, line, baseSeq, pause, config)) replayed += 1;
       markLine(line.seq);
       if (line.seq > baseSeq) maxSeq = Math.max(maxSeq, line.seq);
     }
@@ -1180,7 +1188,8 @@ async function replayParts(
   workspaceId: string,
   line: LogLine,
   baseSeq: number,
-  pause: (unit: string) => void
+  pause: (unit: string) => void,
+  config: DeploymentConfig
 ): Promise<boolean> {
   const object = await bucket.get(logOpsKey(workspaceId, line.seq));
   if (!object) throw new Error(`The ops of log entry ${line.seq} are missing from R2.`);
@@ -1209,9 +1218,9 @@ async function replayParts(
     const ops = JSON.parse(text) as unknown[];
     if (current === 0 && line.seq > baseSeq && startsImport(ops)) { importing = true; await importForeignKeys(sql, false); }
     sql.transactionSync(() => {
-      if (current === 0) recordReplayedLine(sql, { ...line, ops });
+      if (current === 0) recordReplayedLine(sql, { ...line, ops }, config);
       else sql.exec(`INSERT OR IGNORE INTO "_tx_log_parts" (seq, part, ops) VALUES (?, ?, ?)`, line.seq, current, text);
-      if (line.seq > baseSeq && ops.length > 0 && replayLine(sql, txSql, { ...line, ops })) applied = true;
+      if (line.seq > baseSeq && ops.length > 0 && replayLine(sql, txSql, { ...line, ops }, config)) applied = true;
       setMeta(sql, "recovery_entry_parts", `${line.seq}:${current + 1}`);
     });
   }
@@ -1313,6 +1322,7 @@ export async function recoverWorkspace(
   workspaceId: string,
   options: RecoverWorkspaceOptions = {}
 ): Promise<RecoveryResult> {
+  const config = options.config ?? defaultDeploymentConfig();
   const now = options.now ?? Date.now();
   bucket = resumableReads(bucket);
   // Every call does at least one chunk or segment, so a slow first read can
@@ -1336,7 +1346,7 @@ export async function recoverWorkspace(
   const interrupted = status === "running" || status === "failed";
   const pinned = interrupted ? getMeta(sql, "recovery_manifest") : undefined;
   if (pinned !== undefined) {
-    return runRecovery(bucket, sql, workspaceId, JSON.parse(pinned) as WorkspaceManifest, now, pause);
+    return runRecovery(bucket, sql, workspaceId, JSON.parse(pinned) as WorkspaceManifest, now, pause, config);
   }
   if (interrupted) {
     // Failed, or cut off by a version that kept no progress: start over.
@@ -1394,7 +1404,7 @@ export async function recoverWorkspace(
     setMeta(sql, "recovery_chunks_done", "0");
     setMeta(sql, "recovery_segments_done", "0");
   });
-  return runRecovery(bucket, sql, workspaceId, manifest, now, pause);
+  return runRecovery(bucket, sql, workspaceId, manifest, now, pause, config);
 }
 
 /** Restore, then replay, from wherever an earlier attempt got to. */
@@ -1404,7 +1414,8 @@ async function runRecovery(
   workspaceId: string,
   manifest: WorkspaceManifest,
   now: number,
-  pause: (unit: string) => void
+  pause: (unit: string) => void,
+  config: DeploymentConfig
 ): Promise<RecoveryResult> {
   try {
     // Foreign keys are disabled for the restore so chunk order cannot break
@@ -1441,7 +1452,8 @@ async function runRecovery(
       manifest.baseSeq,
       manifest.logSeq,
       manifest.tables.some((table) => table.name === ENGINE_TABLES.files),
-      pause
+      pause,
+      config
     );
     // Lines replayed by earlier attempts count too.
     const replayedTo = Number(

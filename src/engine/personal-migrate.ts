@@ -2,11 +2,12 @@ import { NAMESPACES, toSnakeCase } from "./registry";
 import { isPersonalCiphertext, type PersonalRuntime } from "./personal";
 import type { SqlExecutor, SqlRow, SqlValue } from "./tx-sql";
 import { appendLogEntry } from "./tx-pipeline";
+import type { DeploymentConfig } from "./config";
 import { opsHash } from "./tx-hash";
 import { LogWriter } from "./tx-log";
 
 /** Encrypt existing values in bounded, restartable transactions before reads. */
-export async function migratePersonal(sql: SqlExecutor, personal: PersonalRuntime, transaction: <T>(fn: () => Promise<T>) => Promise<T>, deadline: number): Promise<boolean> {
+export async function migratePersonal(sql: SqlExecutor, personal: PersonalRuntime, transaction: <T>(fn: () => Promise<T>) => Promise<T>, deadline: number, config: DeploymentConfig): Promise<boolean> {
   const signature = JSON.stringify(Object.values(NAMESPACES).map(model => [model.table, Object.entries(model.attributes).filter(([, field]) => field.personal).map(([field, definition]) => [field, definition.personal])]));
   const stateKey = "personal_migration";
   const stored = sql.one<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = ?`, stateKey);
@@ -32,8 +33,8 @@ export async function migratePersonal(sql: SqlExecutor, personal: PersonalRuntim
         }
         if (Object.keys(values).length) {
           if (!log) {
-            const seq = appendLogEntry(sql, { clientTxId: null, ops: "[]", opsHash: opsHash([]), at: Date.now() });
-            log = new LogWriter(sql, seq); log.push({ op: "state:begin" });
+            const seq = appendLogEntry(sql, { clientTxId: null, ops: "[]", opsHash: opsHash([]), at: Date.now() }, config);
+            log = new LogWriter(sql, seq, config.logPartBytes); log.push({ op: "state:begin" });
           }
           sql.exec(`UPDATE "${model.table}" SET ${Object.keys(values).map(column => `"${column}" = ?`).join(", ")} WHERE id = ?`, ...Object.values(values), row.id);
           log.push({ op: "state:row", table: model.table, row: { ...row, ...values }, created: false });

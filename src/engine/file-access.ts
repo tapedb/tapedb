@@ -68,9 +68,20 @@ const DEFAULTS: Record<FileAction, FileRule> = {
   delete: { decision: "role", level: WORKSPACE_ROLE_LEVELS.EDITOR },
 };
 
-let rules: FileRules = {};
+/**
+ * The unconfigured rule set: role levels, as before per-file rules existed.
+ * Frozen, so no deployment can add a rule to it.
+ */
+const NO_RULES: FileRules = Object.freeze({});
 
-export function configureFileAccess(next: FileRules | undefined): void {
+/**
+ * Validates `schema.files` and returns it as this deployment's rule set.
+ *
+ * Runs once, when the Worker is defined, so a typo fails at deploy time. The
+ * result is frozen and travels in the deployment's `DeploymentConfig`; there is
+ * no module-level copy to set, so a second deployment cannot change it.
+ */
+export function resolveFileRules(next: FileRules | undefined): FileRules {
   for (const [action, rule] of Object.entries(next ?? {})) {
     if (!["read", "write", "delete"].includes(action)) {
       throw new Error(`files.${action} is not a file action; use read, write or delete.`);
@@ -86,21 +97,21 @@ export function configureFileAccess(next: FileRules | undefined): void {
       throw new Error(`files.${action}: use role(), fileCheck() or attachedTo().`);
     }
   }
-  rules = { ...(next ?? {}) };
+  return Object.freeze({ ...(next ?? {}) });
 }
 
-/** True when the schema sets any file rule; the defaults need no Durable Object. */
-export function fileRulesConfigured(): boolean {
+/** True when the deployment sets any file rule; the defaults need no Durable Object. */
+export function fileRulesConfigured(rules: FileRules = NO_RULES): boolean {
   return Object.values(rules).some((rule) => rule !== undefined);
 }
 
-function ruleFor(action: FileAction): FileRule {
+function ruleFor(action: FileAction, rules: FileRules): FileRule {
   return rules[action] ?? DEFAULTS[action];
 }
 
 /** The role a role-only rule needs, or null when the rule looks at the file. */
-export function fileRoleFloor(action: FileAction): number | null {
-  const rule = ruleFor(action);
+export function fileRoleFloor(action: FileAction, rules: FileRules = NO_RULES): number | null {
+  const rule = ruleFor(action, rules);
   return rule.decision === "role" ? rule.level : null;
 }
 
@@ -138,17 +149,19 @@ function readableRows(sql: SqlExecutor, claim: RoleClaim, model: string, ids: st
 }
 
 /**
- * Whether the caller may take `action` on `file`. For a write, `file` is the
- * incoming file and `existing` the stored one it would replace.
+ * Whether the caller may take `action` on `file`, under this deployment's
+ * `rules`. For a write, `file` is the incoming file and `existing` the stored
+ * one it would replace.
  */
 export function authorizeFile(
   sql: SqlExecutor,
   claim: RoleClaim,
+  rules: FileRules,
   action: FileAction,
   file: FileInfo,
   existing?: FileInfo
 ): boolean {
-  const rule = ruleFor(action);
+  const rule = ruleFor(action, rules);
   switch (rule.decision) {
     case "role":
       return hasRole(claim, rule.level as never);
@@ -169,10 +182,15 @@ export function authorizeFile(
 }
 
 /** The files the caller may read, in order. Attached rows are read in chunks. */
-export function readableFiles<T extends FileInfo>(sql: SqlExecutor, claim: RoleClaim, files: T[]): T[] {
-  const rule = ruleFor("read");
+export function readableFiles<T extends FileInfo>(
+  sql: SqlExecutor,
+  claim: RoleClaim,
+  files: T[],
+  rules: FileRules = NO_RULES
+): T[] {
+  const rule = ruleFor("read", rules);
   if (rule.decision !== "attachedTo") {
-    return files.filter((file) => authorizeFile(sql, claim, "read", file));
+    return files.filter((file) => authorizeFile(sql, claim, rules, "read", file));
   }
   const ids = files.map((file) => locate(rule, file.path));
   const visible = readableRows(
@@ -185,7 +203,9 @@ export function readableFiles<T extends FileInfo>(sql: SqlExecutor, claim: RoleC
 }
 
 /** How each file action is decided, for tooling: a role level, a check in code, or the rules of a model's rows. */
-export function describeFileAccess(): Record<FileAction, { rule: "role"; role: number } | { rule: "check" } | { rule: "attachedTo"; model: string }> {
+export function describeFileAccess(
+  rules: FileRules = NO_RULES
+): Record<FileAction, { rule: "role"; role: number } | { rule: "check" } | { rule: "attachedTo"; model: string }> {
   const describe = (action: FileAction) => {
     const rule = rules[action] ?? DEFAULTS[action];
     if (rule.decision === "role") return { rule: "role" as const, role: rule.level };

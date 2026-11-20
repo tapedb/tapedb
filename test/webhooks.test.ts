@@ -19,7 +19,7 @@ import type { Env } from "../src/types";
 import {
   WEBHOOK_FIRST_RETRY_MS,
   WEBHOOK_MAX_RETRY_MS,
-  setWebhookTransportForTests,
+  type WebhookTransport,
   type WebhookAttemptResult,
   type WebhookOptions,
   type WebhookRequest,
@@ -69,17 +69,22 @@ function claim(): RoleClaim {
 let sent: WebhookRequest[] = [];
 let reply: (request: WebhookRequest, index: number) => WebhookAttemptResult | Promise<WebhookAttemptResult>;
 
+/**
+ * The network this file's deployments post to. It is handed to the rooms it
+ * builds (`webhookTransport`), never installed globally: a test that stubs
+ * delivery cannot stub another deployment's.
+ */
+const transport: WebhookTransport = async (request) => {
+  sent.push(request);
+  return await reply(request, sent.length - 1);
+};
+
 beforeEach(() => {
   sent = [];
   reply = () => ({ ok: true, status: 200 });
-  setWebhookTransportForTests(async (request) => {
-    sent.push(request);
-    return await reply(request, sent.length - 1);
-  });
 });
 
 afterEach(() => {
-  setWebhookTransportForTests(null);
   // Undo any time travel a retry test did.
   setSystemTime();
 });
@@ -94,7 +99,7 @@ async function makeWorkspace(webhooks?: readonly WebhookOptions[]) {
     FILES: new FakeR2Bucket(),
     TAPEDB_KEY_SECRET: KEY_SECRET,
   } as unknown as Env;
-  const room = new app.WorkspaceRoom(context as never, env);
+  const room = new app.WorkspaceRoom(context as never, env, { webhookTransport: transport });
   await context.ready;
   return { app, db, context, env, room };
 }
@@ -307,7 +312,7 @@ describe("webhook retries and the outbox", () => {
 
     // The object is evicted: a new one, same storage, same outbox.
     const revived = new FakeRoomContext(workspace.db, ID);
-    const room = new workspace.app.WorkspaceRoom(revived as never, workspace.env);
+    const room = new workspace.app.WorkspaceRoom(revived as never, workspace.env, { webhookTransport: transport });
     await revived.ready;
     expect(outbox(workspace)).toHaveLength(1);
 

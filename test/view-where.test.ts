@@ -18,6 +18,10 @@ import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
 import { defineSchema } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const WORKSPACE_ID = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 
@@ -93,7 +97,7 @@ function seedNotes(sql: SqlExecutor, rows: Array<{ id: string; title: string; ow
   runTransaction(sql, WORKSPACE_ID, { ...owner, role: WORKSPACE_ROLE_LEVELS.OWNER }, {
     txId: `seed-${rows[0]?.id ?? "x"}`,
     ops: rows.map(({ id, ...values }) => ({ op: "update", namespace: "notes", id, values })),
-  });
+  }, engineConfig);
 }
 
 function pad(n: number): string {
@@ -167,7 +171,7 @@ describe("where view rules", () => {
     runTransaction(sql, WORKSPACE_ID, { ...owner, role: WORKSPACE_ROLE_LEVELS.OWNER }, {
       txId: "board",
       ops: [{ op: "update", namespace: "boards", id: "b1", values: { name: "Board" } }],
-    });
+    }, engineConfig);
     seedNotes(sql, [
       { id: "n1", title: "A", ownerId: "alice", boardId: "b1" },
       { id: "n2", title: "B", ownerId: "bob", boardId: "b1" },

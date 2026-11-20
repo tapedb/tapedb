@@ -18,6 +18,10 @@ import { TxError } from "../src/engine/tx-types";
 import { AcrossError, acrossModel } from "../src/model/across";
 import { createClient, type LiveState } from "../src/model/client";
 import { model, schema, t } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const A = "6f1c2f3e-6b1a-4c9a-9a6f-00000000000a";
 const B = "6f1c2f3e-6b1a-4c9a-9a6f-00000000000b";
@@ -58,7 +62,7 @@ async function engine(url: string, init: { method: string; headers: Record<strin
   const sql = databases.get(workspaceId)!;
   const body = init.body === undefined ? undefined : JSON.parse(init.body);
   try {
-    if (url.endsWith("/transact")) return Response.json({ ok: true, result: runTransaction(sql, workspaceId, claim(workspaceId), body) });
+    if (url.endsWith("/transact")) return Response.json({ ok: true, result: runTransaction(sql, workspaceId, claim(workspaceId), body, engineConfig) });
     if (url.endsWith("/query")) {
       const { data, pageInfo } = executeQueryWithPageInfo(sql, claim(workspaceId), body);
       return Response.json({ ok: true, data, pageInfo });

@@ -8,7 +8,6 @@ class MockDurableObject { constructor(protected ctx: unknown, protected env: unk
 mock.module("cloudflare:workers", () => ({ DurableObject: MockDurableObject }));
 const { defineTapeDB } = await import("../src/worker/index");
 const { copyObject } = await import("../src/engine/workspace-move");
-const { setLogPartBytesForTests } = await import("../src/engine/tx-log");
 const { flushPending } = await import("../src/engine/durability/flusher");
 const { durableObjectRecoverySqlExecutor } = await import("../src/engine/durability/recovery-support");
 const ID = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a6b";
@@ -28,7 +27,7 @@ async function deployment() {
       let entry = all.get(id);
       if (!entry) {
         const context = new FakeRoomContext(new Database(":memory:"), id);
-        entry = { context, room: new app.WorkspaceRoom(context as never, env as never) }; all.set(id, entry);
+        entry = { context, room: new app.WorkspaceRoom(context as never, env as never, { logPartBytes: 180 }) }; all.set(id, entry);
       }
       await entry.context.ready;
       return entry.room.fetch(typeof input === "string" ? new Request(input, init) : input);
@@ -127,9 +126,9 @@ describe("workspace moves and imports", () => {
     // Children precede parents, and each row occupies its own log part.
     const lines = exported.trim().split("\n").map(line => JSON.parse(line));
     const reordered = [lines[0], ...lines.filter(line => line.type === "row").reverse(), ...lines.filter(line => line.type === "file"), lines.at(-1)].map(line => JSON.stringify(line)).join("\n") + "\n";
-    setLogPartBytesForTests(180);
-    try { expect((await d.call(d.target, "import", reordered)).status).toBe(200); }
-    finally { setLogPartBytesForTests(null); }
+    // Every room here runs with 180-byte log parts (see `rooms`), so the
+    // import below spans several parts without touching any other deployment.
+    expect((await d.call(d.target, "import", reordered)).status).toBe(200);
     const entry = d.target.WORKSPACE.all.get(ID);
     await flushPending(d.targetData as never, durableObjectRecoverySqlExecutor(entry.context.storage as never), ID, Date.now());
     d.target.WORKSPACE.all.clear();

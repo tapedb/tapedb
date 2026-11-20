@@ -36,6 +36,10 @@ import { runTransaction } from "../src/engine/tx-pipeline";
 import { createClient } from "../src/model/client";
 import { toEngineWhere } from "../src/model/where";
 import { model, schema, t } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const WORKSPACE = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 
@@ -101,7 +105,7 @@ function seed(): void {
         values: { title: "a_b c", stage: "todo", due: null, points: 5, authorId: "a2" },
       },
     ],
-  });
+  }, engineConfig);
 }
 
 /** The public API: `createClient` against a fetch that calls the engine. */
@@ -110,7 +114,7 @@ function engineFetch() {
     const body = init.body === undefined ? undefined : JSON.parse(init.body);
     try {
       if (url.endsWith("/transact")) {
-        const result = runTransaction(sql, WORKSPACE, claim(), body);
+        const result = runTransaction(sql, WORKSPACE, claim(), body, engineConfig);
         return Response.json({ ok: true, result });
       }
       if (url.endsWith("/query")) {

@@ -40,6 +40,8 @@ export function createSqlStorage(db: Database) {
 export class FakeRoomContext {
   ready: Promise<unknown> = Promise.resolve();
   alarm: number | null = null;
+  /** Sockets this room accepted; a test pushes one in to act as a client. */
+  readonly sockets: unknown[] = [];
   readonly id: { name: string };
   readonly storage;
 
@@ -75,8 +77,10 @@ export class FakeRoomContext {
   }
 
   getWebSockets(): unknown[] {
-    return [];
+    return this.sockets;
   }
 
-  acceptWebSocket(): void {}
+  acceptWebSocket(ws: unknown): void {
+    this.sockets.push(ws);
+  }
 }

@@ -2,14 +2,19 @@
 import { WORKSPACE_ROLE_LEVELS } from "../claims";
 import { apiError, discardBody, json } from "../http";
 import type { Env } from "../types";
-import { fileRulesConfigured } from "./file-access";
+import { fileRulesConfigured, type FileRules } from "./file-access";
 import { filesPrefix } from "./r2-keys";
 
 export const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
 export type StorageDispatch = (env: Env, workspaceId: string, path: string, init: RequestInit, trustedClaim: string) => Promise<Response>;
 
-/** Metadata dispatch is local to the same room, never another binding fetch. */
-export function storageHandler(callRoom: StorageDispatch) {
+/**
+ * Metadata dispatch is local to the same room, never another binding fetch.
+ * `rules` is the owning deployment's file rule set (its `schema.files`): the
+ * role check here is skipped only when that deployment has rules of its own,
+ * never because another deployment in the process has them.
+ */
+export function storageHandler(callRoom: StorageDispatch, rules: FileRules = {}) {
   function storageKey(workspaceId: string, objectKey: string): string {
     return `${filesPrefix(workspaceId)}${objectKey}`;
   }
@@ -210,7 +215,7 @@ async function handleStorage(
 
   // Without file rules, roles decide here. With rules, the workspace decides
   // each operation before any byte moves (see engine/file-access.ts).
-  const ruled = fileRulesConfigured();
+  const ruled = fileRulesConfigured(rules);
   if (!ruled) {
     const required =
       request.method === "GET" || request.method === "HEAD"

@@ -1,4 +1,5 @@
 import { logOpsKey, logSegmentKey, MANIFEST_VERSION } from "../r2-keys";
+import { defaultDeploymentConfig, type DeploymentConfig } from "../config";
 import { buildLogSegment, storedParts } from "./log-segment";
 import {
   commitManifest,
@@ -177,7 +178,9 @@ export async function flushPending(
   sql: SqlExecutor,
   workspaceId: string,
   now: number,
-  options: FlushOptions = {}
+  options: FlushOptions = {},
+  /** The deployment flushing; its audit flag decides what a segment line carries. */
+  config: DeploymentConfig = defaultDeploymentConfig()
 ): Promise<FlushResult> {
   const state = readFlushState(sql);
 
@@ -189,7 +192,8 @@ export async function flushPending(
     sql,
     state.lastSeq,
     options.maxRows,
-    options.maxBytes
+    options.maxBytes,
+    config
   );
 
   if (!segment) {
