@@ -18,6 +18,7 @@
 import type { FileRules } from "./file-access";
 import type { RealtimeAuthorizer } from "./topics";
 import { DEFAULT_MAX_PRESENCE_ROOMS, DEFAULT_TOPIC_REPLAY_MS } from "./topics";
+import type { ConfiguredVectorize } from "./vector-index/definition";
 import type { ConfiguredWebhook, WebhookTransport } from "./webhooks";
 import { LOG_PART_BYTES } from "./tx-log";
 
@@ -45,6 +46,12 @@ export interface DeploymentConfig {
   readonly realtime: RealtimeConfig;
   /** `defineTapeDB({ webhooks })`, validated once at definition time. */
   readonly webhooks: readonly ConfiguredWebhook[];
+  /**
+   * `defineTapeDB({ vectorize })`, validated against the schema at definition
+   * time; `null` when this deployment indexes nothing, in which case no table
+   * is created and no binding is read.
+   */
+  readonly vectorize: ConfiguredVectorize | null;
   /** Bytes per stored log part (see tx-log.ts). */
   readonly logPartBytes: number;
   /**
@@ -57,7 +64,7 @@ export interface DeploymentConfig {
 /**
  * The unconfigured deployment: audit off, role-based file access, no
  * realtime authorizer, the default room cap and replay window, no webhooks,
- * the standard log part size, `fetch` for delivery.
+ * nothing indexed, the standard log part size, `fetch` for delivery.
  *
  * Immutable. Standalone engine calls default to it; a room never does, because
  * `defineTapeDB` always passes the deployment's own config.
@@ -77,6 +84,7 @@ export function deploymentConfig(overrides: Partial<DeploymentConfig>): Deployme
       maxRooms: overrides.realtime?.maxRooms ?? DEFAULT_MAX_PRESENCE_ROOMS,
     }),
     webhooks: Object.freeze([...(overrides.webhooks ?? [])]),
+    vectorize: overrides.vectorize ?? null,
     logPartBytes: overrides.logPartBytes ?? LOG_PART_BYTES,
     webhookTransport: overrides.webhookTransport ?? null,
   });

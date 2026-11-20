@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `defineTapeDB({ vectorize })` publishes one model's `t.vector({ dimensions })` attribute to a Cloudflare Vectorize index. The intent is committed with the write by a trigger inside its transaction, in the workspace's own SQLite, and drained from the durability alarm, so an index that is slow or down costs a retry and never a commit. Each publish carries a digest over the model, the row, the vector's canonical bytes and the values of the configured filter attributes, so a row whose only change is an indexed filter value is re-sent — a metadata filter evaluated at the provider would otherwise go stale while SQLite says otherwise — and a row that changed nothing is not sent at all. Batches are the platform's: 1,000 vectors per upsert for the Workers binding. Visibility is asynchronous and was measured 73–103 s behind an accepted upsert, so `pending` is the normal state, the mutation ID is recorded for correlation, and nothing assumes the provider's watermark moves forward. `GET /status` counts pending, failing and accepted rows. Erasing a workspace's vectors is not covered: the row-delete path is, and `src/engine/vector-index/erasure.ts` names the seam the purge ledger attaches to.
+
 ## 0.2.3 - 2026-11-20
 
 - The client runs on React Native. `topicOrigin` was initialised with `crypto.randomUUID()` and the socket id generator did the same, and React Native has no Web Crypto, so constructing a client threw before the first render. Both now use the fallback the id generator already had.
