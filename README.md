@@ -587,7 +587,14 @@ export default defineTapeDB({
 It is handed the caller's claim, `kind` (`"presence"` or `"topic"`), the room or
 topic, and `action` (`"join"` or `"send"`), and may answer with a promise. A
 presence join is decided before anything is stored, so a refusal answers
-`presence_denied` and leaves the socket as it was.
+`presence_denied` and leaves the socket as it was — and the room's subscriber
+hears it, rather than having to infer it from a cursor that never appears:
+
+```tsx
+const peers = usePresence(db, "board:" + boardId, { name }, {
+  onError: ({ code, target }) => console.warn(`could not join ${target}: ${code}`),
+});
+```
 
 A typing indicator is a convention on top of that payload, with no API of its
 own: publish the flag with your presence and read it off the peers.
