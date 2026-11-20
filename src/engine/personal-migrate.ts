@@ -36,7 +36,7 @@ export async function migratePersonal(sql: SqlExecutor, personal: PersonalRuntim
             log = new LogWriter(sql, seq); log.push({ op: "state:begin" });
           }
           sql.exec(`UPDATE "${model.table}" SET ${Object.keys(values).map(column => `"${column}" = ?`).join(", ")} WHERE id = ?`, ...Object.values(values), row.id);
-          log.push({ op: "state:row", table: model.table, row: { ...row, ...values } });
+          log.push({ op: "state:row", table: model.table, row: { ...row, ...values }, created: false });
         }
         state.after = String(row.id);
       }
