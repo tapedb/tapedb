@@ -311,6 +311,36 @@ try {
     assert.match(readFileSync(join(app, "types", "consumer.d.ts"), "utf8"), new RegExp(wrapper.type), `${wrapper.name} must carry the subpath's declarations`);
     console.log(`package smoke: ${wrapper.name} passed (${exportsSeen})`);
   }
+
+  // React 18. The bindings use only APIs that exist in 18 — `useSyncExternalStore`
+  // included — so the peer range says `^18 || ^19`. That is a claim about the
+  // tarball, so it is checked on the tarball: install the packed core beside
+  // react@18, load the React entry, and confirm the durable queue is reachable
+  // from the core with no React in the graph at all.
+  {
+    const app = join(scratch, "core-react-18");
+    mkdirSync(app);
+    writeFileSync(join(app, "package.json"), JSON.stringify({ name: "core-react-18", private: true, type: "module" }));
+    command("npm", ["install", archive, "react@18", "--ignore-scripts", "--no-audit", "--no-fund"], app);
+    writeFileSync(
+      join(app, "probe.mjs"),
+      [
+        'import assert from "node:assert/strict";',
+        'import { createRequire } from "node:module";',
+        "const require = createRequire(import.meta.url);",
+        'assert.equal(require("react/package.json").version.split(".")[0], "18", "this case must run on React 18");',
+        'const hooks = await import("@tapedb/tapedb/react");',
+        'for (const name of ["useLive", "useLivePage", "usePresence", "useBroadcast"]) {',
+        '  assert.equal(typeof hooks[name], "function", name + " must load under React 18");',
+        "}",
+        'const core = await import("@tapedb/tapedb");',
+        'assert.equal(typeof core.createClient, "function", "the core client needs no React");',
+        'assert.equal(typeof core.AsyncStorageOutbox, "function", "the durable queue ships in the core, not only in the React wrapper");',
+      ].join("\n")
+    );
+    command(process.execPath, ["probe.mjs"], app);
+    console.log("package smoke: React 18 passed (hooks load, and the queue is importable from the core without React)");
+  }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
