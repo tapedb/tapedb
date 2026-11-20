@@ -92,12 +92,17 @@ function* exportSteps(
   try {
     for (const model of models) {
       counts[model] = 0;
+      // Every attribute by name, so the records are the row exactly as stored:
+      // a default read leaves a vector field out, and an export has to carry
+      // the embedding for a restore to reproduce the workspace.
+      const namespace = NAMESPACES[model]!;
+      const select = [...Object.keys(namespace.attributes), "createdAt", "updatedAt", "updatedSeq"];
       let after: string | undefined;
       for (;;) {
         const compiled = compileQuery(
           {
             [model]: {
-              $: { order: { id: "asc" }, limit: QUERY_CHUNK_ROWS, ...(after === undefined ? {} : { after }) },
+              $: { order: { id: "asc" }, limit: QUERY_CHUNK_ROWS, select, ...(after === undefined ? {} : { after }) },
             },
           },
           viewAccess(claim)

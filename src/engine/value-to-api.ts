@@ -20,6 +20,11 @@ export function fromStoredValue(
     case "json":
     case "any":
       return typeof value === "string" ? parseJson(value) : value;
+    case "vector":
+      // The stored string, exactly as written: `f32le:v1:<base64>`. Decoding
+      // is the codec's job, and only for the validation paths and whatever
+      // reads the bytes.
+      return typeof value === "string" ? value : null;
   }
 }
 

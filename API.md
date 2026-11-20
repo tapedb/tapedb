@@ -42,7 +42,8 @@ then records the new surface with `bun run api:update`.
 ## `@tapedb/tapedb/schema` — stable
 
 `schema`, `model`, `t` (field builders), `role`, `filter`, `check`,
-`fileCheck`, `attachedTo`, and the types `Schema`, `Row`, `Where`,
+`fileCheck`, `attachedTo`, `encodeVector`, `decodeVector`, `VECTOR_TAG`,
+`VECTOR_MAX_DIMENSIONS`, and the types `Schema`, `Row`, `Where`,
 `FieldFilter`, `OrderBy`, `Include`, `CreateData`, `UpdateData`,
 `DeleteBehaviour`, `ScalarKind`, `Access`, `AccessAuth`, `CheckContext`,
 `FileAccess`, `FileCheckContext`, `FileInfo`.
@@ -61,6 +62,59 @@ its `inverse`), and personal subjects must be `self`, an existing non-personal
 string field, or a generated belongs-to foreign key. Diagnostics identify the
 model and field. Widened or dynamically built definitions still use runtime
 validation. These checks do not change runtime behavior.
+
+### Vectors
+
+`t.vector({ dimensions })` is an embedding: a fixed-length list of numbers.
+`dimensions` is an integer from 1 to 1,536, checked when the schema is defined,
+so `0`, a negative count, `1,537`, `1.5` and a missing count all fail there.
+`.optional()` works as it does on every other kind. `.default()`, `.index()`,
+`.unique()` and `.personal()` are refused: an embedding is per row, and it is
+not filterable, sortable, groupable or aggregatable.
+
+```ts
+note: model({
+  title: t.string(),
+  embedding: t.vector({ dimensions: 768 }).optional(),
+})
+```
+
+A write passes the numbers, `embedding: [0.1, -0.2, ...]`. The engine checks
+the length against the declaration, requires every element to be a finite
+number that stays finite as float32 (so `1e39`, which overflows, is refused),
+stores `-0` as `+0`, and refuses an all-zero vector. That last check runs
+**after** the conversion to float32, so a vector of values too small for
+float32 (`1e-50`) is refused rather than stored as zeros. `null` clears the
+field; leaving it out of an update keeps it. A refused vector fails the whole
+transaction before commit: no row, no receipt and no log entry are written, and
+any other op in that transaction rolls back with it.
+
+**Storage is one opaque string**: `f32le:v1:<base64>` — the tag, then the
+values as little-endian float32, four bytes each, base64. At 768 dimensions the
+payload is 3,072 bytes and the base64 body 4,096 characters; at 1,536 it is
+6,144 bytes and 8,192 characters, plus the 9-character tag. The string is the
+value: SQLite holds it in a `TEXT` column, and the transaction log, snapshots,
+`$export` and backup `rows.ndjson` all carry it verbatim, so a row is
+byte-identical through each of them. It is also smaller than a JSON array of
+the same numbers: against the real log writer, 768-dimension values fit 60 rows
+in a 256 KiB log part where the JSON form fits 15, and a 100-write replay
+payload is 432,804 B instead of 1,676,201 B (−74%; −57% gzipped).
+
+`f32le:v1:` is the version. A later codec is a new tag, not a migration, and a
+value with a tag this build does not know is refused rather than guessed at.
+A read returns the stored string; `decodeVector(text, dimensions?)` gives the
+numbers back and `encodeVector(values, dimensions)` produces the string a write
+accepts (`number[]` is accepted too).
+
+An embedding is never part of a default projection: a plain read leaves the
+attribute out of the row entirely. Name it to get it —
+`select: { id: true, embedding: true }` — and that is the only thing that
+returns it. The client refuses to filter, order or group by a vector field, and
+the engine refuses a filter, a `groupBy` and every aggregate measure on one
+(`invalid_value`).
+
+Nothing here talks to Cloudflare Vectorize yet: this release defines the field,
+its encoding and its validation. Indexing and search come later.
 
 ## `@tapedb/tapedb` — client
 

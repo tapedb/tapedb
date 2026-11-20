@@ -15,6 +15,7 @@ export type AttributeType =
   | "boolean"
   | "date"
   | "json"
+  | "vector"
   | "any";
 
 export interface AttributeDefinition<T = unknown> {
