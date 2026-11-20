@@ -1,6 +1,6 @@
 {
   "name": "@tapedb/tapedb",
-  "version": "0.2.3",
+  "version": "0.3.0",
   "description": "A log-structured database for Cloudflare Durable Objects. One SQLite database per workspace, transactions appended to a tape, replayed from R2 on cold start, with live queries and an offline-capable client.",
   "license": "MIT",
   "type": "module",
