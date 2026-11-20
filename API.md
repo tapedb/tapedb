@@ -630,10 +630,11 @@ replica-inconsistent and was observed going *backwards* between two reads, so
 "it advanced" says nothing, and a watermark that matches no mutation this purge
 recorded — another workspace's submission on a shared index, or a replica
 behind — confirms nothing. A confirmation, once recorded, is never withdrawn.
-A deleted vector left `getByIds` after about 18 s on the index these numbers come
-from while the watermark only reached the delete at about 75 s, so `getByIds` is
-not used as evidence at all: it is fast and weak, the watermark is slow and
-honest.
+`getByIds` is not used as evidence at all. Its answer arrives on the same
+asynchronous path an accepted upsert took 73–103 s to appear on, so an ID
+missing from it says nothing about the watermark having reached that delete,
+and an ID present says nothing about it not having been issued. The watermark is
+the only clock this purge reads, and only for the mutation IDs it recorded.
 
 *Interruption.* `vector-purge/<deployment>/<workspace>/ledger.json` is the
 durable truth: the fence's time, the inventory's batches, each batch's mutation
