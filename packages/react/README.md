@@ -26,5 +26,5 @@ import { useLive } from "@tapedb/tapedb/react"; // same module, still supported
 ```
 
 Hooks take the queries and rooms a `createClient()` client returns, so hooks
-and plain calls share one socket, one cache and one outbox. React 19 is a peer
+and plain calls share one socket, one cache and one outbox. React 18 or 19 is a peer
 dependency; the React-free entry is `@tapedb/tapedb`.

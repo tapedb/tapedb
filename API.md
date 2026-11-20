@@ -31,7 +31,7 @@ then records the new surface with `bun run api:update`.
 | --- | --- | --- |
 | `@tapedb/tapedb` | browser, Node, Workers | the client, schema builders, ids, roles |
 | `@tapedb/tapedb/schema` | anywhere | only what a schema file needs |
-| `@tapedb/tapedb/react` | browser (React 19 peer) | hooks |
+| `@tapedb/tapedb/react` | browser (React 18 or 19 peer) | hooks |
 | `@tapedb/tapedb/worker` | Cloudflare Workers | `defineTapeDB` and claim helpers |
 | `@tapedb/tapedb/studio` | Cloudflare Workers | `studio`: the studio at `/_tapedb/studio`, for `defineTapeDB({ studio })` |
 | `@tapedb/tapedb/seed` | Node (the CLI) | `defineSeeder`, `runSeeder` and the seeding context |
@@ -337,7 +337,7 @@ whatever that Worker sent.
 ## `@tapedb/react-native` — hooks and a durable queue
 
 Re-exports `@tapedb/react` unchanged, plus `AsyncStorageOutbox` and `createReactNativeClient`.
-Peers: `react ^19`, `@react-native-async-storage/async-storage ^1.17 || ^2 || ^3`. It does not import
+Peers: `react ^18 || ^19`, `@react-native-async-storage/async-storage ^1.17 || ^2 || ^3`. It does not import
 `react-native`, so it installs and is tested under Node.
 
 ```tsx
