@@ -104,12 +104,13 @@ On the client itself:
 | --- | --- |
 | `$transaction(writes)` | several writes, applied atomically → `Promise<WriteResult[]>` |
 | `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject` (any size: past 16 MiB it goes up as a multipart upload of 16 MiB parts, abandoned if a part fails), `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` (the files the caller may read, each with `uploadedBy`) |
-| `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `subscribe(listener)` with `PresencePeer[]`, `leave()` |
+| `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `peers({ includeSelf? })` → `PresencePeer[]`, `subscribe(listener, { includeSelf? })` with `PresencePeer[]`, `leave()`. A socket holds several rooms at once (below) |
 | `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean | "queued"` (`"queued"` while the socket is down: sent after reconnecting, up to 100 per topic for 60 s; `false` when that queue is full), `subscribe((message, from) => …, { onError? })`, which never hears your own messages; never stored, never delivered late |
 | `$across(workspaceIds, { getToken? })` | `Across`: per model `findMany`, `findFirst`, `findPage` and `count` over those workspaces, each with its own claim (`getToken(workspaceId)`, required unless the client uses the development claim route), merged in `orderBy` order; rows carry `workspaceId`; a page `cursor` holds a position per workspace. Results are `AcrossQuery` (awaitable, `subscribe`, `snapshot`, usable with `useLive`); live states add `errors` by workspace. A failed workspace rejects a one-off read with `AcrossError` (`errors`, `partial`) |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
 | `$history({ model, id })` | `Promise<HistoryEntry[]>`: each recorded change to the row, oldest first, as `{ seq, at, sub, role, action }` with `action` `"insert"`, `"update"` or `"delete"`; ADMIN or higher; needs `audit: true` on the Worker |
 | `$flush()` | waits until queued writes are acknowledged |
+| `clientId` | this socket's session id, assigned by the server on `session:ready` and the id a `PresencePeer` carries. `undefined` until the socket opens, and against a Worker that predates multiple presence rooms |
 | `$close()` | closes the socket |
 
 Also exported: `id()` (time-ordered ids), `Query`, `PageQuery`, `Write`,
@@ -120,13 +121,129 @@ types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 `WorkspaceRole`, `ExportRecord`, and **experimental** `BroadcastTopic` and
 `TopicSender`.
 
+### Filters
+
+A `where` entry is a field and either a value or a comparison object. Building a
+query checks the filter against the schema, so an unknown field or operator
+throws at the call, and the engine refuses the same filters with `invalid_value`.
+
+| Filter | Matches |
+| --- | --- |
+| a value, or `null` | the rows whose field is that value; `null` is `IS NULL` |
+| `{ not: value }`, `$ne` | the rows whose field is another value, and those where it is null |
+| `$in`, `$nin` | any or none of a list; a `null` in a `$in` list also matches rows where the field is null, and `$nin` matches those rows unless `null` is listed |
+| `$gt`, `$gte`, `$lt`, `$lte` | a comparison on a number, a date (epoch milliseconds) or a string |
+| `$isNull: boolean` | the field is null, or is not (below) |
+| `$like: string` | SQL `LIKE`, case-sensitive (below) |
+| `$ilike: string` | the same, case-insensitive for ASCII (below) |
+
+**`$isNull`** is how a nullable field is asked for as set or not set: an optional
+field exists on every row of a model and is stored as null, so `$isNull: true`
+is `IS NULL` and `$isNull: false` is `IS NOT NULL`, and the first reads the same
+rows as `{ field: null }`. It applies to a relation's foreign key like any other
+field, and is refused on the relation itself: `{ column: { $isNull: true } }` is
+an error, because a missing parent is `{ column: null }` and a link is otherwise
+filtered by its modes.
+
+**`$like`** takes SQL wildcards: `%` matches any run of characters, `_` exactly
+one, and a backslash makes the next `%`, `_` or backslash a literal. Every other
+backslash is refused — at the call, and as `invalid_value` from the engine —
+rather than read as the character it precedes, so a pattern that ends in a
+literal backslash is written `"\\"`. It is case-sensitive: SQLite's `LIKE`
+folds ASCII case and the only switch for that is a connection-wide pragma, so the
+pattern is translated to `GLOB`, which compares bytes, keeping `%` and `_` as
+they are. **`$ilike`** compiles to `LOWER(column) LIKE LOWER(pattern)` and folds
+ASCII only: `É` and `é` do not match each other, and any non-ASCII character
+compares exactly.
+
+Both match text only, so a pattern on a number or a date field is
+`invalid_value` rather than a comparison of its text form. All three
+operators compose with `$and`/`$or`/`$not` and inside relation modes, and reach
+live queries the same way.
+
+### Presence
+
+A presence room is a target of 1–128 characters from `A–Z a–z 0–9 : _ -` (a
+board id, a document id). A socket holds several at once — up to the
+deployment's `realtime.maxPresenceRooms`, four by default — so one connection
+can show who is in each open board. Leaving one room leaves the others, and a
+disconnect leaves all of them.
+
+| Member | |
+| --- | --- |
+| `set(presence)` | publishes this client's presence in the room, joining it if it is new |
+| `cursor(cursor)`, `drag(drag)`, `clearDrag()` | the room's pointer state |
+| `peers({ includeSelf? })` | `Promise<PresencePeer[]>` |
+| `subscribe(listener, { includeSelf? })` | the same list live; returns an unsubscribe function |
+| `leave()` | leaves this room, and only this one |
+
+`PresencePeer` is `{ clientId, presence, cursor?, drag? }`. The peers of a room
+include your own entry, marked `isSelf: true`, so an app can draw its own cursor
+without matching on names; `{ includeSelf: false }` leaves it out. Until the
+socket has its `clientId` — or against a Worker that predates multiple presence
+rooms — the list arrives as the server sent it. `client.clientId` is the same
+id, and `undefined` until `session:ready`.
+
+Two limits are decided before a `presence:set` is stored, and a refusal leaves
+the socket's state exactly as it was. A socket's whole presence state, every
+room serialised, is at most 8 KiB: past that the server answers
+`presence_state_too_large`, and the same budget covers `cursor:set` and
+`drag:set`. A new room past `maxPresenceRooms` answers
+`presence_rooms_exceeded`; `maxPresenceRooms: 1` restores one room per socket,
+and `0` refuses presence altogether.
+
+Who may join a room is the Worker's decision:
+
+```ts
+export default defineTapeDB({
+  schema,
+  realtime: {
+    authorize: ({ auth, kind, target, action }) =>
+      kind !== "presence" ||
+      target.startsWith("board:") ||
+      auth.role >= WORKSPACE_ROLE_LEVELS.EDITOR,
+    maxPresenceRooms: 4,
+  },
+});
+```
+
+`kind` is `"presence"` or `"topic"`, `target` the room or the topic, `action`
+`"join"` or `"send"`, and `auth` the caller's `{ sub, role, workspaceId }`. The
+answer may be a promise; anything but `true` — `false`, a throw, a rejected
+promise — refuses. A presence `join` is checked before any state is stored, so a
+refusal changes nothing, and a `presence:set` for a room the socket already holds
+is a `send`. With no authorizer configured, anyone with a claim for the workspace
+may join and send.
+
+`topics.authorize` remains as a deprecated alias: it covers topic kinds only, and
+is consulted only when `realtime.authorize` is absent, so a deployment that
+configures both gets one rule set per kind. `realtime.replaySeconds` carries the
+replay window `topics.replaySeconds` used to hold.
+
+Each refusal is one `{ type: "error", code }` message on the socket, and the
+client has no presence error channel of its own: the state simply does not
+change.
+
+| Code | Meaning |
+| --- | --- |
+| `presence_denied` | the authorizer refused the join or the send |
+| `presence_rooms_exceeded` | the socket already holds `maxPresenceRooms` rooms |
+| `presence_state_too_large` | the message would take the socket's presence past 8 KiB |
+| `presence_target_unknown` | a `cursor:set` or `drag:set` for a room this socket has not joined |
+
+The wire messages are unchanged, so an old client works against a new Worker: its
+second `presence:set` for another target now adds a room instead of evicting the
+first, up to the cap, and it still receives its own entry as it always did. A new
+client against an old Worker gets one room and no `clientId`, so `peers()` is
+whatever that Worker sent.
+
 ## `@tapedb/tapedb/react` — hooks
 
 | Hook | Returns |
 | --- | --- |
 | `useLive(query)` | `LiveState`: `{ data, isLoading, error }`; for an `AcrossQuery`, `AcrossLiveState` with `errors` too |
 | `useLivePage(pageQuery)` | `LivePage`: `{ rows, hasMore, isLoading, error, loadMore }` |
-| `usePresence(db, room, presence?)` | `PresencePeer[]`; publishes `presence` while mounted |
+| `usePresence(db, room, presence?, { includeSelf? })` | `PresencePeer[]`; publishes `presence` while mounted. Your own entry is left out unless `includeSelf` is `true` (see [Presence](#presence)) |
 | `useBroadcast(db, topic, onMessage?)` | **experimental**: a `send(message) => boolean \| "queued"` function |
 
 ## `@tapedb/tapedb/worker`
@@ -142,7 +259,8 @@ the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
 | `devClaims` | serve the development claim route; refused in production |
 | `retention` | `{ days }`: how long deleted or overwritten values may stay in history; default 30, at least 2 |
 | `audit` | `true` records the writer (`sub`, role) of every write and keeps a per-row history for `$history`, within `retention`; default off |
-| `topics` | **experimental**: `TopicOptions` `{ authorize?, replaySeconds? }`: a `TopicAuthorizer` for broadcast topics, and the seconds of each topic kept for listeners that reconnect (default 60, `0` keeps none) |
+| `realtime` | **experimental**: `RealtimeOptions` `{ authorize?, maxPresenceRooms?, replaySeconds? }`: one `RealtimeAuthorizer` for presence rooms and broadcast topics, the rooms one socket may hold (default 4, `0` refuses presence), and the seconds of each topic kept for a listener that reconnects (default 60, `0` keeps none) — see [Presence](#presence) |
+| `topics` | **experimental**, **deprecated** alias of `realtime`: `TopicOptions` `{ authorize?, replaySeconds? }`, whose `authorize` covers topic kinds only and is consulted only when `realtime.authorize` is absent |
 
 Also exported: `signRoleClaim(secret, { sub, workspaceId, role, iss?, aud?,
 ttlSeconds? }, now?)` → `{ token, expiresAt, expiresIn }` and
@@ -155,7 +273,9 @@ export or erase), `ClaimError`,
 `TapeDBRoom` name for the class returned by `defineTapeDB`. These named types
 allow consumers to emit declarations without leaking private names.
 `ModelOptions` is also exported from `@tapedb/tapedb/schema`.
-`TopicAction` and `TopicAuthorizer` are **experimental**.
+`TopicAction` and `TopicAuthorizer` are **experimental**, and so are
+`RealtimeOptions`, `RealtimeAuthorizer`, `RealtimeAuthorizeContext` and
+`RealtimeKind`.
 
 ### Bindings and settings (`Env`)
 
@@ -333,18 +453,21 @@ and `origin` when the sender gave one (`topic:send { origin }`, a stable id
 of the sending client, so it can skip its own messages when they are
 replayed). `topic:join { topic, since? }` answers `topic:joined { topic, seq }`
 after replaying the kept messages with a sequence above `since` (the last
-`topics.replaySeconds`, default 60, at most 1,000 per topic; engine
+`realtime.replaySeconds`, default 60, at most 1,000 per topic; engine
 migration `tapedb_0009_topic_buffer`).
 
 A socket's live queries, presence and topics are kept in its attachment
 while they fit (12 KiB) and in the workspace's storage past that (engine
 migration `tapedb_0007_socket_state`), so a socket may hold any number of
-them. The protocol belongs to the client; use it directly only if you must.
+queries and topics; presence rooms are the exception, capped at
+`maxPresenceRooms` and budgeted together at 8 KiB. The protocol belongs to the
+client; use it directly only if you must.
 
 ## CLI
 
 `npx tapedb-cli init | migrate dev|rollback|status|check|squash | dev | studio |
-deploy | export | seed | erase | move`. The exact commands and flags are in `npx tapedb-cli --help`
+deploy | export | backup | restore | seed | erase | move`. The exact commands
+and flags are in `npx tapedb-cli --help`
 and are part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside
 `TAPEDB_JURISDICTION`, or when `migrate check` fails (no migrations, schema
@@ -364,6 +487,43 @@ now carries the whole change. `--dry-run` reports without writing, and
 
 A run containing a statement that touched rows (an `UPDATE`, a backfill) is
 refused, because a re-derived DDL diff cannot carry it.
+
+### Backup and restore
+
+`tapedb backup --workspace <uuid> --out <dir> [--url <worker>] [--dry-run]`
+writes one workspace as a directory. The workspace comes from `--workspace` or
+`TAPEDB_WORKSPACE`, the claim from `--token`, `TAPEDB_TOKEN` or the development
+claim route, as `export` does.
+
+| Path | Holds |
+| --- | --- |
+| `backup.json` | `format` `"tapedb-backup"`, `version` 1, the workspace, `seq`, the row count and per-model counts, the models, the schema version, and `parts`: every other file with its byte length and its sha256 |
+| `rows.ndjson` | `GET /engine/workspaces/:id/export` saved as it streams, so the `header`, `row`, `file` and `end` records are the engine's own bytes |
+| `files/<path>` | the bytes of each file the export names, through the file route with the same claim |
+
+The export must be consistent: a workspace that took writes while it streamed is
+refused, because import would refuse it too. A directory that already holds a
+`backup.json` is not overwritten, and a run that fails removes what it wrote, so
+an interrupted backup is never mistaken for a good one. `--dry-run` streams and
+hashes the same records and prints the counts, and writes nothing at all — not
+the directory, not a partial file.
+
+`tapedb restore --from <dir> [--into <uuid>] [--url <worker>] [--dry-run]`
+checks every part against `backup.json` — its length and its sha256, and that a
+rows part is named — before anything is written or sent, so a tampered or
+truncated backup is refused with the destination untouched. It then posts the
+rows through `POST /engine/workspaces/:id/import`, which preserves row
+timestamps, and uploads each file's bytes through the file route, so the index
+and the R2 keys are rebuilt for the destination instead of copied from the
+backup. `--into` names the destination and defaults to the workspace the backup
+came from.
+
+The destination must be empty: one that already holds a row or a file is refused
+before the import, so running the same restore twice is a clean error rather than
+a second copy, and an erased workspace (410) needs a new one via `--into`.
+`--dry-run` verifies every part and prints the counts and hashes, and writes and
+sends nothing. A restore whose import reports a different row count from the
+manifest exits 1 and names both numbers.
 
 ## Error codes
 
@@ -390,6 +550,12 @@ usually handles:
 | `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds. The client retries on its own for up to a minute |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |
 | `jurisdiction_mismatch` | 500 | the Worker reached a room outside `TAPEDB_JURISDICTION` |
+
+Socket refusals use their own codes rather than a status: `presence_denied`,
+`presence_rooms_exceeded`, `presence_state_too_large` and
+`presence_target_unknown` (in [Presence](#presence)), plus `invalid_target`,
+`invalid_presence`, `invalid_cursor`, `invalid_drag` and `part_out_of_order`
+for a malformed message.
 
 ## Personal data
 

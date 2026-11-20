@@ -170,9 +170,25 @@ function is folded row by row after the rule runs. Both are live with
 
 Everything is typed from the schema: a misspelt field in `where` is a compile
 error, and `include` / `select` shape the result type. Filters take `not`, `in`,
-`notIn`, `gt`, `gte`, `lt`, `lte`, and `AND` / `OR` / `NOT` over whole
-filters. Pagination is keyset, so an insert above the window cannot repeat a
-row.
+`notIn`, `gt`, `gte`, `lt`, `lte`, `isNull`, `like`, `ilike`, and `AND` / `OR` /
+`NOT` over whole filters. Pagination is keyset, so an insert above the window
+cannot repeat a row.
+
+```ts
+await db.task.findMany({ where: { due: { isNull: true } } });        // never scheduled
+await db.task.findMany({ where: { due: { isNull: false } } });       // has a due date
+await db.task.findMany({ where: { title: { like: "Replay%" } } });   // starts with "Replay"
+await db.task.findMany({ where: { title: { ilike: "%replay%" } } }); // anywhere, either case
+```
+
+`isNull` is how a nullable field is asked for as set or not set: an optional
+field is stored as null on every row, so `{ due: null }` and
+`{ due: { isNull: true } }` read the same rows. It also reads a foreign key like
+any other field, but not a relation, where `{ column: null }` already says it.
+`like` and `ilike` take SQL wildcards — `%` for any run of characters, `_` for
+exactly one, and a backslash making the next `%`, `_` or backslash literal, with
+any other backslash refused — and match text only. `like` is case-sensitive;
+`ilike` folds ASCII case, so `É` and `é` stay different letters.
 
 Filters can also reach through a relation. A to-one link takes a filter on
 the row it points at; a to-many link takes `some`, `every` or `none`:
@@ -486,7 +502,7 @@ const stop = room.subscribe((peers) => render(peers));
 
 File bytes live in the `FILES` bucket (any size, uploaded in parts past
 16 MiB); their index, with who uploaded each file, is written through the
-transaction log, so a restore keeps it. Presence rides the
+transaction log, so a restore keeps it. Presence rides the same
 workspace socket.
 
 Who may read, write and delete each file is set in the schema. Without
@@ -510,6 +526,67 @@ returns only the files the caller may read. A file the caller may not read
 answers 404, like one that does not exist. A rule that throws denies, and an
 editor's role does not override a rule.
 
+### Presence
+
+```ts
+const room = db.$presence("board:" + boardId);
+room.set({ name, color });
+const peers = await room.peers();                     // includes you, marked isSelf
+const others = await room.peers({ includeSelf: false });
+const stop = room.subscribe((peers) => render(peers));
+room.leave();                                         // this room only
+```
+
+A socket holds several rooms at once — up to `maxPresenceRooms` on the Worker,
+four by default — so one connection can show who is in each of the boards a
+user has open. Leaving one room leaves the others alone, and a disconnect
+leaves all of them. A room's peers include your own entry with `isSelf: true`,
+so you can draw your own cursor without matching on names; `db.clientId` is the
+same id, and `includeSelf: false` leaves you out. The React hook inverts that
+default: `usePresence(db, room, presence)` gives you the others, and
+`usePresence(db, room, presence, { includeSelf: true })` adds you.
+
+What a socket publishes is bounded twice, and a refusal changes nothing it
+already holds: past 8 KiB of presence across all its rooms the server answers
+`presence_state_too_large`, and a room past the cap answers
+`presence_rooms_exceeded` (`maxPresenceRooms: 1` is one room per socket, `0`
+refuses presence).
+
+Who may join a room is the Worker's decision, and the same authorizer covers
+broadcast topics:
+
+```ts
+export default defineTapeDB({
+  schema,
+  realtime: {
+    authorize: ({ auth, kind, target, action }) =>
+      kind !== "presence" ||
+      target.startsWith("board:") ||
+      auth.role >= WORKSPACE_ROLE_LEVELS.EDITOR,
+  },
+});
+```
+
+It is handed the caller's claim, `kind` (`"presence"` or `"topic"`), the room or
+topic, and `action` (`"join"` or `"send"`), and may answer with a promise. A
+presence join is decided before anything is stored, so a refusal answers
+`presence_denied` and leaves the socket as it was.
+
+A typing indicator is a convention on top of that payload, with no API of its
+own: publish the flag with your presence and read it off the peers.
+
+```tsx
+const peers = usePresence(db, "board:" + boardId, { name, typing });
+const typing = peers.filter((peer) => (peer.presence as { typing?: boolean })?.typing);
+
+const [typing, setTyping] = useState(false);
+useEffect(() => {
+  if (!typing) return;
+  const timer = setTimeout(() => setTyping(false), 3000);   // a closed tab stops in 3 s
+  return () => clearTimeout(timer);
+}, [typing]);
+```
+
 ### Broadcast
 
 Fire-and-forget messages between the clients of a workspace, on the same
@@ -529,24 +606,31 @@ sender's client id and user id; your own messages are not echoed back.
 A dropped connection loses nothing recent. Sends made while the socket is
 down wait (up to 100 per topic, for 60 seconds; `send` returns `"queued"`)
 and go out after reconnecting. The workspace keeps the last 60 seconds of
-each topic (`topics.replaySeconds`, at most 1,000 messages), and a listener
+each topic (`realtime.replaySeconds`, at most 1,000 messages), and a listener
 that reconnects gets what it missed before new messages, each once, in
 order. Presence converges the same way: after a reconnect the client
 publishes its state again and receives everyone else's. Messages are limited to
 4 MiB of encoded JSON, including multipart messages. The workspace relays parts
 as they arrive, and the receiving client joins them. Pending assembly is bounded
 to 8 MiB per socket and 32 MiB per workspace; excess messages are rejected. By default anyone with a claim for the workspace may listen and send, guests included; decide
-per topic on the Worker:
+for the channels on the Worker:
 
 ```ts
 defineTapeDB({
   schema,
-  topics: {
-    authorize: ({ auth, topic, action }) =>
-      !topic.startsWith("admin:") || auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN,
+  realtime: {
+    authorize: ({ auth, kind, target, action }) =>
+      kind !== "topic" ||
+      !target.startsWith("admin:") ||
+      auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN,
   },
 });
 ```
+
+`topics: { authorize: ({ auth, topic, action }) => … }` is the older spelling
+and still works: it covers topic kinds only, and only when `realtime.authorize`
+is absent. The presence rules above are written the same way, with `kind ===
+"presence"`.
 
 ## Export
 
@@ -584,9 +668,12 @@ bytes — `files/<path>` with the bytes of every file the export names, and
 `backup.json`, which holds the format, the version, the workspace, the
 sequence, the row counts and a sha256 and byte length for each part. An export
 that was not consistent (writes landed while it streamed) is refused, because
-the copy would not be one point in time. `backup --dry-run` streams the same
+the copy would not be one point in time, and a directory that already holds a
+`backup.json` is not overwritten. `backup --dry-run` streams the same
 records, hashes them and prints the counts, and writes nothing — not even the
 directory, so it is safe to run against a workspace you are unsure about.
+`--workspace` may also come from `TAPEDB_WORKSPACE`, and `--url` defaults to a
+local `tapedb dev` on port 8787.
 
 `restore` checks every part against `backup.json` before it writes anything: a
 missing file, one changed byte or a truncated export is named and refused, and
@@ -597,12 +684,13 @@ route, so the file index and R2 keys are rebuilt for that workspace instead of
 copied from the backup. `--into` picks the destination (default: the workspace
 the backup came from).
 
-The destination must be empty. Import needs a workspace with no rows, files or
-history, so a restore into one that already holds any of them is refused, and
-running the same restore twice is a clean error rather than a copy on top of a
-copy. An erased workspace stays erased (it answers 410), so restore it into a
-new one with `--into`. `--dry-run` verifies every part and prints the counts
-and hashes; it writes nothing and sends nothing.
+The destination must be empty. Import needs a workspace with no rows or files,
+so a restore into one that already holds either is refused before anything is
+sent, and running the same restore twice is a clean error rather than a copy on
+top of a copy. An erased workspace stays erased (it answers 410), so restore it
+into a new one with `--into`. An import that reports a different row count from
+`backup.json` fails the run and names both numbers. `--dry-run` verifies every
+part and prints the counts and hashes; it writes nothing and sends nothing.
 
 ## Audit
 
