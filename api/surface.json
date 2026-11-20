@@ -76,7 +76,9 @@
         "experimental": true,
         "shape": {
           "send": "(message: T) => boolean | \"queued\"",
-          "subscribe": "(listener: (message: T, from: TopicSender) => void, options?: { onError?: (error: QueryError) => void; }) => () => void",
+          "subscribe": "(listener: (message: T, from: TopicSender) => void, options?: { onError?: (error: QueryError) => void; onGap?: (gap: TopicGap) => void; }) => () => void",
+          "lastSeq": "number | undefined",
+          "gap": "TopicGap | null",
           "(declaration)": "<T = unknown>"
         }
       },
@@ -378,6 +380,15 @@
         "kind": "value",
         "shape": "{ string: () => Field<\"string\", false, false>; number: () => Field<\"number\", false, false>; boolean: () => Field<\"boolean\", false, false>; date: () => Field<\"date\", false, false>; json: () => Field<\"json\", false, false>; enum: <const V extends readonly string[]>(values: V) => EnumField<V[number], boolean, boolean>; belongsTo: <T extends string>(target: T, options?: BelongsToOptions) => BelongsTo<T, false>; hasMany: <T extends string, const O extends HasManyOptions = {}>(target: T, options?: O) => HasMany<T, \"inverse\" extends keyof O ? O[\"inverse\"] : undefined>; }"
       },
+      "TopicGap": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "topic": "string",
+          "expected": "number",
+          "received": "number"
+        }
+      },
       "TopicSender": {
         "kind": "interface",
         "experimental": true,
@@ -607,7 +618,7 @@
       "useBroadcast": {
         "kind": "function",
         "experimental": true,
-        "shape": "<T = unknown>(db: { $broadcast<M>(topic: string): BroadcastTopic<M>; }, topic: string, onMessage?: (message: T, from: TopicSender) => void) => (message: T) => boolean | \"queued\""
+        "shape": "<T = unknown>(db: { $broadcast<M>(topic: string): BroadcastTopic<M>; }, topic: string, onMessage?: (message: T, from: TopicSender) => void, onGap?: (gap: TopicGap) => void) => (message: T) => boolean | \"queued\""
       },
       "useLive": {
         "kind": "function",
