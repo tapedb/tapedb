@@ -58,6 +58,17 @@ import { describeAccess, viewDependsOnSubject } from "./tx-permissions";
 import { readLog } from "./log-read";
 import { isTopic, REPLAY_MESSAGES, maxPresenceRooms, realtimeAllowed, topicReplayMs } from "./topics";
 import { auditEnabled, dropAuditCapture, rowHistory, syncAuditCapture } from "./audit";
+import {
+  WEBHOOK_DELIVERY_DELAY_MS,
+  WEBHOOK_PASS_ATTEMPTS,
+  deliverWebhooks,
+  drainWebhookChanges,
+  dropWebhookCapture,
+  installWebhookCapture,
+  webhookCounts,
+  webhookTransport,
+  webhooksConfigured,
+} from "./webhooks";
 import { findNamespace } from "./registry";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { MAX_SOCKET_MESSAGE_BYTES } from "../socket-protocol";
@@ -239,6 +250,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // SQLite. Set it before migrations so every request sees it.
     ctx.storage.sql.exec("PRAGMA foreign_keys = ON");
     dropAuditCapture(durableObjectSqlExecutor(ctx.storage));
+    // A migration's own writes (a backfill, a table rebuild) are not events a
+    // consumer asked about; capture starts again once the schema is final.
+    dropWebhookCapture(durableObjectSqlExecutor(ctx.storage));
     await this.applyMigrations();
     syncAuditCapture(durableObjectSqlExecutor(ctx.storage));
     if (hasPersonalFields()) {
@@ -274,6 +288,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
       .map((socket) => (socket.deserializeAttachment() as { clientId?: unknown } | null)?.clientId)
       .filter((clientId): clientId is string => typeof clientId === "string");
     forgetOtherSockets(durableObjectSqlExecutor(ctx.storage), live);
+    // Capture is installed only once no restore is in flight: rows a recovery
+    // replays are not writes a consumer made, and must not become events.
+    if (!this.recovering) this.syncWebhookCapture();
     if (!this.recovering) await this.scheduleNextDurabilityAlarm(Date.now());
   }
 
@@ -358,7 +375,27 @@ export class WorkspaceRoom extends DurableObject<Env> {
         slowestUnit,
       });
     }
-    if (wasRecovering) await this.scheduleNextDurabilityAlarm(Date.now());
+    if (wasRecovering) {
+      // Writes are served again: capture any webhook the deployment asked for.
+      this.syncWebhookCapture();
+      await this.scheduleNextDurabilityAlarm(Date.now());
+    }
+  }
+
+  /**
+   * Installs the webhook capture triggers (and their tables) when the
+   * deployment configured webhooks. A restore replays rows without a
+   * transaction of their own, so this runs only once recovery is finished.
+   */
+  private syncWebhookCapture(): void {
+    if (!webhooksConfigured()) return;
+    try {
+      installWebhookCapture(durableObjectSqlExecutor(this.ctx.storage));
+    } catch (error) {
+      // A workspace that cannot install capture still serves reads and writes;
+      // the next boot tries again.
+      console.error("workspace_webhook_capture_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+    }
   }
 
   private get workspaceId(): string {
@@ -931,6 +968,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
       }
 
       this.wakeSequenceWaiters();
+      // Capture rows are already committed with the write; turning them into
+      // outbox events must never change the answer this request gives.
+      if (webhooksConfigured()) {
+        try {
+          if (drainWebhookChanges(sql, workspaceId) > 0) await this.scheduleWebhookDelivery();
+        } catch (error) {
+          console.error("workspace_webhook_emit_failed", { workspaceId, error: errorMessage(error) });
+        }
+      }
       // Replays and no-op deletes changed no rows; do not re-run queries.
       const touched = touchedNamespacesFromEnvelope(envelope);
       if (result.applied > 0 && touched.size > 0) {
@@ -2109,9 +2155,46 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
 
+    // Deliver after the flush: an event is only sent for a transaction that has
+    // reached R2, so losing this object cannot leave a consumer holding a write
+    // that no longer exists.
+    if (webhooksConfigured()) {
+      try {
+        await this.deliverPendingWebhooks();
+      } catch (error) {
+        console.error("workspace_webhook_delivery_failed", { workspaceId, error: errorMessage(error) });
+      }
+    }
+
     // Re-read the clock: a chunked snapshot can take long enough that the
     // timestamp captured before the tick is already in the past.
     await this.scheduleNextDurabilityAlarm(Date.now());
+  }
+
+  /** Wakes the alarm soon after a write, so its events are delivered promptly. */
+  private async scheduleWebhookDelivery(): Promise<void> {
+    await this.scheduleDurabilityAlarm(Date.now() + WEBHOOK_DELIVERY_DELAY_MS);
+  }
+
+  /**
+   * One delivery pass, from the durability alarm: turn any capture row a write
+   * path left behind into events, then post what is due. A consumer's answer
+   * only ever changes the outbox, never a transaction.
+   */
+  private async deliverPendingWebhooks(): Promise<void> {
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    // An import or the auth projection writes without `/transact`; the same
+    // triggers captured it, and it becomes an event here.
+    drainWebhookChanges(sql, this.workspaceId);
+    const summary = await deliverWebhooks(sql, {
+      now: Date.now(),
+      send: webhookTransport(),
+      limit: WEBHOOK_PASS_ATTEMPTS,
+    });
+    if (summary.pending > 0 && summary.nextAt !== null) {
+      // Either a retry is due (its backoff) or a failed head blocked the rest.
+      await this.scheduleDurabilityAlarm(Math.max(Date.now() + 1_000, summary.nextAt));
+    }
   }
 
   /**
@@ -2381,6 +2464,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
         snapshotSeq: readSnapshotState(sql).baseSeq,
         lastFlushError: flush.lastError,
       },
+      // What the webhook outbox holds, when this deployment delivers them: a
+      // dead-lettered event is visible here without reading the table.
+      ...(webhooksConfigured() ? { webhooks: webhookCounts(durableObjectSqlExecutor(this.ctx.storage)) } : {}),
     });
   }
 }
