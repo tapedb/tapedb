@@ -104,7 +104,7 @@ On the client itself:
 | --- | --- |
 | `$transaction(writes)` | several writes, applied atomically → `Promise<WriteResult[]>` |
 | `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject` (any size: past 16 MiB it goes up as a multipart upload of 16 MiB parts, abandoned if a part fails), `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` (the files the caller may read, each with `uploadedBy`) |
-| `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `peers({ includeSelf? })` → `PresencePeer[]`, `subscribe(listener, { includeSelf? })` with `PresencePeer[]`, `leave()`. A socket holds several rooms at once (below) |
+| `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `peers({ includeSelf? })` → `PresencePeer[]`, `subscribe(listener, { includeSelf?, onError? })` with `PresencePeer[]`, `leave()`. A socket holds several rooms at once (below) |
 | `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean | "queued"` (`"queued"` while the socket is down: sent after reconnecting, up to 100 per topic for 60 s; `false` when that queue is full), `subscribe(listener, { onError?, onGap? })`, `lastSeq`, `gap`; never hears your own messages; never stored, never delivered late |
 A reconnecting listener is sent what it missed, each message once and in
 order. When the replay window no longer holds what it missed, `onGap` reports
@@ -621,6 +621,11 @@ Socket refusals use their own codes rather than a status: `presence_denied`,
 `presence_target_unknown` (in [Presence](#presence)), plus `invalid_target`,
 `invalid_presence`, `invalid_cursor`, `invalid_drag` and `part_out_of_order`
 for a malformed message.
+
+A presence refusal is delivered to the room's subscriber through `onError`,
+as `{ code, target }`. The room keeps its last state and the subscription
+carries on, so the callback is how an app explains the refusal instead of
+leaving the caller to wonder why their cursor never appeared.
 
 ## Personal data
 
