@@ -2,6 +2,7 @@ export {
   VECTOR_SEARCH_DEFAULT_LIMIT,
   VECTOR_SEARCH_MAX_LIMIT,
   executeVectorSearch,
+  visibleRowIds,
   type VectorSearchAnswer,
   type VectorSearchRequest,
 } from "./search";
@@ -90,6 +91,19 @@ export {
   type VectorPurgeRun,
   type VectorRestoreOutcome,
 } from "./erasure";
+export {
+  VECTOR_REBUILD_BATCH,
+  VECTOR_REBUILD_TABLE,
+  advanceVectorRebuild,
+  installVectorRebuild,
+  readVectorRebuild,
+  retryVectorWork,
+  startVectorRebuild,
+  vectorRowStates,
+  type VectorRebuildPhase,
+  type VectorRebuildState,
+  type VectorRowState,
+} from "./operator";
 export {
   VECTOR_PURGE_BATCH,
   VECTOR_PURGE_MAX_ATTEMPTS,

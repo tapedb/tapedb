@@ -485,6 +485,43 @@ than discovering it at the first write. Once a room is running, the index's own
 submission: an index of another shape is refused, the intents stay queued, and
 `/status` keeps counting them.
 
+**Deploying the index.** The deployment declares what it indexes in
+`wrangler.jsonc`, and `tapedb deploy` provisions the index before it uploads the
+Worker:
+
+```jsonc
+"tapedb": {
+  "vectorize": { "model": "note", "field": "embedding", "filterFields": ["archived"] }
+}
+```
+
+The declaration is validated against `tapedb.schema.ts` first — the field must
+be that model's `t.vector({ dimensions })` attribute, filters must be flat,
+non-personal scalars, at most ten — and the index is named from deployment
+identity, `tapedb-<worker>-<model>`, lower-cased and trimmed to the provider's
+64-byte ceiling. A repeat deploy, two concurrent deploys and a retry after a
+failed upload therefore converge on one index rather than creating more. On a
+first deploy the CLI creates the index and one metadata index per declared
+filter, records `tapedb.vectorize.index` and `tapedb.vectorize.ownership` in
+`wrangler.jsonc`, and adds the binding the Worker reads:
+
+```jsonc
+"vectorize": [{ "binding": "VECTORIZE", "index_name": "tapedb-app-note" }]
+```
+
+On every later deploy it reads the live index and refuses to upload when
+anything disagrees with the record or the schema: another dimension count,
+another metric, a metadata index of the wrong type, an ownership record naming
+another account or worker. Nothing is deployed in that case, and the message
+names both values. An index that exists without an ownership record is refused
+rather than adopted silently; if it is yours, record it with
+`"index": "tapedb-app-note"` under `tapedb.vectorize` and deploy again.
+
+A deployment restricted to `eu` or `fedramp` refuses vector search before
+provisioning anything: Vectorize cannot meet that residency, and an index
+created in the wrong jurisdiction cannot be redeployed out of it. Removing the
+`tapedb.vectorize` block generates no binding and touches no index.
+
 **What is published.** Each indexed row becomes one vector: the stored
 `f32le:v1:<base64>` bytes of the field, the configured filter values, and a
 **digest**. The vector ID is `hex(SHA-256(deployment, workspace, model, field,
@@ -549,7 +586,8 @@ count instead:
 {
   "vectorize": {
     "pending": 3, "failing": 1, "deadLettered": 0, "indexed": 412,
-    "lastMutationId": "01J...", "fenced": false, "purge": null
+    "lastMutationId": "01J...", "fenced": false, "purge": null,
+    "rebuild": null
   }
 }
 ```
@@ -561,6 +599,7 @@ workspace's erasure marker stands, and `purge` carries the erasure's phase when
 one exists — the three work states are separate on purpose, because "waiting",
 "failing" and "will not be retried" call for different answers, and because an
 erasure that is stuck is otherwise indistinguishable from a busy queue.
+`rebuild` is the job described below, or null.
 
 **Deletes.** Deleting a row enqueues a delete of its vector, and clearing the
 vector field does the same; both are submitted like any other intent and are
@@ -601,6 +640,28 @@ A search is not live and is not cached: it is one provider query and one SQLite
 read per call, and the answer ages the moment it is sent. A row written a moment
 ago is not searchable until the queue's upsert has been accepted and has become
 visible at the provider — 73–103 s, measured.
+
+**The operator's surface.** Three admin-or-owner routes answer for one
+workspace's index. An ordinary member is refused with `403 insufficient_role`
+before anything else, so the answer cannot tell them whether vector search is
+configured at all.
+
+| route | | |
+| --- | --- | --- |
+| `POST /vector/retry` | requeues every intent whose last attempt failed, including dead-lettered ones. Nothing about what the provider is expected to hold changes: the next drain recomputes each row from current state, so a retry after a fix sends the row as it is now. Answers `{ requeued, pending, failing, deadLettered, indexed }`. |
+| `POST /vector/rebuild` | starts a rebuild, or returns the one already running: one job per workspace, so two operators asking at once get one `jobId` (`started: false` on the second). Answers `{ jobId, started, active, phase, enqueued }`. |
+| `POST /vector/rows` | `{ model, ids }`, 1 to 100 ids. Answers `{ model, rows: [{ id, status }] }` for rows the caller may read, where status is `unindexed` (no embedding stored), `pending` (queued, not yet accepted), `indexed` (the accepted digest is the row's current one) or `failed` (stopped retrying). A row the caller may not see, or one that does not exist, is simply absent — the two are indistinguishable, as they are from a read. |
+
+A rebuild is a workspace-scoped job kept in the workspace's own SQLite, not a
+process: it prepares by forgetting what the provider accepted (so every row is
+sent again) and turning accepted digests whose row is gone into deletes, then
+enqueues rows in bounded batches, then verifies the queue is empty. The Durable
+Object can be evicted between batches and the job resumes from its cursor. While
+it runs, search for that workspace answers `503 vector_search_unavailable` with
+`retry-after: 30`, because a half-built index would rank on a state the database
+no longer has. `GET /status` reports the job under `vectorize.rebuild`, so a
+refused search has a visible cause. Retry and rebuild are logged as
+`workspace_vector_rebuild`; neither logs a vector, a note or a claim.
 
 **Erasing a workspace.** `DELETE /` erases the workspace's vectors as part of
 erasing the workspace. The flow is fence → drain → delete → verify, and each
@@ -793,6 +854,10 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `POST /_tapedb/claim` | `{ workspaceId, role? }` → `{ token, workspaceId, roleLevel, expiresAt, expiresIn }` from the identity adapter. `role` asks for a claim at the caller's own role or below it (403 `role_above_membership` above it). The development route takes `{ workspaceId, role?, sub? }` (default OWNER and `dev-user`) and answers `{ token, workspaceId, roleLevel, expiresIn }` |
 | `POST /engine/workspaces/:id/transact` | a transaction: `{ txId, clientTxId?, issuedAt?, ops }` |
 | `POST /engine/workspaces/:id/query` | a one-off read |
+| `POST /engine/workspaces/:id/search` | `{ model, vector, limit?, filter?, where?, select? }` → `{ ok, data: { <model>: rows }, search: { scores, truncated } }`; see [Vector search](#vector-search). 503 `vector_search_unavailable` while that workspace's index is being rebuilt |
+| `POST /engine/workspaces/:id/vector/retry` | ADMIN or higher; requeue failed and dead-lettered index work for this workspace → `{ ok, data: { requeued, pending, failing, deadLettered, indexed } }` |
+| `POST /engine/workspaces/:id/vector/rebuild` | ADMIN or higher; start or join this workspace's one rebuild job → `{ ok, data: { jobId, started, active, phase, enqueued } }` |
+| `POST /engine/workspaces/:id/vector/rows` | `{ model, ids }` → `{ ok, data: { model, rows: [{ id, status }] } }` for rows the caller may read; status is `unindexed`, `pending`, `indexed` or `failed` |
 | `GET /engine/workspaces/:id/schema` | the schema document the workspace runs: `namespaces` (fields with type, default and `personal`, and `access`: each action's rule, `role`, `filter` with the caller's evaluated `where`, or `check`), `links` (with each foreign key's `onDelete`), `files` (each file action's rule) and `caller` (`{ sub, role }`) |
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2. With `?after=<seq>`, it answers once a transaction lands past `seq`, or after 25 seconds |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
