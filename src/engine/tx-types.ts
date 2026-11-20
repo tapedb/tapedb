@@ -159,11 +159,28 @@ export type TxErrorCode =
   | "unique_violation"
   | "foreign_key_violation"
   | "permission_denied"
+  | "rate_limited"
   | "retry_expired"
   | "storage_error";
 
+/**
+ * What a `rate_limited` refusal says about the budget it hit. Written as
+ * separate fields, not a nested object, so a client reads the retry time out
+ * of the same error envelope as the code.
+ */
+export interface TxErrorDetail {
+  /** The model whose budget ran out, or `"workspace"` for the shared one. */
+  model?: string;
+  /** Writes allowed per window. */
+  limit?: number;
+  /** Window length in seconds. */
+  windowSeconds?: number;
+  /** Milliseconds until the window closes and the same write may be retried. */
+  retryAfterMs?: number;
+}
+
 /** Plain-object form of a transaction error, suitable for JSON responses. */
-export interface TxErrorShape {
+export interface TxErrorShape extends TxErrorDetail {
   code: TxErrorCode;
   message: string;
   txId?: string;
@@ -173,12 +190,15 @@ export interface TxErrorShape {
 export interface TxErrorOptions {
   txId?: string;
   opIndex?: number;
+  detail?: TxErrorDetail;
 }
 
 export class TxError extends Error {
   readonly code: TxErrorCode;
   readonly txId?: string;
   readonly opIndex?: number;
+  /** `rate_limited` only: which budget was hit, and when it reopens. */
+  readonly detail?: TxErrorDetail;
 
   constructor(
     code: TxErrorCode,
@@ -190,14 +210,20 @@ export class TxError extends Error {
     this.code = code;
     this.txId = options.txId;
     this.opIndex = options.opIndex;
+    this.detail = options.detail;
   }
 
   toJSON(): TxErrorShape {
-    return {
+    const shape: TxErrorShape = {
       code: this.code,
       message: this.message,
-      ...(this.txId === undefined ? {} : { txId: this.txId }),
-      ...(this.opIndex === undefined ? {} : { opIndex: this.opIndex }),
     };
+    if (this.txId !== undefined) shape.txId = this.txId;
+    if (this.opIndex !== undefined) shape.opIndex = this.opIndex;
+    if (this.detail?.model !== undefined) shape.model = this.detail.model;
+    if (this.detail?.limit !== undefined) shape.limit = this.detail.limit;
+    if (this.detail?.windowSeconds !== undefined) shape.windowSeconds = this.detail.windowSeconds;
+    if (this.detail?.retryAfterMs !== undefined) shape.retryAfterMs = this.detail.retryAfterMs;
+    return shape;
   }
 }
