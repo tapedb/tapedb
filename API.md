@@ -115,8 +115,8 @@ the engine refuses a filter, a `groupBy` and every aggregate measure on one
 
 Nothing here talks to Cloudflare Vectorize: this is the field, its encoding and
 its validation. Mirroring it into an index is `defineTapeDB({ vectorize })`, in
-[`@tapedb/tapedb/worker`](#vector-search); searching that index is not part of
-this release.
+[`@tapedb/tapedb/worker`](#vector-search); querying that index is
+`db.<model>.search({ vector })` on the client.
 
 ## `@tapedb/tapedb` — client
 
@@ -145,6 +145,7 @@ Per model, `db.<model>` is a `ModelClient`:
 | `count({ where? })` | `Query<number>` | |
 | `aggregate(args)` | `Query<…>` | **experimental**: count, sum, avg, min, max |
 | `groupBy(args)` | `Query<…[]>` | **experimental**: the same per group, at most 1000 groups |
+| `search({ vector, limit?, filter?, where?, select? })` | `Promise<{ rows, truncated }>` | **experimental**: nearest neighbour over the vector field this deployment indexes; rows come back nearest first, each carrying `score`; see [Vector search](#vector-search) |
 | `create({ data })` | `Write` | nested create of related rows |
 | `update({ where: { id }, data })` | `Write` | |
 | `upsert({ where: { id }, create, update })` | `Write` | |
@@ -187,8 +188,7 @@ Also exported: `id()` (time-ordered ids), `Query`, `PageQuery`, `Write`,
 types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 `Page`, `Result`, `LiveState`, `WriteResult`, `HistoryEntry`, `Across`, `AcrossModel`, `AcrossOptions`, `AcrossQuery`, `AcrossLiveState`, `AcrossError`, `QueryError`,
 `WriteRejection`, `PresenceRoom`, `PresencePeer`, `RoleClaim`,
-`WorkspaceRole`, `ExportRecord`, and **experimental** `BroadcastTopic` and
-`TopicSender`.
+`WorkspaceRole`, `ExportRecord`, and **experimental** `BroadcastTopic`, `TopicSender`, `SearchArgs`, `SearchFilter` and `SearchResult`.
 
 ### Offline queue
 
@@ -556,6 +556,40 @@ idempotent at the provider. Deleting an ID the index does not hold is not an
 error, so a delete is always queued rather than inferred from local state — an
 upsert whose answer was lost may still have reached the provider.
 
+**Searching.** `db.note.search({ vector })` asks the index for candidates and
+answers with the rows this workspace still holds:
+
+| option | |
+| --- | --- |
+| `vector` | the query embedding: the numbers a write takes, the field's declared length. Another length is refused with the message a write gives (`invalid_value`). |
+| `limit` | matches to return, 1 to 50. Defaults to **10**. A larger number is **refused** (`invalid_value`), never clamped: a caller who asked for 200 and got 50 would read the answer as "this is all there is". |
+| `filter` | equality on the deployment's `filterFields` only, each value typed as its attribute (a string, a number or a boolean). An attribute the deployment did not declare is refused (`invalid_value`) rather than matched against nothing, because the index carries no metadata for it. Applied before the ranking, so a filtered search returns `limit` matches rather than whatever survives a filter over an unfiltered ranking. |
+| `where` | the same filter a read takes, applied to the rows the index returned. |
+| `select` | fields to return, as a read's `select`. The embedding is never returned, even when it is named. |
+
+The result is `{ rows, truncated }`: rows nearest first, each carrying `score`.
+A score is cosine similarity from -1 to 1 — 1 is the same direction as the
+query — as the provider computed it: not a percentage, not a distance, and only
+meaningful for ranking rows within one answer. `truncated` is true when the index
+answered with as many candidates as the limit asked for, so matches may rank
+below the last row returned; false means the index had nothing more to give.
+
+The index is a cache of earlier writes, so a search never answers with what it
+returned. Every candidate is re-read from the workspace's own SQLite through the
+same path a `findMany` takes, so `view` rules, `where` rules and row-level rules
+apply exactly as they do to a read. An id the database no longer holds is
+dropped; so is a row whose embedding or filter value changed after it was
+indexed, because its vector in the index describes a state the row no longer
+has. Neither drop is an error, and neither is reported: a row the caller may not
+see is indistinguishable from one that does not exist, so a search that finds
+nothing answers with no rows and a caller who is allowed nothing gets the same
+shape of answer as one who matched nothing.
+
+A search is not live and is not cached: it is one provider query and one SQLite
+read per call, and the answer ages the moment it is sent. A row written a moment
+ago is not searchable until the queue's upsert has been accepted and has become
+visible at the provider — 73–103 s, measured.
+
 **Limits and what is not here.** Filter strings are truncated to the provider's
 64-byte indexed-string budget on a UTF-8 boundary when copied into metadata; the
 digest covers the untruncated value. Metadata indexes must exist *before* the
@@ -564,8 +598,7 @@ vector, which this release does not do on its own. Erasing a **workspace** is
 not covered: rows are deleted from the index, a workspace's vectors are not, and
 the purge ledger, the fencing of new submissions and the reconciliation of an
 in-flight upsert belong to a later release (see `src/engine/vector-index/erasure.ts`
-for the seam). Search is not here either: this publishes state to the index and
-never reads a query back.
+for the seam).
 
 ### Bindings and settings (`Env`)
 

@@ -40,6 +40,7 @@ import type {
   TransactInput,
   TxOp,
   TxStep,
+  VectorSearchRequest,
   WriteRejection,
 } from "./types";
 
@@ -668,6 +669,53 @@ class DataClientImpl {
       );
     }
     return { data: payload.data, pageInfo: payload.pageInfo ?? {} };
+  }
+
+  /**
+   * One nearest-neighbour search over HTTP, for the indexed vector field.
+   *
+   * Neither cached nor subscribed: the engine answers with rows it re-read from
+   * SQLite and ranked by the index, so every call is one round trip and the
+   * answer is true when it arrives and not after. A row the caller may not read
+   * is absent from `rows` and from `scores`; a row the index still holds but
+   * SQLite no longer does is absent too.
+   */
+  async searchOnce(
+    request: VectorSearchRequest
+  ): Promise<{ rows: QueryEntity[]; scores: Record<string, number>; truncated: boolean }> {
+    const problem = this.configProblem();
+    if (problem) throw new Error(problem);
+
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/search`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(request),
+      }
+    );
+    const payload = (await response.json().catch(() => null)) as {
+      ok?: boolean;
+      data?: Record<string, QueryEntity[]>;
+      search?: { scores?: Record<string, number>; truncated?: boolean };
+    } | null;
+    if (!response.ok || payload?.ok !== true || payload.data === undefined) {
+      const error = readServerError(payload);
+      throw new ServerError(
+        error?.code ?? "http_error",
+        error?.message ?? `Search failed with HTTP ${response.status}.`,
+        response.status
+      );
+    }
+    return {
+      rows: payload.data[request.model] ?? [],
+      scores: payload.search?.scores ?? {},
+      truncated: payload.search?.truncated === true,
+    };
   }
 
   /** The workspace's file index. */

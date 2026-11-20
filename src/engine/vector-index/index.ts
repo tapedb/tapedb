@@ -7,8 +7,9 @@
  * through whatever `VectorIndex` the deployment has — the Cloudflare binding in
  * a Worker, `MemoryVectorIndex` in a test.
  *
- * Search is not here: this module publishes state to the index, it never reads
- * a query back.
+ * `executeVectorSearch` is the other direction: it asks the index for
+ * candidates and then re-reads them from SQLite, which decides which of them
+ * still exist and which of them the caller may see.
  */
 
 export type {
@@ -65,4 +66,11 @@ export {
   type VectorDrainSummary,
   type VectorQueueCounts,
 } from "./queue";
+export {
+  VECTOR_SEARCH_DEFAULT_LIMIT,
+  VECTOR_SEARCH_MAX_LIMIT,
+  executeVectorSearch,
+  type VectorSearchAnswer,
+  type VectorSearchRequest,
+} from "./search";
 export { VECTOR_ERASURE_HOOK, type VectorErasureHook } from "./erasure";

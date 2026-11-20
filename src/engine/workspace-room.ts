@@ -76,6 +76,7 @@ import {
   cloudflareVectorIndex,
   drainVectorQueue,
   dropVectorCapture,
+  executeVectorSearch,
   installVectorCapture,
   isVectorizeBinding,
   materialiseVectorIntents,
@@ -84,6 +85,7 @@ import {
   vectorQueueDueAt,
   type ConfiguredVectorize,
   type VectorIndex,
+  type VectorSearchRequest,
 } from "./vector-index";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { MAX_SOCKET_MESSAGE_BYTES } from "../socket-protocol";
@@ -921,6 +923,17 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return this.query(request);
     }
 
+    if (url.pathname === "/search") {
+      if (request.method !== "POST") {
+        return apiError(
+          405,
+          "method_not_allowed",
+          `${request.method} is not supported for ${url.pathname}.`
+        );
+      }
+      return this.vectorSearch(request);
+    }
+
     // Who changed one row, and when (audit.ts). Admins and owners only: it
     // names other users.
     if (url.pathname === "/history") {
@@ -1289,6 +1302,62 @@ export class WorkspaceRoom extends DurableObject<Env> {
           { ok: false, error: error.toJSON() },
           statusForQueryError(error.code)
         );
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Nearest-neighbour search over the indexed vector field.
+   *
+   * The claim is read from the Worker-forwarded header exactly as a read's is,
+   * and the answer is built the same way: what comes back is what the caller may
+   * see, shipped as `data` keyed by the model. Scores travel beside the rows in
+   * `search`, one per returned ID. The room answers with rows or with a refusal;
+   * a candidate the caller may not read is not distinguishable from one that
+   * does not exist.
+   */
+  private async vectorSearch(request: Request): Promise<Response> {
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return json(
+        {
+          ok: false,
+          error: {
+            code: "invalid_envelope",
+            message: "Request body must be valid JSON.",
+          },
+        },
+        400
+      );
+    }
+
+    try {
+      const claim = readTrustedRoleClaim(request, this.workspaceId);
+      const config = this.config.vectorize;
+      const raw = durableObjectSqlExecutor(this.ctx.storage);
+      const sql = this.personal?.sql(raw) ?? raw;
+      const answer = await executeVectorSearch({
+        sql,
+        claim,
+        config,
+        index: config === null ? null : this.vectorIndexFor(config),
+        workspaceId: this.workspaceId,
+        request: (body ?? {}) as VectorSearchRequest,
+        // A read that touches a personal field defers its key fetches; the
+        // personal runtime answers by running the read again.
+        ...(this.personal === undefined ? {} : { reads: <T,>(fn: () => T) => this.personal!.read(fn) }),
+      });
+      return json({
+        ok: true,
+        data: { [answer.model]: answer.rows },
+        search: { scores: answer.scores, truncated: answer.truncated },
+      });
+    } catch (error) {
+      if (error instanceof TxError) {
+        return json({ ok: false, error: error.toJSON() }, statusForQueryError(error.code));
       }
       throw error;
     }
