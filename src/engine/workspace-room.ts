@@ -72,6 +72,19 @@ import {
   type WebhookTransport,
 } from "./webhooks";
 import { findNamespace } from "./registry";
+import {
+  cloudflareVectorIndex,
+  drainVectorQueue,
+  dropVectorCapture,
+  installVectorCapture,
+  isVectorizeBinding,
+  materialiseVectorIntents,
+  vectorIndexMatches,
+  vectorQueueCounts,
+  vectorQueueDueAt,
+  type ConfiguredVectorize,
+  type VectorIndex,
+} from "./vector-index";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { MAX_SOCKET_MESSAGE_BYTES } from "../socket-protocol";
 import { SocketLimitError, acceptPart, forgetOtherSockets, forgetSocket, isSpilled, loadAttachment, storeAttachment } from "./socket-state";
@@ -120,6 +133,8 @@ type CountRow = Record<string, SqlStorageValue> & { total: number };
 
 /** Delay between a write and the first durability pass. */
 const DURABILITY_ALARM_DELAY_MS = 30_000;
+/** A write wakes the alarm this soon, so its vector intent is drained early. */
+const VECTOR_DRAIN_DELAY_MS = 1_000;
 /** How long `/status?after=` waits for a new transaction before answering anyway. */
 const STATUS_WAIT_MS = 25_000;
 /** How long a recovery waits after R2 failed to answer. */
@@ -181,6 +196,12 @@ export interface WorkspaceRoomOptions {
    * needs few rows. Per room, so one test cannot resize another's parts.
    */
   logPartBytes?: number;
+  /**
+   * Tests only: the index this room's queue drains into, replacing the
+   * deployment binding. Per room, so a test can drive the drain against a
+   * deterministic implementation without a deployed index.
+   */
+  vectorIndex?: VectorIndex;
   /** Per-model and per-workspace write budgets; absent means none are checked. */
   limits?: LimitsOptions;
   /** Clock for budget windows. Tests inject one; a deployment uses the wall clock. */
@@ -237,6 +258,18 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private readonly config: DeploymentConfig;
   /** This deployment's write budgets, already validated; absent means none. */
   private readonly writeLimits?: ResolvedWriteLimits;
+  /** Tests only: the index this room drains into; the deployment binding otherwise. */
+  private readonly vectorIndexOverride: VectorIndex | null;
+  /** The index resolved for this room, once, so a drain does not re-wrap a binding. */
+  private resolvedVectorIndex: { binding: string; index: VectorIndex } | null = null;
+  /**
+   * What `describe()` said about the live index: cached only for a definite
+   * mismatch, which a redeploy or a room restart clears. A `describe()` that
+   * threw is retried on the next pass.
+   */
+  private vectorIndexCheck: { binding: string; ok: boolean } | null = null;
+  /** One drain at a time, so two alarm passes cannot submit the same batch. */
+  private drainingVectors = false;
   /** The clock budget windows are measured against. */
   private readonly clock: () => number;
 
@@ -260,6 +293,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
           ...(options.logPartBytes === undefined ? {} : { logPartBytes: options.logPartBytes }),
         });
     this.clock = options.clock ?? Date.now;
+    this.vectorIndexOverride = options.vectorIndex ?? null;
     void ctx.blockConcurrencyWhile(() => this.boot());
   }
 
@@ -314,6 +348,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // A migration's own writes (a backfill, a table rebuild) are not events a
     // consumer asked about; capture starts again once the schema is final.
     dropWebhookCapture(durableObjectSqlExecutor(ctx.storage));
+    dropVectorCapture(durableObjectSqlExecutor(ctx.storage));
     await this.applyMigrations();
     syncAuditCapture(durableObjectSqlExecutor(ctx.storage), this.config.audit);
     if (hasPersonalFields()) {
@@ -352,6 +387,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // Capture is installed only once no restore is in flight: rows a recovery
     // replays are not writes a consumer made, and must not become events.
     if (!this.recovering) this.syncWebhookCapture();
+    if (!this.recovering) this.syncVectorCapture();
     if (!this.recovering) await this.scheduleNextDurabilityAlarm(Date.now());
   }
 
@@ -440,6 +476,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (wasRecovering) {
       // Writes are served again: capture any webhook the deployment asked for.
       this.syncWebhookCapture();
+      this.syncVectorCapture();
       await this.scheduleNextDurabilityAlarm(Date.now());
     }
   }
@@ -457,6 +494,125 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // A workspace that cannot install capture still serves reads and writes;
       // the next boot tries again.
       console.error("workspace_webhook_capture_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+    }
+  }
+
+  /**
+   * Creates the index queue and its capture triggers when the deployment asked
+   * for vector search. Runs once recovery has finished, for the same reason the
+   * webhook capture does: rows a restore replays are not writes a consumer made
+   * and must not be published as if they were.
+   */
+  private syncVectorCapture(): void {
+    const config = this.config.vectorize;
+    if (config === null) return;
+    try {
+      installVectorCapture(durableObjectSqlExecutor(this.ctx.storage), config);
+    } catch (error) {
+      // Reads and writes keep working; the queue is created at the next boot.
+      console.error("workspace_vector_capture_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+    }
+  }
+
+  /**
+   * The index this room submits to: the deployment's binding, looked up by the
+   * name `vectorize.index` gives, or the room's override in a test. A binding
+   * that is absent is not an error — the queue keeps the intents and `/status`
+   * counts them, so a deployment that forgets the binding loses freshness, not
+   * writes.
+   */
+  private vectorIndexFor(config: ConfiguredVectorize): VectorIndex | null {
+    if (this.vectorIndexOverride !== null) return this.vectorIndexOverride;
+    if (this.resolvedVectorIndex?.binding === config.binding) return this.resolvedVectorIndex.index;
+    const binding = (this.roomEnv as unknown as Record<string, unknown>)[config.binding];
+    if (!isVectorizeBinding(binding)) return null;
+    const index = cloudflareVectorIndex(binding, config.binding);
+    this.resolvedVectorIndex = { binding: config.binding, index };
+    return index;
+  }
+
+  /**
+   * `describe()` once per room: an index of another shape accepts nothing the
+   * schema writes, and a mismatch is cheaper to find here than as a wall of
+   * rejected upserts. A mismatch is remembered; a `describe()` that threw is
+   * retried on the next pass.
+   */
+  private async vectorIndexUsable(index: VectorIndex, config: ConfiguredVectorize): Promise<boolean> {
+    if (this.vectorIndexCheck?.binding === config.binding) return this.vectorIndexCheck.ok;
+    let description: { dimensions?: number; metric?: string };
+    try {
+      description = await index.describe();
+    } catch (error) {
+      console.error("workspace_vector_index_unavailable", {
+        workspaceId: this.workspaceId,
+        binding: config.binding,
+        error: errorMessage(error),
+      });
+      return false;
+    }
+    const match = vectorIndexMatches(config, description);
+    if (!match.ok) {
+      console.error("workspace_vector_index_mismatch", {
+        workspaceId: this.workspaceId,
+        binding: config.binding,
+        reason: match.reason,
+      });
+      this.vectorIndexCheck = { binding: config.binding, ok: false };
+      return false;
+    }
+    this.vectorIndexCheck = { binding: config.binding, ok: true };
+    return true;
+  }
+
+  /**
+   * Turns the intents this write captured into a publishable form, and asks for
+   * the alarm that drains them. A failure here cannot change the answer the
+   * write gives: the row and its intent are already committed, and the next
+   * drain materialises whatever this left behind.
+   */
+  private async emitVectorIntents(sql: SqlExecutor): Promise<void> {
+    const config = this.config.vectorize;
+    if (config === null) return;
+    try {
+      const changed = await materialiseVectorIntents(sql, config, this.workspaceId, Date.now());
+      if (changed > 0) await this.scheduleVectorDrain();
+    } catch (error) {
+      console.error("workspace_vector_emit_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+    }
+  }
+
+  /** Wakes the alarm soon after a write, so its intent is not waiting on the flush. */
+  private async scheduleVectorDrain(): Promise<void> {
+    await this.scheduleDurabilityAlarm(Date.now() + VECTOR_DRAIN_DELAY_MS);
+  }
+
+  /**
+   * One drain pass, from the durability alarm: materialise anything a write or
+   * an import left captured, then submit the due batches. Nothing here waits
+   * for the vectors to become visible — the provider is asynchronous, measured
+   * at ~73–103 s behind an accepted upsert, and `pending` is the normal state
+   * of a freshly written row.
+   */
+  private async drainPendingVectors(): Promise<void> {
+    const config = this.config.vectorize;
+    if (config === null || this.drainingVectors) return;
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    // An import or the auth projection writes without `/transact`; its captures
+    // become intents here, exactly as the webhook drain does.
+    await materialiseVectorIntents(sql, config, this.workspaceId, Date.now());
+    const index = this.vectorIndexFor(config);
+    if (index === null) return;
+    if (!(await this.vectorIndexUsable(index, config))) return;
+
+    this.drainingVectors = true;
+    try {
+      const summary = await drainVectorQueue(sql, index, config, this.workspaceId, Date.now());
+      if (summary.pending > 0 && summary.nextAt !== null) {
+        // Either a retry is due (its backoff) or a batch is left over.
+        await this.scheduleDurabilityAlarm(Math.max(Date.now() + VECTOR_DRAIN_DELAY_MS, summary.nextAt));
+      }
+    } finally {
+      this.drainingVectors = false;
     }
   }
 
@@ -1069,6 +1225,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
           console.error("workspace_webhook_emit_failed", { workspaceId, error: errorMessage(error) });
         }
       }
+      // The index intent is committed with the write too. Turning it into a
+      // digest is best-effort and never re-runs the write: whatever it leaves
+      // behind is materialised by the next drain, from the same rows.
+      await this.emitVectorIntents(sql);
       // Replays and no-op deletes changed no rows; do not re-run queries.
       const touched = touchedNamespacesFromEnvelope(envelope);
       if (result.applied > 0 && touched.size > 0) {
@@ -2267,6 +2427,16 @@ export class WorkspaceRoom extends DurableObject<Env> {
       }
     }
 
+    // The index is a cache: it is drained after the log has reached R2 for the
+    // same reason, and an index that is down costs a retry, never a write.
+    if (this.config.vectorize !== null) {
+      try {
+        await this.drainPendingVectors();
+      } catch (error) {
+        console.error("workspace_vector_drain_failed", { workspaceId, error: errorMessage(error) });
+      }
+    }
+
     // Re-read the clock: a chunked snapshot can take long enough that the
     // timestamp captured before the tick is already in the past.
     await this.scheduleNextDurabilityAlarm(Date.now());
@@ -2324,6 +2494,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (snapshotAt !== null) later(Math.max(snapshotAt, now + DURABILITY_ALARM_DELAY_MS));
     const pruneAt = historyPruneAt(sql);
     if (pruneAt !== null) later(Math.max(pruneAt, now + DURABILITY_ALARM_DELAY_MS));
+    // Index intents are retried on their own schedule: a backoff of an hour
+    // must not be polled every 30 s, and a queued batch must not wait for the
+    // next flush to be sent.
+    if (this.config.vectorize !== null) {
+      const vectorAt = vectorQueueDueAt(durableObjectSqlExecutor(this.ctx.storage));
+      if (vectorAt !== null) later(Math.max(vectorAt, now + VECTOR_DRAIN_DELAY_MS));
+    }
 
     if (nextAt !== null) {
       await this.scheduleDurabilityAlarm(nextAt);
@@ -2570,6 +2747,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // What the webhook outbox holds, when this deployment delivers them: a
       // dead-lettered event is visible here without reading the table.
       ...(webhooksConfigured(this.config.webhooks) ? { webhooks: webhookCounts(durableObjectSqlExecutor(this.ctx.storage)) } : {}),
+      // Index intents waiting, failing and accepted. `pending` is a normal
+      // state: the provider accepts asynchronously and its visibility lags
+      // acceptance by a minute or more, so this is a queue depth, not a
+      // confirmation that anything is searchable yet.
+      ...(this.config.vectorize !== null
+        ? { vectorize: vectorQueueCounts(durableObjectSqlExecutor(this.ctx.storage)) }
+        : {}),
     });
   }
 }

@@ -20,6 +20,7 @@ import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
 import { resolveRealtime, type RealtimeOptions, type TopicOptions } from "../engine/topics";
 import { resolveWebhooks, type WebhookOptions } from "../engine/webhooks";
+import { resolveVectorize, type VectorizeOptions } from "../engine/vector-index";
 import { resolveWriteLimits, type LimitsOptions } from "../engine/rate-limits";
 import { fileRulesConfigured, resolveFileRules } from "../engine/file-access";
 import { deploymentConfig, type DeploymentConfig } from "../engine/config";
@@ -156,6 +157,33 @@ export interface DefineTapeDBOptions {
    * @experimental May change in a minor release.
    */
   webhooks?: readonly WebhookOptions[];
+  /**
+   * Mirrors one model's vector attribute into a Cloudflare Vectorize index.
+   *
+   *   vectorize: { index: "VECTORIZE", model: "note", field: "embedding",
+   *                filterFields: ["archived"] }
+   *
+   * `index` names the binding in `Env`; `model` and `field` say what is
+   * indexed, and `filterFields` which scalar attributes are copied into the
+   * vector's metadata and may be filtered on (at most ten). The option is
+   * validated against the schema when the Worker is defined: a field that is
+   * not a `t.vector({ dimensions })` attribute, a filter that is not a flat
+   * string, number or boolean, and a personal filter are all refused there.
+   *
+   * A write commits its row and its indexing intent in one transaction, so
+   * indexing can never fail or slow a commit; the intent is drained from the
+   * durability alarm, retried with backoff, and visible on `GET /status`. A
+   * vector is not searchable the moment it is written — batch indexing is
+   * asynchronous at the provider and was measured 73–103 s behind an accepted
+   * upsert — so `pending` is the normal state of a fresh row. Search itself is
+   * not part of this option yet: this publishes state to the index.
+   *
+   * Leave it out and no table is created, no binding is read and nothing is
+   * written.
+   *
+   * @experimental May change in a minor release.
+   */
+  vectorize?: VectorizeOptions;
   /**
    * The admin HTTP API for backends: `POST /v1/query`, `/v1/transact` and
    * `/v1/claim`, in front of the same room routes a client uses.
@@ -359,6 +387,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
     files: resolveFileRules(schema.files),
     realtime: resolveRealtime(options.realtime, options.topics),
     webhooks: resolveWebhooks(options.webhooks),
+    vectorize: resolveVectorize(options.vectorize),
   });
   // Refused here, when the Worker is defined, rather than on the first write.
   // Each room resolves its own copy from these options; nothing is shared.
@@ -566,6 +595,16 @@ export type { ClaimIdentity } from "../mint";
 export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
 export type { TopicAction, TopicAuthorizer, TopicOptions } from "../engine/topics";
 export type { WebhookEvent, WebhookEventPayload, WebhookOptions } from "../engine/webhooks";
+export type {
+  VectorIndex,
+  VectorIndexDescription,
+  VectorIndexMutation,
+  VectorMatch,
+  VectorQueryOptions,
+  VectorQueryResult,
+  VectorRecord,
+  VectorizeOptions,
+} from "../engine/vector-index";
 export type { LimitsOptions, WriteLimit, WriteLimitsOptions } from "../engine/rate-limits";
 export type { HttpApiOptions, HttpApiToken } from "./admin";
 export type {

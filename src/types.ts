@@ -17,6 +17,13 @@ export interface Env {
   DATA: R2Bucket;
   /** Uploaded files. Optional unless `db.$files` is used. */
   FILES?: R2Bucket;
+  /**
+   * The Vectorize index, when `defineTapeDB({ vectorize })` names it. The
+   * binding is read by the name the option gives, so any binding name works;
+   * this field documents the conventional one and keeps `Env` closed. Absent
+   * means nothing is submitted — the queue keeps its intents and counts them.
+   */
+  VECTORIZE?: VectorizeIndex;
 
   /** Original buckets and optional namespace while moving workspaces. */
   DATA_FROM?: R2Bucket;
