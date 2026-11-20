@@ -260,6 +260,12 @@ export interface ErrorMessage {
   type: "error";
   code: string;
   message?: string;
+  /**
+   * What the code is about, when it is about one thing: the presence room a
+   * `presence_*` refusal refused, so a socket holding several rooms can tell
+   * the app which one said no. Absent on errors that are not about a target.
+   */
+  target?: string;
 }
 
 export type ServerMessage =

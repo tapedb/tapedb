@@ -22,7 +22,9 @@ import type {
   InitConfig,
   OutboxEntry,
   PresencePeer,
+  PresenceError,
   PresencePeersOptions,
+  PresenceSubscribeOptions,
   QueryDocument,
   QueryEntity,
   QueryError,
@@ -408,7 +410,11 @@ class DataClientImpl {
   private sessionClientId: string | undefined;
   private readonly presenceListeners = new Map<
     string,
-    Set<{ includeSelf: boolean; listener: (peers: PresencePeer[]) => void }>
+    Set<{
+      includeSelf: boolean;
+      listener: (peers: PresencePeer[]) => void;
+      onError?: (error: PresenceError) => void;
+    }>
   >();
   private readonly localPresence = new Map<
     string,
@@ -787,14 +793,18 @@ class DataClientImpl {
   subscribePresence(
     target: string,
     listener: (peers: PresencePeer[]) => void,
-    options: PresencePeersOptions = {}
+    options: PresenceSubscribeOptions = {}
   ): () => void {
     let listeners = this.presenceListeners.get(target);
     if (!listeners) {
       listeners = new Set();
       this.presenceListeners.set(target, listeners);
     }
-    const entry = { includeSelf: options.includeSelf !== false, listener };
+    const entry = {
+      includeSelf: options.includeSelf !== false,
+      listener,
+      ...(options.onError === undefined ? {} : { onError: options.onError }),
+    };
     listeners.add(entry);
     this.ensureSocket();
     listener(this.peersFor(target, entry.includeSelf));
@@ -1320,6 +1330,52 @@ class DataClientImpl {
     }
   }
 
+  /**
+   * An `error` frame, routed to the handle whose request it refused.
+   *
+   * Presence refusals name the room they refused (`target`), so a socket that
+   * holds several rooms can tell an app which one said no. A refusal naming a
+   * room this client has no handle for is not dropped: it goes to every room
+   * handle instead, because a frame nobody can route is the silence this
+   * exists to remove. A code this client does not know is ignored outright —
+   * one unreadable frame must never take the socket down.
+   *
+   * Topic refusals arrive as `topic:error` and are routed in the switch; one
+   * shaped as `error` with a `topic_` code is routed the same way here so a
+   * newer engine has somewhere to land.
+   */
+  private deliverError(message: { code: string; target?: string; message?: string }): void {
+    const target = typeof message.target === "string" ? message.target : null;
+
+    if (message.code.startsWith("topic_")) {
+      if (target === null) return;
+      for (const listener of [...(this.topicListeners.get(target) ?? [])]) {
+        try {
+          listener.error?.({ code: message.code, message: message.message ?? message.code });
+        } catch {
+          // One listener's error must not keep the refusal from the rest.
+        }
+      }
+      return;
+    }
+
+    if (!message.code.startsWith("presence_")) return;
+    const error: PresenceError = { code: message.code, target };
+    const named = target === null ? undefined : this.presenceListeners.get(target);
+    const entries =
+      named === undefined
+        ? [...this.presenceListeners.values()].flatMap((set) => [...set])
+        : [...named];
+    for (const entry of entries) {
+      if (entry.onError === undefined) continue;
+      try {
+        entry.onError(error);
+      } catch {
+        // An app's callback must not break the socket's message loop.
+      }
+    }
+  }
+
   private handleServerMessage(message: ServerMessage): void {
     switch (message.type) {
       case "session:ready": {
@@ -1383,6 +1439,10 @@ class DataClientImpl {
       case "presence:update": {
         this.peerCache.set(message.target, message.peers);
         this.notifyPresence(message.target);
+        return;
+      }
+      case "error": {
+        this.deliverError(message);
         return;
       }
       case "cursor:update": {
