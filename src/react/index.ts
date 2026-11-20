@@ -16,6 +16,10 @@ import type { PresencePeer, PresencePeersOptions } from "../client/types";
 import type { BroadcastTopic, LiveState, Page, PageQuery, PresenceRoom, Query } from "../model/client";
 import type { TopicGap, TopicSender } from "../client/types";
 
+// Public, because `usePresence` takes it and `PresenceRoom.peers()` returns to
+// it: a type a signature names must be nameable from the entry that names it.
+export type { PresencePeersOptions } from "../client/types";
+
 /**
  * Live results for a query: `useLive(db.task.findMany({ where }))`.
  *
