@@ -57,7 +57,8 @@ import { flushPending, snapshotWorkspace } from "./durability";
 import { describeAccess, viewDependsOnSubject } from "./tx-permissions";
 import { readLog } from "./log-read";
 import { isTopic, REPLAY_MESSAGES, maxPresenceRooms, realtimeAllowed, topicReplayMs } from "./topics";
-import { auditEnabled, dropAuditCapture, rowHistory, syncAuditCapture } from "./audit";
+import { dropAuditCapture, rowHistory, syncAuditCapture } from "./audit";
+import { defaultDeploymentConfig, deploymentConfig, type DeploymentConfig } from "./config";
 import {
   WEBHOOK_DELIVERY_DELAY_MS,
   WEBHOOK_PASS_ATTEMPTS,
@@ -66,8 +67,9 @@ import {
   dropWebhookCapture,
   installWebhookCapture,
   webhookCounts,
-  webhookTransport,
+  defaultWebhookTransport,
   webhooksConfigured,
+  type WebhookTransport,
 } from "./webhooks";
 import { findNamespace } from "./registry";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
@@ -162,6 +164,23 @@ const ERASING_TABLE = "_tapedb_erasing";
  * rooms) in one process never share a budget.
  */
 export interface WorkspaceRoomOptions {
+  /**
+   * This deployment's configuration: audit, file rules, realtime, webhooks,
+   * the log part size and the webhook transport. `defineTapeDB` always passes
+   * the one it built; a room constructed without it (a durability test, a
+   * standalone engine call) gets the frozen unconfigured default.
+   */
+  config?: DeploymentConfig;
+  /**
+   * Tests only: the network this room's webhooks post to, replacing the
+   * deployment's. Per room, so one test cannot stub another's delivery.
+   */
+  webhookTransport?: WebhookTransport;
+  /**
+   * Tests only: a smaller log part size for this room, so a multi-part entry
+   * needs few rows. Per room, so one test cannot resize another's parts.
+   */
+  logPartBytes?: number;
   /** Per-model and per-workspace write budgets; absent means none are checked. */
   limits?: LimitsOptions;
   /** Clock for budget windows. Tests inject one; a deployment uses the wall clock. */
@@ -214,6 +233,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private limiter = false;
   private misplaced: string | null = null;
   private invalidationTimer: ReturnType<typeof setTimeout> | null = null;
+  /** This deployment's configuration; a frozen value, never a module global. */
+  private readonly config: DeploymentConfig;
   /** This deployment's write budgets, already validated; absent means none. */
   private readonly writeLimits?: ResolvedWriteLimits;
   /** The clock budget windows are measured against. */
@@ -228,6 +249,16 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // Validated once per room: a bad limit fails at construction, not on the
     // first write, and an unconfigured room keeps `undefined` and pays one check.
     this.writeLimits = resolveWriteLimits(options.limits?.writes);
+    // Whatever the Worker built travels with this room only. A test that builds
+    // a room without one gets the frozen defaults, never another room's.
+    const base = options.config ?? defaultDeploymentConfig();
+    this.config = options.webhookTransport === undefined && options.logPartBytes === undefined
+      ? base
+      : deploymentConfig({
+          ...base,
+          ...(options.webhookTransport === undefined ? {} : { webhookTransport: options.webhookTransport }),
+          ...(options.logPartBytes === undefined ? {} : { logPartBytes: options.logPartBytes }),
+        });
     this.clock = options.clock ?? Date.now;
     void ctx.blockConcurrencyWhile(() => this.boot());
   }
@@ -284,7 +315,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // consumer asked about; capture starts again once the schema is final.
     dropWebhookCapture(durableObjectSqlExecutor(ctx.storage));
     await this.applyMigrations();
-    syncAuditCapture(durableObjectSqlExecutor(ctx.storage));
+    syncAuditCapture(durableObjectSqlExecutor(ctx.storage), this.config.audit);
     if (hasPersonalFields()) {
       this.personal = new PersonalRuntime(env, this.workspaceId);
       installPersonalCapture(durableObjectSqlExecutor(ctx.storage));
@@ -351,6 +382,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       durableObjectRecoverySqlExecutor(this.ctx.storage),
       this.workspaceId,
       {
+        config: this.config,
         // Called between chunks, segments and the parts of a large log
         // entry. A unit as slow as the slowest so far must still fit: a step
         // that runs past Cloudflare's 30 s of CPU resets the object.
@@ -388,7 +420,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
     const wasRecovering = this.recovering;
     this.recovering = false;
-    if (this.personal && !await migratePersonal(durableObjectSqlExecutor(this.ctx.storage), this.personal, fn => this.ctx.storage.transaction(fn), Date.now() + Math.min(budgetMs, 4000))) {
+    if (this.personal && !await migratePersonal(durableObjectSqlExecutor(this.ctx.storage), this.personal, fn => this.ctx.storage.transaction(fn), Date.now() + Math.min(budgetMs, 4000), this.config)) {
       this.recovering = true;
       await this.ctx.storage.setAlarm(Date.now());
       return;
@@ -418,9 +450,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * transaction of their own, so this runs only once recovery is finished.
    */
   private syncWebhookCapture(): void {
-    if (!webhooksConfigured()) return;
+    if (!webhooksConfigured(this.config.webhooks)) return;
     try {
-      installWebhookCapture(durableObjectSqlExecutor(this.ctx.storage));
+      installWebhookCapture(durableObjectSqlExecutor(this.ctx.storage), this.config.webhooks);
     } catch (error) {
       // A workspace that cannot install capture still serves reads and writes;
       // the next boot tries again.
@@ -594,8 +626,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
         const sql = durableObjectSqlExecutor(this.ctx.storage);
         for (let index = 0; index < ops.length; index += 100) {
           const envelope = { txId: crypto.randomUUID(), ops: ops.slice(index, index + 100) };
-          if (this.personal) await runPersonalTransaction(sql, this.personal, this.workspaceId, claim, envelope);
-          else runTransaction(sql, this.workspaceId, claim, envelope);
+          if (this.personal) await runPersonalTransaction(sql, this.personal, this.workspaceId, claim, envelope, this.config);
+          else runTransaction(sql, this.workspaceId, claim, envelope, this.config);
         }
         changed = true;
       });
@@ -619,7 +651,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       if (request.method !== "POST") return apiError(405, "method_not_allowed", "Import uses POST.");
       this.importing = true;
       try {
-        const rows = await importWorkspace(durableObjectSqlExecutor(this.ctx.storage), request, claim, this.workspaceId, this.personal);
+        const rows = await importWorkspace(durableObjectSqlExecutor(this.ctx.storage), request, claim, this.workspaceId, this.config, this.personal);
         await this.scheduleNextDurabilityAlarm(Date.now());
         return json({ ok: true, imported: { rows } });
       } catch (error) { return apiError(error instanceof TxError && error.code === "conflict" ? 409 : 400, "import_failed", errorMessage(error)); }
@@ -637,7 +669,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         const headers = new Headers(init.headers);
         headers.set("x-tapedb-claims", trustedClaim);
         return this.route(new Request(new URL(path, "https://room.internal"), { ...init, headers }));
-      });
+      }, this.config.files);
       return this.serializeFileWork(() => {
         if (this.moveState?.state === "frozen" || this.moveState?.state === "moved") return Promise.resolve(apiError(409, "workspace_moving", "File operations resume after the move."));
         return handle(request, this.roomEnv, this.workspaceId, url.pathname.slice("/storage/".length), claim.role, request.headers.get("x-tapedb-claims")!);
@@ -749,7 +781,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
         return apiError(403, "insufficient_role", "Reading the history needs an admin or owner.");
       }
-      if (!auditEnabled()) {
+      if (!this.config.audit) {
         return apiError(409, "audit_disabled", "This deployment does not record an audit; set defineTapeDB({ audit: true }).");
       }
       const model = findNamespace(url.searchParams.get("model") ?? "");
@@ -802,7 +834,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         throw error;
       }
       return new Response(
-        exportStream(durableObjectSqlExecutor(this.ctx.storage), claim, this.workspaceId, this.personal),
+        exportStream(durableObjectSqlExecutor(this.ctx.storage), claim, this.workspaceId, this.personal, this.config.files),
         { headers: { "content-type": "application/x-ndjson; charset=utf-8", "cache-control": "no-store" } }
       );
     }
@@ -826,7 +858,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         const action = body.action === "delete" ? "delete" : "read";
         const sql = durableObjectSqlExecutor(this.ctx.storage);
         const stored = typeof body.path === "string" ? this.storedFile(sql, body.path) : undefined;
-        const allowed = stored && (fileRulesConfigured() ? await this.readPersonal(view => authorizeFile(view, claim, action, stored)) : claim.role >= (action === "read" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR));
+        const allowed = stored && (fileRulesConfigured(this.config.files) ? await this.readPersonal(view => authorizeFile(view, claim, this.config.files, action, stored)) : claim.role >= (action === "read" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR));
         if (!allowed) return apiError(404, "not_found", "No such file.");
         return json(sql.one<{ key: string }>(`SELECT r2_key AS key FROM "_files" WHERE path = ?`, body.path!) ?? {});
       }
@@ -835,7 +867,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
           ? this.authorizeFileRequest(request, claim)
           : apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
       }
-      if (!fileRulesConfigured()) {
+      if (!fileRulesConfigured(this.config.files)) {
         const needed = request.method === "GET" ? WORKSPACE_ROLE_LEVELS.MEMBER : WORKSPACE_ROLE_LEVELS.EDITOR;
         if (claim.role < needed) return apiError(403, "insufficient_role", "Insufficient role for this file operation.");
       }
@@ -933,11 +965,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
       for (const socket of this.ctx.getWebSockets()) this.closeSocket(socket, 1012, "workspace moving");
       const sql = durableObjectRecoverySqlExecutor(this.ctx.storage);
       for (;;) {
-        const result = await flushPending(this.roomEnv.DATA, sql, this.workspaceId, Date.now());
+        const result = await flushPending(this.roomEnv.DATA, sql, this.workspaceId, Date.now(), {}, this.config);
         if (result.error) return apiError(503, "move_flush_failed", result.error);
         if (!result.flushed) break;
       }
-      const snapshot = await snapshotWorkspace(this.roomEnv.DATA, sql, this.workspaceId, Date.now());
+      const snapshot = await snapshotWorkspace(this.roomEnv.DATA, sql, this.workspaceId, Date.now(), {}, this.config);
       return snapshot.snapshotted ? json({ ok: true }) : apiError(503, "move_snapshot_failed", snapshot.error ?? "Snapshot failed.");
     }
     if (path === "/move/finish") {
@@ -1010,8 +1042,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
       let result: TxResult;
       try {
         result = this.personal
-          ? await this.ctx.storage.transaction(() => runPersonalTransaction(sql, this.personal!, workspaceId, claim, envelope))
-          : runTransaction(sql, workspaceId, claim, envelope);
+          ? await this.ctx.storage.transaction(() => runPersonalTransaction(sql, this.personal!, workspaceId, claim, envelope, this.config))
+          : runTransaction(sql, workspaceId, claim, envelope, this.config);
       } catch (error) {
         if (budget !== null) releaseWriteBudget(sql, budget);
         throw error;
@@ -1030,9 +1062,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
       this.wakeSequenceWaiters();
       // Capture rows are already committed with the write; turning them into
       // outbox events must never change the answer this request gives.
-      if (webhooksConfigured()) {
+      if (webhooksConfigured(this.config.webhooks)) {
         try {
-          if (drainWebhookChanges(sql, workspaceId) > 0) await this.scheduleWebhookDelivery();
+          if (drainWebhookChanges(sql, workspaceId, this.config.webhooks) > 0) await this.scheduleWebhookDelivery();
         } catch (error) {
           console.error("workspace_webhook_emit_failed", { workspaceId, error: errorMessage(error) });
         }
@@ -1338,7 +1370,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       this.topicError(ws, topic, "invalid_topic", "A topic is 1 to 128 of A-Z a-z 0-9 : _ . -");
       return;
     }
-    if (!(await realtimeAllowed(claimFromAttachment(attachment, this.workspaceId), "topic", topic, "join"))) {
+    if (!(await realtimeAllowed(this.config.realtime, claimFromAttachment(attachment, this.workspaceId), "topic", topic, "join"))) {
       this.topicError(ws, topic, "permission_denied", `Not allowed to join topic "${topic}".`);
       return;
     }
@@ -1350,12 +1382,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // What the socket missed while it was away, then where the topic is now.
     const sql = durableObjectSqlExecutor(this.ctx.storage);
     const since = payload.since;
-    if (Number.isInteger(since) && (since as number) >= 0 && topicReplayMs() > 0) {
+    if (Number.isInteger(since) && (since as number) >= 0 && topicReplayMs(this.config.realtime) > 0) {
       const frames = sql.all<{ frame: string }>(
         `SELECT frame FROM "_topic_buffer" WHERE topic = ? AND seq > ? AND at >= ? ORDER BY seq`,
         topic,
         since as number,
-        Date.now() - topicReplayMs()
+        Date.now() - topicReplayMs(this.config.realtime)
       );
       for (const { frame } of frames) {
         try {
@@ -1381,13 +1413,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const seq = Number(sql.one<{ seq: number }>(`SELECT seq FROM "_topic_seq" WHERE topic = ?`, topic)?.seq ?? 0) + 1;
       sql.exec(`INSERT INTO "_topic_seq" (topic, seq) VALUES (?, ?) ON CONFLICT(topic) DO UPDATE SET seq = excluded.seq`, topic, seq);
       text = frame(seq);
-      if (topicReplayMs() > 0) {
+      if (topicReplayMs(this.config.realtime) > 0) {
         sql.exec(`INSERT INTO "_topic_buffer" (topic, seq, at, frame) VALUES (?, ?, ?, ?)`, topic, seq, now, text);
         sql.exec(
           `DELETE FROM "_topic_buffer" WHERE topic = ? AND (seq <= ? OR at < ?)`,
           topic,
           seq - REPLAY_MESSAGES,
-          now - topicReplayMs()
+          now - topicReplayMs(this.config.realtime)
         );
         // Count alone is insufficient when frames are large. Keep replay
         // globally bounded so a reconnect cannot buffer an unbounded result.
@@ -1448,7 +1480,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       this.topicError(ws, topic, "invalid_topic_message", "topic:send needs a topic and a message (or a part and its data).");
       return;
     }
-    if (!(await realtimeAllowed(claimFromAttachment(attachment, this.workspaceId), "topic", topic, "send"))) {
+    if (!(await realtimeAllowed(this.config.realtime, claimFromAttachment(attachment, this.workspaceId), "topic", topic, "send"))) {
       this.topicError(ws, topic, "permission_denied", `Not allowed to send to topic "${topic}".`);
       return;
     }
@@ -1510,7 +1542,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
 
     const joined = presenceEntry(attachment, target) !== undefined;
-    if (!joined && presenceTargets(attachment).length >= maxPresenceRooms()) {
+    if (!joined && presenceTargets(attachment).length >= maxPresenceRooms(this.config.realtime)) {
       this.send(ws, { type: "error", code: "presence_rooms_exceeded", target });
       return;
     }
@@ -1519,7 +1551,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // The authorizer may have awaited; decide on the state as it is now.
     const current = this.readSocket(ws) ?? attachment;
     const existing = presenceEntry(current, target);
-    if (existing === undefined && presenceTargets(current).length >= maxPresenceRooms()) {
+    if (existing === undefined && presenceTargets(current).length >= maxPresenceRooms(this.config.realtime)) {
       this.send(ws, { type: "error", code: "presence_rooms_exceeded", target });
       return;
     }
@@ -1550,6 +1582,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     action: "join" | "send"
   ): Promise<boolean> {
     const allowed = await realtimeAllowed(
+      this.config.realtime,
       claimFromAttachment(attachment, this.workspaceId),
       "presence",
       target,
@@ -2206,7 +2239,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
         this.roomEnv.DATA,
         this.ctx.storage.sql,
         workspaceId,
-        Date.now()
+        Date.now(),
+        { config: this.config }
       );
       // A failed flush is retried with backoff; say so, or nobody knows the
       // log is not reaching R2.
@@ -2225,7 +2259,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // Deliver after the flush: an event is only sent for a transaction that has
     // reached R2, so losing this object cannot leave a consumer holding a write
     // that no longer exists.
-    if (webhooksConfigured()) {
+    if (webhooksConfigured(this.config.webhooks)) {
       try {
         await this.deliverPendingWebhooks();
       } catch (error) {
@@ -2252,10 +2286,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const sql = durableObjectSqlExecutor(this.ctx.storage);
     // An import or the auth projection writes without `/transact`; the same
     // triggers captured it, and it becomes an event here.
-    drainWebhookChanges(sql, this.workspaceId);
+    drainWebhookChanges(sql, this.workspaceId, this.config.webhooks);
     const summary = await deliverWebhooks(sql, {
       now: Date.now(),
-      send: webhookTransport(),
+      hooks: this.config.webhooks,
+      send: this.config.webhookTransport ?? defaultWebhookTransport,
       limit: WEBHOOK_PASS_ATTEMPTS,
     });
     if (summary.pending > 0 && summary.nextAt !== null) {
@@ -2315,7 +2350,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
          FROM "${ENGINE_TABLES.files}"
         ORDER BY "path"`
     ) as unknown as Array<FileInfo & Record<string, SqlValue>>;
-    return json({ ok: true, data: fileRulesConfigured() ? await this.readPersonal(view => readableFiles(view, claim, rows)) : rows });
+    return json({ ok: true, data: fileRulesConfigured(this.config.files) ? await this.readPersonal(view => readableFiles(view, claim, rows, this.config.files)) : rows });
   }
 
   /** The stored file at `path`, as file rules see it. */
@@ -2350,12 +2385,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
         contentType: typeof body?.contentType === "string" ? body.contentType : null,
         uploadedBy: claim.sub,
       };
-      return await this.readPersonal(view => authorizeFile(view, claim, "write", incoming, stored))
+      return await this.readPersonal(view => authorizeFile(view, claim, this.config.files, "write", incoming, stored))
         ? json({ ok: true })
         : apiError(403, "file_access_denied", "The file rules do not allow this write.");
     }
-    if (stored === undefined || !await this.readPersonal(view => authorizeFile(view, claim, action, stored))) {
-      return stored === undefined || action === "read" || !await this.readPersonal(view => authorizeFile(view, claim, "read", stored))
+    if (stored === undefined || !await this.readPersonal(view => authorizeFile(view, claim, this.config.files, action, stored))) {
+      return stored === undefined || action === "read" || !await this.readPersonal(view => authorizeFile(view, claim, this.config.files, "read", stored))
         ? apiError(404, "not_found", "No such file.")
         : apiError(403, "file_access_denied", "The file rules do not allow this delete.");
     }
@@ -2396,9 +2431,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const commit = (view: SqlExecutor) => {
       const existing = this.storedFile(view, path);
       const incoming = { path, size, contentType: typeof contentType === "string" ? contentType : null, uploadedBy: claim.sub };
-      if (!authorizeFile(view, claim, "write", incoming, existing)) return { denied: true as const };
+      if (!authorizeFile(view, claim, this.config.files, "write", incoming, existing)) return { denied: true as const };
       const previousKey = view.one<{ key: string }>(`SELECT r2_key AS key FROM "_files" WHERE path = ?`, path)?.key;
-      recordFileEntry(sql, { ...incoming, key });
+      recordFileEntry(sql, { ...incoming, key }, this.config);
       return { denied: false as const, previousKey };
     };
     const decision = this.personal
@@ -2426,7 +2461,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     const removed = forgetFileEntry(
       durableObjectSqlExecutor(this.ctx.storage),
-      path
+      path,
+      this.config
     );
     if (removed > 0) await this.scheduleFileFlush();
     return json({ ok: true, removed });
@@ -2474,7 +2510,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       data: {
         // Who the document was built for: filters in `access` are theirs.
         caller: { sub: claim.sub, role: claim.role },
-        files: describeFileAccess(),
+        files: describeFileAccess(this.config.files),
         namespaces,
         links: Object.values(LINKS).map((link) => ({
           apiName: link.apiName,
@@ -2533,7 +2569,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       },
       // What the webhook outbox holds, when this deployment delivers them: a
       // dead-lettered event is visible here without reading the table.
-      ...(webhooksConfigured() ? { webhooks: webhookCounts(durableObjectSqlExecutor(this.ctx.storage)) } : {}),
+      ...(webhooksConfigured(this.config.webhooks) ? { webhooks: webhookCounts(durableObjectSqlExecutor(this.ctx.storage)) } : {}),
     });
   }
 }

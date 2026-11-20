@@ -22,6 +22,10 @@ import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
 import { defineSchema } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const WORKSPACE_ID = "2b7d4c1e-9a3f-4e6b-8c2d-7f1a0b3c5d9e";
 
@@ -121,7 +125,7 @@ function seed(sql: SqlExecutor, visibleRanks: (rank: number) => boolean): void {
         visible: visibleRanks(rank),
       },
     })),
-  });
+  }, engineConfig);
 }
 
 function page(
@@ -177,7 +181,7 @@ describe("complete page filling", () => {
         id: `rec-${String(rank).padStart(2, "0")}`,
         values: { label: `Row ${rank}`, rank, visible: rank % 5 === 0 },
       })),
-    });
+    }, engineConfig);
 
     const first = page(sql, 10);
     expect(first.data.records.map((row) => row.rank)).toEqual([0, 5, 10, 15, 20, 25, 30, 35, 40, 45]);
@@ -234,7 +238,7 @@ describe("complete page filling", () => {
         id: `bulk-${String(index).padStart(3, "0")}`,
         values: { label: `Bulk ${index}`, rank: 1000 + index, visible: false },
       })),
-    });
+    }, engineConfig);
     const { sql: counted, stats } = counting(sql);
 
     const { data, pageInfo } = page(counted, 10);
@@ -257,7 +261,7 @@ describe("complete page filling", () => {
         op: "update" as const, namespace: "records", id: `sparse-${String(rank).padStart(3, "0")}`,
         values: { label: `Row ${rank}`, rank, visible: rank >= 430 },
       })),
-    });
+    }, engineConfig);
     const first = executeCompiledQueryWithPageInfo(sql, compileQuery({
       records: { $: { limit: 5, count: true, order: { rank: "asc" } } },
     }), claimFor("bob"));

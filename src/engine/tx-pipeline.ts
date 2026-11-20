@@ -7,7 +7,7 @@
  * rolls back the log, the high-water mark and every row mutation together.
  */
 
-import { auditEnabled } from "./audit";
+import type { DeploymentConfig } from "./config";
 import type { RoleClaim } from "../claims";
 import { applyOps } from "./tx-apply";
 import { bulkChunk, isBulk, releaseStaged, stageBulkOps, stagedIds } from "./tx-bulk";
@@ -41,7 +41,8 @@ export function runTransaction(
   sql: SqlExecutor,
   workspaceId: string,
   claim: RoleClaim,
-  envelope: unknown
+  envelope: unknown,
+  config: DeploymentConfig
 ): TxResult {
   if (claim.workspaceId !== workspaceId) {
     throw new TxError(
@@ -92,9 +93,9 @@ export function runTransaction(
       // after the idempotency check (a replay of an applied tx must not
       // re-judge) and before the sequence is allocated (a denial burns nothing).
       const now = Date.now();
-      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
+      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role }, config);
       // In parts when it is larger than a row holds (see tx-log.ts).
-      writeLogOps(sql, seq, tx.rawOps);
+      writeLogOps(sql, seq, tx.rawOps, config.logPartBytes);
       const applied = applyOps({ sql, seq, now, txId: tx.txId, beforeOp: op => assertRowPermissions(sql, claim, [op]) }, tx.ops);
       return { txId: tx.txId, seq, applied };
     }
@@ -122,13 +123,13 @@ export function runTransaction(
         const state = sql.one<TxStateRow>(`SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`);
         const seq = tx.clientTxId === undefined ? (state?.high_water_seq ?? 0) : appendLogEntry(sql, {
           clientTxId: tx.clientTxId, ops: "[]", opsHash: hash, at: Date.now(), userId: claim.sub, role: claim.role,
-        });
+        }, config);
         return { txId: tx.txId, seq, applied: 0, ...matched };
       }
 
       const now = Date.now();
-      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
-      const log = new LogWriter(sql, seq);
+      const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role }, config);
+      const log = new LogWriter(sql, seq, config.logPartBytes);
       const context = { sql, seq, now, txId: tx.txId, beforeOp: (op: typeof tx.ops[number]) => assertRowPermissions(sql, claim, [op]) };
       let applied = 0;
       for (const [index, op] of tx.ops.entries()) {
@@ -165,8 +166,12 @@ export interface LogEntry {
  * Allocates the next sequence and appends one `_tx_log` row. Must run inside
  * the caller's transaction, so the row, the high-water mark and whatever the
  * caller applies commit or roll back together.
+ *
+ * `config` is the calling deployment's: its audit flag decides whether the
+ * writer is stored, and its log part size how the ops are chunked. There is no
+ * module-level copy, so a second deployment cannot change either.
  */
-export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
+export function appendLogEntry(sql: SqlExecutor, entry: LogEntry, config: DeploymentConfig): number {
   const state = sql.one<TxStateRow>(
     `SELECT high_water_seq FROM "_tx_state" WHERE "id" = 1`
   );
@@ -201,8 +206,8 @@ export function appendLogEntry(sql: SqlExecutor, entry: LogEntry): number {
     entry.opsHash,
     // Who wrote what is recorded only when the deployment asks for an audit
     // (audit.ts): otherwise it would be personal data without a purpose.
-    auditEnabled() ? entry.userId ?? null : null,
-    auditEnabled() ? entry.role ?? null : null,
+    config.audit ? entry.userId ?? null : null,
+    config.audit ? entry.role ?? null : null,
     entry.at,
     readSchemaVersion(sql)
   );

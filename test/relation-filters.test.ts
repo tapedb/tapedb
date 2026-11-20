@@ -23,6 +23,10 @@ import { runTransaction } from "../src/engine/tx-pipeline";
 import { TxError } from "../src/engine/tx-types";
 import { createClient } from "../src/model/client";
 import { filter, model, schema, t } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const WORKSPACE = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 
@@ -85,7 +89,7 @@ function client(sub = "alice", role: WorkspaceRole = WORKSPACE_ROLE_LEVELS.EDITO
         const body = init?.body === undefined ? undefined : JSON.parse(init.body);
         try {
           if (url.endsWith("/transact")) {
-            return Response.json({ ok: true, result: runTransaction(sql, WORKSPACE, claim, body) });
+            return Response.json({ ok: true, result: runTransaction(sql, WORKSPACE, claim, body, engineConfig) });
           }
           const { data, pageInfo } = executeQueryWithPageInfo(sql, claim, body);
           return Response.json({ ok: true, data, pageInfo });

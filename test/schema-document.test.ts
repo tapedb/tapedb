@@ -15,11 +15,10 @@ class MockDurableObject {
 }
 mock.module("cloudflare:workers", () => ({ DurableObject: MockDurableObject }));
 const { defineTapeDB } = await import("../src/worker/index");
-const { WorkspaceRoom } = await import("../src/engine/workspace-room");
 const { model, schema, t } = await import("../src/schema");
 
 test("the schema document names the field that stores each link, and each field's default", async () => {
-  defineTapeDB({
+  const tapedb = defineTapeDB({
     schema: schema({
       board: model({ name: t.string(), archived: t.boolean().default(false), rank: t.number().default(3), columns: t.hasMany("column") }),
       column: model({ name: t.string(), board: t.belongsTo("board") }),
@@ -37,7 +36,9 @@ test("the schema document names the field that stores each link, and each field'
     },
     getWebSockets: () => [],
   };
-  const room = new WorkspaceRoom(ctx as never, { DATA: new FakeR2Bucket() } as never);
+  // The room comes from the deployment that was just defined: it carries that
+  // deployment's configuration, not whatever was defined last in this process.
+  const room = new tapedb.WorkspaceRoom(ctx as never, { DATA: new FakeR2Bucket() } as never);
   await ctx.ready;
   const claim = encodeTrustedRoleClaim({ sub: "u", workspaceId: TEST_WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER, iat: 0, exp: Math.floor(Date.now() / 1000) + 60 });
   const response = await room.fetch(new Request("http://room/schema", { headers: { "x-tapedb-claims": claim } }));
@@ -56,7 +57,7 @@ test("the schema document names the field that stores each link, and each field'
 
 test("the schema document says who may do what, with filter rules evaluated for the caller", async () => {
   const { role, filter, check, attachedTo } = await import("../src/schema");
-  defineTapeDB({
+  const tapedb = defineTapeDB({
     schema: schema(
       {
         board: model({ name: t.string(), ownerId: t.string().index(), open: t.boolean().default(false) }).access({
@@ -80,7 +81,7 @@ test("the schema document says who may do what, with filter rules evaluated for 
     },
     getWebSockets: () => [],
   };
-  const room = new WorkspaceRoom(ctx as never, { DATA: new FakeR2Bucket() } as never);
+  const room = new tapedb.WorkspaceRoom(ctx as never, { DATA: new FakeR2Bucket() } as never);
   await ctx.ready;
   const claim = encodeTrustedRoleClaim({ sub: "alice", workspaceId: TEST_WORKSPACE, role: WORKSPACE_ROLE_LEVELS.EDITOR, iat: 0, exp: Math.floor(Date.now() / 1000) + 60 });
   const response = await room.fetch(new Request("http://room/schema", { headers: { "x-tapedb-claims": claim } }));

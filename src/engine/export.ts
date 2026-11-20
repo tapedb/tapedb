@@ -27,7 +27,7 @@ import { authorizeQuery, executeCompiledQueryWithPageInfo, viewAccess } from "./
 import { QUERY_CHUNK_ROWS } from "./query-types";
 import { ENGINE_TABLES, NAMESPACES } from "./registry";
 import type { SqlExecutor, SqlRow } from "./tx-sql";
-import { readableFiles } from "./file-access";
+import { readableFiles, type FileRules } from "./file-access";
 import { TxError } from "./tx-types";
 
 type ExportFile = SqlRow & { id: string; path: string; size: number; contentType: string | null; uploadedBy: string | null; r2Key: string; createdAt: number; updatedAt: number };
@@ -69,7 +69,9 @@ function* exportSteps(
   sql: SqlExecutor,
   claim: RoleClaim,
   workspaceId: string,
-  now: () => number = Date.now
+  now: () => number = Date.now,
+  /** The exporting deployment's file rules: which files the caller may see. */
+  fileRules: FileRules = {}
 ): Generator<string | (() => StepResult), void, StepResult> {
   const startSeq = highWater(sql);
   const { models, skipped } = plan(claim);
@@ -124,7 +126,7 @@ function* exportSteps(
         QUERY_CHUNK_ROWS
       );
       const visible = (yield () => {
-        const ids = new Set(readableFiles(sql, claim, files.map(file => ({ ...file, uploadedBy: file.uploadedBy ?? "" }))).map(file => file.id));
+        const ids = new Set(readableFiles(sql, claim, files.map(file => ({ ...file, uploadedBy: file.uploadedBy ?? "" })), fileRules).map(file => file.id));
         return { data: {}, pageInfo: {}, files: files.filter(file => ids.has(file.id)) };
       }).files ?? [];
       for (const file of visible) yield JSON.stringify({ type: "file", file });
@@ -152,8 +154,14 @@ function* exportSteps(
 }
 
 /** Synchronous export for engines without encrypted fields. */
-export function* exportLines(sql: SqlExecutor, claim: RoleClaim, workspaceId: string, now: () => number = Date.now): Generator<string> {
-  const steps = exportSteps(sql, claim, workspaceId, now);
+export function* exportLines(
+  sql: SqlExecutor,
+  claim: RoleClaim,
+  workspaceId: string,
+  now: () => number = Date.now,
+  fileRules: FileRules = {}
+): Generator<string> {
+  const steps = exportSteps(sql, claim, workspaceId, now, fileRules);
   let next = steps.next();
   try {
     while (!next.done) {
@@ -165,8 +173,14 @@ export function* exportLines(sql: SqlExecutor, claim: RoleClaim, workspaceId: st
   } finally { steps.return(); }
 }
 
-async function* personalExportLines(sql: SqlExecutor, claim: RoleClaim, workspaceId: string, personal: PersonalRuntime): AsyncGenerator<string> {
-  const steps = exportSteps(personal.sql(sql), claim, workspaceId);
+async function* personalExportLines(
+  sql: SqlExecutor,
+  claim: RoleClaim,
+  workspaceId: string,
+  personal: PersonalRuntime,
+  fileRules: FileRules = {}
+): AsyncGenerator<string> {
+  const steps = exportSteps(personal.sql(sql), claim, workspaceId, Date.now, fileRules);
   let next = steps.next();
   try {
     while (!next.done) {
@@ -183,9 +197,12 @@ export function exportStream(
   sql: SqlExecutor,
   claim: RoleClaim,
   workspaceId: string,
-  personal?: PersonalRuntime
+  personal?: PersonalRuntime,
+  fileRules: FileRules = {}
 ): ReadableStream<Uint8Array> {
-  const lines = personal ? personalExportLines(sql, claim, workspaceId, personal) : exportLines(sql, claim, workspaceId);
+  const lines = personal
+    ? personalExportLines(sql, claim, workspaceId, personal, fileRules)
+    : exportLines(sql, claim, workspaceId, Date.now, fileRules);
   const encoder = new TextEncoder();
   return new ReadableStream<Uint8Array>({
     async pull(controller) {

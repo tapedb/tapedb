@@ -5,6 +5,7 @@ import { signRoleClaim } from "../src/mint";
 import { FakeR2Bucket } from "./fixtures/test-support";
 import { FakeRoomContext } from "./fixtures/room-harness";
 import { migratePersonal } from "../src/engine/personal-migrate";
+import { defaultDeploymentConfig } from "../src/engine/config";
 import { durableObjectSqlExecutor } from "../src/engine/tx-sql";
 import { PersonalRuntime } from "../src/engine/personal";
 import { flushPending, snapshotWorkspace } from "../src/engine/durability";
@@ -79,15 +80,15 @@ test("existing plaintext is encrypted in resumable batches without changing row 
   db.exec(`DELETE FROM "_engine_meta" WHERE "key" = 'personal_migration'`);
   for (let n = 0; n < 205; n++) db.query(`INSERT INTO person (id, name, created_at, updated_at, updated_seq) VALUES (?, ?, 10, 20, 0)`).run(String(n).padStart(4, "0"), `Private ${n}`);
   const sql = durableObjectSqlExecutor(context.storage as never), personal = new PersonalRuntime(env, ID);
-  expect(await migratePersonal(sql, personal, context.storage.transaction, 0)).toBe(false);
+  expect(await migratePersonal(sql, personal, context.storage.transaction, 0, defaultDeploymentConfig())).toBe(false);
   let batches = 0;
   const transaction = async <T>(fn: () => Promise<T>) => {
     if (++batches === 2) throw new Error("restart");
     return context.storage.transaction(fn);
   };
-  await expect(migratePersonal(sql, personal, transaction, Infinity)).rejects.toThrow("restart");
+  await expect(migratePersonal(sql, personal, transaction, Infinity, defaultDeploymentConfig())).rejects.toThrow("restart");
   expect(db.query(`SELECT COUNT(*) AS n FROM person WHERE name LIKE 'tapedb:personal:%'`).get()).toEqual({ n: 100 });
-  expect(await migratePersonal(sql, new PersonalRuntime(env, ID), context.storage.transaction, Infinity)).toBe(true);
+  expect(await migratePersonal(sql, new PersonalRuntime(env, ID), context.storage.transaction, Infinity, defaultDeploymentConfig())).toBe(true);
   expect(db.query(`SELECT COUNT(*) AS n FROM person WHERE name LIKE 'tapedb:personal:%' AND created_at = 10 AND updated_at = 20`).get()).toEqual({ n: 205 });
   expect(JSON.stringify(db.query(`SELECT * FROM _tx_log`).all())).not.toContain("Private");
   const fresh = new PersonalRuntime(env, ID);

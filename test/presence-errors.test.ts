@@ -16,7 +16,8 @@ import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, mock, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type WorkspaceRole } from "../src/claims";
-import { configureRealtime } from "../src/engine/topics";
+import { resolveRealtime } from "../src/engine/topics";
+import { defaultDeploymentConfig, deploymentConfig, type DeploymentConfig } from "../src/engine/config";
 import { PRESENCE_STATE_BYTES } from "../src/engine/ws-types";
 import type { Env } from "../src/types";
 import { MemoryOutbox } from "../src/client/outbox";
@@ -181,15 +182,20 @@ describe("presence refusals name the room they refused", () => {
   let context: FakeContext;
   let room: InstanceType<typeof WorkspaceRoom>;
 
-  beforeEach(async () => {
-    configureRealtime(undefined, undefined);
-    db = new Database(":memory:");
+  /** A fresh room for this deployment's settings: each test gets its own. */
+  async function boot(config: DeploymentConfig = defaultDeploymentConfig()) {
     context = new FakeContext(db, TEST_WORKSPACE);
     room = new WorkspaceRoom(
       context as unknown as DurableObjectState,
-      { DATA: new FakeR2Bucket() } as unknown as Env
+      { DATA: new FakeR2Bucket() } as unknown as Env,
+      { config }
     );
     await context.ready;
+  }
+
+  beforeEach(async () => {
+    db = new Database(":memory:");
+    await boot();
   });
 
   function socket(clientId: string, attachment: unknown = attachmentFor(clientId)): FakeSocket {
@@ -204,7 +210,8 @@ describe("presence refusals name the room they refused", () => {
   }
 
   test("an authorizer refusal answers presence_denied with the room", async () => {
-    configureRealtime({ authorize: ({ target }) => target !== "board:secret" }, undefined);
+    await boot(deploymentConfig({ realtime: resolveRealtime({ authorize: ({ target }) => target !== "board:secret" }, undefined) }));
+
     const ws = socket("s");
 
     await send(ws, { type: "presence:set", target: "board:secret", presence: { name: "s" } });
@@ -216,7 +223,8 @@ describe("presence refusals name the room they refused", () => {
   });
 
   test("the room cap answers presence_rooms_exceeded with the room it refused", async () => {
-    configureRealtime({ maxPresenceRooms: 1 }, undefined);
+    await boot(deploymentConfig({ realtime: resolveRealtime({ maxPresenceRooms: 1 }, undefined) }));
+
     const ws = socket("s");
     await send(ws, { type: "presence:set", target: "board:A", presence: { name: "s" } });
 

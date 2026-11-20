@@ -104,15 +104,14 @@ const WEBHOOK_MAX_ATTEMPTS = 60;
 /** Captured changes turned into events per pass; the rest wait for the next. */
 const CHANGES_PER_DRAIN = 500;
 
-interface ConfiguredWebhook {
+/** One endpoint the deployment delivers to, validated when it was defined. */
+export interface ConfiguredWebhook {
   index: number;
   url: string;
   events: Set<WebhookEvent>;
   models: Set<string> | null;
   secret: string;
 }
-
-let hooks: ConfiguredWebhook[] = [];
 
 const ACTION_FOR: Record<WebhookEvent, "INSERT" | "UPDATE" | "DELETE"> = {
   create: "INSERT",
@@ -125,11 +124,18 @@ function invalid(message: string): never {
 }
 
 /**
- * Installs `defineTapeDB({ webhooks })`. Validated once, when the Worker is
- * defined, so a typo fails at deploy time rather than at the first write.
+ * Validates `defineTapeDB({ webhooks })` and returns this deployment's
+ * endpoints. Validated once, when the Worker is defined, so a typo fails at
+ * deploy time rather than at the first write.
+ *
+ * The result travels in the deployment's `DeploymentConfig`; a second
+ * deployment in the same process has its own list, and nothing can append to
+ * this one.
  */
-export function configureWebhooks(options: readonly WebhookOptions[] | undefined): void {
-  hooks = (options ?? []).map((option, index) => {
+export function resolveWebhooks(
+  options: readonly WebhookOptions[] | undefined
+): readonly ConfiguredWebhook[] {
+  const hooks = (options ?? []).map((option, index) => {
     const where = `webhooks[${index}]`;
     if (typeof option?.url !== "string" || !/^https?:\/\/[^\s]+$/i.test(option.url)) {
       invalid(`${where}.url must be an http or https URL.`);
@@ -162,10 +168,11 @@ export function configureWebhooks(options: readonly WebhookOptions[] | undefined
     }
     return { index, url: option.url, events, models, secret: option.secret };
   });
+  return Object.freeze(hooks);
 }
 
-/** Whether this Worker delivers webhooks at all. */
-export function webhooksConfigured(): boolean {
+/** Whether this deployment delivers webhooks at all. */
+export function webhooksConfigured(hooks: readonly ConfiguredWebhook[]): boolean {
   return hooks.length > 0;
 }
 
@@ -244,12 +251,12 @@ function createTables(sql: SqlExecutor): void {
  * watched tables, only watched operations, so a workspace with webhooks pays
  * for the rows an endpoint actually asked about.
  */
-export function installWebhookCapture(sql: SqlExecutor): void {
+export function installWebhookCapture(sql: SqlExecutor, hooks: readonly ConfiguredWebhook[]): void {
   if (hooks.length === 0) return;
   createTables(sql);
   const actions = new Set<"INSERT" | "UPDATE" | "DELETE">();
   for (const hook of hooks) for (const event of hook.events) actions.add(ACTION_FOR[event]);
-  const watched = watchedModels();
+  const watched = watchedModels(hooks);
   for (const model of Object.values(NAMESPACES)) {
     if (watched !== null && !watched.has(model.apiName)) continue;
     for (const action of actions) sql.exec(captureTrigger(model, action));
@@ -269,7 +276,7 @@ export function dropWebhookCapture(sql: SqlExecutor): void {
   }
 }
 
-function watchedModels(): Set<string> | null {
+function watchedModels(hooks: readonly ConfiguredWebhook[]): Set<string> | null {
   if (hooks.some((hook) => hook.models === null)) return null;
   return new Set(hooks.flatMap((hook) => [...(hook.models ?? [])]));
 }
@@ -333,7 +340,11 @@ function deletedRow(model: NamespaceDefinition, before: string | null, id: strin
  * A failure here loses no capture: the change rows are only deleted by the
  * same transaction that inserts the events, and they are durable until then.
  */
-export function drainWebhookChanges(sql: SqlExecutor, workspaceId: string): number {
+export function drainWebhookChanges(
+  sql: SqlExecutor,
+  workspaceId: string,
+  hooks: readonly ConfiguredWebhook[]
+): number {
   if (hooks.length === 0) return 0;
 
   const changes = sql.all<ChangeRow>(
@@ -440,36 +451,29 @@ export interface WebhookRequest {
 /** The network, swappable in tests. */
 export type WebhookTransport = (request: WebhookRequest) => Promise<WebhookAttemptResult>;
 
-let transport: WebhookTransport | null = null;
-
-/** Test hook: replaces the network with a stub. `null` restores `fetch`. */
-export function setWebhookTransportForTests(next: WebhookTransport | null): void {
-  transport = next;
-}
-
-/** The transport delivery uses: the injected stub, or `fetch` with a timeout. */
-export function webhookTransport(): WebhookTransport {
-  if (transport !== null) return transport;
-  return async (request) => {
+/**
+ * The network, as a value: `fetch` with a timeout. A deployment's
+ * `DeploymentConfig.webhookTransport` replaces it for that deployment only.
+ */
+export const defaultWebhookTransport: WebhookTransport = async (request) => {
+  try {
+    const response = await fetch(request.url, {
+      method: "POST",
+      headers: request.headers,
+      body: request.body,
+      signal: AbortSignal.timeout(WEBHOOK_SEND_TIMEOUT_MS),
+    });
+    // The body is the consumer's business; dropping it frees the connection.
     try {
-      const response = await fetch(request.url, {
-        method: "POST",
-        headers: request.headers,
-        body: request.body,
-        signal: AbortSignal.timeout(WEBHOOK_SEND_TIMEOUT_MS),
-      });
-      // The body is the consumer's business; dropping it frees the connection.
-      try {
-        await response.body?.cancel();
-      } catch {
-        // Already read or absent.
-      }
-      return { ok: response.ok, status: response.status };
-    } catch (error) {
-      return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      await response.body?.cancel();
+    } catch {
+      // Already read or absent.
     }
-  };
-}
+    return { ok: response.ok, status: response.status };
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+  }
+};
 
 /** What one delivery pass did. */
 export interface WebhookDeliverySummary {
@@ -513,9 +517,16 @@ export function webhookBackoffMs(attempts: number): number {
  */
 export async function deliverWebhooks(
   sql: SqlExecutor,
-  options: { now: number; send: WebhookTransport; limit?: number }
+  options: {
+    now: number;
+    send: WebhookTransport;
+    /** This deployment's endpoints; an event whose hook is gone is dead-lettered. */
+    hooks: readonly ConfiguredWebhook[];
+    limit?: number;
+  }
 ): Promise<WebhookDeliverySummary> {
   const now = options.now;
+  const hooks = options.hooks;
   const limit = Math.max(1, options.limit ?? WEBHOOK_PASS_ATTEMPTS);
   // The whole pending queue, in sequence order: an endpoint's first waiting
   // event is its head, and nothing later may overtake it. A row held back by

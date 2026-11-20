@@ -19,6 +19,10 @@ import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
 import { validateEnvelope } from "../src/engine/tx-validate";
 import { defineSchema } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const WORKSPACE_ID = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 
@@ -47,7 +51,7 @@ function claim(role: WorkspaceRole = WORKSPACE_ROLE_LEVELS.EDITOR): RoleClaim {
 }
 
 function write(sql: SqlExecutor, ops: unknown[], role?: WorkspaceRole) {
-  return runTransaction(sql, WORKSPACE_ID, claim(role), { txId: crypto.randomUUID(), ops });
+  return runTransaction(sql, WORKSPACE_ID, claim(role), { txId: crypto.randomUUID(), ops }, engineConfig);
 }
 
 function row(sql: SqlExecutor, id: string) {

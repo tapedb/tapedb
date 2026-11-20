@@ -14,11 +14,15 @@ import {
 import { ENGINE_MIGRATIONS } from "../../src/engine/migrations-bundle";
 import { opsHash } from "../../src/engine/tx-hash";
 import { runTransaction } from "../../src/engine/tx-pipeline";
+import { defaultDeploymentConfig } from "../../src/engine/config";
 import type { SqlExecutor, SqlRow } from "../../src/engine/tx-sql";
 import { TxError, type TxEnvelope } from "../../src/engine/tx-types";
 import { DAY_MS } from "../../src/engine/durability/retention";
 
 const WORKSPACE = "workspace-1";
+
+/** These tests run the unconfigured engine: audit off, role file rules. */
+const engineConfig = defaultDeploymentConfig();
 const MIGRATIONS_DIR = resolve(
   import.meta.dir,
   "../fixtures/migrations/"
@@ -75,7 +79,7 @@ function run(
   envelope: TxEnvelope,
   role: WorkspaceRole = WORKSPACE_ROLE_LEVELS.EDITOR
 ) {
-  return runTransaction(store.sql, WORKSPACE, claim(role), envelope);
+  return runTransaction(store.sql, WORKSPACE, claim(role), envelope, engineConfig);
 }
 
 function expectCode(fn: () => unknown, code: string): void {

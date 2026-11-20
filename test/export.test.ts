@@ -12,7 +12,8 @@ import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { MemoryOutbox } from "../src/client/outbox";
 import { exportLines, exportStream } from "../src/engine/export";
-import { configureFileAccess } from "../src/engine/file-access";
+import { resolveFileRules } from "../src/engine/file-access";
+import { defaultDeploymentConfig } from "../src/engine/config";
 import { recordFileEntry } from "../src/engine/file-index";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { configureRegistry } from "../src/engine/registry";
@@ -25,6 +26,9 @@ import { check, filter, model, role, schema, t } from "../src/schema";
 
 const WORKSPACE = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 
+/** These tests run the unconfigured engine: audit off, standard log parts. */
+const engineConfig = defaultDeploymentConfig();
+
 const appSchema = schema({
   board: model({ name: t.string(), ownerId: t.string().index(), columns: t.hasMany("column") }).access({
     read: filter(({ auth }) => ({ ownerId: auth.sub })),
@@ -36,7 +40,6 @@ const appSchema = schema({
   secret: model({ value: t.string() }).access({ read: role("admin") }),
 });
 
-afterEach(() => configureFileAccess(undefined));
 
 let sql: SqlExecutor;
 
@@ -48,7 +51,6 @@ function claim(sub = "alice", level: WorkspaceRole = WORKSPACE_ROLE_LEVELS.EDITO
 const owner = () => claim("seed", WORKSPACE_ROLE_LEVELS.OWNER);
 
 beforeEach(() => {
-  configureFileAccess(undefined);
   configureRegistry(appSchema.registry);
   configureMigrations(appSchema.migrations);
   configurePermissions(appSchema.permissions);
@@ -71,7 +73,7 @@ function seed() {
       { op: "insert", namespace: "board", id: "b-bob", values: { name: "Theirs", ownerId: "bob" } },
       { op: "insert", namespace: "secret", id: "s1", values: { value: "hidden" } },
     ],
-  });
+  }, engineConfig);
   // More columns than one chunk holds.
   runTransaction(sql, WORKSPACE, owner(), {
     txId: "columns",
@@ -81,7 +83,7 @@ function seed() {
       id: `c${String(n).padStart(4, "0")}`,
       values: { name: `c${n}`, boardId: "b-alice" },
     })),
-  });
+  }, engineConfig);
   runTransaction(sql, WORKSPACE, owner(), {
     txId: "notes",
     ops: Array.from({ length: 1500 }, (_, n) => ({
@@ -90,8 +92,8 @@ function seed() {
       id: `n${String(n).padStart(4, "0")}`,
       values: { body: `n${n}`, author: n % 3 === 0 ? "alice" : "bob" },
     })),
-  });
-  recordFileEntry(sql, { path: "a.png", key: "k/a", size: 3, contentType: "image/png" } as never);
+  }, engineConfig);
+  recordFileEntry(sql, { path: "a.png", key: "k/a", size: 3, contentType: "image/png" } as never, engineConfig);
 }
 
 const parse = (lines: Iterable<string>) => [...lines].map((line) => JSON.parse(line) as Record<string, unknown>);
@@ -144,7 +146,7 @@ describe("export", () => {
     runTransaction(sql, WORKSPACE, owner(), {
       txId: "late",
       ops: [{ op: "insert", namespace: "column", id: "c9999", values: { name: "late", boardId: "b-alice" } }],
-    });
+    }, engineConfig);
     const rest = parse(lines);
     expect(rest.at(-1)).toMatchObject({ type: "end", startSeq: 4, seq: 5, consistent: false });
   });
@@ -235,22 +237,24 @@ describe("export", () => {
 
 describe("export file permissions", () => {
   test("a guest cannot enumerate member-only file metadata", () => {
-    recordFileEntry(sql, { path: "private/customer.pdf", key: "private/key", size: 3, contentType: "application/pdf", uploadedBy: "bob" });
+    recordFileEntry(sql, { path: "private/customer.pdf", key: "private/key", size: 3, contentType: "application/pdf", uploadedBy: "bob" }, engineConfig);
     expect(parse(exportLines(sql, claim("guest", WORKSPACE_ROLE_LEVELS.GUEST), WORKSPACE)).filter(record => record.type === "file")).toEqual([]);
   });
 
   test("file checks filter every page without leaking hidden metadata", () => {
-    configureFileAccess({ read: { decision: "check", test: ({ file }) => file.uploadedBy === "alice" } });
-    for (let n = 0; n < 1001; n++) recordFileEntry(sql, { path: `a-hidden-${String(n).padStart(4, "0")}`, key: `k/${n}`, size: 1, contentType: "text/plain", uploadedBy: "bob" });
-    recordFileEntry(sql, { path: "z-visible", key: "k/visible", size: 1, contentType: "text/plain", uploadedBy: "alice" });
-    const files = parse(exportLines(sql, claim(), WORKSPACE)).filter(record => record.type === "file");
+    // This rule set belongs to this export call only: the engine is handed it
+    // per call, so no other deployment (or test) sees it.
+    const rules = resolveFileRules({ read: { decision: "check", test: ({ file }: { file: { uploadedBy: string } }) => file.uploadedBy === "alice" } });
+    for (let n = 0; n < 1001; n++) recordFileEntry(sql, { path: `a-hidden-${String(n).padStart(4, "0")}`, key: `k/${n}`, size: 1, contentType: "text/plain", uploadedBy: "bob" }, engineConfig);
+    recordFileEntry(sql, { path: "z-visible", key: "k/visible", size: 1, contentType: "text/plain", uploadedBy: "alice" }, engineConfig);
+    const files = parse(exportLines(sql, claim(), WORKSPACE, Date.now, rules)).filter(record => record.type === "file");
     expect(files.map(record => (record.file as { path: string }).path)).toEqual(["z-visible"]);
   });
 
   test("attached files follow the parent row's read rule", () => {
     seed();
-    configureFileAccess({ read: { decision: "attachedTo", model: "board", locate: path => path.split("/")[0] } });
-    for (const id of ["b-alice", "b-bob"]) recordFileEntry(sql, { path: `${id}/file`, key: `k/${id}`, size: 1, contentType: "text/plain", uploadedBy: "seed" });
-    expect(parse(exportLines(sql, claim(), WORKSPACE)).filter(record => record.type === "file").map(record => (record.file as { path: string }).path)).toEqual(["b-alice/file"]);
+    const rules = resolveFileRules({ read: { decision: "attachedTo", model: "board", locate: (path: string) => path.split("/")[0] } });
+    for (const id of ["b-alice", "b-bob"]) recordFileEntry(sql, { path: `${id}/file`, key: `k/${id}`, size: 1, contentType: "text/plain", uploadedBy: "seed" }, engineConfig);
+    expect(parse(exportLines(sql, claim(), WORKSPACE, Date.now, rules)).filter(record => record.type === "file").map(record => (record.file as { path: string }).path)).toEqual(["b-alice/file"]);
   });
 });

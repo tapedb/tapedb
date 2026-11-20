@@ -21,6 +21,10 @@ import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
 import { defineSchema } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const WORKSPACE_ID = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 
@@ -157,7 +161,7 @@ describe("transaction pipeline", () => {
           values: { title: "Ship it", columnId: "column-1" },
         },
       ],
-    });
+    }, engineConfig);
 
     expect(result.seq).toBe(1);
     expect(result.applied).toBe(3);
@@ -185,9 +189,9 @@ describe("transaction pipeline", () => {
       ops: [{ op: "update", namespace: "boards", id: "board-1", values: { name: "A" } }],
     };
 
-    expect(runTransaction(sql, WORKSPACE_ID, claim, envelope).applied).toBe(1);
+    expect(runTransaction(sql, WORKSPACE_ID, claim, envelope, engineConfig).applied).toBe(1);
 
-    const replay = runTransaction(sql, WORKSPACE_ID, claim, envelope);
+    const replay = runTransaction(sql, WORKSPACE_ID, claim, envelope, engineConfig);
     expect(replay.applied).toBe(0);
     expect(replay.seq).toBe(1);
 
@@ -196,7 +200,7 @@ describe("transaction pipeline", () => {
         txId: "t3",
         clientTxId: "tx-same",
         ops: [{ op: "update", namespace: "boards", id: "board-1", values: { name: "B" } }],
-      })
+      }, engineConfig)
     ).toThrow(/already used with different ops/);
   });
 
@@ -208,7 +212,7 @@ describe("transaction pipeline", () => {
         WORKSPACE_ID,
         { ...claim, workspaceId: "00000000-0000-4000-8000-000000000000" },
         { txId: "t5", ops: [] }
-      )
+      , engineConfig)
     ).toThrow(/does not belong to this workspace/);
   });
 });
@@ -244,7 +248,7 @@ describe("pagination", () => {
         id: `board-${index + 1}`,
         values: { name },
       })),
-    });
+    }, engineConfig);
   }
 
   function page(sql: ReturnType<typeof freshDatabase>, after?: string) {
@@ -295,7 +299,7 @@ describe("pagination", () => {
     runTransaction(sql, WORKSPACE_ID, claim, {
       txId: "insert-a",
       ops: [{ op: "update", namespace: "boards", id: "board-a", values: { name: "A0" } }],
-    });
+    }, engineConfig);
 
     const second = page(sql, first.pageInfo.boards.nextCursor);
     // Keyset, not offset: the new row does not shift the window, so nothing
@@ -399,7 +403,7 @@ describe("queries", () => {
           values: { title: "Ship it", columnId: "column-1" },
         },
       ],
-    });
+    }, engineConfig);
 
     const compiled = compileQuery({
       boards: { $: { where: { id: "board-1" } }, columns: { tasks: {} } },
