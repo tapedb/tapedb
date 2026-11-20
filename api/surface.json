@@ -71,6 +71,36 @@
           "(declaration)": "<T> extends PromiseLike<T>"
         }
       },
+      "ASYNC_STORAGE_OUTBOX_PREFIX": {
+        "kind": "value",
+        "shape": "\"tapedb-outbox:\""
+      },
+      "AsyncStorageLike": {
+        "kind": "interface",
+        "shape": {
+          "getItem": "(key: string) => Promise<string | null>",
+          "setItem": "(key: string, value: string) => Promise<void>",
+          "removeItem": "(key: string) => Promise<void>",
+          "getAllKeys": "() => Promise<readonly string[]>",
+          "multiRemove": "(keys: readonly string[]) => Promise<void>"
+        }
+      },
+      "AsyncStorageOutbox": {
+        "kind": "class",
+        "shape": {
+          "add": "(entry: OutboxEntry) => Promise<void>",
+          "list": "(workspaceId: string) => Promise<OutboxEntry[]>",
+          "remove": "(clientTxId: string) => Promise<void>",
+          "clear": "(workspaceId?: string) => Promise<void>",
+          "(declaration)": "implements Outbox"
+        }
+      },
+      "AsyncStorageOutboxOptions": {
+        "kind": "interface",
+        "shape": {
+          "prefix": "string | undefined"
+        }
+      },
       "BroadcastTopic": {
         "kind": "interface",
         "experimental": true,
@@ -109,6 +139,7 @@
           "workspace": "string",
           "getToken": "(() => Promise<string>) | undefined",
           "onWriteRejected": "((rejection: WriteRejection) => void) | undefined",
+          "outbox": "Outbox | OutboxFactory | undefined",
           "(declaration)": "<M extends Models>"
         }
       },
@@ -119,6 +150,10 @@
       "CreateData": {
         "kind": "type",
         "shape": "<F, M extends Models = Models> { id?: string } & RequiredParents<F> & { [K in RequiredScalarKeys<F>]: InputOf<F[K]>; } & { [K in OptionalScalarKeys<F>]?: InputOf<F[K]>; } & { [K in BelongsToKeys<F>]?: BelongsToInput<F[K], M>; } & { [K in BelongsToKeys<F> as `${K}Id`]?: string | null; } & { [K in HasManyKeys<F>]?: HasManyInput<F[K], M>; }"
+      },
+      "createOutbox": {
+        "kind": "function",
+        "shape": "(options?: OutboxOptions) => Outbox"
       },
       "DeleteBehaviour": {
         "kind": "type",
@@ -195,6 +230,16 @@
         "kind": "type",
         "shape": "<M extends Models, F extends Fields> { [K in RelationKeys<F>]?: true | IncludeArgs<M, TargetFields<F[K], M>>; }"
       },
+      "IndexedDbOutbox": {
+        "kind": "class",
+        "shape": {
+          "add": "(entry: OutboxEntry) => Promise<void>",
+          "list": "(workspaceId: string) => Promise<OutboxEntry[]>",
+          "remove": "(clientTxId: string) => Promise<void>",
+          "clear": "(workspaceId?: string) => Promise<void>",
+          "(declaration)": "implements Outbox"
+        }
+      },
       "LiveState": {
         "kind": "interface",
         "shape": {
@@ -202,6 +247,16 @@
           "isLoading": "boolean",
           "error": "QueryError | null",
           "(declaration)": "<T>"
+        }
+      },
+      "MemoryOutbox": {
+        "kind": "class",
+        "shape": {
+          "add": "(entry: OutboxEntry) => Promise<void>",
+          "list": "(workspaceId: string) => Promise<OutboxEntry[]>",
+          "remove": "(clientTxId: string) => Promise<void>",
+          "clear": "(workspaceId?: string) => Promise<void>",
+          "(declaration)": "implements Outbox"
         }
       },
       "model": {
@@ -227,9 +282,44 @@
           "(declaration)": "<M extends Models, F extends Fields>"
         }
       },
+      "Models": {
+        "kind": "type",
+        "shape": "Record<string, Model>"
+      },
       "OrderBy": {
         "kind": "type",
         "shape": "<F> | Partial<Record<FilterKeys<F> | SystemKey, \"asc\" | \"desc\">> | Partial<Record<FilterKeys<F> | SystemKey, \"asc\" | \"desc\">>[]"
+      },
+      "Outbox": {
+        "kind": "interface",
+        "shape": {
+          "add": "(entry: OutboxEntry) => Promise<void>",
+          "list": "(workspaceId: string) => Promise<OutboxEntry[]>",
+          "remove": "(clientTxId: string) => Promise<void>",
+          "clear": "(workspaceId?: string) => Promise<void>"
+        }
+      },
+      "OutboxEntry": {
+        "kind": "interface",
+        "shape": {
+          "clientTxId": "string",
+          "txId": "string",
+          "workspaceId": "string",
+          "ops": "TxOp[]",
+          "createdAt": "number",
+          "attempts": "number | undefined"
+        }
+      },
+      "OutboxFactory": {
+        "kind": "type",
+        "shape": "() => Outbox"
+      },
+      "OutboxOptions": {
+        "kind": "interface",
+        "shape": {
+          "indexedDB": "IDBFactory | null | undefined",
+          "dbName": "string | undefined"
+        }
       },
       "Page": {
         "kind": "interface",
@@ -368,6 +458,10 @@
           "files": "FileRules | undefined",
           "(declaration)": "<M extends Models = Models> extends TapeDBSchema"
         }
+      },
+      "scopedOutboxName": {
+        "kind": "function",
+        "shape": "(apiUrl: string, userId?: string) => string"
       },
       "StorageObject": {
         "kind": "interface",
@@ -1670,10 +1764,6 @@
         "kind": "type",
         "shape": "AnyField | BelongsTo | HasMany"
       },
-      "Models (src/model/schema.ts)": {
-        "kind": "type",
-        "shape": "Record<string, Model>"
-      },
       "ModelTargets (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<M extends Models> {[K in keyof M]:TargetOf<FieldsOf<M[K]>[keyof FieldsOf<M[K]>]>}[keyof M]"
@@ -1725,26 +1815,6 @@
       "OrderedKeys (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<F> | Exclude<GroupKeys<F>, { [K in ScalarKeys<F>]: F[K] extends Field<\"boolean\", boolean, boolean> ? K : never }[ScalarKeys<F>]>"
-      },
-      "Outbox (src/client/outbox.ts)": {
-        "kind": "interface",
-        "shape": {
-          "add": "(entry: OutboxEntry) => Promise<void>",
-          "list": "(workspaceId: string) => Promise<OutboxEntry[]>",
-          "remove": "(clientTxId: string) => Promise<void>",
-          "clear": "(workspaceId?: string) => Promise<void>"
-        }
-      },
-      "OutboxEntry (src/client/types.ts)": {
-        "kind": "interface",
-        "shape": {
-          "clientTxId": "string",
-          "txId": "string",
-          "workspaceId": "string",
-          "ops": "TxOp[]",
-          "createdAt": "number",
-          "attempts": "number | undefined"
-        }
       },
       "OutputOf (src/model/schema.ts)": {
         "kind": "type",

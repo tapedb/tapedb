@@ -1,0 +1,41 @@
+{
+  "name": "@tapedb/react-native",
+  "version": "0.2.0",
+  "description": "React Native bindings for tapedb: the hooks, plus a durable AsyncStorage outbox so offline writes survive the app being killed.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
+  },
+  "main": "index.mjs",
+  "types": "index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@tapedb/tapedb": "0.2.0"
+  },
+  "peerDependencies": {
+    "@react-native-async-storage/async-storage": "^1.17.0 || ^2.0.0",
+    "react": "^19.0.0"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tapedb/tapedb.git",
+    "directory": "packages/react-native"
+  },
+  "homepage": "https://tapedb.dev"
+}

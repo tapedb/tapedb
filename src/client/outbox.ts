@@ -21,6 +21,14 @@ export function indexedDbAvailable(): boolean {
   return defaultIndexedDb() !== null;
 }
 
+/**
+ * Where unacknowledged writes wait for the network.
+ *
+ * One implementation ships in the browser (`IndexedDbOutbox`) and one outside
+ * it (`MemoryOutbox`, which does not survive a reload). Pass your own through
+ * `createClient({ outbox })` to make the queue durable somewhere else — React
+ * Native uses `@tapedb/react-native`, which supplies an `AsyncStorageOutbox`.
+ */
 export interface Outbox {
   add(entry: OutboxEntry): Promise<void>;
   list(workspaceId: string): Promise<OutboxEntry[]>;
@@ -28,13 +36,21 @@ export interface Outbox {
   clear(workspaceId?: string): Promise<void>;
 }
 
+/** `createClient({ outbox })` accepts the queue itself or something that makes one. */
+export type OutboxFactory = () => Outbox;
+
 export interface OutboxOptions {
   /** Pass `null` to force the in-memory store (tests, SSR). */
   indexedDB?: IDBFactory | null;
   dbName?: string;
 }
 
-function sortEntries(entries: OutboxEntry[]): OutboxEntry[] {
+/**
+ * The order a queue is replayed in: when the write was made, then the id that
+ * breaks a tie. Every `Outbox` sorts through here, so two implementations
+ * cannot disagree about what "in order" means.
+ */
+export function sortOutboxEntries(entries: OutboxEntry[]): OutboxEntry[] {
   return [...entries].sort(
     (left, right) =>
       left.createdAt - right.createdAt ||
@@ -42,7 +58,7 @@ function sortEntries(entries: OutboxEntry[]): OutboxEntry[] {
   );
 }
 
-function isOutboxEntry(value: unknown): value is OutboxEntry {
+export function isOutboxEntry(value: unknown): value is OutboxEntry {
   if (typeof value !== "object" || value === null) return false;
   const candidate = value as Record<string, unknown>;
   return (
@@ -62,7 +78,7 @@ export class MemoryOutbox implements Outbox {
   }
 
   async list(workspaceId: string): Promise<OutboxEntry[]> {
-    return sortEntries(
+    return sortOutboxEntries(
       [...this.entries.values()].filter(
         (entry) => entry.workspaceId === workspaceId
       )
@@ -109,7 +125,7 @@ export class IndexedDbOutbox implements Outbox {
       const values = await this.request<OutboxEntry[]>("readonly", (store) =>
         store.getAll()
       );
-      return sortEntries(
+      return sortOutboxEntries(
         [...new Map([
           ...values.filter(isOutboxEntry).filter((entry) => entry.workspaceId === workspaceId),
           ...await this.fallback.list(workspaceId),
