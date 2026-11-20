@@ -321,3 +321,45 @@ describe("useBroadcast", () => {
     expect(socket.sent.at(-1)).toEqual({ type: "topic:leave", topic: "board:1" });
   });
 });
+
+describe("usePresence agrees with the client on includeSelf", () => {
+  // The hook used to invert the client's default: `peers()` included the
+  // caller while the hook dropped it. One default, asserted from both sides.
+  const roomPeers = [
+    { clientId: "self-1", presence: { name: "Me" } },
+    { clientId: "other-2", presence: { name: "You" } },
+  ];
+
+  async function joined(options?: { includeSelf?: boolean }) {
+    const { db, socket } = harness();
+    const seen: { clientId: string; isSelf?: boolean }[][] = [];
+    render(() => {
+      seen.push(usePresence(db, "board:1", { name: "Me" }, options));
+      return null;
+    });
+    await act(async () => {
+      await tick();
+      socket.onopen?.({});
+      socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1, clientId: "self-1" });
+    });
+    await act(async () => {
+      socket.push({ type: "presence:update", target: "board:1", peers: roomPeers });
+      await tick();
+    });
+    return { db, seen };
+  }
+
+  test("the hook returns exactly what peers() returns, self included and marked", async () => {
+    const { db, seen } = await joined();
+    const fromClient = await db.$presence("board:1").peers();
+    expect(db.clientId).toBe("self-1");
+    expect(seen.at(-1)).toEqual(fromClient);
+    expect(fromClient.map((peer) => peer.isSelf)).toEqual([true, undefined]);
+  });
+
+  test("includeSelf: false removes the caller from both views", async () => {
+    const { db, seen } = await joined({ includeSelf: false });
+    expect(seen.at(-1)?.map((peer) => peer.clientId)).toEqual(["other-2"]);
+    expect((await db.$presence("board:1").peers({ includeSelf: false })).map((peer) => peer.clientId)).toEqual(["other-2"]);
+  });
+});

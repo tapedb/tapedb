@@ -81,7 +81,7 @@ export function usePresence(
   const [peers, setPeers] = useState<PresencePeer[]>([]);
   const handle = useMemo(() => db.$presence(room), [db, room]);
   const serialised = presence === undefined ? undefined : stableStringify(presence);
-  const includeSelf = options?.includeSelf === true;
+  const includeSelf = options?.includeSelf !== false;
 
   useEffect(() => handle.subscribe(setPeers, { includeSelf }), [handle, includeSelf]);
   useEffect(() => {
