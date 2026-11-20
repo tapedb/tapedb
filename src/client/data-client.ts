@@ -9,7 +9,7 @@
  * re-authenticate and resubscribe.
  */
 
-import { id } from "./id";
+import { id, randomUuid } from "./id";
 import { MAX_SOCKET_MESSAGE_BYTES } from "../socket-protocol";
 import { retryWhileRecovering, type RecoveringRetryOptions } from "./recovering";
 import { createStorageClient, type StorageFetch } from "./storage-client";
@@ -405,7 +405,7 @@ class DataClientImpl {
   /** Sends made while the socket was down, sent after reconnecting. */
   private readonly topicQueue = new Map<string, Array<{ message: unknown; at: number }>>();
   /** This client's id across connections: replay skips its own messages. */
-  private readonly topicOrigin = crypto.randomUUID();
+  private readonly topicOrigin = randomUuid();
   /** Who this socket is, from `session:ready`; undefined until then. */
   private sessionClientId: string | undefined;
   private readonly presenceListeners = new Map<

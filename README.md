@@ -66,7 +66,7 @@ npm install @tapedb/tapedb @tapedb/react-native @react-native-async-storage/asyn
 ```tsx
 import { createReactNativeClient, useLive } from "@tapedb/react-native";
 
-const db = createReactNativeClient({ schema, url, userId });   // queue lives in AsyncStorage
+const db = createReactNativeClient({ schema, url, workspace, userId });   // queue lives in AsyncStorage
 ```
 
 It exports the same hooks as `@tapedb/react` — one module, same release — and the queue is scoped by

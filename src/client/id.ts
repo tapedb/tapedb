@@ -92,6 +92,16 @@ export function id(): string {
   return formatUuid(bytes);
 }
 
+/**
+ * A random UUID, for values that only need to be unique rather than ordered
+ * (a socket's id, a topic's origin). Hermes and some other runtimes have no
+ * `crypto`, so this never touches it unguarded — the same fallback chain as
+ * `id()`, without the timestamp.
+ */
+export function randomUuid(): string {
+  return fallbackId();
+}
+
 /** Test helper: true when the value is a syntactically valid UUID. */
 export function isUuid(value: string): boolean {
   return UUID_PATTERN.test(value);
