@@ -72,6 +72,11 @@ function byTable(table: string): NamespaceDefinition | undefined {
  * behind (`state:row`, `state:delete`, between `state:begin` and `state:end`),
  * in storage form. This turns one into an ordinary op: an insert when the row
  * was created by this write, an update otherwise, with its values in API form.
+ *
+ * The entry says which (`created`), because the row cannot: an insert stamps
+ * `created_at` and `updated_at` with the same instant, so a patch in that same
+ * millisecond leaves the two equal. Entries written before the marker existed
+ * fall back to that comparison — it is right except inside one millisecond.
  */
 function fromState(raw: Record<string, unknown>): Record<string, unknown> | null {
   if (raw.op === "state:begin" || raw.op === "state:end") return null;
@@ -84,7 +89,8 @@ function fromState(raw: Record<string, unknown>): Record<string, unknown> | null
     const column = toSnakeCase(name);
     if (column in row) values[name] = fromStoredValue(attribute.type, row[column] as never);
   }
-  return { op: row.created_at === row.updated_at ? "insert" : "update", namespace: namespace.apiName, id: row.id, values, whole: true };
+  const created = typeof raw.created === "boolean" ? raw.created : row.created_at === row.updated_at;
+  return { op: created ? "insert" : "update", namespace: namespace.apiName, id: row.id, values, whole: true };
 }
 
 function shape(claim: RoleClaim, raw: Record<string, unknown>): LogOp {

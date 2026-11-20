@@ -46,6 +46,11 @@ export async function runPersonalTransaction(sql: SqlExecutor, personal: Persona
     const now = Date.now();
     const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
     sql.exec(`DELETE FROM "_personal_changes"`);
+    // Rows this transaction creates, by table and id: their whole-row entry is
+    // an insert. The row cannot say so afterwards — an insert stamps
+    // `created_at` and `updated_at` with the same `now`, so a patch in that
+    // same millisecond leaves them equal and the entry would read as an insert.
+    const created = new Set<string>();
     let applied = 0;
     for (const [index, op] of tx.ops.entries()) {
       const batches = isBulk(op) ? chunks(index) : [{ ops: [op] }];
@@ -54,6 +59,10 @@ export async function runPersonalTransaction(sql: SqlExecutor, personal: Persona
         if ("values" in item && "id" in item) {
           const model = findNamespace(item.namespace)!;
           const inserting = !sql.one(`SELECT id FROM "${model.table}" WHERE id = ?`, item.id);
+          // A missing row is only created by an insert or an upsert; a patch
+          // throws. Record it before `prepare` so the whole-row entry below
+          // knows the row was not there before this write.
+          if (inserting && item.kind !== "patch") created.add(`${model.table}:${item.id}`);
           const incoming = item.kind === "upsert" && inserting && item.createValues !== undefined ? item.createValues : item.values;
           const values = await personal.prepare(sql, model, item.id, incoming, inserting);
           item = { ...item, values, ...(item.kind === "upsert" && inserting ? { createValues: values } : {}) };
@@ -79,7 +88,9 @@ export async function runPersonalTransaction(sql: SqlExecutor, personal: Persona
       if (!changed.length) break;
       for (const change of changed) {
         const row = sql.one<SqlRow>(`SELECT * FROM "${change.table_name}" WHERE id = ?`, change.id);
-        log.push(row ? { op: "state:row", table: change.table_name, row } : { op: "state:delete", table: change.table_name, id: change.id });
+        log.push(row
+          ? { op: "state:row", table: change.table_name, row, created: created.has(`${change.table_name}:${change.id}`) }
+          : { op: "state:delete", table: change.table_name, id: change.id });
         afterTable = change.table_name; afterId = change.id;
       }
     }
