@@ -1,0 +1,37 @@
+{
+  "name": "@tapedb/email",
+  "version": "0.1.30",
+  "description": "Email sending for tapedb: one mailer over Cloudflare Email Service, with a local inbox in development.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "import": "./index.mjs"
+    }
+  },
+  "main": "index.mjs",
+  "types": "index.d.ts",
+  "sideEffects": false,
+  "files": [
+    "index.mjs",
+    "index.d.ts",
+    "README.md",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "@tapedb/tapedb": "0.1.30"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "license": "MIT",
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tapedb/tapedb.git",
+    "directory": "packages/email"
+  },
+  "homepage": "https://tapedb.dev"
+}

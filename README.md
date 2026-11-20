@@ -18,21 +18,38 @@ and how to answer GDPR access and erasure requests.
 
 ## Project status
 
-Public releases are on npm as `@tapedb/tapedb` and `tapedb-cli`; see the
-[changelog](CHANGELOG.md) for the latest changes. The API is described, with what is stable
-and what is experimental, in [API.md](API.md); the design boundaries are in
+Public releases are on npm as `@tapedb/tapedb`, `@tapedb/cli`, `@tapedb/react`,
+`@tapedb/auth` and `@tapedb/email`; see the [changelog](CHANGELOG.md) for the
+latest changes. The API is described, with what is stable and what is
+experimental, in [API.md](API.md); the design boundaries are in
 [LIMITATIONS.md](LIMITATIONS.md). The packaged CLI requires Node 22.18 or
 newer; the library itself runs in Cloudflare Workers.
 
 ```bash
-npx tapedb-cli init     # interactive setup, dependencies and first migration
-npx tapedb-cli dev      # local database, and the studio at http://localhost:8787/
-npx tapedb-cli deploy   # your Cloudflare account: buckets, secrets, Worker
+npx @tapedb/cli init     # interactive setup, dependencies and first migration
+npx @tapedb/cli dev      # local database, and the studio at http://localhost:8787/
+npx @tapedb/cli deploy   # your Cloudflare account: buckets, secrets, Worker
 ```
 
 No flags are needed: each command asks when it has to, and Enter takes the
-default. `npx` runs the newest `tapedb-cli`, which also brings the project's
-`@tapedb/tapedb` up to the same version.
+default. `npx` runs the newest `@tapedb/cli`, which also brings the project's
+`@tapedb/tapedb` up to the same version. The package installs the `tapedb-cli`
+command, so `npx tapedb-cli init` is the same run.
+
+### Preferred imports
+
+The core is one package; the entries with their own dependency or peer graph
+ship as their own package, and each one is a re-export of the core's entry:
+
+| install | import | instead of |
+| --- | --- | --- |
+| `@tapedb/react` | `import { useLive } from "@tapedb/react"` | `@tapedb/tapedb/react` |
+| `@tapedb/auth` | `import { tapedbAuth } from "@tapedb/auth"` | `@tapedb/tapedb/auth` |
+| `@tapedb/email` | `import { mailer } from "@tapedb/email"` | `@tapedb/tapedb/email` |
+
+Every `@tapedb/tapedb/<x>` subpath in this README still resolves to the same
+module as its package: the subpath is not deprecated, the package is just the
+preferred name and pins the core version it ships with.
 
 ## The schema
 
@@ -985,13 +1002,16 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | --- | --- | --- |
 | `@tapedb/tapedb` | `createClient`, schema builders, `id` | no (zero runtime deps) |
 | `@tapedb/tapedb/schema` | `schema`, `model`, `t`, `role`, `filter`, `check` | no |
-| `@tapedb/tapedb/react` | `useLive`, `useLivePage`, `usePresence` | peer (React 19) |
+| `@tapedb/react` | `useLive`, `useLivePage`, `usePresence` (alias of `@tapedb/tapedb/react`) | peer (React 19) |
+| `@tapedb/tapedb/react` | the same hooks, the core's own entry | peer (React 19) |
+| `@tapedb/auth` | `tapedbAuth`, `eraseAuthUser`, `authDatabase` (alias of `@tapedb/tapedb/auth`) | no |
+| `@tapedb/email` | `mailer` (alias of `@tapedb/tapedb/email`) | no |
 | `@tapedb/tapedb/worker` | `defineTapeDB`, claim helpers | no |
 | `@tapedb/tapedb/studio` | `studio`, served at `/_tapedb/studio` | no |
 | `@tapedb/tapedb/seed` | `defineSeeder`, `runSeeder` | no |
 
-The CLI is a command, not an import: `npx tapedb-cli init | migrate | dev | studio
-| deploy | export | backup | restore | seed | erase | move`.
+The CLI is a command, not an import: `npx @tapedb/cli init | migrate | dev | studio
+| deploy | export | backup | restore | seed | erase | move` (bin `tapedb-cli`).
 
 [API.md](API.md) is the reference: every export and signature, what is stable
 and what is experimental, the HTTP routes, the export format and the error
