@@ -66,12 +66,17 @@ validation. These checks do not change runtime behavior.
 
 Everything in `@tapedb/tapedb/schema`, plus:
 
-**`createClient({ schema, url, workspace, userId?, getToken?, onWriteRejected? })`** →
+**`createClient({ schema, url, workspace, userId?, getToken?, onWriteRejected?, outbox? })`** →
 `Client`. Without `getToken` the client asks the development claim route for a
 token, which only `tapedb dev` (or a gated test Worker) serves. Browser clients
 using the default IndexedDB outbox must supply `userId` matching the claim subject
 (`dev-user` in development). Close and recreate clients on account changes;
 legacy unscoped queues are retained but never automatically replayed.
+
+`outbox` replaces that default: pass an `Outbox` — or a factory, which is called once and shared with
+the `$across` clients this client creates — when the runtime has no IndexedDB. An injected outbox also
+replaces the `userId` requirement, because the caller has already decided where the queue lives and how
+it is scoped. See [Offline queue](#offline-queue).
 
 Per model, `db.<model>` is a `ModelClient`:
 
@@ -128,6 +133,24 @@ types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 `WriteRejection`, `PresenceRoom`, `PresencePeer`, `RoleClaim`,
 `WorkspaceRole`, `ExportRecord`, and **experimental** `BroadcastTopic` and
 `TopicSender`.
+
+### Offline queue
+
+Writes go out optimistically and wait in an `Outbox` until the server acknowledges them; after a
+restart the queue is read back and replayed, and each entry keeps its `clientTxId`, so a replay applies
+at most once.
+
+| | |
+| --- | --- |
+| `Outbox` | `add(entry)`, `list(workspaceId)`, `remove(clientTxId)`, `clear(workspaceId?)` — implement these four and a runtime has a durable queue |
+| `OutboxEntry` | `{ clientTxId, txId, workspaceId, ops, createdAt, attempts }`; ordering is by `createdAt`, not by storage order |
+| `MemoryOutbox` | in-memory, for tests and server rendering |
+| `IndexedDbOutbox` | the browser default, scoped to `userId` |
+| `AsyncStorageOutbox` | any async key-value store: `getItem`, `setItem`, `removeItem`, `getAllKeys`, and a batch delete (`multiRemove` on v1/v2, `removeMany` on v3, or neither — it then removes one key at a time). Keys are `prefix + clientTxId`, so two accounts on one device stay apart. Pass `prefix: scopedOutboxName(url, userId) + ":"` to scope it the way the browser does |
+
+`@tapedb/react-native` is the packaged form of this: `createReactNativeClient({ schema, url, userId })`
+wires an `AsyncStorageOutbox` for you and re-exports the React hooks. A store that fails a write does
+not lose it — the entry is held in memory and a later flush still sees it.
 
 ### Filters
 
@@ -254,6 +277,21 @@ whatever that Worker sent.
 | `useLivePage(pageQuery)` | `LivePage`: `{ rows, hasMore, isLoading, error, loadMore }` |
 | `usePresence(db, room, presence?, { includeSelf? })` | `PresencePeer[]`; publishes `presence` while mounted. Your own entry is included and marked `isSelf`; pass `{ includeSelf: false }` to leave it out (see [Presence](#presence)) |
 | `useBroadcast(db, topic, onMessage?)` | **experimental**: a `send(message) => boolean \| "queued"` function |
+
+## `@tapedb/react-native` — hooks and a durable queue
+
+Re-exports `@tapedb/react` unchanged, plus `AsyncStorageOutbox` and `createReactNativeClient`.
+Peers: `react ^19`, `@react-native-async-storage/async-storage ^1.17 || ^2 || ^3`. It does not import
+`react-native`, so it installs and is tested under Node.
+
+```tsx
+import { createReactNativeClient, useLive } from "@tapedb/react-native";
+
+const db = createReactNativeClient({ schema, url, userId });
+```
+
+`storage` overrides the store; `outbox` overrides the whole queue. Everything else is `createClient`'s
+options. The binding contract and failure behaviour are in [Offline queue](#offline-queue).
 
 ## `@tapedb/tapedb/worker`
 
