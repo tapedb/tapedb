@@ -105,7 +105,15 @@ On the client itself:
 | `$transaction(writes)` | several writes, applied atomically → `Promise<WriteResult[]>` |
 | `$files` | `FilesClient`: `upload(blob, { path })` → `StorageObject` (any size: past 16 MiB it goes up as a multipart upload of 16 MiB parts, abandoned if a part fails), `download(path)` → `Blob`, `delete(path)`, `list({ prefix? })` → `StoredFile[]` (the files the caller may read, each with `uploadedBy`) |
 | `$presence(room)` | `PresenceRoom`: `set(presence)`, `cursor(cursor)`, `drag(drag)`, `clearDrag()`, `peers({ includeSelf? })` → `PresencePeer[]`, `subscribe(listener, { includeSelf? })` with `PresencePeer[]`, `leave()`. A socket holds several rooms at once (below) |
-| `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean | "queued"` (`"queued"` while the socket is down: sent after reconnecting, up to 100 per topic for 60 s; `false` when that queue is full), `subscribe((message, from) => …, { onError? })`, which never hears your own messages; never stored, never delivered late |
+| `$broadcast(topic)` | **experimental**: `BroadcastTopic`: `send(message)` → `boolean | "queued"` (`"queued"` while the socket is down: sent after reconnecting, up to 100 per topic for 60 s; `false` when that queue is full), `subscribe(listener, { onError?, onGap? })`, `lastSeq`, `gap`; never hears your own messages; never stored, never delivered late |
+A reconnecting listener is sent what it missed, each message once and in
+order. When the replay window no longer holds what it missed, `onGap` reports
+`{ topic, expected, received }` — the first missing sequence and the one that
+arrived — and `gap` keeps that last jump until the topic is left, so a caller can
+resynchronise instead of mistaking loss for quiet. `lastSeq` is the highest
+sequence seen. Your own messages never count as a gap, and a reconnect that
+resumes exactly leaves `gap` null.
+
 | `$across(workspaceIds, { getToken? })` | `Across`: per model `findMany`, `findFirst`, `findPage` and `count` over those workspaces, each with its own claim (`getToken(workspaceId)`, required unless the client uses the development claim route), merged in `orderBy` order; rows carry `workspaceId`; a page `cursor` holds a position per workspace. Results are `AcrossQuery` (awaitable, `subscribe`, `snapshot`, usable with `useLive`); live states add `errors` by workspace. A failed workspace rejects a one-off read with `AcrossError` (`errors`, `partial`) |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
 | `$history({ model, id })` | `Promise<HistoryEntry[]>`: each recorded change to the row, oldest first, as `{ seq, at, sub, role, action }` with `action` `"insert"`, `"update"` or `"delete"`; ADMIN or higher; needs `audit: true` on the Worker |
@@ -273,7 +281,7 @@ export or erase), `ClaimError`,
 `TapeDBRoom` name for the class returned by `defineTapeDB`. These named types
 allow consumers to emit declarations without leaking private names.
 `ModelOptions` is also exported from `@tapedb/tapedb/schema`.
-`TopicAction` and `TopicAuthorizer` are **experimental**, and so are
+`TopicAction`, `TopicAuthorizer` and `TopicGap` are **experimental**, and so are
 `RealtimeOptions`, `RealtimeAuthorizer`, `RealtimeAuthorizeContext` and
 `RealtimeKind`.
 
