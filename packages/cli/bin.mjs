@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-// `npx tapedb-cli <command>`: runs the CLI of the @tapedb/tapedb release this package pins.
-// npx fetches the newest tapedb-cli when it isn't installed in the project, so the CLI is always
+// `npx @tapedb/cli <command>` (bin name `tapedb-cli`): runs the CLI of the @tapedb/tapedb release this package pins.
+// npx fetches the newest @tapedb/cli when it isn't installed in the project, so the CLI is always
 // current; it then brings the project's own @tapedb/tapedb up to the same version.
 import { spawnSync } from "node:child_process";
 import { dirname, join } from "node:path";
