@@ -94,8 +94,10 @@ export function runTransaction(
       // re-judge) and before the sequence is allocated (a denial burns nothing).
       const now = Date.now();
       const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role }, config);
-      // In parts when it is larger than a row holds (see tx-log.ts).
-      writeLogOps(sql, seq, tx.rawOps, config.logPartBytes);
+      // In parts when it is larger than a row holds (see tx-log.ts). The log
+      // holds the stored form of each value: an embedding is one string there,
+      // not the `number[]` the client sent.
+      writeLogOps(sql, seq, tx.logOps, config.logPartBytes);
       const applied = applyOps({ sql, seq, now, txId: tx.txId, beforeOp: op => assertRowPermissions(sql, claim, [op]) }, tx.ops);
       return { txId: tx.txId, seq, applied };
     }
@@ -112,7 +114,7 @@ export function runTransaction(
         const op = tx.ops[index];
         const key = staged.keys.get(index)!;
         return (function* () {
-          for (const ids of stagedIds(sql, key)) yield bulkChunk(tx.txId, op as never, tx.rawOps[index], ids);
+          for (const ids of stagedIds(sql, key)) yield bulkChunk(tx.txId, op as never, tx.logOps[index], ids);
         })();
       };
 
@@ -134,7 +136,7 @@ export function runTransaction(
       let applied = 0;
       for (const [index, op] of tx.ops.entries()) {
         if (!isBulk(op)) {
-          log.push(tx.rawOps[index]);
+          log.push(tx.logOps[index]);
           applied += applyOps(context, [op]);
           continue;
         }

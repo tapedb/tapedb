@@ -21,6 +21,7 @@ import {
 } from "./registry";
 import type { SqlValue } from "./tx-sql";
 import { TxError, type TxOpKind } from "./tx-types";
+import { canonicalVectorValue } from "../model/vector";
 
 const ID_PATTERN = /^[A-Za-z0-9_:|.-]{1,128}$/;
 const ISO_DATE_PATTERN =
@@ -99,6 +100,14 @@ export interface ValidatedTx {
   ops: ValidatedOp[];
   /** Original ops array, used for the stable log hash. */
   rawOps: unknown[];
+  /**
+   * The ops as the log stores them: index-aligned with `ops`, with every vector
+   * value in its `f32le:v1:<base64>` form rather than the `number[]` a client
+   * sent. The tape carries the stored value verbatim, which is what keeps an
+   * embedding byte-identical through a replay (and why a log part holds 60 of
+   * them instead of 15).
+   */
+  logOps: unknown[];
 }
 
 interface ValidationContext {
@@ -153,7 +162,58 @@ export function validateEnvelope(value: unknown): ValidatedTx {
     ...(issuedAt === undefined ? {} : { issuedAt }),
     ops,
     rawOps,
+    logOps: rawOps.map((op, index) => loggableOp(op, ops[index]!)),
   };
+}
+
+/** The vector attributes of a namespace, cached: most schemas have none. */
+const VECTOR_ATTRIBUTES = new WeakMap<NamespaceDefinition, string[]>();
+
+function vectorAttributes(namespace: NamespaceDefinition): string[] {
+  const cached = VECTOR_ATTRIBUTES.get(namespace);
+  if (cached !== undefined) return cached;
+  const found = Object.entries(namespace.attributes)
+    .filter(([, definition]) => definition.type === "vector")
+    .map(([attribute]) => attribute);
+  VECTOR_ATTRIBUTES.set(namespace, found);
+  return found;
+}
+
+/**
+ * One op as the log stores it. Only a vector value differs: the client sends
+ * `number[]`, and the log carries the string the row holds, so replaying it
+ * cannot re-encode the value into different bytes.
+ *
+ * A namespace with no vector field takes the fastest path: the op it came in
+ * as, untouched.
+ */
+function loggableOp(op: unknown, validated: ValidatedOp): unknown {
+  if (!isPlainObject(op)) return op;
+  const namespace = findNamespace(validated.namespace);
+  if (namespace === undefined) return op;
+  const vectors = vectorAttributes(namespace);
+  if (vectors.length === 0) return op;
+
+  let logged: Record<string, unknown> | null = null;
+  for (const key of ["values", "create"] as const) {
+    const raw = op[key];
+    if (!isPlainObject(raw)) continue;
+    let replaced = raw;
+    for (const attribute of vectors) {
+      if (!(attribute in raw)) continue;
+      const column = toSnakeCase(attribute);
+      const stored =
+        key === "values"
+          ? (validated as ValidatedValuesOp | ValidatedBulkOp).values?.[column]
+          : (validated as ValidatedValuesOp).createValues?.[column];
+      if (stored === undefined) continue;
+      replaced = { ...replaced, [attribute]: stored };
+    }
+    if (replaced === raw) continue;
+    logged ??= { ...op };
+    logged[key] = replaced;
+  }
+  return logged ?? op;
 }
 
 function validateOp(value: unknown, context: ValidationContext): ValidatedOp {
@@ -425,10 +485,42 @@ function normaliseValue(
       return value ? 1 : 0;
     case "date":
       return normaliseDate(attribute, value, context);
+    case "vector":
+      return normaliseVector(attribute, definition, value, context);
     case "json":
     case "any":
       assertJsonSerialisable(attribute, value, context, new Set<object>());
       return JSON.stringify(value);
+  }
+}
+
+/**
+ * A vector field's stored value: `f32le:v1:<base64>`, from the `number[]` a
+ * write supplies or from the string a log entry, export or backup carries.
+ *
+ * Every refusal here happens before the transaction opens, so a bad embedding
+ * leaves no row, receipt or log entry behind.
+ */
+function normaliseVector(
+  attribute: string,
+  definition: AttributeDefinition,
+  value: unknown,
+  context: ValidationContext
+): string {
+  const dimensions = definition.dimensions;
+  if (dimensions === undefined) {
+    throw invalidValue(
+      `Attribute "${attribute}" is a vector field without declared dimensions.`,
+      context
+    );
+  }
+  try {
+    return canonicalVectorValue(value, dimensions);
+  } catch (error) {
+    throw invalidValue(
+      `Attribute "${attribute}" ${error instanceof Error ? error.message : String(error)}`,
+      context
+    );
   }
 }
 

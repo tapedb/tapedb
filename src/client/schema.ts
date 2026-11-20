@@ -60,6 +60,8 @@ export const i = {
     createAttribute<boolean>("boolean"),
   date: (): AttributeDefinition<Date> => createAttribute<Date>("date"),
   json: <T = unknown>(): AttributeDefinition<T> => createAttribute<T>("json"),
+  /** A vector field: the client only needs its kind, never the dimensions. */
+  vector: <T = string>(): AttributeDefinition<T> => createAttribute<T>("vector"),
   any: <T = unknown>(): AttributeDefinition<T> => createAttribute<T>("any"),
 } as const;
 

@@ -39,7 +39,7 @@ export function graphFromSchemaDocument(document: SchemaDocument): Record<string
         hasDefault,
         defaultValue: !hasDefault ? undefined : kind === "json" && typeof stored === "string" ? JSON.parse(stored) : stored,
       };
-      if (kind !== "json" && !attribute.personal) info.filterable.add(name);
+      if (kind !== "json" && kind !== "vector" && !attribute.personal) info.filterable.add(name);
     }
     graph[namespace.apiName] = info;
   }
