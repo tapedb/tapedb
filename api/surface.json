@@ -1212,6 +1212,16 @@
           "fork": "(label: string) => Random"
         }
       },
+      "RelationInfo": {
+        "kind": "interface",
+        "shape": {
+          "kind": "\"belongsTo\" | \"hasMany\"",
+          "target": "string",
+          "link": "string",
+          "foreignKey": "string | undefined",
+          "optional": "boolean | undefined"
+        }
+      },
       "runSeeder": {
         "kind": "function",
         "shape": "<M extends Models>(options: RunSeederOptions<M>) => Promise<SeedSummary>"
@@ -1948,16 +1958,6 @@
         "shape": {
           "namespaces": "readonly NamespaceDefinition[]",
           "links": "readonly LinkDefinition[]"
-        }
-      },
-      "RelationInfo (src/model/schema.ts)": {
-        "kind": "interface",
-        "shape": {
-          "kind": "\"belongsTo\" | \"hasMany\"",
-          "target": "string",
-          "link": "string",
-          "foreignKey": "string | undefined",
-          "optional": "boolean | undefined"
         }
       },
       "RelationKeys (src/model/schema.ts)": {

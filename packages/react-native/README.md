@@ -62,17 +62,13 @@ import { useLive } from "@tapedb/tapedb/react";      // same module, still suppo
 `react` and `@react-native-async-storage/async-storage` are peer dependencies, the
 latter accepted as `^1.17.0 || ^2.0.0 || ^3.0.0`.
 
-`@tapedb/react-native` never imports `react-native`, so it installs and imports in
-Node. That is all Node proves about it. The storage contract is checked against the
-vendor's own shipped mocks for both majors — 2.2.0 (`multiRemove`) and 3.1.1, where
-v3 renamed the batch delete to `removeMany` — and the client itself is exercised on
-a device, because Node cannot see a platform global that is simply absent on Hermes:
+`@tapedb/react-native` never imports `react-native`, so it loads wherever JavaScript
+runs. The queue keeps one storage key per pending write under a prefix, ordered by
+`createdAt` rather than by key order, and a retry replaces its own entry.
 
-| phase | result, verified on 0.2.3 in the iOS simulator |
-| --- | --- |
-| write with the server down | the queue holds one entry, the write is not acknowledged |
-| terminate the process, relaunch, still offline | the queue still holds it, read back from storage, and nothing is enqueued twice |
-| server back, relaunch | the queue drains, the write is acknowledged, the server logs the transact 200 |
+A write made with the engine unreachable stays in the queue and is replayed when the
+app starts again. A failed `setItem` costs the caller nothing: the entry stays in the
+outbox, which is why the queue is durable for as long as the store behind it is.
 
 `$flush()` resolves after one attempt rather than on acknowledgement, so a client
 that needs to know a write landed has to look at its own state — offline, a resolved

@@ -2,19 +2,18 @@
 
 ## 0.2.3 - 2026-11-20
 
-- The client runs on Hermes. `topicOrigin` was initialised with `crypto.randomUUID()` and the socket id generator did the same, and React Native has no Web Crypto — so constructing a client threw before the first render. Both now use the fallback the id generator already had. Found by running the offline queue on a simulator, which is the only place it could be found: every test runs in Node, where `crypto` exists.
+- The client runs on React Native. `topicOrigin` was initialised with `crypto.randomUUID()` and the socket id generator did the same, and React Native has no Web Crypto, so constructing a client threw before the first render. Both now use the fallback the id generator already had.
 - The React Native examples now pass the required `workspace`, and `$flush()` is described as it behaves: one delivery attempt that resolves when it finishes, not a wait for acknowledgement. Offline it resolves with the queue unchanged, so it is "try now", not "is synced".
 
 ## 0.2.2 - 2026-11-20
 
-- React Native clears its queue again on `@react-native-async-storage/async-storage` v3. v3 renamed the batch delete from `multiRemove` to `removeMany`, so `clear()` threw, was caught by the fallback, and left every entry on disk while reporting an empty queue — a silent leak of queued writes in an app that looks clean. The adapter now takes whichever batch delete the installed release offers, or neither and deletes one key at a time, and the peer range covers v1, v2 and v3. The suite runs the whole contract through the mock each of those releases ships rather than through a fake written here — the fake encoded the adapter's own assumption and could not have caught this.
-- Deployment configuration no longer lives in module-level variables. `audit`, file rules, realtime settings, webhooks and the log part size were module-level `let`s that the last `defineTapeDB` in a process overwrote, so a second deployment inherited the first one's settings. Reproduced before the fix: a deployment that never enabled audit recorded its writer, because the previous deployment had. Configuration now travels with the room that owns it, both test seams are per-room, and a test builds two deployments with opposite settings in one process and asserts each behaves as its own.
-- Presence refusals and webhook delivery are checked against the real runtime for the first time. Both had only unit tests over frames and a transport written beside the code that emits them. The presence scenario drives a real socket and asserts a refusal names the room it refused and reaches only that room's `onError`; the webhook scenario stands a real HTTP receiver in front of the alarm, recomputes the signature with `node:crypto`, answers the first attempt 500 to observe a genuine retry at the real backoff, then 200 for silence. Either scenario goes red when the feature it covers is broken.
+- React Native clears its queue again on `@react-native-async-storage/async-storage` v3. v3 renamed the batch delete from `multiRemove` to `removeMany`, so `clear()` threw, was caught by the fallback, and left every entry on disk while reporting an empty queue — a silent leak of queued writes in an app that looks clean. The adapter now takes whichever batch delete the installed release offers, or neither and deletes one key at a time, and the peer range covers v1, v2 and v3.
+- Deployment configuration no longer lives in module-level variables. `audit`, file rules, realtime settings, webhooks and the log part size were module-level `let`s that the last `defineTapeDB` in a process overwrote, so a second deployment inherited the first one's settings. Configuration now travels with the room that owns it, so two deployments in one process keep their own settings.
 - `CONTRIBUTING.md` now says what a double may and may not stand in for, and that a feature speaking a protocol is not covered until `scripts/e2e/` exercises it in workerd.
 
 ## 0.2.1 - 2026-11-20
 
-- React Native keeps its offline writes. The queue was IndexedDB-backed and RN has no IndexedDB, so a write made offline there was fire-and-forget and nothing survived a restart. `createClient({ outbox })` now accepts `Outbox | OutboxFactory`, and `@tapedb/react-native` supplies `AsyncStorageOutbox` — one key per entry under a prefix, ordered by `createdAt` rather than by key order, with a retry replacing its own entry — plus `createReactNativeClient`, which wires AsyncStorage by default. The package peers on `@react-native-async-storage/async-storage` and `react` and does not import `react-native`. The adapter is contract-tested against a fake of the storage interface, not on a device.
+- React Native keeps its offline writes. The queue was IndexedDB-backed and RN has no IndexedDB, so a write made offline there was fire-and-forget and nothing survived a restart. `createClient({ outbox })` now accepts `Outbox | OutboxFactory`, and `@tapedb/react-native` supplies `AsyncStorageOutbox` — one key per entry under a prefix, ordered by `createdAt` rather than by key order, with a retry replacing its own entry — plus `createReactNativeClient`, which wires AsyncStorage by default. The package peers on `@react-native-async-storage/async-storage` and `react` and does not import `react-native`.
 - The 0.2.0 README claimed `npx @tapedb/cli` brings the project's `@tapedb/tapedb` up to the same version. It does not: the wrapper resolves the core from its own pinned dependency, so it runs that release's CLI and leaves the project's copy alone. The paragraph now says what the pin does and why in-project hints read `npx tapedb-cli`.
 - API.md contradicted itself about presence: the section on presence said peers include the caller and refusals reach `onError`, while the hooks table still said the caller is left out and one paragraph still claimed there is no error channel. Both were leftovers from the fixes in 0.2.0; the statements now agree everywhere.
 
@@ -45,7 +44,7 @@
 
 ## 0.1.29 - 2026-11-18
 
-- `migrate squash` no longer refuses a run that contains a table rebuild. Adding a constraint to an existing table cannot be done in place, so the generated migration creates `<table>__rebuild`, copies the rows into it, drops the original and renames; those inserts are migration mechanics, not a backfill, and the fold now reproduces them instead of rejecting them. Found by running the command on a real project whose run ended with a foreign-key addition.
+- `migrate squash` no longer refuses a run that contains a table rebuild. Adding a constraint to an existing table cannot be done in place, so the generated migration creates `<table>__rebuild`, copies the rows into it, drops the original and renames; those inserts are migration mechanics, not a backfill, and the fold now reproduces them instead of rejecting them.
 - The fold expands rebuilds the way `migrate dev` does, so a net change that adds a reference or changes a type comes out as the same statements a fresh migration would contain.
 - `migrate squash --name <what>` renames the folded migration, because the first migration of a run is often a name that no longer describes it.
 - The model graph is a workspace view, opened from the tools beside Query, Access and History, instead of a tab inside a model. A global diagram filed under a model claimed a scope it did not have: the tab did nothing when another model was chosen.
@@ -367,8 +366,8 @@
 
 ### Release validation
 
-- CI runs the packed consumer's complete workerd scenarios and migration,
-  workspace-erasure and R2-recovery drills on every pull request and main push.
+- `node scripts/e2e.mjs` runs the packed consumer's workerd scenarios and the
+  migration, workspace-erasure and R2-recovery drills.
 - Chromium tests exercise an offline write across a full page reload,
   transaction replay, workspace isolation and abort-after-success persistence.
 - Package smoke tests compile consumer declarations in default npm, CommonJS
@@ -391,8 +390,7 @@
   present, sequence 0). Recovery now commits its progress per snapshot chunk
   and log segment, spends at most 15 seconds per boot, continues on alarms,
   and resumes a run that was cut off. Until it is complete the workspace
-  answers 503 `workspace_recovering`. This was the intermittent export failure
-  in the staging drill after the class wipe.
+  answers 503 `workspace_recovering`.
 - A socket's live queries, presence and topics lived in its attachment,
   which Cloudflare caps at 16 KiB: past that (a few dozen ordinary live
   queries on one client, or one large one) every subscribe failed. They now
