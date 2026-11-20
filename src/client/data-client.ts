@@ -33,6 +33,7 @@ import type {
   SchemaDefinition,
   ServerMessage,
   TopicListener,
+  TopicGap,
   TopicSender,
   TransactInput,
   TxOp,
@@ -347,6 +348,23 @@ export const TOPIC_QUEUE_MESSAGES = 100;
 /** How long a queued broadcast send stays worth sending. */
 export const TOPIC_QUEUE_MS = 60_000;
 
+/**
+ * Where a client stands on one topic.
+ *
+ * `unaccountedOwnSends` is what keeps a client's own broadcasts from looking
+ * like loss: the room delivers a frame to every socket but the one that sent
+ * it, so a sent message occupies a sequence this client will never receive
+ * live and every later arrival jumps over it.
+ */
+interface TopicProgress {
+  /** Highest sequence seen, or covered by one of this client's own sends. */
+  lastSeq?: number;
+  /** The most recent jump, kept until the topic is left. */
+  gap: TopicGap | null;
+  /** Own sends that no missing sequence has consumed yet. */
+  unaccountedOwnSends: number;
+}
+
 class DataClientImpl {
 
   private readonly config: ResolvedConfig;
@@ -376,8 +394,12 @@ class DataClientImpl {
   private readonly pendingOps = new Map<string, readonly TxOp[]>();
   private readonly peerCache = new Map<string, PresencePeer[]>();
   private readonly topicListeners = new Map<string, Set<TopicListener>>();
-  /** Last sequence seen per joined topic; a rejoin asks for what came after. */
-  private readonly topicSeq = new Map<string, number>();
+  /**
+   * What this client knows of each joined topic's sequence: the highest one it
+   * has seen, the last run it jumped over, and how many of its own sends are
+   * still unmatched. A rejoin asks for everything after `lastSeq`.
+   */
+  private readonly topicProgress = new Map<string, TopicProgress>();
   /** Sends made while the socket was down, sent after reconnecting. */
   private readonly topicQueue = new Map<string, Array<{ message: unknown; at: number }>>();
   /** This client's id across connections: replay skips its own messages. */
@@ -831,9 +853,79 @@ class DataClientImpl {
       const current = this.topicListeners.get(topic);
       if (!current?.delete(listener) || current.size > 0) return;
       this.topicListeners.delete(topic);
-      this.topicSeq.delete(topic);
+      this.topicProgress.delete(topic);
       this.socket?.send({ type: "topic:leave", topic });
     };
+  }
+
+  /** The highest sequence this client has seen on `topic`, if any. */
+  topicLastSeq(topic: string): number | undefined {
+    return this.topicProgress.get(topic)?.lastSeq;
+  }
+
+  /** The last run of sequences this client jumped over on `topic`, if any. */
+  topicGap(topic: string): TopicGap | null {
+    return this.topicProgress.get(topic)?.gap ?? null;
+  }
+
+  private progressFor(topic: string): TopicProgress {
+    let progress = this.topicProgress.get(topic);
+    if (!progress) {
+      progress = { gap: null, unaccountedOwnSends: 0 };
+      this.topicProgress.set(topic, progress);
+    }
+    return progress;
+  }
+
+  /**
+   * Folds one sequence into the topic's position. False means it had already
+   * been seen: a replay can overlap what arrived live, so each sequence is
+   * taken once.
+   *
+   * A jump is reported as a gap unless it can be accounted for by messages
+   * this client sent itself — `own` here, or a live send still unmatched. A
+   * client that is the only sender on a topic therefore sees no gaps: every
+   * sequence it skips is one of its own broadcasts.
+   */
+  private accountTopicSeq(topic: string, seq: number, own: boolean): boolean {
+    const progress = this.progressFor(topic);
+    const last = progress.lastSeq;
+    if (last !== undefined && seq <= last) return false;
+    if (last === undefined) {
+      progress.lastSeq = seq;
+      return true;
+    }
+    progress.lastSeq = seq;
+    if (own) return true;
+
+    let expected = last + 1;
+    while (expected < seq && progress.unaccountedOwnSends > 0) {
+      progress.unaccountedOwnSends -= 1;
+      expected += 1;
+    }
+    if (expected < seq) this.reportTopicGap(topic, { topic, expected, received: seq });
+    return true;
+  }
+
+  private reportTopicGap(topic: string, gap: TopicGap): void {
+    this.progressFor(topic).gap = gap;
+    for (const listener of [...(this.topicListeners.get(topic) ?? [])]) {
+      try {
+        listener.gap?.(gap);
+      } catch {
+        // One listener's error must not keep the gap from the rest.
+      }
+    }
+  }
+
+  /**
+   * Records that a `topic:send` frame reached the socket, so its sequence —
+   * which this client will never be handed — is not mistaken for a loss.
+   * Best effort: a frame the server refuses (an expiring claim) leaves one
+   * spare, which at worst hides one later jump on the same connection.
+   */
+  private noteOwnTopicSend(topic: string): void {
+    this.progressFor(topic).unaccountedOwnSends += 1;
   }
 
   /**
@@ -848,7 +940,10 @@ class DataClientImpl {
     // Retain the exact validated JSON value, not a mutable caller object.
     message = JSON.parse(encoded).message;
     this.ensureSocket();
-    if (this.socket?.send({ type: "topic:send", topic, message, origin: this.topicOrigin })) return true;
+    if (this.socket?.send({ type: "topic:send", topic, message, origin: this.topicOrigin })) {
+      this.noteOwnTopicSend(topic);
+      return true;
+    }
     const queue = (this.topicQueue.get(topic) ?? []).filter((item) => Date.now() - item.at < TOPIC_QUEUE_MS);
     if (queue.length >= TOPIC_QUEUE_MESSAGES) {
       this.topicQueue.set(topic, queue);
@@ -865,6 +960,7 @@ class DataClientImpl {
       const fresh = queue.filter((item) => now - item.at < TOPIC_QUEUE_MS);
       while (fresh.length > 0) {
         if (!this.socket?.send({ type: "topic:send", topic, message: fresh[0].message, origin: this.topicOrigin })) break;
+        this.noteOwnTopicSend(topic);
         fresh.shift();
       }
       if (fresh.length > 0) this.topicQueue.set(topic, fresh);
@@ -1168,7 +1264,7 @@ class DataClientImpl {
         this.resubscribeAll();
         this.republishPresence();
         for (const topic of this.topicListeners.keys()) {
-          const since = this.topicSeq.get(topic);
+          const since = this.topicProgress.get(topic)?.lastSeq;
           this.socket?.send({ type: "topic:join", topic, ...(since !== undefined ? { since } : {}) });
         }
         // After the rejoins, so a listener's own topic is joined first.
@@ -1234,23 +1330,36 @@ class DataClientImpl {
         return;
       }
       case "topic:joined": {
-        // Where the topic stands. A room that restarted from scratch counts
-        // from its own number, lower than ours.
-        const seen = this.topicSeq.get(message.topic);
-        if (seen === undefined || message.seq < seen) this.topicSeq.set(message.topic, message.seq);
+        // The topic's head, after any replay this join asked for. Replay
+        // covers everything between our position and the head, so a head that
+        // is still ahead of us means the replay window dropped those
+        // sequences: report them now, because no message will arrive to carry
+        // them. A room that restarted from scratch counts from its own
+        // number, lower than ours, and that is a rewind, not a gap.
+        const progress = this.progressFor(message.topic);
+        // A new connection: own sends from the old one are either replayed
+        // back to us or accounted for by the head below.
+        progress.unaccountedOwnSends = 0;
+        const seen = progress.lastSeq;
+        progress.lastSeq = message.seq;
+        if (seen === undefined || message.seq <= seen) return;
+        this.reportTopicGap(message.topic, {
+          topic: message.topic,
+          expected: seen + 1,
+          received: message.seq,
+        });
         return;
       }
       case "topic:message": {
         // The socket joins parts; one that reaches here was incomplete.
         if ("part" in message) return;
-        if (message.seq !== undefined) {
-          const seen = this.topicSeq.get(message.topic);
-          // A replay can overlap what arrived live: each sequence once.
-          if (seen !== undefined && message.seq <= seen) return;
-          this.topicSeq.set(message.topic, message.seq);
-        }
         // This client's own messages, replayed to it on a later connection.
-        if (message.origin === this.topicOrigin) return;
+        const own = message.origin === this.topicOrigin;
+        if (message.seq !== undefined) {
+          // A replay can overlap what arrived live: each sequence once.
+          if (!this.accountTopicSeq(message.topic, message.seq, own)) return;
+        }
+        if (own) return;
         const from: TopicSender = { clientId: message.from.clientId, userId: message.from.sub };
         for (const listener of [...(this.topicListeners.get(message.topic) ?? [])]) {
           try {
