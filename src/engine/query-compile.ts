@@ -876,7 +876,11 @@ function compileOrder(
         `Unknown attribute "${attribute}" on namespace "${namespace.apiName}".`
       );
     }
-    if (resolved.type === "json" || resolved.type === "any") {
+    if (resolved.type === "json" || resolved.type === "any" || resolved.type === "vector") {
+      // A vector is opaque bytes: ordering by it would sort base64, which is not
+      // an order of the values and not stable between two writes of the same
+      // numbers. The client planner refuses it too, but a raw query document and
+      // the HTTP API reach the engine directly, so the engine refuses it here.
       throw invalidValue(
         `Cannot order by non-scalar attribute "${attribute}".`
       );
