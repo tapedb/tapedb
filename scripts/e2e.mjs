@@ -115,12 +115,52 @@ writeFileSync(join(project, "tapedb.schema.ts"), schemaSource);
 run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "migrate", "dev", "--name", "personal_fields"], { cwd: project });
 run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "migrate", "check"], { cwd: project });
 for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(project, file));
+
+// Presence refusals and webhook delivery are deployment configuration, not
+// request behaviour, so a local run bakes them into the Worker it generates
+// and hands the same values to the two scenarios that assert them. A deployed
+// Worker cannot reach this process's loopback receiver (and no other scenario
+// uses presence), so those two scenarios skip what --deploy and --url do not
+// configure.
+const localRun = !deployName && !remote;
+const presenceRooms = 2;
+const refusedRoom = "secret:room";
+const hookPort = localRun ? await freePort() : null;
+const hookSecret = localRun ? randomUUID() : null;
+const hookUrl = `http://127.0.0.1:${hookPort}/tapedb`;
+if (localRun) {
+  Object.assign(process.env, {
+    TAPEDB_E2E_WEBHOOK_URL: hookUrl,
+    TAPEDB_E2E_WEBHOOK_SECRET: hookSecret,
+    TAPEDB_E2E_PRESENCE_ROOMS: String(presenceRooms),
+    TAPEDB_E2E_REFUSED_ROOM: refusedRoom,
+  });
+}
+// Both defineTapeDB calls below need these: the configuration is per Worker,
+// so a second instance defined without them clears the first one's.
+const deployment = localRun
+  ? `  realtime: {
+    maxPresenceRooms: ${presenceRooms},
+    authorize: ({ kind, target }: { kind: string; target: string }) =>
+      !(kind === "presence" && target === ${JSON.stringify(refusedRoom)}),
+  },
+  webhooks: [
+    {
+      url: ${JSON.stringify(hookUrl)},
+      secret: ${JSON.stringify(hookSecret)},
+      events: ["create", "update", "delete"],
+      models: ["board", "person"],
+    },
+  ],
+`
+  : "";
+
 // The audit is opt-in; the suite runs with it on (audit.mjs).
 {
   const path = join(project, "worker.ts");
   const source = readFileSync(path, "utf8");
   if (!source.includes("devClaims: true,")) throw new Error("worker.ts template changed: cannot turn the audit on.");
-  let worker = source.replace("devClaims: true,", "devClaims: true,\n  audit: true,");
+  let worker = source.replace("devClaims: true,", `devClaims: true,\n  audit: true,${deployment ? `\n${deployment}` : ""}`);
   // A second instance on /_e2e/claim serves claims the way a production
   // deployment does: through an identity adapter, under the built-in claim
   // limits (claim-limits.mjs). The subject comes from a header, which mints
@@ -132,7 +172,7 @@ for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(proj
   schema,
   migrations,
   audit: true,
-  identity: {
+${deployment}  identity: {
     async getSubject(headers) {
       const sub = headers.get("x-e2e-user");
       return sub ? { sub } : null;
