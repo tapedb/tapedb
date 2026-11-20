@@ -22,6 +22,7 @@ import type {
   AggregateGroup,
   PresencePeer,
   PresencePeersOptions,
+  PresenceSubscribeOptions,
   TopicGap,
   TopicSender,
   QueryDocument,
@@ -185,10 +186,15 @@ export interface PresenceRoom {
   /**
    * Listens for the room's peers until the returned function is called, with
    * the same self-exclusion as `peers()`.
+   *
+   * `onError` hears the engine refuse something this room asked for — a room
+   * the authorizer denied, one past `maxPresenceRooms`, a state past the
+   * socket's byte budget. A refusal leaves the peers and the subscription as
+   * they were; the callback is the only sign it happened.
    */
   subscribe(
     listener: (peers: PresencePeer[]) => void,
-    options?: PresencePeersOptions
+    options?: PresenceSubscribeOptions
   ): () => void;
   leave(): void;
 }

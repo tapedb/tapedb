@@ -14,6 +14,7 @@ import type { ReactNode } from "react";
 import type { Root } from "react-dom/client";
 
 import { MemoryOutbox } from "../src/client/outbox";
+import type { PresenceError } from "../src/client/types";
 import type { WebSocketLike } from "../src/client/socket";
 import { createClient } from "../src/model/client";
 import { useBroadcast, useLive, useLivePage, usePresence } from "../src/react/index";
@@ -285,6 +286,42 @@ describe("usePresence", () => {
     });
 
     expect(peers).toEqual([{ clientId: "c1", presence: { name: "carol" } }]);
+  });
+
+  test("onError hears a refusal, and the peers survive it", async () => {
+    const { db, socket } = harness();
+    const errors: PresenceError[] = [];
+    let peers: unknown[] = [];
+    render(() => {
+      // A new callback object every render must not disturb the subscription.
+      peers = usePresence(db, "board:1", { name: "alice" }, {
+        onError: (error) => errors.push(error),
+      });
+      return null;
+    });
+
+    await act(async () => {
+      await tick();
+      socket.onopen?.({});
+      socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1, clientId: "self-1" });
+      socket.push({
+        type: "presence:update",
+        target: "board:1",
+        peers: [{ clientId: "c1", presence: { name: "carol" } }],
+      });
+    });
+    expect(peers).toEqual([{ clientId: "c1", presence: { name: "carol" } }]);
+
+    await act(async () => {
+      socket.push({ type: "error", code: "presence_denied", target: "board:1" });
+      await tick();
+    });
+
+    expect(errors).toEqual([{ code: "presence_denied", target: "board:1" }]);
+    // A refusal neither clears the list nor ends the subscription.
+    expect(peers).toEqual([{ clientId: "c1", presence: { name: "carol" } }]);
+    expect(socket.sent.filter((message) => message.type === "presence:set").length).toBeGreaterThan(0);
+    expect(socket.sent.filter((message) => message.type === "presence:clear")).toHaveLength(0);
   });
 });
 
