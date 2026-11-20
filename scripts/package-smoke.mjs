@@ -156,6 +156,19 @@ try {
     { dir: "packages/react", name: "@tapedb/react", entry: "react", install: ["react@19"], type: "PresencePeersOptions" },
     { dir: "packages/auth", name: "@tapedb/auth", entry: "auth", install: ["better-auth@1.7.25"], type: "TapeDBAuthOptions" },
     { dir: "packages/email", name: "@tapedb/email", entry: "email", install: [], type: "MailerOptions" },
+    // React Native re-exports the React entry whole and adds the queue the
+    // core cannot default to there, so it is a superset rather than an alias.
+    // Its peer is a store, not a runtime: the package must install and run in
+    // Node, with `--legacy-peer-deps` so AsyncStorage's own `react-native`
+    // peer is not dragged in.
+    {
+      dir: "packages/react-native", name: "@tapedb/react-native", entry: "react",
+      install: ["react@19", "@react-native-async-storage/async-storage@2.2.0"],
+      installOptions: ["--legacy-peer-deps"],
+      type: "AsyncStorageOutbox",
+      own: ["AsyncStorageOutbox", "createReactNativeClient"],
+      superset: true, functional: "react-native",
+    },
   ];
   for (const wrapper of wrappers) {
     const manifest = JSON.parse(readFileSync(join(root, wrapper.dir, "package.json"), "utf8"));
@@ -180,7 +193,7 @@ try {
     const app = join(scratch, wrapper.name.replace("@", "").replace("/", "-"));
     mkdirSync(app);
     writeFileSync(join(app, "package.json"), JSON.stringify({ name: `${wrapper.dir}-consumer`, private: true, type: "module" }));
-    command("npm", ["install", archive, wrapperArchive, ...wrapper.install, "--ignore-scripts", "--no-audit", "--no-fund"], app);
+    command("npm", ["install", archive, wrapperArchive, ...wrapper.install, ...(wrapper.installOptions ?? []), "--ignore-scripts", "--no-audit", "--no-fund"], app);
     // Both sides came from disk: a registry fetch would mean the pin drifted.
     const lockfile = JSON.parse(readFileSync(join(app, "package-lock.json"), "utf8"));
     assert.match(lockfile.packages["node_modules/@tapedb/tapedb"].resolved, /\.tgz$/, `${wrapper.name} must install beside the packed core tarball, never the registry`);
@@ -210,17 +223,76 @@ try {
     }
 
     // One probe for both import paths in one process: the names must match and
-    // each value must be the subpath's own binding, not a copy of it.
-    writeFileSync(join(app, "probe.mjs"), [
+    // each value must be the subpath's own binding, not a copy of it. A wrapper
+    // that re-exports an entry and adds bindings of its own (`react-native`)
+    // must carry every name of the entry identically, and add only what it
+    // declares.
+    const probe = [
       'import assert from "node:assert/strict";',
       `import * as alias from "${wrapper.name}";`,
       `import * as subpath from "@tapedb/tapedb/${wrapper.entry}";`,
       'assert.ok(Object.keys(subpath).length > 0, "the subpath must export names");',
-      `assert.deepEqual(Object.keys(alias).sort(), Object.keys(subpath).sort(), "${wrapper.name} and the subpath must export the same names");`,
-      `for (const name of Object.keys(subpath)) assert.equal(alias[name], subpath[name], name + " must be the subpath's own binding, not a copy");`,
-      'console.log(Object.keys(alias).sort().join(", "));',
-    ].join("\n"));
-    const exportsSeen = command(process.execPath, ["probe.mjs"], app).stdout.trim();
+    ];
+    if (wrapper.superset) {
+      probe.push(
+        `for (const name of Object.keys(subpath)) assert.equal(alias[name], subpath[name], name + " must be the core react entry's own binding, not a copy");`,
+        `assert.deepEqual(Object.keys(alias).filter((name) => !(name in subpath)).sort(), ${JSON.stringify(wrapper.own)}, "${wrapper.name} adds its own queue, and nothing else");`,
+      );
+    } else {
+      probe.push(
+        `assert.deepEqual(Object.keys(alias).sort(), Object.keys(subpath).sort(), "${wrapper.name} and the subpath must export the same names");`,
+        `for (const name of Object.keys(subpath)) assert.equal(alias[name], subpath[name], name + " must be the subpath's own binding, not a copy");`,
+      );
+    }
+    if (wrapper.functional === "react-native") {
+      // The capability, against the tarballs: a write made offline must land
+      // in the AsyncStorage-shaped store and be replayed by the next client,
+      // with no IndexedDB and no `userId` anywhere in sight.
+      probe.push(
+        'import { schema, model, t } from "@tapedb/tapedb/schema";',
+        'const values = new Map();',
+        'const storage = {',
+        '  getItem: async (key) => (values.has(key) ? values.get(key) : null),',
+        '  setItem: async (key, value) => { values.set(key, value); },',
+        '  removeItem: async (key) => { values.delete(key); },',
+        '  getAllKeys: async () => [...values.keys()],',
+        '  multiRemove: async (keys) => { for (const key of keys) values.delete(key); },',
+        '};',
+        'const sent = [];',
+        'let online = false;',
+        'globalThis.fetch = async (_url, init) => {',
+        '  if (!online) throw new TypeError("network down");',
+        '  sent.push(JSON.parse(init.body));',
+        '  return new Response(JSON.stringify({ ok: true, result: { seq: sent.length } }), { status: 200, headers: { "content-type": "application/json" } });',
+        '};',
+        '// A socket that never opens and never errors: the queue, not the socket,',
+        '// is what this probe is about.',
+        'globalThis.WebSocket = class { send() {} close() {} };',
+        'const config = {',
+        '  schema: schema({ task: model({ title: t.string() }) }),',
+        '  url: "http://127.0.0.1:8787",',
+        '  workspace: "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a",',
+        '  getToken: async () => "token",',
+        '  storage,',
+        '};',
+        'const first = alias.createReactNativeClient(config);',
+        'assert.equal((await first.task.create({ data: { title: "offline" } })).status, "queued", "an offline write must queue");',
+        'assert.equal(values.size, 1, "the queued write must be in AsyncStorage, not in memory");',
+        'assert.match([...values.keys()][0], /^tapedb-data-outbox:v2:/, "the queue keeps the browser scope, so one account cannot replay another\'s writes");',
+        'first.$close();',
+        'online = true;',
+        'const second = alias.createReactNativeClient(config);',
+        'await new Promise((resolve) => setTimeout(resolve, 20));',
+        'assert.equal(sent.length, 1, "a fresh client must replay the previous session\'s queue");',
+        'assert.equal(values.size, 0, "an acknowledged write must leave the store");',
+        'second.$close();',
+        'console.log("offline queue: 1 write stayed in AsyncStorage across a new client, then replayed");',
+      );
+    }
+    probe.push('console.log(Object.keys(alias).sort().join(", "));');
+    writeFileSync(join(app, "probe.mjs"), probe.join("\n"));
+    // The last line is the export list; a functional probe may log above it.
+    const exportsSeen = command(process.execPath, ["probe.mjs"], app).stdout.trim().split("\n").at(-1);
     assert.ok(exportsSeen.length > 0, `${wrapper.name} must export the subpath's names`);
 
     // Declarations emitted through the alias must name the subpath's types.
