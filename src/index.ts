@@ -52,7 +52,7 @@ export type {
 
 export { id } from "./client/id";
 export type { HistoryEntry, StoredFile } from "./client/data-client";
-export type { PresencePeer, QueryError, TopicSender, WriteRejection } from "./client/types";
+export type { PresencePeer, QueryError, TopicGap, TopicSender, WriteRejection } from "./client/types";
 export type { StorageObject } from "./client/storage-client";
 
 export { WORKSPACE_ROLE_LEVELS, hasRole, hasRoleLevel } from "./claims";
