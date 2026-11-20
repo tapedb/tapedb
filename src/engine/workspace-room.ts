@@ -73,19 +73,29 @@ import {
 } from "./webhooks";
 import { findNamespace } from "./registry";
 import {
+  VECTOR_ERASURE_HOOK,
+  adoptRestoredVectors,
   cloudflareVectorIndex,
   drainVectorQueue,
   dropVectorCapture,
   executeVectorSearch,
   installVectorCapture,
+  isVectorPurgeFenced,
   isVectorizeBinding,
   materialiseVectorIntents,
+  readVectorIdentity,
+  recordVectorIdentity,
+  vectorIdsInWorkspace,
   vectorIndexMatches,
   vectorQueueCounts,
   vectorQueueDueAt,
   type ConfiguredVectorize,
+  type VectorErasureHook,
   type VectorIndex,
+  type VectorPurgeStatus,
+  type VectorQueueStatus,
   type VectorSearchRequest,
+  type VectorSubmissionGate,
 } from "./vector-index";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
 import { MAX_SOCKET_MESSAGE_BYTES } from "../socket-protocol";
@@ -137,6 +147,8 @@ type CountRow = Record<string, SqlStorageValue> & { total: number };
 const DURABILITY_ALARM_DELAY_MS = 30_000;
 /** A write wakes the alarm this soon, so its vector intent is drained early. */
 const VECTOR_DRAIN_DELAY_MS = 1_000;
+/** How long an unfinished vector purge waits before it tries the index again. */
+const VECTOR_PURGE_RETRY_MS = 60_000;
 /** How long `/status?after=` waits for a new transaction before answering anyway. */
 const STATUS_WAIT_MS = 25_000;
 /** How long a recovery waits after R2 failed to answer. */
@@ -272,6 +284,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private vectorIndexCheck: { binding: string; ok: boolean } | null = null;
   /** One drain at a time, so two alarm passes cannot submit the same batch. */
   private drainingVectors = false;
+  /**
+   * Serialises a fence check with the submission it admits. The weaker shape —
+   * read the marker, await, submit — was measured emitting an upsert after the
+   * fence; the submission is therefore started inside the same step as the
+   * check, and the fence write takes the same step.
+   */
+  private vectorSubmissionChain: Promise<unknown> = Promise.resolve();
+  /** This workspace's erasure, built once per deployment and binding. */
+  private vectorErasureRun: { key: string; erasure: VectorErasureHook } | null = null;
   /** The clock budget windows are measured against. */
   private readonly clock: () => number;
 
@@ -327,7 +348,33 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // An erased workspace stays erased: no migrations, no recovery, no alarm.
     if (ctx.storage.sql.exec(`SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = '${ERASED_TABLE}'`).toArray().length > 0) {
       this.erased = true;
+      await this.resumeVectorPurge();
       return;
+    }
+
+    // An erasure fence outlives this object's storage, so it is read from R2
+    // before the workspace is opened to anything: a room re-created over
+    // storage that a rebuild or a moved copy refilled must not publish a
+    // vector for a workspace that asked to be gone. `head` is enough here —
+    // the marker's contents are needed only when it stands.
+    const fence = this.config.vectorize;
+    if (fence !== null) {
+      try {
+        if (await isVectorPurgeFenced(this.roomEnv.DATA, {
+          deployment: this.deploymentName(),
+          workspace: this.workspaceId,
+        })) {
+          // The fence stands: finish the erase this object was part of.
+          this.erased = true;
+          this.erasurePending = true;
+          await ctx.storage.setAlarm(Date.now());
+          return;
+        }
+      } catch (error) {
+        // R2 did not answer. Serving is unaffected — the drain refuses to
+        // submit while it cannot read the fence — and the next boot tries again.
+        console.error("workspace_vector_fence_unreadable", { workspaceId: this.workspaceId, error: errorMessage(error) });
+      }
     }
 
     if (isWorkspaceId(ctx.id.name ?? "")) {
@@ -389,8 +436,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // Capture is installed only once no restore is in flight: rows a recovery
     // replays are not writes a consumer made, and must not become events.
     if (!this.recovering) this.syncWebhookCapture();
-    if (!this.recovering) this.syncVectorCapture();
-    if (!this.recovering) await this.scheduleNextDurabilityAlarm(Date.now());
+    if (!this.recovering) {
+      // Before capture is installed, and on every boot rather than only after a
+      // restore: bookkeeping that names another workspace's identity is
+      // re-derived here, so a copied backup never publishes under an ID it
+      // inherited. One `_engine_meta` read unless a marker exists.
+      await this.adoptRestoredVectors();
+      this.syncVectorCapture();
+      await this.scheduleNextDurabilityAlarm(Date.now());
+    }
   }
 
   /** Boots again after a deferred boot; false while it still cannot. */
@@ -478,6 +532,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (wasRecovering) {
       // Writes are served again: capture any webhook the deployment asked for.
       this.syncWebhookCapture();
+      // Before capture is installed: a restore may have brought another
+      // workspace's vector bookkeeping with it, or a source that was erased.
+      await this.adoptRestoredVectors();
       this.syncVectorCapture();
       await this.scheduleNextDurabilityAlarm(Date.now());
     }
@@ -509,10 +566,194 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const config = this.config.vectorize;
     if (config === null) return;
     try {
-      installVectorCapture(durableObjectSqlExecutor(this.ctx.storage), config);
+      const sql = durableObjectSqlExecutor(this.ctx.storage);
+      installVectorCapture(sql, config);
+      // Which identity this workspace's queue and state belong to: a later
+      // boot reads it back and knows whether the bookkeeping it restored is
+      // its own (see `adoptRestoredVectors`).
+      if (readVectorIdentity(sql) === null) {
+        recordVectorIdentity(sql, { binding: config.binding, workspace: this.workspaceId });
+      }
     } catch (error) {
       // Reads and writes keep working; the queue is created at the next boot.
       console.error("workspace_vector_capture_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+    }
+  }
+
+  /** The deployment's own name: the segment that keeps two deployments' purges apart. */
+  private deploymentName(): string {
+    const name = this.roomEnv.ENVIRONMENT;
+    return typeof name === "string" && name.length > 0 ? name : "default";
+  }
+
+  /** This workspace's erasure, built once per binding. */
+  private vectorErasure(config: ConfiguredVectorize): VectorErasureHook {
+    const key = `${this.deploymentName()}\u001f${config.binding}`;
+    if (this.vectorErasureRun?.key === key) return this.vectorErasureRun.erasure;
+    const erasure = VECTOR_ERASURE_HOOK({
+      bucket: this.roomEnv.DATA,
+      deployment: this.deploymentName(),
+      workspaceId: this.workspaceId,
+      config,
+      index: () => this.vectorIndexFor(config),
+      now: this.clock,
+    });
+    this.vectorErasureRun = { key, erasure };
+    return erasure;
+  }
+
+  /**
+   * One serialised vector step. A submission starts inside the step that read
+   * the fence, and the fence write takes the same step, so the two can never
+   * interleave: whatever began before the marker was written finishes, and
+   * whatever begins after it sees it.
+   */
+  private serializeVectorStep<T>(operation: () => Promise<T>): Promise<T> {
+    const next = this.vectorSubmissionChain.then(operation, operation);
+    this.vectorSubmissionChain = next.then(() => undefined, () => undefined);
+    return next;
+  }
+
+  /** The gate the drain submits through: the fence, checked as one step with the submission. */
+  private vectorSubmissionGate(config: ConfiguredVectorize): VectorSubmissionGate {
+    return {
+      submit: <T,>(operation: () => Promise<T>): Promise<T | null> =>
+        this.serializeVectorStep(async () => {
+          const fenced = await this.vectorErasure(config).isFenced({
+            binding: config.binding,
+            workspaceId: this.workspaceId,
+          });
+          return fenced ? null : operation();
+        }),
+    };
+  }
+
+  /**
+   * Continues an interrupted vector purge from the ledger, using no room state.
+   *
+   * This is the coordinator's entry point and also what the alarm does for an
+   * erased workspace: the Durable Object and its alarm can both be destroyed,
+   * and the erasure still finishes, because everything needed is in R2.
+   */
+  async resumeVectorPurge(): Promise<VectorPurgeStatus | null> {
+    const config = this.config.vectorize;
+    if (config === null) return null;
+    const erasure = this.vectorErasure(config);
+    try {
+      const status = await erasure.resume({ binding: config.binding, workspaceId: this.workspaceId });
+      if (status === null) return null;
+      console.log("workspace_vector_purge", {
+        workspaceId: this.workspaceId,
+        phase: status.phase,
+        ids: status.ids,
+        confirmed: status.confirmed,
+        pending: status.pending,
+        stalled: status.stalled,
+      });
+      // A stalled purge stops re-arming itself: the ledger says so in
+      // `/status`/logs, and an operator resumes it once the cause is fixed.
+      if (status.phase !== "complete" && !status.stalled) {
+        await this.ctx.storage.setAlarm(Date.now() + VECTOR_PURGE_RETRY_MS);
+      }
+      return status;
+    } catch (error) {
+      console.error("workspace_vector_purge_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+      await this.ctx.storage.setAlarm(Date.now() + VECTOR_PURGE_RETRY_MS);
+      return null;
+    }
+  }
+
+  /**
+   * Makes a restored workspace's vector bookkeeping its own, and refuses to
+   * publish rows of an erased source.
+   *
+   * Runs once a restore has finished, before capture is installed. The identity
+   * a vector ID is derived from includes the workspace, so an ID can never
+   * survive a restore into a different workspace: this makes the *bookkeeping*
+   * agree by discarding digests that describe another identity and letting
+   * every surviving intent be re-derived here. When the source workspace's
+   * marker stands, the restored rows are not published at all.
+   */
+  private async adoptRestoredVectors(): Promise<void> {
+    const config = this.config.vectorize;
+    if (config === null) return;
+    try {
+      const sql = durableObjectSqlExecutor(this.ctx.storage);
+      // Read before the rewrite: after `adoptRestoredVectors` the queue is this
+      // workspace's, and the source it came from is no longer recorded.
+      const identity = readVectorIdentity(sql);
+      const fencedSource = identity !== null && identity.workspace !== this.workspaceId
+        ? await isVectorPurgeFenced(this.roomEnv.DATA, {
+            deployment: this.deploymentName(),
+            workspace: identity.workspace,
+          })
+        : false;
+      const fencedDestination = await this.vectorErasure(config).isFenced({
+        binding: config.binding,
+        workspaceId: this.workspaceId,
+      });
+      const outcome = adoptRestoredVectors(sql, {
+        binding: config.binding,
+        workspaceId: this.workspaceId,
+        fencedSource,
+        fencedDestination,
+        now: this.clock(),
+      });
+      if (outcome.adopted || outcome.fenced) {
+        console.log("workspace_vector_restored", {
+          workspaceId: this.workspaceId,
+          source: identity?.workspace ?? null,
+          ...outcome,
+        });
+      }
+    } catch (error) {
+      console.error("workspace_vector_restore_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+    }
+  }
+
+  /**
+   * The erase path's vector work: fence, inventory, delete, verify — and the
+   * fence is a precondition, not a step. A purge that could not write its
+   * marker throws, so no delete of the log or the workspace happens either:
+   * erasure is not attempted without the record that makes it finishable.
+   */
+  private async beginVectorPurge(): Promise<VectorPurgeStatus | null> {
+    const config = this.config.vectorize;
+    if (config === null) return null;
+    const erasure = this.vectorErasure(config);
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    try {
+      const status = await this.serializeVectorStep(() =>
+        erasure.erase({
+          binding: config.binding,
+          workspaceId: this.workspaceId,
+          model: config.model,
+          // Read from SQLite here, before the wipe below: after it there is no
+          // workspace to read IDs from, and the inventory in R2 is the record.
+          inventory: () =>
+            vectorIdsInWorkspace(sql, {
+              binding: config.binding,
+              workspaceId: this.workspaceId,
+              config,
+            }),
+        })
+      );
+      console.log("workspace_vector_purge", {
+        workspaceId: this.workspaceId,
+        phase: status.phase,
+        ids: status.ids,
+        confirmed: status.confirmed,
+        pending: status.pending,
+      });
+      return status;
+    } catch (error) {
+      const fenced = await erasure
+        .isFenced({ binding: config.binding, workspaceId: this.workspaceId })
+        .catch(() => false);
+      // No fence, no erase: an unrecorded purge cannot be finished by anyone.
+      if (!fenced) throw error;
+      console.error("workspace_vector_purge_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+      return erasure.status({ binding: config.binding, workspaceId: this.workspaceId }).catch(() => null);
     }
   }
 
@@ -608,13 +849,44 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     this.drainingVectors = true;
     try {
-      const summary = await drainVectorQueue(sql, index, config, this.workspaceId, Date.now());
-      if (summary.pending > 0 && summary.nextAt !== null) {
+      const summary = await drainVectorQueue(sql, index, config, this.workspaceId, Date.now(), {
+        // Every submission goes through the fence, including one this pass
+        // recovered from `_vector_state` after the object was evicted.
+        gate: this.vectorSubmissionGate(config),
+      });
+      // A fenced workspace submits nothing again: the erasure owns what happens
+      // next, and re-arming the drain would only re-read the marker.
+      if (!summary.fenced && summary.pending > 0 && summary.nextAt !== null) {
         // Either a retry is due (its backoff) or a batch is left over.
         await this.scheduleDurabilityAlarm(Math.max(Date.now() + VECTOR_DRAIN_DELAY_MS, summary.nextAt));
       }
     } finally {
       this.drainingVectors = false;
+    }
+  }
+
+  /**
+   * The `vectorize` block of `/status`: the queue's counts, the fence, and the
+   * purge's phase. An R2 read only while a marker or a ledger exists, so a
+   * deployment that never erased a workspace pays a `head` per status call and
+   * nothing else.
+   */
+  private async vectorStatus(): Promise<{ vectorize: VectorQueueStatus } | null> {
+    const config = this.config.vectorize;
+    if (config === null) return null;
+    const counts = vectorQueueCounts(durableObjectSqlExecutor(this.ctx.storage));
+    try {
+      const purge = await this.vectorErasure(config).status({
+        binding: config.binding,
+        workspaceId: this.workspaceId,
+      });
+      return { vectorize: { ...counts, fenced: purge?.fenced ?? false, purge } };
+    } catch (error) {
+      // A ledger that cannot be read is reported as unfenced rather than
+      // failing `/status`: the counts are still true, and the drain refuses to
+      // submit on an unreadable fence anyway.
+      console.error("workspace_vector_status_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
+      return { vectorize: { ...counts, fenced: false, purge: null } };
     }
   }
 
@@ -808,12 +1080,31 @@ export class WorkspaceRoom extends DurableObject<Env> {
       if (claim.role < WORKSPACE_ROLE_LEVELS.OWNER) return apiError(403, "insufficient_role", "Only an owner can import a workspace.");
       if (request.method !== "POST") return apiError(405, "method_not_allowed", "Import uses POST.");
       this.importing = true;
+      // A restore says which workspace its backup was exported from. When that
+      // workspace's erasure marker stands, the rows still import — they are the
+      // caller's data — but nothing is published for them: a backup may not
+      // carry vectors out of a workspace that asked to be gone.
+      const vectorize = this.config.vectorize;
+      const exportedFrom = request.headers.get("x-tapedb-exported-from");
+      const fencedSource = vectorize !== null && exportedFrom !== null && isWorkspaceId(exportedFrom)
+        ? await isVectorPurgeFenced(this.roomEnv.DATA, {
+            deployment: this.deploymentName(),
+            workspace: exportedFrom,
+          }).catch(() => false)
+        : false;
+      if (fencedSource) dropVectorCapture(durableObjectSqlExecutor(this.ctx.storage));
       try {
         const rows = await importWorkspace(durableObjectSqlExecutor(this.ctx.storage), request, claim, this.workspaceId, this.config, this.personal);
         await this.scheduleNextDurabilityAlarm(Date.now());
-        return json({ ok: true, imported: { rows } });
+        if (fencedSource) {
+          console.log("workspace_vector_restore_withheld", { workspaceId: this.workspaceId, source: exportedFrom });
+        }
+        return json({ ok: true, imported: { rows }, ...(fencedSource ? { vectorize: "withheld" } : {}) });
       } catch (error) { return apiError(error instanceof TxError && error.code === "conflict" ? 409 : 400, "import_failed", errorMessage(error)); }
-      finally { this.importing = false; }
+      finally {
+        this.importing = false;
+        if (fencedSource) this.syncVectorCapture();
+      }
     }
 
     if (this.moveState?.state === "frozen" &&
@@ -2155,6 +2446,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
     sql.exec(`CREATE TABLE IF NOT EXISTS "${ERASING_TABLE}" (at INTEGER NOT NULL)`);
     sql.exec(`INSERT INTO "${ERASING_TABLE}" (at) SELECT ? WHERE NOT EXISTS (SELECT 1 FROM "${ERASING_TABLE}")`, Date.now());
     await this.ctx.storage.sync?.();
+
+    // The vector fence stands before the first delete — of the index or of the
+    // log. It is written through the same serialised step a submission takes,
+    // so a batch already in flight finishes and nothing starts after it. A
+    // purge that cannot write its marker throws, and the erase stops here
+    // rather than deleting data it could not finish erasing from the index.
+    const vectorPurge = await this.beginVectorPurge();
+
     const workspaceId = this.workspaceId;
     await this.roomEnv.DATA.delete(manifestKey(workspaceId));
     const history = (await listAllR2(this.roomEnv.DATA, `${workspacePrefix(workspaceId)}/`)).map(object => object.key);
@@ -2195,7 +2494,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
     this.erasurePending = false;
     this.personal?.clearPlaintext();
     this.subscriptionResults.clear();
-    console.log("workspace_erased", { workspaceId, objects: history.length + 1, files: files.length });
+    // This object's storage is now a tombstone; the ledger is not. Keep an alarm
+    // so an unfinished purge continues from R2 — the room it lived in is gone.
+    if (vectorPurge !== null && vectorPurge.phase !== "complete") {
+      await this.ctx.storage.setAlarm(Date.now() + VECTOR_PURGE_RETRY_MS);
+    }
+    console.log("workspace_erased", {
+      workspaceId,
+      objects: history.length + 1,
+      files: files.length,
+      ...(vectorPurge === null
+        ? {}
+        : { vectorPurge: { phase: vectorPurge.phase, ids: vectorPurge.ids, confirmed: vectorPurge.confirmed } }),
+    });
     return { historyObjects: history.length + 1, files: files.length };
   }
 
@@ -2445,7 +2756,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
       }
       return;
     }
-    if (this.erased) return;
+    if (this.erased) {
+      // A tombstone still owns its vector purge: the erasure outlives the data.
+      await this.resumeVectorPurge();
+      return;
+    }
     return this.trackWork(() => this.runAlarm());
   }
 
@@ -2774,7 +3089,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
     });
   }
 
-  private status(): Response {
+  /**
+   * `GET /status`. Reported after the queue's own counts so an operator can
+   * tell pending from fenced from dead-lettered, and read a stuck erasure's
+   * phase without listing R2.
+   */
+  private async status(): Promise<Response> {
     const sql = this.ctx.storage.sql;
     const migrations = sql
       .exec<IdRow>(`SELECT id FROM "_migrations" ORDER BY id`)
@@ -2816,13 +3136,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // What the webhook outbox holds, when this deployment delivers them: a
       // dead-lettered event is visible here without reading the table.
       ...(webhooksConfigured(this.config.webhooks) ? { webhooks: webhookCounts(durableObjectSqlExecutor(this.ctx.storage)) } : {}),
-      // Index intents waiting, failing and accepted. `pending` is a normal
-      // state: the provider accepts asynchronously and its visibility lags
-      // acceptance by a minute or more, so this is a queue depth, not a
-      // confirmation that anything is searchable yet.
-      ...(this.config.vectorize !== null
-        ? { vectorize: vectorQueueCounts(durableObjectSqlExecutor(this.ctx.storage)) }
-        : {}),
+      // Index intents pending, failing, dead-lettered and accepted, plus the
+      // fence and the purge's phase. `pending` is a normal state: the provider
+      // accepts asynchronously and its visibility lags acceptance by a minute
+      // or more, so this is a queue depth, not a confirmation that anything is
+      // searchable yet.
+      ...(await this.vectorStatus() ?? {}),
     });
   }
 }

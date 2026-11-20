@@ -87,6 +87,11 @@ export function cloudflareVectorIndex(binding: VectorizeBinding, name?: string):
         ...(name === undefined ? {} : { name }),
         ...(typeof details.dimensions === "number" ? { dimensions: details.dimensions } : {}),
         ...(typeof details.metric === "string" ? { metric: details.metric } : {}),
+        // Forwarded for a purge to *match* a delete's own mutation ID. Nothing
+        // compares it: it is replica inconsistent.
+        ...(typeof details.processedUpToMutation === "string"
+          ? { processedUpToMutation: details.processedUpToMutation }
+          : {}),
       };
     },
   };

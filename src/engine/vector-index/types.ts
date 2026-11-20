@@ -73,6 +73,30 @@ export interface VectorIndexDescription {
   /** Declared dimensions; compared with the schema before anything is sent. */
   dimensions?: number;
   metric?: string;
+  /**
+   * The mutation the index reports as processed. Read only to **match** a
+   * mutation this engine recorded — never to compare: it is replica
+   * inconsistent and was measured moving backwards between two reads, so
+   * "it advanced" is not evidence that anything was applied.
+   */
+  processedUpToMutation?: string | null;
+}
+
+/**
+ * A submission gate, as the drain consumes it.
+ *
+ * `submit` runs the operation only when the fence does not stand, and the check
+ * and the start of the submission are one serialised step: a fence written
+ * while a submission is in flight waits for it, and a submission that begins
+ * after the fence has been written sees it. Resolves `null` when the workspace
+ * is fenced, which is not a failure — the intent keeps its place.
+ *
+ * It exists because the weaker shape — check the fence, await something, then
+ * submit — was measured emitting an upsert *after* the fence, and the vector
+ * reappeared 114 s later.
+ */
+export interface VectorSubmissionGate {
+  submit<T>(operation: () => Promise<T>): Promise<T | null>;
 }
 
 /**
