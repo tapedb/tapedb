@@ -8,7 +8,9 @@ npx @tapedb/cli dev      # run the database locally, with the studio at http://l
 npx @tapedb/cli deploy   # deploy to your Cloudflare account
 ```
 
-Each run uses the newest tapedb and brings the project's `@tapedb/tapedb` up to it.
+Each run uses the `@tapedb/tapedb` release this package pins. It does **not** install or
+upgrade your project's own copy, so `npx @tapedb/cli` and the version in your
+`package.json` can differ: pin `@tapedb/tapedb` yourself and keep the two in step.
 The library itself is [`@tapedb/tapedb`](https://www.npmjs.com/package/@tapedb/tapedb).
 
 ## The command is still `tapedb-cli`
