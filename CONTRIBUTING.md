@@ -82,6 +82,18 @@ publish order — that is what keeps the two names one release.
   nothing about permissions.
 - If your change touches the request path, add the live check you ran to the PR
   description instead of writing a test that starts a Worker.
+- A double may simulate a failure the real world can produce: a full disk, a
+  500, a socket that drops mid-frame. It may **not** be the only evidence that
+  our code matches somebody else's interface. For a third-party contract, test
+  against the artifact that ships — the vendor generally publishes one. A fake
+  written beside the code carries that code's assumptions and can only confirm
+  them: the React Native adapter passed every test against a hand-written fake
+  while `clear()` silently left every entry on disk against the vendor's v3,
+  whose mock renamed the method the adapter called.
+- A feature that speaks a protocol — a socket frame, a webhook payload, a CLI's
+  printed output — is not covered until a scenario in `scripts/e2e/` exercises
+  it against workerd. Unit tests over hand-built frames check the code against
+  a model of the protocol written by whoever wrote the code.
 
 ## Commits
 
