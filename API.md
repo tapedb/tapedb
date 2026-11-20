@@ -336,14 +336,16 @@ whatever that Worker sent.
 | `usePresence(db, room, presence?, { includeSelf? })` | `PresencePeer[]`; publishes `presence` while mounted. Your own entry is included and marked `isSelf`; pass `{ includeSelf: false }` to leave it out (see [Presence](#presence)) |
 | `useBroadcast(db, topic, onMessage?)` | **experimental**: a `send(message) => boolean \| "queued"` function |
 
-## `@tapedb/react-native` — hooks and a durable queue
+## `@tapedb/react-native` — a durable queue
 
-Re-exports `@tapedb/react` unchanged, plus `AsyncStorageOutbox` and `createReactNativeClient`.
-Peers: `react ^18 || ^19`, `@react-native-async-storage/async-storage ^1.17 || ^2 || ^3`. It does not import
-`react-native`, so it installs and is tested under Node.
+`AsyncStorageOutbox` and `createReactNativeClient`, and no framework bindings: React Native is a runtime,
+so this package peers on `@react-native-async-storage/async-storage` (`^1.17 || ^2 || ^3`) and on nothing
+else. It does not import `react-native` either, so it loads wherever JavaScript runs. The hooks are
+`@tapedb/react`'s, the same module on web and on device.
 
 ```tsx
-import { createReactNativeClient, useLive } from "@tapedb/react-native";
+import { createReactNativeClient } from "@tapedb/react-native";
+import { useLive } from "@tapedb/react";
 
 const db = createReactNativeClient({ schema, url, workspace, userId });
 ```
