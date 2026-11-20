@@ -23,6 +23,7 @@ import { spawn, spawnSync } from "node:child_process";
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
+import { packedArchive } from "./packed-archive.mjs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -80,7 +81,7 @@ const sleep = (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms)
 const project = mkdtempSync(join(tmpdir(), "tapedb-e2e-"));
 console.log(`e2e project: ${project}`);
 run("npm", ["run", "build"], { cwd: root });
-const packed = JSON.parse(run("npm", ["pack", "--json", "--pack-destination", project], { cwd: root }))[0].filename;
+const packed = packedArchive(run("npm", ["pack", "--json", "--pack-destination", project], { cwd: root }));
 writeFileSync(join(project, "package.json"), JSON.stringify({ name: "tapedb-e2e", private: true, type: "module" }));
 run("npm", ["install", join(project, packed), "wrangler@4", "--no-audit", "--no-fund"], { cwd: project });
 run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "init", "--no-install", "--no-start", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], { cwd: project });
