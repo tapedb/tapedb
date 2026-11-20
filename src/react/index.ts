@@ -65,8 +65,8 @@ export function useLivePage<R>(query: PageQuery<R>): LivePage<R> {
  * Joins a presence room with `presence` and returns the other peers. Leaves
  * the room on unmount; publishes again whenever `presence` changes.
  *
- * Your own entry is left out — use `{ includeSelf: true }` to get it back,
- * marked `isSelf: true`.
+ * Your own entry is included and marked `isSelf: true`; pass
+ * `{ includeSelf: false }` to leave it out.
  */
 export function usePresence(
   db: { $presence(room: string): PresenceRoom },

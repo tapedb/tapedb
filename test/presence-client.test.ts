@@ -79,7 +79,7 @@ const peers = [
 ];
 
 describe("presence peers on the client", () => {
-  test("the client knows its own clientId, and peers() leaves it out", async () => {
+  test("the client knows its own clientId, and peers() marks it isSelf", async () => {
     const { db, sockets } = client();
     const room = db.$presence("board:1");
     const seen: unknown[] = [];
@@ -91,8 +91,27 @@ describe("presence peers on the client", () => {
     socket.push({ type: "presence:update", target: "board:1", peers });
     await tick();
 
-    expect(await room.peers()).toEqual([{ clientId: "other-2", presence: { name: "You" } }]);
-    expect(seen.at(-1)).toEqual([{ clientId: "other-2", presence: { name: "You" } }]);
+    const expected = [
+      { clientId: "self-1", presence: { name: "Me" }, cursor: { x: 1 }, isSelf: true },
+      { clientId: "other-2", presence: { name: "You" } },
+    ];
+    expect(await room.peers()).toEqual(expected);
+    expect(seen.at(-1)).toEqual(expected);
+  });
+
+  test("includeSelf: false leaves the caller out", async () => {
+    const { db, sockets } = client();
+    const room = db.$presence("board:1");
+    // Opening a room alone does not connect; subscribing does.
+    room.subscribe(() => {});
+    const socket = await session(sockets, "self-1");
+
+    socket.push({ type: "presence:update", target: "board:1", peers });
+    await tick();
+
+    expect(await room.peers({ includeSelf: false })).toEqual([
+      { clientId: "other-2", presence: { name: "You" } },
+    ]);
   });
 
   test("includeSelf returns the caller's entry, marked isSelf", async () => {
@@ -116,7 +135,7 @@ describe("presence peers on the client", () => {
     const { db, sockets } = client();
     const others: unknown[] = [];
     const all: unknown[] = [];
-    db.$presence("board:1").subscribe((list) => others.push(list));
+    db.$presence("board:1").subscribe((list) => others.push(list), { includeSelf: false });
     db.$presence("board:1").subscribe((list) => all.push(list), { includeSelf: true });
     const socket = await session(sockets, "self-1");
     socket.push({ type: "presence:update", target: "board:1", peers });

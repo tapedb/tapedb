@@ -178,7 +178,7 @@ export interface PresenceRoom {
   clearDrag(): void;
   /**
    * The other peers in the room now. Your own entry is left out; pass
-   * `{ includeSelf: true }` to get it back, marked `isSelf: true`.
+   * `{ includeSelf: false }` to leave it out again.
    */
   peers(options?: PresencePeersOptions): Promise<PresencePeer[]>;
   /**

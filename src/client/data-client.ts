@@ -772,7 +772,7 @@ class DataClientImpl {
       listeners = new Set();
       this.presenceListeners.set(target, listeners);
     }
-    const entry = { includeSelf: options.includeSelf === true, listener };
+    const entry = { includeSelf: options.includeSelf !== false, listener };
     listeners.add(entry);
     this.ensureSocket();
     listener(this.peersFor(target, entry.includeSelf));
@@ -788,7 +788,7 @@ class DataClientImpl {
     options: PresencePeersOptions = {}
   ): Promise<PresencePeer[]> {
     this.ensureSocket();
-    return Promise.resolve(this.peersFor(target, options.includeSelf === true));
+    return Promise.resolve(this.peersFor(target, options.includeSelf !== false));
   }
 
   /**
@@ -796,9 +796,10 @@ class DataClientImpl {
    *
    * The server sends every socket in the room, the caller included, because a
    * client that predates `session:ready.clientId` has no other way to tell
-   * which cursor is its own. Here the caller's own entry is dropped — a peer
-   * list is about the others — unless `includeSelf` asks for it, in which case
-   * it is marked so an app can render "you" without guessing by name.
+   * which cursor is its own. The caller's own entry stays in the list and is
+   * marked `isSelf: true`, so an app can render "you" without guessing by name
+   * and no upgrade silently drops a cursor it used to draw. `includeSelf:
+   * false` leaves it out for callers that want only the others.
    */
   private peersFor(target: string, includeSelf: boolean): PresencePeer[] {
     const peers = this.peerCache.get(target) ?? [];
