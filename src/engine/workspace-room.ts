@@ -1444,7 +1444,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
     const joined = presenceEntry(attachment, target) !== undefined;
     if (!joined && presenceTargets(attachment).length >= maxPresenceRooms()) {
-      this.send(ws, { type: "error", code: "presence_rooms_exceeded" });
+      this.send(ws, { type: "error", code: "presence_rooms_exceeded", target });
       return;
     }
     if (!(await this.authorizePresence(ws, attachment, target, joined ? "send" : "join"))) return;
@@ -1453,7 +1453,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const current = this.readSocket(ws) ?? attachment;
     const existing = presenceEntry(current, target);
     if (existing === undefined && presenceTargets(current).length >= maxPresenceRooms()) {
-      this.send(ws, { type: "error", code: "presence_rooms_exceeded" });
+      this.send(ws, { type: "error", code: "presence_rooms_exceeded", target });
       return;
     }
 
@@ -1463,7 +1463,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     };
     const rooms = { ...(current.presence ?? {}), [target]: next };
     if (presenceStateBytes(rooms) > PRESENCE_STATE_BYTES) {
-      this.send(ws, { type: "error", code: "presence_state_too_large" });
+      this.send(ws, { type: "error", code: "presence_state_too_large", target });
       return;
     }
 
@@ -1489,7 +1489,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       action
     );
     if (allowed) return true;
-    this.send(ws, { type: "error", code: "presence_denied" });
+    this.send(ws, { type: "error", code: "presence_denied", target });
     return false;
   }
 
@@ -1551,7 +1551,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
     if (presenceEntry(attachment, target) === undefined) {
-      this.send(ws, { type: "error", code: "presence_target_unknown" });
+      this.send(ws, { type: "error", code: "presence_target_unknown", target });
       return;
     }
     if (!(await this.authorizePresence(ws, attachment, target, "send"))) return;
@@ -1559,13 +1559,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const current = this.readSocket(ws) ?? attachment;
     const entry = presenceEntry(current, target);
     if (entry === undefined || current.presence === undefined) {
-      this.send(ws, { type: "error", code: "presence_target_unknown" });
+      this.send(ws, { type: "error", code: "presence_target_unknown", target });
       return;
     }
     const next = { ...entry, [field]: payload[field] };
     const rooms = { ...current.presence, [target]: next };
     if (presenceStateBytes(rooms) > PRESENCE_STATE_BYTES) {
-      this.send(ws, { type: "error", code: "presence_state_too_large" });
+      this.send(ws, { type: "error", code: "presence_state_too_large", target });
       return;
     }
 

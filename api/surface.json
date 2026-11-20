@@ -266,6 +266,13 @@
           "(declaration)": "<R> extends Query<Page<R>>"
         }
       },
+      "PresenceError": {
+        "kind": "interface",
+        "shape": {
+          "code": "string",
+          "target": "string | null"
+        }
+      },
       "PresencePeer": {
         "kind": "interface",
         "shape": {
@@ -284,8 +291,17 @@
           "drag": "(drag: unknown) => void",
           "clearDrag": "() => void",
           "peers": "(options?: PresencePeersOptions) => Promise<PresencePeer[]>",
-          "subscribe": "(listener: (peers: PresencePeer[]) => void, options?: PresencePeersOptions) => () => void",
+          "subscribe": "(listener: (peers: PresencePeer[]) => void, options?: PresenceSubscribeOptions) => () => void",
           "leave": "() => void"
+        }
+      },
+      "PresenceSubscribeOptions": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "onError": "((error: PresenceError) => void) | undefined",
+          "includeSelf": "boolean | undefined",
+          "(declaration)": "extends PresencePeersOptions"
         }
       },
       "Query": {
@@ -615,11 +631,27 @@
           "(declaration)": "<R>"
         }
       },
+      "PresenceError": {
+        "kind": "interface",
+        "shape": {
+          "code": "string",
+          "target": "string | null"
+        }
+      },
       "PresencePeersOptions": {
         "kind": "interface",
         "experimental": true,
         "shape": {
           "includeSelf": "boolean | undefined"
+        }
+      },
+      "PresenceSubscribeOptions": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "onError": "((error: PresenceError) => void) | undefined",
+          "includeSelf": "boolean | undefined",
+          "(declaration)": "extends PresencePeersOptions"
         }
       },
       "useBroadcast": {
@@ -637,7 +669,7 @@
       },
       "usePresence": {
         "kind": "function",
-        "shape": "(db: { $presence(room: string): PresenceRoom; }, room: string, presence?: unknown, options?: PresencePeersOptions) => PresencePeer[]"
+        "shape": "(db: { $presence(room: string): PresenceRoom; }, room: string, presence?: unknown, options?: PresenceSubscribeOptions) => PresencePeer[]"
       }
     },
     "@tapedb/tapedb/worker": {

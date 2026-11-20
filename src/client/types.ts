@@ -172,6 +172,53 @@ export interface PresencePeersOptions {
   includeSelf?: boolean;
 }
 
+/**
+ * Why the engine refused something this presence subscription asked for.
+ *
+ * A refusal changes nothing: the room keeps the peers and the state it had,
+ * and the subscription stays open. This is the only way an app learns that
+ * what it just published was not accepted.
+ *
+ * - `presence_denied` — the deployment's `realtime.authorize` said no.
+ * - `presence_rooms_exceeded` — this socket already holds `maxPresenceRooms`.
+ * - `presence_state_too_large` — the socket's whole presence state would pass
+ *   its byte budget (`PRESENCE_STATE_BYTES`, 8 KiB).
+ * - `presence_target_unknown` — the socket never joined that room, so a
+ *   cursor or drag had nowhere to go.
+ *
+ * A newer engine may answer a code this client does not know; it arrives here
+ * as it was sent rather than being dropped.
+ */
+export interface PresenceError {
+  /** The engine's refusal code, e.g. `presence_denied`. */
+  code: string;
+  /**
+   * The room the refusal is about, or `null` when the engine did not name one
+   * (an older Worker that predates `target` on error frames).
+   */
+  target: string | null;
+}
+
+/**
+ * Options for `PresenceRoom.subscribe`.
+ *
+ * @experimental May change in a minor release.
+ */
+export interface PresenceSubscribeOptions extends PresencePeersOptions {
+  /**
+   * Called when the engine refuses something this subscription asked for:
+   * `presence_denied` when the authorizer refused, `presence_rooms_exceeded`
+   * when the socket already holds `maxPresenceRooms` rooms,
+   * `presence_state_too_large` when the update would pass the per-socket byte
+   * budget, and `presence_target_unknown` for a cursor or drag on a room this
+   * socket never joined.
+   *
+   * A refusal never clears the peer list and never ends the subscription: the
+   * room keeps its last state, and this callback is how the app finds out.
+   */
+  onError?: (error: PresenceError) => void;
+}
+
 // ---- Transactions ----------------------------------------------------------
 
 export type TxOpKind =
@@ -328,7 +375,7 @@ export interface DataRoom {
   peers(options?: PresencePeersOptions): Promise<PresencePeer[]>;
   subscribePresence(
     listener: (peers: PresencePeer[]) => void,
-    options?: PresencePeersOptions
+    options?: PresenceSubscribeOptions
   ): () => void;
   /** Clears local presence; subscription disposers remain owned by their callers. */
   leave(): void;
@@ -396,7 +443,7 @@ export interface DataClient {
   subscribePresence(
     target: string,
     listener: (peers: PresencePeer[]) => void,
-    options?: PresencePeersOptions
+    options?: PresenceSubscribeOptions
   ): () => void;
 
   /**
@@ -474,7 +521,16 @@ export type ServerMessage =
     }
   | { type: "topic:joined"; topic: string; seq: number }
   | { type: "topic:error"; topic: string | null; code: string; message: string }
-  | { type: "error"; code: string; message?: string };
+  | {
+      type: "error";
+      code: string;
+      message?: string;
+      /**
+       * The room or topic the code is about. Presence refusals name the room
+       * they refused; an older Worker sends none.
+       */
+      target?: string;
+    };
 
 /**
  * Who sent a broadcast message.
