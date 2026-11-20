@@ -158,6 +158,61 @@ try {
   writeFileSync(join(app, "tapedb.schema.ts"), "export default {};\n");
   command(bin, ["migrate", "check"], app, 1);
   console.log("package smoke: tapedb-cli passed");
+
+  // `@tapedb/react` is an alias, not a fork: it re-exports `@tapedb/tapedb/react`
+  // and pins the core version. Pack both and install both from disk, because the
+  // core release this pin names need not be on the registry yet.
+  const reactDir = join(root, "packages", "react");
+  const reactManifest = JSON.parse(readFileSync(join(reactDir, "package.json"), "utf8"));
+  const coreManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  assert.equal(reactManifest.version, coreManifest.version, "@tapedb/react must ship the core package version");
+  assert.equal(
+    reactManifest.dependencies["@tapedb/tapedb"],
+    coreManifest.version,
+    "the wrapper pins the exact core version, so a drifted wrapper fails this gate"
+  );
+  const reactPacked = JSON.parse(command("npm", ["pack", "--json", "--pack-destination", scratch], reactDir).stdout)[0];
+  const reactArchive = join(scratch, reactPacked.filename);
+  assert.deepEqual(
+    reactPacked.files.map(file => file.path).sort(),
+    ["LICENSE", "README.md", "index.d.ts", "index.mjs", "package.json"],
+    "@tapedb/react ships the alias and nothing else"
+  );
+  const reactApp = join(scratch, "react-alias");
+  mkdirSync(reactApp);
+  writeFileSync(join(reactApp, "package.json"), JSON.stringify({ name: "react-consumer", private: true, type: "module" }));
+  command("npm", ["install", archive, reactArchive, "react@19", "--ignore-scripts", "--no-audit", "--no-fund"], reactApp);
+  writeFileSync(join(reactApp, "probe.mjs"), [
+    'import assert from "node:assert/strict";',
+    'import * as alias from "@tapedb/react";',
+    'import * as subpath from "@tapedb/tapedb/react";',
+    "const { useLive, usePresence } = alias;",
+    'assert.equal(typeof useLive, "function", "@tapedb/react must export useLive");',
+    'assert.equal(typeof usePresence, "function", "@tapedb/react must export usePresence");',
+    "assert.deepEqual(Object.keys(alias).sort(), Object.keys(subpath).sort(), \"both import paths must export the same names\");",
+    "for (const name of Object.keys(subpath)) assert.equal(alias[name], subpath[name], name + \" must be the subpath's own binding, not a copy\");",
+    "console.log(Object.keys(alias).sort().join(\", \"));",
+  ].join("\n"));
+  const exportsSeen = command(process.execPath, ["probe.mjs"], reactApp).stdout.trim();
+  assert.match(exportsSeen, /useLive/);
+  // Declarations emitted through the alias must name every type the hooks name.
+  writeFileSync(join(reactApp, "consumer.ts"), [
+    'import { createClient } from "@tapedb/tapedb";',
+    'import { usePresence, type PresencePeersOptions } from "@tapedb/react";',
+    "export function peers(db: ReturnType<typeof createClient>, options: PresencePeersOptions = { includeSelf: false }) {",
+    '  return usePresence(db, "board:1", undefined, options);',
+    "}",
+  ].join("\n"));
+  writeFileSync(join(reactApp, "tsconfig.json"), JSON.stringify({
+    compilerOptions: {
+      target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true,
+      skipLibCheck: true, declaration: true, emitDeclarationOnly: true, outDir: "types",
+    },
+    include: ["consumer.ts"],
+  }));
+  command(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", reactApp], reactApp);
+  assert.match(readFileSync(join(reactApp, "types", "consumer.d.ts"), "utf8"), /PresencePeersOptions/);
+  console.log(`package smoke: @tapedb/react alias passed (${exportsSeen})`);
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
