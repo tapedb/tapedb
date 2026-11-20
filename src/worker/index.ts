@@ -18,14 +18,14 @@ import type { TapeDBStudio } from "../studio";
 import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
-import { configureRealtime, type RealtimeOptions, type TopicOptions } from "../engine/topics";
-import { configureWebhooks, type WebhookOptions } from "../engine/webhooks";
+import { resolveRealtime, type RealtimeOptions, type TopicOptions } from "../engine/topics";
+import { resolveWebhooks, type WebhookOptions } from "../engine/webhooks";
 import { resolveWriteLimits, type LimitsOptions } from "../engine/rate-limits";
-import { configureAudit } from "../engine/audit";
-import { configureFileAccess, fileRulesConfigured } from "../engine/file-access";
+import { fileRulesConfigured, resolveFileRules } from "../engine/file-access";
+import { deploymentConfig, type DeploymentConfig } from "../engine/config";
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
 import { isWorkspaceId } from "../engine/r2-keys";
-import { WorkspaceRoom } from "../engine/workspace-room";
+import { WorkspaceRoom, type WorkspaceRoomOptions } from "../engine/workspace-room";
 import { sourceEnvironment, readMove } from "../engine/workspace-move";
 import { ADMIN_PREFIX, handleAdminRequest, resolveHttpApi, type HttpApiOptions } from "./admin";
 import { apiError, discardBody, json } from "../http";
@@ -347,11 +347,19 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
     migrations === undefined ? schema.migrations : [schema.migrations[0], ...migrations]
   );
   configurePermissions(schema.permissions);
-  configureRealtime(options.realtime, options.topics);
-  configureWebhooks(options.webhooks);
-  configureAudit(options.audit);
-  configureFileAccess(schema.files);
   configureRetention(options.retention);
+
+  // This deployment's own settings, built once from its options and handed to
+  // every room it constructs. They are values, not module globals: a second
+  // deployment in the same process (a test, `@tapedb/tapedb/backend` in Node)
+  // cannot change this one's audit flag, file rules, realtime caps, webhooks or
+  // log part size. Validated here, so a bad option fails at definition time.
+  const config: DeploymentConfig = deploymentConfig({
+    audit: options.audit === true,
+    files: resolveFileRules(schema.files),
+    realtime: resolveRealtime(options.realtime, options.topics),
+    webhooks: resolveWebhooks(options.webhooks),
+  });
   // Refused here, when the Worker is defined, rather than on the first write.
   // Each room resolves its own copy from these options; nothing is shared.
   resolveWriteLimits(options.limits?.writes);
@@ -500,7 +508,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
               return apiError(405, "method_not_allowed", "The file index changes only through uploads and deletes under /files/<path>.");
             }
             // With file rules the room lists only what the caller may read.
-            if (!fileRulesConfigured() && role < WORKSPACE_ROLE_LEVELS.MEMBER) {
+            if (!fileRulesConfigured(config.files) && role < WORKSPACE_ROLE_LEVELS.MEMBER) {
               return apiError(403, "insufficient_role", "Insufficient role to list files.");
             }
           }
@@ -530,13 +538,18 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   };
 
   /**
-   * This deployment's room: the engine's class with its limits attached. A
-   * module-level variable would let two deployments — or two rooms — in one
-   * process share one budget, so the configuration travels with the class.
+   * This deployment's room: the engine's class with this deployment's
+   * configuration and limits attached. A module-level variable would let two
+   * deployments — or two rooms — in one process share one audit flag, one rule
+   * set and one budget, so both travel with the class.
    */
   class ConfiguredWorkspaceRoom extends WorkspaceRoom {
-    constructor(context: DurableObjectState, environment: Env) {
-      super(context, environment, options.limits === undefined ? {} : { limits: options.limits });
+    constructor(context: DurableObjectState, environment: Env, roomOptions: WorkspaceRoomOptions = {}) {
+      super(context, environment, {
+        ...roomOptions,
+        config: roomOptions.config ?? config,
+        ...(options.limits === undefined ? {} : { limits: options.limits }),
+      });
     }
   }
 

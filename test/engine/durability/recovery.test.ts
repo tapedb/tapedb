@@ -8,11 +8,11 @@ import { describe, expect, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../../../src/claims";
 import { logOpsKey, manifestKey, readManifest } from "../../../src/engine/r2-keys";
-import { setLogPartBytesForTests } from "../../../src/engine/tx-log";
 import { namespaceTables } from "../../fixtures/registry";
 import { appendLogEntry, runTransaction } from "../../../src/engine/tx-pipeline";
 import { LogWriter } from "../../../src/engine/tx-log";
-import { configureAudit, rowHistory, syncAuditCapture } from "../../../src/engine/audit";
+import { rowHistory, syncAuditCapture } from "../../../src/engine/audit";
+import { defaultDeploymentConfig, deploymentConfig } from "../../../src/engine/config";
 import type { SqlRow as TxRow, SqlExecutor as TxSql } from "../../../src/engine/tx-sql";
 import type { TxEnvelope } from "../../../src/engine/tx-types";
 import { flushPending } from "../../../src/engine/durability/flusher";
@@ -88,16 +88,27 @@ function claim(role: number = WORKSPACE_ROLE_LEVELS.EDITOR): RoleClaim {
   };
 }
 
+/** These tests run the unconfigured engine: audit off, standard log parts. */
+const engineConfig = defaultDeploymentConfig();
+
+/** A deployment whose log parts are small enough that a write spans several. */
+const SMALL_PARTS = deploymentConfig({ logPartBytes: 20_000 });
+
+/** An audit-on deployment: the writer is recorded and `_tx_audit` is kept. */
+const AUDITED = deploymentConfig({ audit: true });
+
 function run(
   source: Source,
   envelope: TxEnvelope,
-  role: number = WORKSPACE_ROLE_LEVELS.EDITOR
+  role: number = WORKSPACE_ROLE_LEVELS.EDITOR,
+  config = engineConfig
 ) {
   return runTransaction(
     txExecutor(source.db),
     TEST_WORKSPACE,
     claim(role),
-    envelope
+    envelope,
+    config
   );
 }
 
@@ -595,8 +606,7 @@ describe("recoverWorkspace", () => {
   });
 
   test("a large entry is restored a part per step, and no step repeats finished lines or parts", async () => {
-    setLogPartBytesForTests(20_000);
-    try {
+    {
       const source = createSource();
       seedWorkspace(source);
       const bucket = new FakeR2Bucket();
@@ -609,12 +619,12 @@ describe("recoverWorkspace", () => {
           id: `bulk-${String(index).padStart(5, "0")}`,
           values: { name: `F${index}` },
         })),
-      });
+      }, WORKSPACE_ROLE_LEVELS.EDITOR, SMALL_PARTS);
       // Two large entries in the same segment.
       for (const [txId, color] of [["green", "green"], ["blue", "blue"]]) {
-        run(source, { txId, ops: [{ op: "patchMany", namespace: "folders", where: { name: { $ne: "keep" } }, values: { color } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.MODERATOR);
+        run(source, { txId, ops: [{ op: "patchMany", namespace: "folders", where: { name: { $ne: "keep" } }, values: { color } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.MODERATOR, SMALL_PARTS);
       }
-      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10, {}, SMALL_PARTS);
       const parts = Number(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log_parts"`));
       expect(parts).toBeGreaterThan(4);
 
@@ -640,14 +650,11 @@ describe("recoverWorkspace", () => {
       const entries = Number(scalar(source.db, `SELECT COUNT(DISTINCT seq) FROM "_tx_log_parts"`));
       expect(calls).toBeLessThanOrEqual(chunks + segments + entries + parts + 2);
       expect(entityRows(target.db)).toEqual(entityRows(source.db));
-    } finally {
-      setLogPartBytesForTests(null);
     }
   });
 
   test("each entry stored in parts is its own unit, also below the snapshot", async () => {
-    setLogPartBytesForTests(20_000);
-    try {
+    {
       const source = createSource();
       seedWorkspace(source);
       for (let entry = 0; entry < 4; entry += 1) {
@@ -659,7 +666,7 @@ describe("recoverWorkspace", () => {
             id: `parted-${entry}-${index}`,
             values: { name: `F${index}` },
           })),
-        });
+        }, WORKSPACE_ROLE_LEVELS.EDITOR, SMALL_PARTS);
       }
       const bucket = new FakeR2Bucket();
       // The entries are folded into the snapshot: restoring only records them.
@@ -685,8 +692,6 @@ describe("recoverWorkspace", () => {
       expect(stoppedBetween).toBe(true);
       expect(units.filter((unit) => /^entry \d+$/.test(unit)).length).toBeGreaterThanOrEqual(entries - 1);
       expect(entityRows(target.db)).toEqual(entityRows(source.db));
-    } finally {
-      setLogPartBytesForTests(null);
     }
   });
 
@@ -702,7 +707,7 @@ describe("recoverWorkspace", () => {
           ops: JSON.stringify([{ op: "state:begin" }, { op: "state:row", table: "folders", row: { ...row, updated_seq: 0 } }, { op: "state:end" }]),
           opsHash: `hash-${index}`,
           at: NOW,
-        });
+        }, engineConfig);
         source.db.query(`INSERT INTO "folders" (id, name, created_at, updated_at, updated_seq) VALUES (?, ?, 1, 1, ?)`).run(row.id, row.name, seq);
         // The logged row carries the seq it was written at.
         source.db.query(`UPDATE "_tx_log" SET ops = replace(ops, '"updated_seq":0', '"updated_seq":' || seq) WHERE seq = ?`).run(seq);
@@ -745,7 +750,7 @@ describe("recoverWorkspace", () => {
     // One entry of 300 whole rows, written as personal-field writes are, in parts.
     source.db.transaction(() => {
       const sql = txExecutor(source.db);
-      const seq = appendLogEntry(sql, { clientTxId: "whole-entry", ops: "[]", opsHash: "hash-whole", at: NOW });
+      const seq = appendLogEntry(sql, { clientTxId: "whole-entry", ops: "[]", opsHash: "hash-whole", at: NOW }, engineConfig);
       const log = new LogWriter(sql, seq, 4_000);
       log.push({ op: "state:begin" });
       for (let index = 0; index < 300; index += 1) {
@@ -786,8 +791,7 @@ describe("recoverWorkspace", () => {
   });
 
   test("replays a bulk write stored in parts, a part at a time", async () => {
-    setLogPartBytesForTests(20_000);
-    try {
+    {
       const source = createSource();
       seedWorkspace(source);
       const bucket = new FakeR2Bucket();
@@ -801,16 +805,17 @@ describe("recoverWorkspace", () => {
           id: `bulk-${String(index).padStart(5, "0")}`,
           values: { name: `F${index}` },
         })),
-      });
+      }, WORKSPACE_ROLE_LEVELS.EDITOR, SMALL_PARTS);
       const bulk = run(
         source,
         { txId: "bulk", clientTxId: "bulk-1", ops: [{ op: "patchMany", namespace: "folders", where: { name: { $ne: "keep" } }, values: { color: "green" } }] } as TxEnvelope,
-        WORKSPACE_ROLE_LEVELS.MODERATOR
+        WORKSPACE_ROLE_LEVELS.MODERATOR,
+        SMALL_PARTS
       );
       expect(Number(scalar(source.db, `SELECT COUNT(*) FROM "folders" WHERE "color" = 'green'`))).toBeGreaterThanOrEqual(3000);
       expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log_parts" WHERE seq = ${bulk.seq}`)).toBeGreaterThan(0);
 
-      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10, {}, SMALL_PARTS);
       const opsKey = logOpsKey(TEST_WORKSPACE, bulk.seq);
       expect(bucket.objects.has(opsKey)).toBe(true);
       expect(bucket.multipartUploads).toBeGreaterThan(0);
@@ -832,8 +837,6 @@ describe("recoverWorkspace", () => {
       await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 30);
       await pruneCoveredLogSegments(bucket as unknown as R2Bucket, TEST_WORKSPACE, bulk.seq + 10, { retainLogSequences: 0 });
       expect(bucket.objects.has(opsKey)).toBe(false);
-    } finally {
-      setLogPartBytesForTests(null);
     }
   });
 
@@ -1342,16 +1345,16 @@ describe("file index across a restore", () => {
     seedWorkspace(source);
     const sql = txExecutor(source.db);
 
-    recordFileEntry(sql, { path: "kept.png", key: "k/kept", size: 10, contentType: "image/png", uploadedBy: "alice" });
-    recordFileEntry(sql, { path: "doomed.png", key: "k/doomed", size: 20, contentType: null });
+    recordFileEntry(sql, { path: "kept.png", key: "k/kept", size: 10, contentType: "image/png", uploadedBy: "alice" }, engineConfig);
+    recordFileEntry(sql, { path: "doomed.png", key: "k/doomed", size: 20, contentType: null }, engineConfig);
 
     const bucket = new FakeR2Bucket();
     await publish(source, bucket, NOW); // snapshot holds kept + doomed
 
     // After the snapshot: one new upload, one overwrite, one delete.
-    recordFileEntry(sql, { path: "late.pdf", key: "k/late", size: 30, contentType: "application/pdf", uploadedBy: "bob" });
-    recordFileEntry(sql, { path: "kept.png", key: "k/kept-v2", size: 11, contentType: "image/png", uploadedBy: "carol" });
-    expect(forgetFileEntry(sql, "doomed.png")).toBe(1);
+    recordFileEntry(sql, { path: "late.pdf", key: "k/late", size: 30, contentType: "application/pdf", uploadedBy: "bob" }, engineConfig);
+    recordFileEntry(sql, { path: "kept.png", key: "k/kept-v2", size: 11, contentType: "image/png", uploadedBy: "carol" }, engineConfig);
+    expect(forgetFileEntry(sql, "doomed.png", engineConfig)).toBe(1);
 
     await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 10);
 
@@ -1381,7 +1384,7 @@ describe("file index across a restore", () => {
     const source = createSource();
     seedWorkspace(source);
     const before = scalar(source.db, `SELECT high_water_seq FROM "_tx_state"`);
-    expect(forgetFileEntry(txExecutor(source.db), "never.png")).toBe(0);
+    expect(forgetFileEntry(txExecutor(source.db), "never.png", engineConfig)).toBe(0);
     expect(scalar(source.db, `SELECT high_water_seq FROM "_tx_state"`)).toBe(before);
   });
 
@@ -1497,7 +1500,7 @@ describe("the file index in snapshots", () => {
   async function uploadedBeforeSnapshot() {
     const source = createSource();
     seedWorkspace(source);
-    recordFileEntry(txExecutor(source.db), { path: "old.png", key: "k/old", size: 5, contentType: null });
+    recordFileEntry(txExecutor(source.db), { path: "old.png", key: "k/old", size: 5, contentType: null }, engineConfig);
     const bucket = new FakeR2Bucket();
     await publish(source, bucket, NOW); // the file entry is at or below the base
     return { source, bucket };
@@ -1821,9 +1824,9 @@ describe("the writer's identity", () => {
 });
 
 describe("with audit on", () => {
-  function auditSource(): Source {
+  function auditSource(config = AUDITED): Source {
     const source = createSource();
-    syncAuditCapture(txExecutor(source.db));
+    syncAuditCapture(txExecutor(source.db), config.audit);
     return source;
   }
   function history(db: Database, table: string, id: string) {
@@ -1831,11 +1834,10 @@ describe("with audit on", () => {
   }
 
   test("records who changed each row, carries it in R2, and recovery restores it", async () => {
-    configureAudit(true);
-    try {
+    {
       const source = auditSource();
-      run(source, { txId: "a", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "One" } }] } as TxEnvelope);
-      run(source, { txId: "b", ops: [{ op: "merge", namespace: "folders", id: "f1", values: { name: "Uno" } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.ADMIN);
+      run(source, { txId: "a", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "One" } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.EDITOR, AUDITED);
+      run(source, { txId: "b", ops: [{ op: "merge", namespace: "folders", id: "f1", values: { name: "Uno" } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.ADMIN, AUDITED);
       expect(history(source.db, "folders", "f1")).toEqual([
         { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.EDITOR, action: "insert" },
         { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.ADMIN, action: "update" },
@@ -1847,7 +1849,7 @@ describe("with audit on", () => {
       ]);
 
       const bucket = new FakeR2Bucket();
-      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW, {}, AUDITED);
       const lines = [...bucket.objects.entries()].filter(([key]) => key.includes("/log/"))
         .flatMap(([, stored]) => new TextDecoder().decode(stored.body).trim().split("\n").map((line) => JSON.parse(line)));
       expect(lines.map((line) => [line.userId, line.role])).toEqual([
@@ -1857,48 +1859,43 @@ describe("with audit on", () => {
 
       // Replayed from the log alone.
       const fromLog = auditSource();
-      await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(fromLog.db, fromLog.sql), TEST_WORKSPACE, { now: NOW + 1 });
+      await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(fromLog.db, fromLog.sql), TEST_WORKSPACE, { now: NOW + 1, config: AUDITED });
       expect(fromLog.db.query(`SELECT user_id, role FROM "_tx_log" ORDER BY seq`).all()).toEqual(logged);
       expect(history(fromLog.db, "folders", "f1")).toEqual(history(source.db, "folders", "f1"));
 
       // Restored from a snapshot, then one more change replayed on top.
-      expect(await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 2)).toMatchObject({ snapshotted: true });
-      run(source, { txId: "c", ops: [{ op: "delete", namespace: "folders", id: "f1" }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.OWNER);
-      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 3);
+      expect(await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW + 2, {}, AUDITED)).toMatchObject({ snapshotted: true });
+      run(source, { txId: "c", ops: [{ op: "delete", namespace: "folders", id: "f1" }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.OWNER, AUDITED);
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW + 3, {}, AUDITED);
       const fromSnapshot = auditSource();
-      await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(fromSnapshot.db, fromSnapshot.sql), TEST_WORKSPACE, { now: NOW + 4 });
+      await recoverWorkspace(bucket as unknown as R2Bucket, recoveryExecutor(fromSnapshot.db, fromSnapshot.sql), TEST_WORKSPACE, { now: NOW + 4, config: AUDITED });
       expect(history(fromSnapshot.db, "folders", "f1")).toEqual([
         { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.EDITOR, action: "insert" },
         { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.ADMIN, action: "update" },
         { sub: "user-1", role: WORKSPACE_ROLE_LEVELS.OWNER, action: "delete" },
       ]);
-    } finally {
-      configureAudit(false);
     }
   });
 
   test("the history leaves with the rest of the log after the retention", async () => {
-    configureAudit(true);
-    try {
+    {
       const source = auditSource();
-      run(source, { txId: "a", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "One" } }] } as TxEnvelope);
+      run(source, { txId: "a", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "One" } }] } as TxEnvelope, WORKSPACE_ROLE_LEVELS.EDITOR, AUDITED);
       const bucket = new FakeR2Bucket();
-      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW);
-      await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW);
+      await flushPending(bucket, source.sql, TEST_WORKSPACE, NOW, {}, AUDITED);
+      await snapshotWorkspace(bucket, source.sql, TEST_WORKSPACE, NOW, {}, AUDITED);
       expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_audit"`)).toBe(1);
       await pruneHistory(bucket as unknown as R2Bucket, source.sql, TEST_WORKSPACE, Date.now() + 400 * 86_400_000);
       expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_log"`)).toBe(0);
       expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_audit"`)).toBe(0);
-    } finally {
-      configureAudit(false);
     }
   });
 
   test("turning it off stops recording", () => {
-    configureAudit(true);
     const source = auditSource();
-    configureAudit(false);
-    syncAuditCapture(txExecutor(source.db));
+    // The same workspace, now served by a deployment that does not audit: its
+    // boot drops the capture triggers, and its writes record no writer.
+    syncAuditCapture(txExecutor(source.db), engineConfig.audit);
     run(source, { txId: "a", ops: [{ op: "update", namespace: "folders", id: "f1", values: { name: "One" } }] } as TxEnvelope);
     expect(scalar(source.db, `SELECT COUNT(*) FROM "_tx_audit"`)).toBe(0);
     expect(source.db.query(`SELECT user_id, role FROM "_tx_log"`).all()).toEqual([{ user_id: null, role: null }]);

@@ -1,4 +1,5 @@
-import { configureAudit } from "../../src/engine/audit";
+import { resolveRealtime } from "../../src/engine/topics";
+import { defaultDeploymentConfig, deploymentConfig, type DeploymentConfig } from "../../src/engine/config";
 import { useLegacyFixture } from "../fixtures/registry";
 useLegacyFixture();
 
@@ -86,7 +87,6 @@ function clone<T>(value: T): T {
 (globalThis as { WebSocketPair?: unknown }).WebSocketPair = FakeWebSocketPair;
 
 const { WorkspaceRoom } = await import("../../src/engine/workspace-room");
-const { configureTopics } = await import("../../src/engine/topics");
 
 const WORKSPACE = "0190a5b2-7c3d-4e8f-9a0b-1c2d3e4f5a6b";
 const MIGRATIONS_DIR = resolve(
@@ -235,13 +235,19 @@ describe("WorkspaceRoom live queries", () => {
        VALUES (?, ?, ?, ?, ?, ?, ?)`
     ).run("task1", "col1", "First", 0, 1, 1, 0);
 
+    await boot();
+  });
+
+  /** A room for one deployment's settings; the schema in `db` is reused. */
+  async function boot(config: DeploymentConfig = defaultDeploymentConfig()) {
     context = new FakeContext(db, WORKSPACE);
     room = new WorkspaceRoom(
       context as unknown as DurableObjectState,
-      { DATA: new FakeR2Bucket() } as unknown as Env
+      { DATA: new FakeR2Bucket() } as unknown as Env,
+      { config }
     );
     await context.ready;
-  });
+  }
 
   async function connect(
     role: number | null = WORKSPACE_ROLE_LEVELS.MEMBER,
@@ -724,11 +730,15 @@ describe("WorkspaceRoom live queries", () => {
     });
 
     test("an authorize hook decides who may join and send", async () => {
-      configureTopics({
-        authorize: ({ auth, topic, action }) =>
-          !topic.startsWith("admin:") || (action === "join" ? auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN : false),
-      });
-      try {
+      await boot(deploymentConfig({
+        realtime: resolveRealtime({
+          // `realtime.authorize` is told the channel's `target`, for a topic
+          // its name: one rule set covers presence and topics.
+          authorize: ({ auth, target, action }) =>
+            !target.startsWith("admin:") || (action === "join" ? auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN : false),
+        }, undefined),
+      }));
+      {
         const member = await connect(WORKSPACE_ROLE_LEVELS.MEMBER);
         const admin = await connect(WORKSPACE_ROLE_LEVELS.ADMIN);
         await send(member, { type: "topic:join", topic: "admin:alerts" });
@@ -738,8 +748,6 @@ describe("WorkspaceRoom live queries", () => {
         await send(admin, { type: "topic:join", topic: "admin:alerts" });
         await send(member, { type: "topic:send", topic: "admin:alerts", message: "spoof" });
         expect(topicMessages(admin)).toEqual([]);
-      } finally {
-        configureTopics(undefined);
       }
     });
 
@@ -776,12 +784,9 @@ describe("WorkspaceRoom live queries", () => {
     await transact([{ op: "update", namespace: "kanbanTasks", id: "task2", values: { columnId: "col1", title: "Two", order: 1 } }], "h1");
     expect((await history(WORKSPACE_ROLE_LEVELS.ADMIN)).status).toBe(409);
 
-    configureAudit(true);
-    try {
-      // The capture is installed at boot.
-      context = new FakeContext(db, WORKSPACE);
-      room = new WorkspaceRoom(context as unknown as DurableObjectState, { DATA: new FakeR2Bucket() } as unknown as Env);
-      await context.ready;
+    {
+      // The capture is installed at boot, for this deployment only.
+      await boot(deploymentConfig({ audit: true }));
       await transact([{ op: "merge", namespace: "kanbanTasks", id: "task2", values: { title: "Deux" } }], "h2");
       await transact([{ op: "delete", namespace: "kanbanTasks", id: "task2" }], "h3", WORKSPACE_ROLE_LEVELS.ADMIN);
 
@@ -796,8 +801,6 @@ describe("WorkspaceRoom live queries", () => {
       expect((await history(WORKSPACE_ROLE_LEVELS.EDITOR)).status).toBe(403);
       expect((await history(WORKSPACE_ROLE_LEVELS.ADMIN, "model=nope&id=x")).status).toBe(400);
       expect((await room.fetch(new Request("http://test/history?model=kanbanTasks&id=task2"))).status).toBe(403);
-    } finally {
-      configureAudit(false);
     }
   });
 
@@ -1037,26 +1040,26 @@ describe("WorkspaceRoom live queries", () => {
       await send(late, { type: "topic:join", topic: "busy", since: 0 });
       expect(frames(late)).toEqual([{ type: "topic:joined", topic: "busy", seq: REPLAY_MESSAGES + 25 }]);
 
-      configureTopics({ replaySeconds: 0 });
-      try {
-        await send(sender, { type: "topic:send", topic: "quiet", message: "x" });
-        expect(db.query(`SELECT COUNT(*) AS n FROM "_topic_buffer" WHERE topic = 'quiet'`).get()).toEqual({ n: 0 });
-      } finally {
-        configureTopics(undefined);
-      }
+    });
+
+    test("replaySeconds: 0 keeps nothing for the deployment that set it", async () => {
+      await boot(deploymentConfig({ realtime: resolveRealtime({ replaySeconds: 0 }, undefined) }));
+      const sender = await connect();
+      await send(sender, { type: "topic:send", topic: "quiet", message: "x" });
+      expect(db.query(`SELECT COUNT(*) AS n FROM "_topic_buffer" WHERE topic = 'quiet'`).get()).toEqual({ n: 0 });
     });
 
     test("replays nothing to a socket the authorize hook refuses", async () => {
+      await boot(deploymentConfig({
+        realtime: resolveRealtime({
+          authorize: ({ auth, target }) => !target.startsWith("admin:") || auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN,
+        }, undefined),
+      }));
       const sender = await connect(WORKSPACE_ROLE_LEVELS.ADMIN, "admin");
       await send(sender, { type: "topic:send", topic: "admin:alerts", message: "secret" });
-      configureTopics({ authorize: ({ auth, topic }) => !topic.startsWith("admin:") || auth.role >= WORKSPACE_ROLE_LEVELS.ADMIN });
-      try {
-        const member = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "member");
-        await send(member, { type: "topic:join", topic: "admin:alerts", since: 0 });
-        expect(frames(member)).toEqual([expect.objectContaining({ type: "topic:error", code: "permission_denied" })]);
-      } finally {
-        configureTopics(undefined);
-      }
+      const member = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "member");
+      await send(member, { type: "topic:join", topic: "admin:alerts", since: 0 });
+      expect(frames(member)).toEqual([expect.objectContaining({ type: "topic:error", code: "permission_denied" })]);
     });
   });
 

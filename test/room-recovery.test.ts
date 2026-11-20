@@ -10,6 +10,7 @@ import { afterAll, describe, expect, mock, test } from "bun:test";
 import { WORKSPACE_ROLE_LEVELS } from "../src/claims";
 import { flushPending } from "../src/engine/durability/flusher";
 import { snapshotWorkspace } from "../src/engine/durability/snapshot";
+import { deploymentConfig } from "../src/engine/config";
 import { encodeTrustedRoleClaim, TRUSTED_CLAIM_HEADER } from "../src/verify";
 import { model, schema, t } from "../src/schema";
 import { FakeRoomContext } from "./fixtures/room-harness";
@@ -88,6 +89,9 @@ describe("a room restoring from R2", () => {
   test("with audit on, restores the history in steps too", async () => {
     try {
     const tapedb = defineTapeDB({ schema: schema({ task: model({ title: t.string() }) }), audit: true });
+    // The flush and snapshot this test drives are the audited deployment's, so
+    // the segment lines keep the writer and `_tx_audit` is snapshotted.
+    const audited = deploymentConfig({ audit: true });
     const bucket = new FakeR2Bucket();
     const env = { FILES: new FakeR2Bucket(), DATA: bucket, TAPEDB_CLAIM_SECRET: SECRET, ENVIRONMENT: "development" };
     const now = Math.floor(Date.now() / 1000);
@@ -109,10 +113,10 @@ describe("a room restoring from R2", () => {
     for (let n = 0; n < 5; n += 1) {
       expect((await call(first, "/transact", { txId: `t${n}`, ops: [{ op: "insert", namespace: "task", id: `task-${n}`, values: { title: `Task ${n}` } }] })).status).toBe(200);
       if (n === 1) {
-        await flushPending(bucket as never, original.storage.sql as never, WORKSPACE, Date.now());
-        await snapshotWorkspace(bucket as never, original.storage.sql as never, WORKSPACE, Date.now());
+        await flushPending(bucket as never, original.storage.sql as never, WORKSPACE, Date.now(), {}, audited);
+        await snapshotWorkspace(bucket as never, original.storage.sql as never, WORKSPACE, Date.now(), {}, audited);
       } else {
-        await flushPending(bucket as never, original.storage.sql as never, WORKSPACE, Date.now());
+        await flushPending(bucket as never, original.storage.sql as never, WORKSPACE, Date.now(), {}, audited);
       }
     }
 

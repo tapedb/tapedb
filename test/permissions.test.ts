@@ -20,6 +20,10 @@ import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
 import { defineSchema } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const WORKSPACE_ID = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 
@@ -96,12 +100,12 @@ describe("row rules", () => {
       ops: [
         { op: "update", namespace: "documents", id: "doc-1", values: { title: "Draft", ownerId: "alice" } },
       ],
-    });
+    }, engineConfig);
 
     runTransaction(sql, WORKSPACE_ID, author, {
       txId: "t2",
       ops: [{ op: "update", namespace: "documents", id: "doc-1", values: { title: "Final" } }],
-    });
+    }, engineConfig);
 
     const row = sql.one<{ title: string }>(`SELECT "title" FROM "documents" WHERE "id" = ?`, "doc-1");
     expect(row?.title).toBe("Final");
@@ -114,13 +118,13 @@ describe("row rules", () => {
       ops: [
         { op: "update", namespace: "documents", id: "doc-1", values: { title: "Draft", ownerId: "alice" } },
       ],
-    });
+    }, engineConfig);
 
     expect(() =>
       runTransaction(sql, WORKSPACE_ID, claimFor("mallory"), {
         txId: "t2",
         ops: [{ op: "update", namespace: "documents", id: "doc-1", values: { title: "Hijacked" } }],
-      })
+      }, engineConfig)
     ).toThrow(/Row rule denied update/);
 
     const row = sql.one<{ title: string }>(`SELECT "title" FROM "documents" WHERE "id" = ?`, "doc-1");
@@ -135,7 +139,7 @@ describe("row rules", () => {
         ops: [
           { op: "update", namespace: "documents", id: "doc-1", values: { title: "Planted", ownerId: "alice" } },
         ],
-      })
+      }, engineConfig)
     ).toThrow(/Row rule denied create/);
   });
 
@@ -146,20 +150,20 @@ describe("row rules", () => {
       ops: [
         { op: "update", namespace: "documents", id: "doc-1", values: { title: "Draft", ownerId: "alice" } },
       ],
-    });
+    }, engineConfig);
 
     // Mallory cannot delete by pretending; the rule reads the stored owner.
     expect(() =>
       runTransaction(sql, WORKSPACE_ID, claimFor("mallory"), {
         txId: "t2",
         ops: [{ op: "delete", namespace: "documents", id: "doc-1" }],
-      })
+      }, engineConfig)
     ).toThrow(/Row rule denied delete/);
 
     runTransaction(sql, WORKSPACE_ID, claimFor("alice"), {
       txId: "t3",
       ops: [{ op: "delete", namespace: "documents", id: "doc-1" }],
-    });
+    }, engineConfig);
     expect(sql.one(`SELECT "id" FROM "documents" WHERE "id" = ?`, "doc-1")).toBeUndefined();
   });
 
@@ -170,7 +174,7 @@ describe("row rules", () => {
       ops: [
         { op: "update", namespace: "documents", id: "doc-1", values: { title: "Draft", ownerId: "alice" } },
       ],
-    });
+    }, engineConfig);
     configurePermissions({
       overrides: {
         documents: {
@@ -185,7 +189,7 @@ describe("row rules", () => {
       runTransaction(sql, WORKSPACE_ID, claimFor("alice"), {
         txId: "t1",
         ops: [{ op: "update", namespace: "documents", id: "doc-1", values: { title: "x" } }],
-      })
+      }, engineConfig)
     ).toThrow(/Row rule denied/);
   });
 
@@ -195,13 +199,13 @@ describe("row rules", () => {
     runTransaction(sql, WORKSPACE_ID, claimFor("alice"), {
       txId: "t1",
       ops: [{ op: "update", namespace: "notes", id: "note-1", values: { body: "hello" } }],
-    });
+    }, engineConfig);
 
     expect(() =>
       runTransaction(sql, WORKSPACE_ID, claimFor("bob", WORKSPACE_ROLE_LEVELS.MEMBER), {
         txId: "t2",
         ops: [{ op: "update", namespace: "notes", id: "note-2", values: { body: "nope" } }],
-      })
+      }, engineConfig)
     ).toThrow(/not allowed to update/);
   });
 
@@ -218,7 +222,7 @@ describe("row rules", () => {
       txId: "t1",
       clientTxId: "client-1",
       ops: [op],
-    });
+    }, engineConfig);
 
     // Ownership changes; the same clientTxId is retried. It must be treated as
     // already applied, not re-authorized and not applied twice.
@@ -228,7 +232,7 @@ describe("row rules", () => {
       txId: "t1",
       clientTxId: "client-1",
       ops: [op],
-    });
+    }, engineConfig);
 
     expect(replay.applied).toBe(0);
     expect(replay.seq).toBe(1);
@@ -327,7 +331,7 @@ describe("view rules", () => {
         { op: "update", namespace: "columns", id: "c1", values: { name: "Public", isPublic: true, boardId: "b1" } },
         { op: "update", namespace: "columns", id: "c2", values: { name: "Private", isPublic: false, boardId: "b1" } },
       ],
-    });
+    }, engineConfig);
 
     const compiled = compileQuery({ columns: { $: { order: { name: "asc" } } } });
     const result = executeCompiledQuery(sql, compiled, claimFor("bob"));
@@ -346,7 +350,7 @@ describe("view rules", () => {
         { op: "update", namespace: "columns", id: "c1", values: { name: "Public", isPublic: true, boardId: "b1" } },
         { op: "update", namespace: "columns", id: "c2", values: { name: "Private", isPublic: false, boardId: "b1" } },
       ],
-    });
+    }, engineConfig);
 
     const compiled = compileQuery({ boards: { columns: {} } });
     const result = executeCompiledQuery(sql, compiled, claimFor("bob"));
@@ -364,7 +368,7 @@ describe("view rules", () => {
         { op: "update", namespace: "boards", id: "b1", values: { name: "Board" } },
         { op: "update", namespace: "columns", id: "c1", values: { name: "Public", isPublic: true, boardId: "b1" } },
       ],
-    });
+    }, engineConfig);
 
     configurePermissions({
       overrides: {
@@ -391,7 +395,7 @@ describe("view rules", () => {
         { op: "update", namespace: "columns", id: "c2", values: { name: "B", isPublic: true } },
         { op: "update", namespace: "columns", id: "c3", values: { name: "C", isPublic: false } },
       ],
-    });
+    }, engineConfig);
 
     const compiled = compileQuery({
       columns: { $: { order: { name: "asc" }, limit: 2 } },
@@ -423,18 +427,18 @@ describe("attribute rules", () => {
       ops: [
         { op: "update", namespace: "priced", id: "p1", values: { title: "Thing", price: 10, ownerId: "alice" } },
       ],
-    });
+    }, engineConfig);
 
     runTransaction(sql, WORKSPACE_ID, other, {
       txId: "t2",
       ops: [{ op: "update", namespace: "priced", id: "p1", values: { title: "Renamed" } }],
-    });
+    }, engineConfig);
 
     expect(() =>
       runTransaction(sql, WORKSPACE_ID, other, {
         txId: "t3",
         ops: [{ op: "update", namespace: "priced", id: "p1", values: { price: 1 } }],
-      })
+      }, engineConfig)
     ).toThrow(/Row rule denied update/);
 
     const row = sql.one<{ title: string; price: number }>(
@@ -452,8 +456,8 @@ describe("write rules use public value types", () => {
     const sql = freshDatabase();
     configurePermissions({ overrides: { documents: { update: ({ data }) => data?.locked !== true && (data?.meta as { blocked?: boolean } | undefined)?.blocked !== true } } });
     for (const [id, locked, meta] of [["boolean", true, {}], ["json", false, { blocked: true }]] as const) {
-      runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: `seed-${id}`, ops: [{ op: "insert", namespace: "documents", id, values: { title: "keep", locked, meta } }] });
-      expect(() => runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: `deny-${id}`, ops: [{ op: "patch", namespace: "documents", id, values: { title: "changed" } }] })).toThrow(/Row rule denied update/);
+      runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: `seed-${id}`, ops: [{ op: "insert", namespace: "documents", id, values: { title: "keep", locked, meta } }] }, engineConfig);
+      expect(() => runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: `deny-${id}`, ops: [{ op: "patch", namespace: "documents", id, values: { title: "changed" } }] }, engineConfig)).toThrow(/Row rule denied update/);
       expect(sql.one<{ title: string }>(`SELECT title FROM documents WHERE id = ?`, id)?.title).toBe("keep");
     }
   });
@@ -462,7 +466,7 @@ describe("write rules use public value types", () => {
     const sql = freshDatabase();
     configurePermissions({ overrides: { documents: { create: ({ next }) => next?.locked !== true && (next?.meta as { blocked?: boolean } | undefined)?.blocked !== true } } });
     for (const values of [{ title: "denied", locked: true }, { title: "denied", meta: { blocked: true } }]) {
-      expect(() => runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: crypto.randomUUID(), ops: [{ op: "insert", namespace: "documents", id: "no", values }] })).toThrow(/Row rule denied create/);
+      expect(() => runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: crypto.randomUUID(), ops: [{ op: "insert", namespace: "documents", id: "no", values }] }, engineConfig)).toThrow(/Row rule denied create/);
     }
   });
 });
@@ -470,7 +474,7 @@ describe("write rules use public value types", () => {
 
 test("link and unlink expose their foreign-key field to update rules", () => {
   const sql = freshDatabase();
-  runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: "seed-link", ops: [{ op: "insert", namespace: "documents", id: "d", values: { title: "x", ownerId: "alice" } }] });
+  runTransaction(sql, WORKSPACE_ID, claimFor("alice"), { txId: "seed-link", ops: [{ op: "insert", namespace: "documents", id: "d", values: { title: "x", ownerId: "alice" } }] }, engineConfig);
   configurePermissions({ overrides: { documents: { update: ({ changed }) => !changed?.includes("ownerId") } } });
   for (const kind of ["link", "unlink"] as const) {
     expect(() => assertRowPermissions(sql, claimFor("alice"), [{ kind, namespace: "documents", id: "d", link: "owner", targetId: "bob", childNamespace: "documents", childId: "d", parentId: "bob", foreignKeyAttribute: "ownerId", foreignKeyColumn: "owner_id" }])).toThrow(/Row rule denied update/);

@@ -18,6 +18,10 @@ import { configureRegistry } from "../src/engine/registry";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
 import { defineSchema } from "../src/schema";
+import { defaultDeploymentConfig } from "../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const WORKSPACE_ID = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
 
@@ -54,7 +58,7 @@ function setup(permissions: PermissionOverrides = {}): SqlExecutor {
       { op: "insert", namespace: "tasks", id: "c", values: { title: "c", status: null, ownerId: "alice", points: 5 } },
       { op: "insert", namespace: "tasks", id: "d", values: { title: "d", status: "doing", ownerId: "bob", points: null } },
     ],
-  });
+  }, engineConfig);
   return sql;
 }
 

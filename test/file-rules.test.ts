@@ -7,13 +7,11 @@
  */
 
 import { Database } from "bun:sqlite";
-import { afterEach, describe, expect, mock, test } from "bun:test";
+import { describe, expect, mock, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS } from "../src/claims";
 import { signRoleClaim } from "../src/mint";
 import { attachedTo, check, fileCheck, filter, model, role, schema, t } from "../src/schema";
-import { configureFileAccess } from "../src/engine/file-access";
-afterEach(() => configureFileAccess(undefined));
 import { FakeR2Bucket } from "./fixtures/test-support";
 import { FakeRoomContext } from "./fixtures/room-harness";
 

@@ -1,5 +1,7 @@
 /** Shared types for the workspace durability modules. */
 
+import type { DeploymentConfig } from "../config";
+
 export type SnapshotStatus = "idle" | "running" | "completed" | "failed";
 
 export interface FlushState {
@@ -81,6 +83,8 @@ export interface SnapshotResult {
 }
 
 export interface DurabilityOptions {
+  /** The deployment this pass runs for; absent means the unconfigured default. */
+  config?: DeploymentConfig;
   flush?: FlushOptions;
   snapshot?: SnapshotOptions;
 }

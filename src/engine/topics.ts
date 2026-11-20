@@ -20,6 +20,7 @@
  */
 
 import type { RoleClaim } from "../claims";
+import type { RealtimeConfig } from "./config";
 
 /** Topic names: the same alphabet and length as presence targets. */
 export const TOPIC_PATTERN = /^[A-Za-z0-9:_.-]{1,128}$/;
@@ -36,6 +37,9 @@ export type RealtimeKind = "presence" | "topic";
 
 /** How many presence rooms one socket may hold at once, unless configured. */
 export const DEFAULT_MAX_PRESENCE_ROOMS = 4;
+
+/** Seconds of each topic kept for replay, unless configured. */
+export const DEFAULT_TOPIC_REPLAY_MS = 60_000;
 
 /** What an authorizer is told about one request. */
 export interface RealtimeAuthorizeContext {
@@ -69,10 +73,6 @@ export type TopicAuthorizer = (context: {
   topic: string;
   action: TopicAction;
 }) => boolean;
-
-let authorizer: RealtimeAuthorizer | null = null;
-let replayMs = 60_000;
-let maxRooms = DEFAULT_MAX_PRESENCE_ROOMS;
 
 /** Messages kept per topic for replay, however short their age. */
 export const REPLAY_MESSAGES = 1000;
@@ -124,64 +124,65 @@ function checkReplaySeconds(seconds: unknown, where: string): void {
 }
 
 /**
- * Installed by `defineTapeDB({ realtime, topics })`. `realtime` wins for
- * both kinds; `topics` covers topic kinds when `realtime.authorize` is
- * absent, so an existing deployment keeps its topic rules untouched.
+ * Resolves `defineTapeDB({ realtime, topics })` into this deployment's realtime
+ * settings. `realtime` wins for both kinds; `topics` covers topic kinds when
+ * `realtime.authorize` is absent, so an existing deployment keeps its topic
+ * rules untouched.
+ *
+ * Validated once, when the Worker is defined, so a bad option fails at deploy
+ * time rather than on the first join. The result is frozen: one deployment's
+ * settings cannot be changed by another.
  */
-export function configureRealtime(
+export function resolveRealtime(
   realtime: RealtimeOptions | undefined,
   topics: TopicOptions | undefined
-): void {
+): RealtimeConfig {
+  let resolvedAuthorizer: RealtimeAuthorizer | null = null;
   if (realtime?.authorize !== undefined) {
-    authorizer = realtime.authorize;
+    resolvedAuthorizer = realtime.authorize;
   } else if (topics?.authorize !== undefined) {
-    authorizer = asRealtime(topics.authorize);
-  } else {
-    authorizer = null;
+    resolvedAuthorizer = asRealtime(topics.authorize);
   }
 
   const seconds = realtime?.replaySeconds ?? topics?.replaySeconds ?? 60;
   checkReplaySeconds(seconds, realtime?.replaySeconds !== undefined ? "realtime" : "topics");
-  replayMs = seconds * 1000;
 
   const rooms = realtime?.maxPresenceRooms ?? DEFAULT_MAX_PRESENCE_ROOMS;
   if (!(Number.isInteger(rooms) && rooms >= 0)) {
     throw new Error("realtime.maxPresenceRooms must be a whole number of rooms, 0 or more.");
   }
-  maxRooms = rooms;
+
+  return Object.freeze({ authorizer: resolvedAuthorizer, replayMs: seconds * 1000, maxRooms: rooms });
 }
 
-/** Installed by `defineTapeDB({ topics })` on its own; keeps `realtime` unset. */
-export function configureTopics(options: TopicOptions | undefined): void {
-  configureRealtime(undefined, options);
+/** Topic replay window in milliseconds for one deployment; 0 keeps nothing. */
+export function topicReplayMs(config: RealtimeConfig): number {
+  return config.replayMs;
 }
 
-export function topicReplayMs(): number {
-  return replayMs;
-}
-
-/** How many presence rooms one socket may hold. */
-export function maxPresenceRooms(): number {
-  return maxRooms;
+/** How many presence rooms one socket may hold for one deployment. */
+export function maxPresenceRooms(config: RealtimeConfig): number {
+  return config.maxRooms;
 }
 
 /**
- * Runs the configured authorizer. Anything but a plain `true` — `false`, a
+ * Runs the deployment's authorizer. Anything but a plain `true` — `false`, a
  * throw, a rejected promise — refuses; with no authorizer configured everyone
  * with a claim for the workspace may join and send.
  *
  * @experimental May change in a minor release.
  */
 export async function realtimeAllowed(
+  config: RealtimeConfig,
   claim: RoleClaim,
   kind: RealtimeKind,
   target: string,
   action: TopicAction
 ): Promise<boolean> {
-  if (authorizer === null) return true;
+  if (config.authorizer === null) return true;
   try {
     return (
-      (await authorizer({
+      (await config.authorizer({
         auth: { sub: claim.sub, role: claim.role, workspaceId: claim.workspaceId },
         kind,
         target,
@@ -194,6 +195,11 @@ export async function realtimeAllowed(
 }
 
 /** Whether a caller may join or send to a topic. */
-export function topicAllowed(claim: RoleClaim, topic: string, action: TopicAction): Promise<boolean> {
-  return realtimeAllowed(claim, "topic", topic, action);
+export function topicAllowed(
+  config: RealtimeConfig,
+  claim: RoleClaim,
+  topic: string,
+  action: TopicAction
+): Promise<boolean> {
+  return realtimeAllowed(config, claim, "topic", topic, action);
 }

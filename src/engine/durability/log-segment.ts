@@ -1,4 +1,4 @@
-import { auditEnabled } from "../audit";
+import { defaultDeploymentConfig, type DeploymentConfig } from "../config";
 import type { SqlExecutor, SqlValue } from "./sql";
 import type { LogSegment } from "./types";
 
@@ -74,7 +74,9 @@ export function buildLogSegment(
   sql: SqlExecutor,
   afterSeq: number,
   maxRows: number = DEFAULT_MAX_SEGMENT_ROWS,
-  maxBytes: number = DEFAULT_MAX_SEGMENT_BYTES
+  maxBytes: number = DEFAULT_MAX_SEGMENT_BYTES,
+  /** The deployment being flushed; its audit flag decides what a line carries. */
+  config: DeploymentConfig = defaultDeploymentConfig()
 ): LogSegment | null {
   assertPositiveInteger(maxRows, "maxRows");
   assertPositiveInteger(maxBytes, "maxBytes");
@@ -113,8 +115,8 @@ export function buildLogSegment(
       // so a retry after a restore is still recognised.
       opsHash: row.ops_hash,
       // Present only when the deployment records an audit.
-      ...(auditEnabled() && row.user_id !== null ? { userId: row.user_id } : {}),
-      ...(auditEnabled() && row.role !== null ? { role: row.role } : {}),
+      ...(config.audit && row.user_id !== null ? { userId: row.user_id } : {}),
+      ...(config.audit && row.role !== null ? { role: row.role } : {}),
       at: row.at,
       schemaVersion: row.schema_version,
     };
