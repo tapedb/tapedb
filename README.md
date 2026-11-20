@@ -851,12 +851,15 @@ defineTapeDB({
 })
 ```
 
-The deployment declares what it indexes in `wrangler.jsonc`, and `tapedb deploy`
-provisions the index before it uploads the Worker:
+The deployment declares what it indexes in `tapedb.vectorize.json`, and
+`tapedb deploy` provisions the index before it uploads the Worker:
 
-```jsonc
-"tapedb": { "vectorize": { "model": "note", "field": "embedding", "filterFields": ["archived"] } }
+```json
+{ "model": "note", "field": "embedding", "filterFields": ["archived"] }
 ```
+
+That file is the CLI's own: Wrangler validates `wrangler.jsonc` and warns about
+fields it does not recognise, so a correct project would warn on every deploy.
 
 The CLI validates that declaration against the schema, derives the index name
 from deployment identity (so a repeat or concurrent deploy converges on one

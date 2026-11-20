@@ -2,23 +2,17 @@
  * Vectorize provisioning: the deployment's index, created and validated before
  * the Worker that uses it is uploaded.
  *
- * The deployment declares what it indexes once, in `wrangler.jsonc`:
+ * The deployment declares what it indexes once, in `tapedb.vectorize.json`:
  *
- * ```jsonc
- * "tapedb": {
- *   "vectorize": {
- *     "model": "note",
- *     "field": "embedding",
- *     "filterFields": ["archived"]
- *   }
- * }
+ * ```json
+ * { "model": "note", "field": "embedding", "filterFields": ["archived"] }
  * ```
  *
- * `tapedb deploy` reads the project's schema, validates that declaration
- * against it, derives the index's name from the deployment's identity, creates
- * the index and one metadata index per declared filter, and records what it
- * created under `tapedb.vectorize.index` / `tapedb.vectorize.ownership` so the
- * next deploy can prove the index is still this deployment's.
+ * It is its own file because Wrangler validates `wrangler.jsonc` and warns about
+ * every field it does not know, and a warning on each deploy of a correct
+ * project is noise. The CLI owns this file: it records `index` and `ownership`
+ * in it after it creates the index, so the next deploy can prove the index is
+ * still this deployment's.
  *
  * The name is derived, never guessed: a repeat deploy, two concurrent deploys
  * and a retry after a failed upload all converge on the same resource. An index
@@ -27,9 +21,14 @@
  * while every ordinary read and write still looks healthy.
  */
 
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type { TapeDBSchema } from "../schema";
 import type { AttributeDefinition } from "../engine/registry";
 import type { CommandResult, DeployConfig, WranglerCommand } from "./onboarding";
+
+/** The file the CLI owns: the declaration, and what it provisioned. */
+export const VECTORIZE_RECORD_FILE = "tapedb.vectorize.json";
 
 /** The binding name the Worker reads the index by. */
 export const VECTORIZE_DEFAULT_BINDING = "VECTORIZE";
@@ -90,6 +89,29 @@ export interface ResolvedVectorize {
   field: string;
   dimensions: number;
   filters: VectorizeMetadataIndex[];
+}
+
+/** The declaration as it stands on disk, or null when this project has none. */
+export function readVectorizeRecord(root: string): VectorizeDeploymentConfig | null {
+  const file = join(root, VECTORIZE_RECORD_FILE);
+  if (!existsSync(file)) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `${VECTORIZE_RECORD_FILE} is not valid JSON. Fix it, or delete it to provision no vector index: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  if (parsed === null || typeof parsed !== "object") {
+    throw new Error(`${VECTORIZE_RECORD_FILE} must be an object naming model, field and filterFields.`);
+  }
+  return parsed as VectorizeDeploymentConfig;
+}
+
+/** Writes the declaration and its ownership record. */
+export function writeVectorizeRecord(root: string, record: VectorizeDeploymentConfig): void {
+  writeFileSync(join(root, VECTORIZE_RECORD_FILE), JSON.stringify(record, null, 2) + "\n");
 }
 
 /** The project schema, validated against the declaration. */
@@ -189,7 +211,7 @@ export interface ProvisionedVectorize {
 }
 
 export interface ProvisionVectorizeArgs {
-  /** The project root, for resolving the schema's path only. */
+  /** The project root: it holds the record file and the schema. */
   root: string;
   /** The configuration this deploy is using: the top level, or one environment. */
   selected: DeployConfig;
@@ -208,8 +230,8 @@ export interface ProvisionVectorizeArgs {
  * nothing in that case.
  */
 export async function provisionVectorize(args: ProvisionVectorizeArgs): Promise<ProvisionedVectorize | null> {
-  const record = args.selected.tapedb?.vectorize;
-  if (record === undefined) return null;
+  const record = readVectorizeRecord(args.root);
+  if (record === null) return null;
   const log = args.log ?? ((line: string) => console.log(line));
 
   // Residency first: creating an index outside the deployment's jurisdiction is
@@ -300,6 +322,9 @@ export async function provisionVectorize(args: ProvisionVectorizeArgs): Promise<
     log(`  Vectorize: recorded ownership of ${index} in wrangler.jsonc.`);
   }
   if (!created) log(`  Vectorize: kept ${index}.`);
+  // Persist before the upload: if the upload fails, the index still exists and
+  // the next deploy must find its ownership rather than refuse its own index.
+  writeVectorizeRecord(args.root, record);
 
   // The Worker reads the index through this binding; it is part of the deploy.
   const bindings = args.selected.vectorize ?? [];
@@ -362,7 +387,10 @@ function createIndex(
 }
 
 function listMetadataIndexes(command: WranglerCommand, index: string): VectorizeMetadataIndex[] {
-  const result = command(["vectorize", "list-metadata-indexes", index, "--json"], true);
+  // The command is singular, and its JSON names the type `indexType` with the
+  // provider's own spelling ("Bool", "String", "Number"), both measured against
+  // wrangler 4.166 on a live index.
+  const result = command(["vectorize", "list-metadata-index", index, "--json"], true);
   if (result.status !== 0) {
     throw new Error(`Could not read the metadata indexes of ${index}. ${output(result)}`);
   }
@@ -375,21 +403,49 @@ function listMetadataIndexes(command: WranglerCommand, index: string): Vectorize
   const indexes: VectorizeMetadataIndex[] = [];
   for (const entry of entries) {
     if (entry === null || typeof entry !== "object") continue;
-    const record = entry as { propertyName?: unknown; property?: unknown; name?: unknown; type?: unknown };
+    const record = entry as {
+      propertyName?: unknown;
+      property?: unknown;
+      name?: unknown;
+      type?: unknown;
+      indexType?: unknown;
+    };
     const property = record.propertyName ?? record.property ?? record.name;
-    const type = record.type;
-    if (typeof property !== "string") continue;
-    if (type !== "string" && type !== "number" && type !== "boolean") continue;
+    const type = normalizeMetadataType(record.type ?? record.indexType);
+    if (typeof property !== "string" || type === null) continue;
     indexes.push({ property, type });
   }
   return indexes;
 }
 
+/** The provider's spelling ("Bool") and this library's ("boolean") are one type. */
+function normalizeMetadataType(value: unknown): VectorizeMetadataIndex["type"] | null {
+  if (typeof value !== "string") return null;
+  switch (value.toLowerCase()) {
+    case "bool":
+    case "boolean":
+      return "boolean";
+    case "num":
+    case "number":
+      return "number";
+    case "str":
+    case "string":
+      return "string";
+    default:
+      return null;
+  }
+}
+
 function createMetadataIndex(command: WranglerCommand, index: string, filter: VectorizeMetadataIndex): void {
-  command(
-    ["vectorize", "create-metadata-index", index, "--property-name", filter.property, "--type", filter.type],
+  const result = command(
+    ["vectorize", "create-metadata-index", index, "--propertyName", filter.property, "--type", filter.type],
     true
   );
+  if (result.status !== 0) {
+    throw new Error(
+      `Could not create the metadata index for ${filter.property} on ${index}. ${output(result)}`
+    );
+  }
 }
 
 /** Refuses an index whose shape cannot hold this deployment's vectors. */
