@@ -62,6 +62,9 @@ gitleaks detect --source . --redact --no-banner --verbose   # gitleaks v8.30.1
 
 The package smoke test inside `verify` installs the tarball under Node in
 default npm, CommonJS and ESM projects. It uses Node 22.18 or newer and npm, and emits consumer TypeScript declarations.
+It also packs `packages/react`, installs it beside the packed core, and requires
+the alias to export the subpath's own bindings — and to pin the exact core
+version, so a wrapper left behind by a release fails the gate.
 
 Exercise the packed product as a consumer would:
 
@@ -81,8 +84,10 @@ migration and erasure. Do not release on the strength of the unit suite alone.
 Only after the gates and checks:
 
 1. Update `CHANGELOG.md` and set the intended version in `package.json`, and
-   the same version in `packages/tapedb-cli/package.json` (both its `version`
-   and its `@tapedb/tapedb` dependency). The two packages move in lockstep.
+   the same version in `packages/tapedb-cli/package.json` and
+   `packages/react/package.json` (each one's `version` and its `@tapedb/tapedb`
+   dependency). All three move in lockstep: the wrappers pin the core version
+   exactly.
 2. Open the release pull request and remove `"private": true` there. Keep
    `publishConfig` and the repository metadata. Merge only after the checks
    pass.
@@ -93,9 +98,13 @@ Only after the gates and checks:
    ```bash
    npm publish --access public
    cd packages/tapedb-cli && npm publish --access public
+   cd ../react && npm publish --access public
    ```
 
-   Publish `@tapedb/tapedb` first: `tapedb-cli` depends on that exact version.
+   Publish `@tapedb/tapedb` first, then `tapedb-cli`, then `@tapedb/react`: both
+   wrappers depend on that exact core version, so publishing either one first
+   puts a pin on the registry that resolves to nothing. The order is the whole
+   guarantee that `@tapedb/react` and `@tapedb/tapedb/react` are one release.
 
    Without an npm CI service there is no OIDC token, so this publish carries no
    provenance attestation. Do not add `--provenance` unless the publish runs in
@@ -106,6 +115,7 @@ Only after the gates and checks:
    ```bash
    npm view @tapedb/tapedb version dist-tags.latest
    npm view tapedb-cli version dist-tags.latest
+   npm view @tapedb/react version dist-tags.latest
    cd "$(mktemp -d)" && npx tapedb-cli init
    ```
 
