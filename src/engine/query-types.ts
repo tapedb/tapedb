@@ -36,6 +36,21 @@ export interface QueryComparison {
   $gte?: QueryScalar;
   $lt?: QueryScalar;
   $lte?: QueryScalar;
+  /**
+   * True matches rows where the attribute is null, false where it is not.
+   * The attribute exists on every row of a namespace — an optional field is
+   * stored as null — so this is the only way to ask for "set" or "not set".
+   * Relations are filtered with `$link`, not here.
+   */
+  $isNull?: boolean;
+  /**
+   * SQL `LIKE`, case-sensitive: `%` matches any run of characters, `_`
+   * exactly one, and a backslash makes the next `%`, `_` or backslash
+   * literal. Every other backslash is refused rather than guessed at.
+   */
+  $like?: string;
+  /** `$like`, case-insensitive (ASCII, as SQLite's `lower()` is). */
+  $ilike?: string;
 }
 
 export type QueryWhereValue = QueryScalar | QueryComparison;
@@ -168,6 +183,9 @@ const COMPARISON_OPERATORS = new Set([
   "$gte",
   "$lt",
   "$lte",
+  "$isNull",
+  "$like",
+  "$ilike",
 ]);
 
 const ISO_DATE_PATTERN =
@@ -436,10 +454,51 @@ function parseComparison(
       case "$lte":
         comparison.$lte = parseScalar(attribute, operand);
         break;
+      case "$isNull":
+        if (typeof operand !== "boolean") {
+          throw invalidValue(`"$isNull" on "${attribute}" takes true or false.`);
+        }
+        comparison.$isNull = operand;
+        break;
+      case "$like":
+      case "$ilike":
+        if (typeof operand !== "string") {
+          throw invalidValue(`"${operator}" on "${attribute}" takes a string pattern.`);
+        }
+        parseLikePattern(operand, `${operator} on "${attribute}"`);
+        comparison[operator] = operand;
+        break;
     }
   }
 
   return comparison;
+}
+
+/**
+ * Checks the backslash escapes in a `LIKE` pattern.
+ *
+ * `%` and `_` mean what SQL says; a backslash in front of either, or in front
+ * of another backslash, makes it a literal. A backslash anywhere else is
+ * refused: silently reading `\d` as `d` would drop a character the caller
+ * wrote on purpose, and silently keeping it would put a stray backslash in the
+ * comparison. The pattern itself is returned unchanged, escapes included, so
+ * the caller can bind it with `ESCAPE '\'`.
+ */
+export function parseLikePattern(pattern: string, label: string): string {
+  for (let index = 0; index < pattern.length; index += 1) {
+    if (pattern[index] !== "\\") continue;
+    const next = pattern[index + 1];
+    if (next === "%" || next === "_" || next === "\\") {
+      index += 1;
+      continue;
+    }
+    throw invalidValue(
+      next === undefined
+        ? `"${label}" ends with a backslash; write "\\\\" for a literal one.`
+        : `"${label}" escapes "${next}"; only %, _ and \\ are escape sequences.`
+    );
+  }
+  return pattern;
 }
 
 function parseOrder(value: unknown): Record<string, SortDirection> {

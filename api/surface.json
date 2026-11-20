@@ -137,6 +137,9 @@
           "gte": "T | undefined",
           "lt": "T | undefined",
           "lte": "T | undefined",
+          "isNull": "boolean | undefined",
+          "like": "string | undefined",
+          "ilike": "string | undefined",
           "(declaration)": "<T = Scalar>"
         }
       },
@@ -481,6 +484,9 @@
           "gte": "T | undefined",
           "lt": "T | undefined",
           "lte": "T | undefined",
+          "isNull": "boolean | undefined",
+          "like": "string | undefined",
+          "ilike": "string | undefined",
           "(declaration)": "<T = Scalar>"
         }
       },
@@ -1654,7 +1660,10 @@
           "$gt": "QueryScalar | undefined",
           "$gte": "QueryScalar | undefined",
           "$lt": "QueryScalar | undefined",
-          "$lte": "QueryScalar | undefined"
+          "$lte": "QueryScalar | undefined",
+          "$isNull": "boolean | undefined",
+          "$like": "string | undefined",
+          "$ilike": "string | undefined"
         }
       },
       "QueryRelationFilter (src/engine/query-types.ts)": {
