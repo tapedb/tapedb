@@ -276,6 +276,7 @@
         "kind": "interface",
         "shape": {
           "findMany": "<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A) => Query<Result<M, F, A>[]>",
+          "search": "<A extends SearchArgs<M, F> = SearchArgs<M, F>>(args: A) => Promise<SearchResult<Array<Result<M, F, A> & { score: number; }>>> @experimental",
           "findFirst": "<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A) => Query<Result<M, F, A> | null>",
           "findUnique": "<A extends { where: { id: string; }; include?: Include<M, F>; select?: Select<M, F>; }>(args: A) => Query<Result<M, F, A> | null>",
           "findPage": "<A extends PageArgs<M, F> = PageArgs<M, F>>(args?: A) => PageQuery<Result<M, F, A>>",
@@ -471,6 +472,31 @@
       "scopedOutboxName": {
         "kind": "function",
         "shape": "(apiUrl: string, userId?: string) => string"
+      },
+      "SearchArgs": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "vector": "number[]",
+          "limit": "number | undefined",
+          "filter": "Partial<Record<FilterKeys<F>, string | number | boolean>> | undefined",
+          "where": "Where<F, M> | undefined",
+          "select": "Select<M, F> | undefined",
+          "(declaration)": "<M extends Models, F extends Fields>"
+        }
+      },
+      "SearchFilter": {
+        "kind": "type",
+        "shape": "<F extends Fields> Partial< Record<FilterKeys<F>, string | number | boolean> >"
+      },
+      "SearchResult": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "rows": "R[]",
+          "truncated": "boolean",
+          "(declaration)": "<R>"
+        }
       },
       "StorageObject": {
         "kind": "interface",

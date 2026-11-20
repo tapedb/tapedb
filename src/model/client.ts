@@ -32,12 +32,14 @@ import type {
   QueryResult,
   QueryState,
   TxOp,
+  VectorSearchRequest,
   WriteRejection,
 } from "../client/types";
 import type {
   CreateData,
   Fields,
   FieldsOf,
+  FilterKeys,
   Include,
   ModelInfo,
   Models,
@@ -56,7 +58,7 @@ import type {
 } from "./schema";
 import { acrossModel, type AcrossQuery, type WorkspaceClients } from "./across";
 import { plan, READ_METHODS } from "./plan";
-import type { Where } from "./where";
+import { splitSelect, toEngineWhere, type Where } from "./where";
 
 // ---- Public types ----------------------------------------------------------
 
@@ -123,6 +125,61 @@ export interface PageArgs<M extends Models, F extends Fields> extends FindArgs<M
   after?: string | null;
 }
 
+/**
+ * Equality on the attributes an index was declared to filter on, typed as each
+ * attribute is.
+ *
+ * The client knows which attributes of the model are filterable; the
+ * deployment's `vectorize.filterFields` is a subset of them, chosen in the
+ * Worker, and an attribute outside that subset is refused by the engine
+ * (`invalid_value`) rather than matched against nothing. A value of the wrong
+ * type for its attribute is refused the same way.
+ */
+export type SearchFilter<F extends Fields> = Partial<
+  Record<FilterKeys<F>, string | number | boolean>
+>;
+
+/**
+ * What `search` takes: a query embedding, and what narrows the rows it ranks.
+ *
+ * @experimental May change in a minor release.
+ */
+export interface SearchArgs<M extends Models, F extends Fields> {
+  /** The query embedding: the numbers a write takes for the same field. */
+  vector: number[];
+  /**
+   * At most this many matches. Defaults to 10. A search returns at most 50 —
+   * the provider's ceiling for a query that returns metadata — and a larger
+   * number is refused, not clamped to 50.
+   */
+  limit?: number;
+  /** Equality on the index's declared filter fields only. */
+  filter?: SearchFilter<F>;
+  /** The engine's `where`, applied to the candidate rows the index returned. */
+  where?: Where<F, M>;
+  /**
+   * Return only these fields, as a read's `select` does. The embedding itself
+   * is never returned, even when it is named here.
+   */
+  select?: Select<M, F>;
+}
+
+/**
+ * What a search answers: rows in rank order, each with the score it was found
+ * by.
+ *
+ * @experimental May change in a minor release.
+ */
+export interface SearchResult<R> {
+  /** Nearest first. A row the caller may not read is simply not here. */
+  rows: R[];
+  /**
+   * True when the index answered with as many candidates as the limit asked
+   * for: there may be matches ranked below the last one returned.
+   */
+  truncated: boolean;
+}
+
 export type Result<M extends Models, F extends Fields, A> = (A extends { select: infer S }
   ? Selected<M, F, S>
   : Row<F>) &
@@ -130,6 +187,23 @@ export type Result<M extends Models, F extends Fields, A> = (A extends { select:
 
 export interface ModelClient<M extends Models, F extends Fields> {
   findMany<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A): Query<Result<M, F, A>[]>;
+  /**
+   * Nearest-neighbour search over the vector field this deployment indexes.
+   *
+   * Resolves to rows in rank order, each with its `score`, and whether the
+   * answer was cut off at `limit`. It is a one-shot read: no cache, no live
+   * updates. Read rules apply — a row the caller may not read is absent rather
+   * than scored null — and a row the index still holds but the database no
+   * longer does is dropped, so what comes back is what exists now.
+   *
+   * `vector` must be the field's declared length and `limit` 1 to 50 (default
+   * 10); anything else is refused by the engine with `invalid_value`.
+   *
+   * @experimental May change in a minor release.
+   */
+  search<A extends SearchArgs<M, F> = SearchArgs<M, F>>(
+    args: A
+  ): Promise<SearchResult<Array<Result<M, F, A> & { score: number }>>>;
   findFirst<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A): Query<Result<M, F, A> | null>;
   findUnique<A extends { where: { id: string }; include?: Include<M, F>; select?: Select<M, F> }>(
     args: A
@@ -494,10 +568,49 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
     return runtime.impl.bulk(planned.op);
   };
 
+  /**
+   * A search is not a query document: the engine takes the embedding, the
+   * metadata filter and the limit directly, and answers with rows it re-read
+   * plus a score per row. `where` and `select` are the client's own shapes, so
+   * they are translated here the way a read translates them.
+   */
+  const search = async (args: SearchArgs<Models, Fields>) => {
+    let fields: string[] | undefined;
+    if (args.select !== undefined) {
+      const { fields: selected, relations } = splitSelect(model, args.select as Record<string, unknown>);
+      if (Object.keys(relations).length > 0) {
+        throw new Error(
+          `"${model.key}.search" returns rows, not relations: name fields in select, or read the linked rows separately.`
+        );
+      }
+      fields = selected;
+    }
+    const answer = await runtime.impl.searchOnce({
+      model: model.key,
+      vector: args.vector,
+      ...(args.limit === undefined ? {} : { limit: args.limit }),
+      ...(args.filter === undefined ? {} : { filter: args.filter as Record<string, string | number | boolean> }),
+      // The client's `where` mirror does not carry the engine-only `$link`, so
+      // the translated value is handed over as the engine's shape.
+      ...(args.where === undefined
+        ? {}
+        : { where: toEngineWhere(model, args.where) as unknown as VectorSearchRequest["where"] }),
+      ...(fields === undefined ? {} : { select: fields }),
+    });
+    // The engine ranks and scores every row it returns, so a row without a
+    // score is a contradiction rather than a row to show with 0.
+    const rows = answer.rows.flatMap((row) => {
+      const score = answer.scores[String(row.id)];
+      return score === undefined ? [] : [{ ...row, score }];
+    });
+    return { rows, truncated: answer.truncated };
+  };
+
   const client: Record<string, unknown> = {};
   for (const method of READ_METHODS) client[method] = (args?: unknown) => read(method, args);
   for (const method of ["create", "update", "upsert", "delete"]) client[method] = (args: unknown) => write(method, args);
   for (const method of ["updateMany", "deleteMany"]) client[method] = (args: unknown) => bulk(method, args);
+  client.search = (args: SearchArgs<Models, Fields>) => search(args);
   return client as unknown as ModelClient<Models, Fields>;
 }
 

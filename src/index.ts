@@ -30,6 +30,9 @@ export type {
   PageArgs,
   PresenceRoom,
   Result,
+  SearchArgs,
+  SearchFilter,
+  SearchResult,
   WriteResult,
 } from "./model/client";
 
