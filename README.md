@@ -561,9 +561,9 @@ four by default — so one connection can show who is in each of the boards a
 user has open. Leaving one room leaves the others alone, and a disconnect
 leaves all of them. A room's peers include your own entry with `isSelf: true`,
 so you can draw your own cursor without matching on names; `db.clientId` is the
-same id, and `includeSelf: false` leaves you out. The React hook inverts that
-default: `usePresence(db, room, presence)` gives you the others, and
-`usePresence(db, room, presence, { includeSelf: true })` adds you.
+same id, and `includeSelf: false` leaves you out. The React hook reads the same
+option the same way: `usePresence(db, room, presence)` includes you, and
+`usePresence(db, room, presence, { includeSelf: false })` leaves you out.
 
 What a socket publishes is bounded twice, and a refusal changes nothing it
 already holds: past 8 KiB of presence across all its rooms the server answers
