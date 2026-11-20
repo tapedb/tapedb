@@ -152,6 +152,24 @@ export interface PresencePeer {
   presence: unknown;
   cursor?: unknown;
   drag?: unknown;
+  /**
+   * Set on the caller's own entry, which `peers()` leaves out unless it is
+   * asked for with `{ includeSelf: true }`.
+   */
+  isSelf?: true;
+}
+
+/**
+ * Options for reading or subscribing to a presence room's peers.
+ *
+ * @experimental May change in a minor release.
+ */
+export interface PresencePeersOptions {
+  /**
+   * Include the caller's own entry, marked `isSelf: true`. Off by default:
+   * a peer list is usually about the others, and the caller knows itself.
+   */
+  includeSelf?: boolean;
 }
 
 // ---- Transactions ----------------------------------------------------------
@@ -306,12 +324,23 @@ export interface DataRoom {
   publishCursor(cursor: unknown): void;
   publishDrag(drag: unknown): void;
   clearDrag(): void;
-  subscribePresence(listener: (peers: PresencePeer[]) => void): () => void;
+  /** Who else is in the room now; the caller only with `includeSelf`. */
+  peers(options?: PresencePeersOptions): Promise<PresencePeer[]>;
+  subscribePresence(
+    listener: (peers: PresencePeer[]) => void,
+    options?: PresencePeersOptions
+  ): () => void;
   /** Clears local presence; subscription disposers remain owned by their callers. */
   leave(): void;
 }
 
 export interface DataClient {
+  /**
+   * This socket's session id, as the server assigned it — the `clientId` a
+   * peer entry carries. `undefined` until `session:ready`, and against a
+   * Worker too old to send one.
+   */
+  readonly clientId: string | undefined;
   transact(input: TransactInput): Promise<"applied" | "queued">;
   /** Files scoped to the configured workspace and authenticated by its claim. */
   files: StorageClient;
@@ -366,8 +395,18 @@ export interface DataClient {
   /** Subscribes to the peer snapshot for a target; immediate first call. */
   subscribePresence(
     target: string,
-    listener: (peers: PresencePeer[]) => void
+    listener: (peers: PresencePeer[]) => void,
+    options?: PresencePeersOptions
   ): () => void;
+
+  /**
+   * The peers in a target as they are known now, without subscribing: this
+   * socket's own entry is left out unless `includeSelf` is set.
+   */
+  presencePeers(
+    target: string,
+    options?: PresencePeersOptions
+  ): Promise<PresencePeer[]>;
 
   /** Stops reconnection timers and closes the socket. */
   close(): void;
@@ -391,7 +430,7 @@ export type ClientMessage =
   | { type: "ping"; at?: unknown };
 
 export type ServerMessage =
-  | { type: "session:ready"; workspaceId: string; connections: number }
+  | { type: "session:ready"; workspaceId: string; connections: number; clientId?: string }
   | { type: "session:error"; code: string; message: string }
   | { type: "pong"; at?: unknown; now: number }
   | {
