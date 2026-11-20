@@ -32,9 +32,11 @@ npx @tapedb/cli deploy   # your Cloudflare account: buckets, secrets, Worker
 ```
 
 No flags are needed: each command asks when it has to, and Enter takes the
-default. `npx` runs the newest `@tapedb/cli`, which also brings the project's
-`@tapedb/tapedb` up to the same version. The package installs the `tapedb-cli`
-command, so `npx tapedb-cli init` is the same run.
+default. `@tapedb/cli` pins the core exactly, so `npx @tapedb/cli` runs that
+release's CLI and does not touch the copy your project has installed. Both
+packages install a `tapedb-cli` command; inside a project, `npx tapedb-cli
+<command>` runs the CLI you already have, which is why the hints below spell it
+that way.
 
 ### Preferred imports
 
