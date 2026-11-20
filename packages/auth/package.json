@@ -1,6 +1,6 @@
 {
   "name": "@tapedb/auth",
-  "version": "0.1.30",
+  "version": "0.2.0",
   "description": "Better Auth adapter for tapedb: users, sessions and members in a dedicated auth Durable Object.",
   "type": "module",
   "exports": {
@@ -19,7 +19,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@tapedb/tapedb": "0.1.30"
+    "@tapedb/tapedb": "0.2.0"
   },
   "peerDependencies": {
     "better-auth": "^1.7.25"
