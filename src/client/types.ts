@@ -137,6 +137,43 @@ export interface AggregateGroup {
 
 export type QueryPageInfo = Record<string, PageInfo>;
 
+/**
+ * A nearest-neighbour search request, as the client sends it.
+ *
+ * Mirrors the engine's contract without importing it, like the rest of this
+ * file. `vector` is the numbers a write takes; `filter` names only the
+ * attributes the deployment declared as filter fields, and the engine refuses
+ * anything else.
+ *
+ * @experimental May change in a minor release.
+ */
+export interface VectorSearchRequest {
+  /** The indexed model's API name. */
+  model: string;
+  /** The query embedding. */
+  vector: number[];
+  /** 1 to 50; the engine's ceiling. */
+  limit?: number;
+  /** Equality on the declared filter fields. */
+  filter?: Record<string, string | number | boolean>;
+  /** The engine's `where`, applied to the rows the index returned. */
+  where?: QueryWhere;
+  /** API attribute names, narrowing the rows the way a read's `select` does. */
+  select?: string[];
+}
+
+/** What a search answers: ranked rows and the score each one was found by. */
+export interface VectorSearchResponse {
+  /** The indexed model. */
+  model: string;
+  /** Rows in rank order, shaped like a read with the same `select`. */
+  rows: QueryEntity[];
+  /** Score per row ID, for the rows in `rows`. */
+  scores: Record<string, number>;
+  /** True when the index returned as many candidates as it was asked for. */
+  truncated: boolean;
+}
+
 export interface QueryState {
   data: QueryResult | null;
   isLoading: boolean;
