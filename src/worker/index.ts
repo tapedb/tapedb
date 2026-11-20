@@ -27,6 +27,7 @@ import { configureRetention, type RetentionOptions } from "../engine/durability/
 import { isWorkspaceId } from "../engine/r2-keys";
 import { WorkspaceRoom } from "../engine/workspace-room";
 import { sourceEnvironment, readMove } from "../engine/workspace-move";
+import { ADMIN_PREFIX, handleAdminRequest, resolveHttpApi, type HttpApiOptions } from "./admin";
 import { apiError, discardBody, json } from "../http";
 import { handleClaimRequest } from "../claim-route";
 import { limiterKey, limiterName, resolveClaimLimits, type ClaimLimits, type LimitDecision } from "../engine/claim-limits";
@@ -155,6 +156,24 @@ export interface DefineTapeDBOptions {
    * @experimental May change in a minor release.
    */
   webhooks?: readonly WebhookOptions[];
+  /**
+   * The admin HTTP API for backends: `POST /v1/query`, `/v1/transact` and
+   * `/v1/claim`, in front of the same room routes a client uses.
+   *
+   *   http: { token: (env) => env.TAPEDB_API_TOKEN }
+   *
+   * A caller sends `authorization: Bearer <token>` and names who it acts as
+   * (`as: { sub, role }`); the access rules are evaluated for that identity,
+   * exactly as for a socket holding that claim, and writes spend the
+   * `limits.writes` budget. The token must be at least 32 bytes and is
+   * compared in constant time.
+   *
+   * Optional, and off by default: without it these paths answer 404, so an
+   * API nobody enabled is not visible.
+   *
+   * @experimental May change in a minor release.
+   */
+  http?: HttpApiOptions;
 }
 
 export interface TapeDBWorker {
@@ -336,6 +355,9 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   // Refused here, when the Worker is defined, rather than on the first write.
   // Each room resolves its own copy from these options; nothing is shared.
   resolveWriteLimits(options.limits?.writes);
+  // The admin API's token: refused here when it is a string and too short, so
+  // a mistyped secret fails at deploy rather than on the first backend call.
+  const httpApi = resolveHttpApi(options.http);
 
   const worker = {
     async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -399,6 +421,25 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
         // During `tapedb dev`, note the workspace so the studio lists it before its first flush.
         if (opened && claimed.ok) await noteLocalWorkspace(env.DATA, opened);
         return claimed;
+      }
+
+      // The admin HTTP API. Off unless `http` is configured: without it these
+      // paths fall through to the 404 below, so an API nobody enabled cannot
+      // be probed for.
+      if (httpApi !== undefined && url.pathname.startsWith(ADMIN_PREFIX)) {
+        return handleAdminRequest({
+          request,
+          env,
+          http: httpApi,
+          callRoom: (workspaceId, path, body, claim) =>
+            callRoom(
+              env,
+              workspaceId,
+              path,
+              { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) },
+              encodeTrustedRoleClaim(claim)
+            ),
+        });
       }
 
       if (!url.pathname.startsWith(`${ENGINE_PREFIX}/`)) {
@@ -513,6 +554,7 @@ export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
 export type { TopicAction, TopicAuthorizer, TopicOptions } from "../engine/topics";
 export type { WebhookEvent, WebhookEventPayload, WebhookOptions } from "../engine/webhooks";
 export type { LimitsOptions, WriteLimit, WriteLimitsOptions } from "../engine/rate-limits";
+export type { HttpApiOptions, HttpApiToken } from "./admin";
 export type {
   RealtimeAuthorizeContext,
   RealtimeAuthorizer,
