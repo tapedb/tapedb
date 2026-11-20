@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.3.3 - 2026-11-20
 
 - `tapedb deploy` provisions the vector index instead of leaving it to the app. A deployment declares `tapedb.vectorize` in `wrangler.jsonc` (model, field, filter fields); the CLI validates it against the schema, derives the index name from deployment identity, creates the index and one metadata index per filter, records ownership of what it created, and writes the binding the Worker reads. A repeat deploy, two concurrent deploys and a retry after a failed upload converge on one index. Every later deploy reads the live index and refuses to upload on a wrong dimension count, another metric, a metadata index of the wrong type, or an ownership record naming another account or worker, naming both values and deploying nothing. An index that exists without a record is refused rather than adopted; naming it under `tapedb.vectorize.index` records it. `eu` and `fedramp` deployments refuse vector search before provisioning, because Vectorize cannot meet that residency and an index cannot be redeployed out of a jurisdiction.
 
