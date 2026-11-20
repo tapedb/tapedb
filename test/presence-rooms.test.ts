@@ -15,7 +15,8 @@ import { beforeEach, describe, expect, mock, test } from "bun:test";
 import { WORKSPACE_ROLE_LEVELS, type WorkspaceRole } from "../src/claims";
 import { encodeTrustedRoleClaim } from "../src/verify";
 import type { Env } from "../src/types";
-import { configureRealtime } from "../src/engine/topics";
+import { resolveRealtime } from "../src/engine/topics";
+import { defaultDeploymentConfig, deploymentConfig, type DeploymentConfig } from "../src/engine/config";
 import { PRESENCE_STATE_BYTES } from "../src/engine/ws-types";
 import { FakeR2Bucket, TEST_WORKSPACE } from "./fixtures/test-support";
 
@@ -183,16 +184,21 @@ describe("presence rooms", () => {
   let context: FakeContext;
   let room: InstanceType<typeof WorkspaceRoom>;
 
-  beforeEach(async () => {
-    // Each test starts from the deployed defaults: no authorizer, 4 rooms.
-    configureRealtime(undefined, undefined);
-    db = new Database(":memory:");
+  /** A fresh room for this deployment's settings: each test gets its own. */
+  async function boot(config: DeploymentConfig = defaultDeploymentConfig()) {
     context = new FakeContext(db, TEST_WORKSPACE);
     room = new WorkspaceRoom(
       context as unknown as DurableObjectState,
-      { DATA: new FakeR2Bucket() } as unknown as Env
+      { DATA: new FakeR2Bucket() } as unknown as Env,
+      { config }
     );
     await context.ready;
+  }
+
+  beforeEach(async () => {
+    // Each test starts from the deployed defaults: no authorizer, 4 rooms.
+    db = new Database(":memory:");
+    await boot();
   });
 
   function socket(clientId: string, attachment: unknown = attachmentFor(clientId)): FakeSocket {
@@ -270,7 +276,8 @@ describe("presence rooms", () => {
   });
 
   test("the room cap refuses a further room and changes nothing", async () => {
-    configureRealtime({ maxPresenceRooms: 2 }, undefined);
+    await boot(deploymentConfig({ realtime: resolveRealtime({ maxPresenceRooms: 2 }, undefined) }));
+
     const ws = socket("s");
     await send(ws, { type: "presence:set", target: "board:A", presence: { name: "s" } });
     await send(ws, { type: "presence:set", target: "board:B", presence: { name: "s" } });
@@ -290,7 +297,8 @@ describe("presence rooms", () => {
   });
 
   test("maxPresenceRooms: 1 is the old single-room socket", async () => {
-    configureRealtime({ maxPresenceRooms: 1 }, undefined);
+    await boot(deploymentConfig({ realtime: resolveRealtime({ maxPresenceRooms: 1 }, undefined) }));
+
     const ws = socket("s");
     await send(ws, { type: "presence:set", target: "board:A", presence: { name: "s" } });
     expect(ws.last()).toMatchObject({ type: "presence:update", target: "board:A" });
@@ -315,15 +323,13 @@ describe("presence rooms", () => {
 
   test("an authorize refusal leaves no state and is not broadcast", async () => {
     const seen: Array<{ kind: string; target: string; action: string }> = [];
-    configureRealtime(
-      {
+    await boot(deploymentConfig({ realtime: resolveRealtime({
         authorize: async ({ kind, target, action }) => {
           seen.push({ kind, target, action });
           return target !== "board:secret";
         },
-      },
-      undefined
-    );
+      }, undefined) }));
+
 
     const ws = socket("s");
     const peer = socket("peer");
@@ -344,14 +350,12 @@ describe("presence rooms", () => {
   });
 
   test("an authorizer that throws or answers a non-boolean refuses", async () => {
-    configureRealtime(
-      {
+    await boot(deploymentConfig({ realtime: resolveRealtime({
         authorize: () => {
           throw new Error("boom");
         },
-      },
-      undefined
-    );
+      }, undefined) }));
+
     const ws = socket("s");
     await send(ws, { type: "presence:set", target: "board:A", presence: { name: "s" } });
     expect(ws.last()).toMatchObject({ type: "error", code: "presence_denied" });
@@ -360,15 +364,13 @@ describe("presence rooms", () => {
 
   test("an update to a joined room is a send, and is authorized as one", async () => {
     const calls: string[] = [];
-    configureRealtime(
-      {
+    await boot(deploymentConfig({ realtime: resolveRealtime({
         authorize: ({ action, target }) => {
           calls.push(`${target}:${action}`);
           return true;
         },
-      },
-      undefined
-    );
+      }, undefined) }));
+
     const ws = socket("s");
     await send(ws, { type: "presence:set", target: "board:A", presence: { name: "s" } });
     await send(ws, { type: "presence:set", target: "board:A", presence: { name: "s2" } });
@@ -505,20 +507,18 @@ describe("presence rooms", () => {
   test("realtime.authorize covers topics as well, and wins over topics.authorize", async () => {
     const kinds: string[] = [];
     const legacy: string[] = [];
-    configureRealtime(
-      {
+    await boot(deploymentConfig({ realtime: resolveRealtime({
         authorize: ({ kind, target, action }) => {
           kinds.push(`${kind}:${target}:${action}`);
           return !(kind === "topic" && target === "closed");
         },
-      },
-      {
+      }, {
         authorize: ({ topic }) => {
           legacy.push(topic);
           return true;
         },
-      }
-    );
+      }) }));
+
 
     const ws = socket("s");
     await send(ws, { type: "topic:join", topic: "open" });
@@ -534,7 +534,8 @@ describe("presence rooms", () => {
   });
 
   test("topics.authorize still decides topics, and never gates presence", async () => {
-    configureRealtime(undefined, { authorize: ({ topic }) => topic !== "closed" });
+    await boot(deploymentConfig({ realtime: resolveRealtime(undefined, { authorize: ({ topic }) => topic !== "closed" }) }));
+
 
     const ws = socket("s");
     await send(ws, { type: "topic:join", topic: "closed" });

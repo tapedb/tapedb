@@ -4,6 +4,7 @@ import type { SqlExecutor, SqlRow } from "./tx-sql";
 import { validateEnvelope, isLinkOp } from "./tx-validate";
 import { authorizeOps, assertRowPermissions } from "./tx-permissions";
 import { appendLogEntry } from "./tx-pipeline";
+import type { DeploymentConfig } from "./config";
 import { applyOps } from "./tx-apply";
 import { stageBulkOps, isBulk, bulkChunk, stagedIds, releaseStaged } from "./tx-bulk";
 import { LogWriter } from "./tx-log";
@@ -21,7 +22,7 @@ export function installPersonalCapture(sql: SqlExecutor): void {
 }
 
 /** The caller wraps this async pipeline in storage.transaction(). */
-export async function runPersonalTransaction(sql: SqlExecutor, personal: PersonalRuntime, workspace: string, claim: RoleClaim, envelope: unknown): Promise<TxResult> {
+export async function runPersonalTransaction(sql: SqlExecutor, personal: PersonalRuntime, workspace: string, claim: RoleClaim, envelope: unknown, config: DeploymentConfig): Promise<TxResult> {
   if (claim.workspaceId !== workspace) throw new TxError("permission_denied", "The claim belongs to another workspace.");
   const tx = validateEnvelope(envelope); authorizeOps(claim, tx.ops);
   // Keyed: the raw ops carry plaintext personal values.
@@ -44,7 +45,7 @@ export async function runPersonalTransaction(sql: SqlExecutor, personal: Persona
     const nothing = tx.ops.every((op, index) => isBulk(op) && staged.matched[index] === 0);
     if (nothing && tx.clientTxId === undefined) return { txId: tx.txId, seq: sql.one<{ seq: number }>(`SELECT high_water_seq AS seq FROM "_tx_state" WHERE id = 1`)?.seq ?? 0, applied: 0, matched: staged.matched };
     const now = Date.now();
-    const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role });
+    const seq = appendLogEntry(sql, { clientTxId: tx.clientTxId ?? null, ops: "[]", opsHash: hash, at: now, userId: claim.sub, role: claim.role }, config);
     sql.exec(`DELETE FROM "_personal_changes"`);
     // Rows this transaction creates, by table and id: their whole-row entry is
     // an insert. The row cannot say so afterwards — an insert stamps
@@ -81,7 +82,7 @@ export async function runPersonalTransaction(sql: SqlExecutor, personal: Persona
         applied += applyOps({ sql, seq, now, txId: tx.txId }, [item]);
       }
     }
-    const log = new LogWriter(sql, seq); log.push({ op: "state:begin" });
+    const log = new LogWriter(sql, seq, config.logPartBytes); log.push({ op: "state:begin" });
     let afterTable = "", afterId = "";
     for (;;) {
       const changed = sql.all<{ table_name: string; id: string }>(`SELECT table_name, id FROM "_personal_changes" WHERE table_name > ? OR (table_name = ? AND id > ?) ORDER BY table_name, id LIMIT 100`, afterTable, afterTable, afterId);

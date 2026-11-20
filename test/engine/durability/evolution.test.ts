@@ -23,6 +23,10 @@ import type { SqlRow, SqlExecutor as TxSql } from "../../../src/engine/tx-sql";
 import { runTransaction } from "../../../src/engine/tx-pipeline";
 import { model, schema, t } from "../../../src/schema";
 import { createSqlExecutor, FakeR2Bucket, TEST_WORKSPACE } from "../../fixtures/test-support";
+import { defaultDeploymentConfig } from "../../../src/engine/config";
+
+/** These tests run the unconfigured engine: audit off, role file rules, no webhooks. */
+const engineConfig = defaultDeploymentConfig();
 
 const NOW = 1_700_000_000_000;
 
@@ -83,7 +87,7 @@ const claim: RoleClaim = {
 async function writtenUnderV1(): Promise<FakeR2Bucket> {
   useSchema(v1, v1.migrations);
   const source = open([...v1.migrations]);
-  const write = (ops: unknown[]) => runTransaction(source.tx, TEST_WORKSPACE, claim, { txId: crypto.randomUUID(), ops });
+  const write = (ops: unknown[]) => runTransaction(source.tx, TEST_WORKSPACE, claim, { txId: crypto.randomUUID(), ops }, engineConfig);
 
   write([{ op: "insert", namespace: "task", id: "a", values: { title: "A", legacy: "gone", oldName: "a-old" } }]);
   const bucket = new FakeR2Bucket();
@@ -145,7 +149,7 @@ describe("recovery across a rollback", () => {
       // Written while the field existed: in the snapshot and in the log.
       useSchema(added, bundle());
       const source = open(bundle());
-      const write = (ops: unknown[]) => runTransaction(source.tx, TEST_WORKSPACE, claim, { txId: crypto.randomUUID(), ops });
+      const write = (ops: unknown[]) => runTransaction(source.tx, TEST_WORKSPACE, claim, { txId: crypto.randomUUID(), ops }, engineConfig);
       write([{ op: "insert", namespace: "task", id: "a", values: { title: "A", priority: 1 } }]);
       const bucket = new FakeR2Bucket();
       await flushPending(bucket, source.durable, TEST_WORKSPACE, NOW);

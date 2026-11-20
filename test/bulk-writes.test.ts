@@ -10,12 +10,11 @@
  */
 
 import { Database } from "bun:sqlite";
-import { afterEach, beforeEach, describe, expect, test } from "bun:test";
+import { beforeEach, describe, expect, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim, type WorkspaceRole } from "../src/claims";
 import { MemoryOutbox } from "../src/client/outbox";
 import { BULK_BATCH_ROWS } from "../src/engine/tx-bulk";
-import { setLogPartBytesForTests } from "../src/engine/tx-log";
 import { matchesWhere } from "../src/client/local-where";
 import { applyOptimisticOps } from "../src/client/query-cache";
 import { configureMigrations } from "../src/engine/migrations-bundle";
@@ -24,11 +23,15 @@ import { configureRegistry } from "../src/engine/registry";
 import { configurePermissions, type PermissionOverrides } from "../src/engine/tx-permissions";
 import type { SqlExecutor, SqlRow, SqlValue } from "../src/engine/tx-sql";
 import { runTransaction } from "../src/engine/tx-pipeline";
+import { defaultDeploymentConfig, deploymentConfig } from "../src/engine/config";
 import { TxError } from "../src/engine/tx-types";
 import { createClient } from "../src/model/client";
 import { model, schema, t } from "../src/schema";
 
 const WORKSPACE = "6f1c2f3e-6b1a-4c9a-9a6f-2f3e6b1a4c9a";
+
+/** These tests run the unconfigured engine: audit off, standard log parts. */
+const engineConfig = defaultDeploymentConfig();
 
 const models = {
   project: model({ name: t.string(), secret: t.boolean().default(false), tasks: t.hasMany("task") }),
@@ -71,7 +74,11 @@ function claimFor(sub: string, role: WorkspaceRole): RoleClaim {
 let offline = false;
 let sharedOutbox: MemoryOutbox | null = null;
 
-function client(sub = "alice", role: WorkspaceRole = WORKSPACE_ROLE_LEVELS.MODERATOR) {
+function client(
+  sub = "alice",
+  role: WorkspaceRole = WORKSPACE_ROLE_LEVELS.MODERATOR,
+  config = engineConfig
+) {
   const claim = claimFor(sub, role);
   return createClient(
     { schema: appSchema, url: "http://engine.test", workspace: WORKSPACE, getToken: async () => "t" },
@@ -85,7 +92,7 @@ function client(sub = "alice", role: WorkspaceRole = WORKSPACE_ROLE_LEVELS.MODER
         const body = init?.body === undefined ? undefined : JSON.parse(init.body);
         try {
           if (url.endsWith("/transact")) {
-            return Response.json({ ok: true, result: runTransaction(sql, WORKSPACE, claim, body) });
+            return Response.json({ ok: true, result: runTransaction(sql, WORKSPACE, claim, body, config) });
           }
           const { data, pageInfo } = executeQueryWithPageInfo(sql, claim, body);
           return Response.json({ ok: true, data, pageInfo });
@@ -100,7 +107,11 @@ function client(sub = "alice", role: WorkspaceRole = WORKSPACE_ROLE_LEVELS.MODER
   );
 }
 
-function seed(count: number, owner = (index: number) => (index % 2 === 0 ? "alice" : "bob")) {
+function seed(
+  count: number,
+  owner = (index: number) => (index % 2 === 0 ? "alice" : "bob"),
+  config = engineConfig
+) {
   const claim = claimFor("seed", WORKSPACE_ROLE_LEVELS.OWNER);
   runTransaction(sql, WORKSPACE, claim, {
     txId: "seed",
@@ -110,7 +121,7 @@ function seed(count: number, owner = (index: number) => (index % 2 === 0 ? "alic
       id: `t${String(index).padStart(4, "0")}`,
       values: { title: `task ${index}`, done: false, ownerId: owner(index) },
     })),
-  });
+  }, config);
 }
 
 /** A log entry's ops, every part, as stored (compact bulk ops unexpanded). */
@@ -225,7 +236,7 @@ describe("filters through a relation", () => {
         { op: "insert", namespace: "task", id: "a", values: { title: "a", done: false, ownerId: "alice", projectId: "open" } },
         { op: "insert", namespace: "task", id: "b", values: { title: "b", done: false, ownerId: "alice", projectId: "hidden" } },
       ],
-    });
+    }, engineConfig);
 
     // "tasks whose project is named anything" must not reach the task whose
     // project the caller cannot read.
@@ -241,7 +252,6 @@ describe("any size, one transaction", () => {
     (db.query(`SELECT COUNT(*) AS n FROM "task" WHERE ${where}`).get() as { n: number }).n;
   const writes = () =>
     (db.query(`SELECT COUNT(*) AS n FROM "_tx_log" WHERE ops LIKE '%Ids"%'`).get() as { n: number }).n;
-  afterEach(() => setLogPartBytesForTests(null));
 
   test("thousands of rows are one transaction, every row exactly once", async () => {
     const total = BULK_BATCH_ROWS * 2 + 500;
@@ -288,7 +298,7 @@ describe("any size, one transaction", () => {
     const result = runTransaction(sql, WORKSPACE, claim, {
       txId: "b1",
       ops: [{ op: "patchMany", namespace: "task", where: {}, values: { done: true } }],
-    });
+    }, engineConfig);
     expect(result.matched).toEqual({ 0: BULK_BATCH_ROWS + 1 });
     expect(result.more).toBeUndefined();
     expect(count(`"done" = 1`)).toBe(BULK_BATCH_ROWS + 1);
@@ -296,21 +306,23 @@ describe("any size, one transaction", () => {
     const resumed = runTransaction(sql, WORKSPACE, claim, {
       txId: "b2",
       ops: [{ op: "deleteMany", namespace: "task", where: {}, after: "t0999" }],
-    });
+    }, engineConfig);
     expect(resumed.matched).toEqual({ 0: 1 });
     expect(() =>
       runTransaction(sql, WORKSPACE, claim, {
         txId: "b3",
         ops: [{ op: "deleteMany", namespace: "task", where: {}, after: "not an id!" }],
-      })
+      }, engineConfig)
     ).toThrow();
   });
 
   test("a log entry larger than a row is stored in parts", async () => {
     // A part holds at least one whole op; one op here (1000 short ids) is about 9 KB.
-    setLogPartBytesForTests(20_000);
-    seed(BULK_BATCH_ROWS * 3, () => "alice");
-    await client().task.updateMany({ where: {}, data: { done: true } });
+    // A smaller part size for this deployment only: the engine is told per
+    // call, so no other test (or the other deployment in this process) sees it.
+    const smallParts = deploymentConfig({ logPartBytes: 20_000 });
+    seed(BULK_BATCH_ROWS * 3, () => "alice", smallParts);
+    await client("alice", WORKSPACE_ROLE_LEVELS.MODERATOR, smallParts).task.updateMany({ where: {}, data: { done: true } });
     const parts = (db.query(`SELECT COUNT(*) AS n FROM "_tx_log_parts" WHERE seq = 2`).get() as { n: number }).n;
     expect(parts).toBeGreaterThan(0);
     for (const row of db.query(`SELECT ops FROM "_tx_log" UNION ALL SELECT ops FROM "_tx_log_parts"`).all() as Array<{ ops: string }>) {
@@ -329,7 +341,7 @@ describe("any size, one transaction", () => {
         { op: "insert", namespace: "task", id: "t9999", values: { title: "new", done: false, ownerId: "alice" } },
         { op: "patchMany", namespace: "task", where: {}, values: { weight: 3 } },
       ],
-    });
+    }, engineConfig);
     expect(result.matched).toEqual({ 1: 3 });
     expect(count(`"weight" = 3`)).toBe(3);
     expect(count(`"id" = 't9999' AND "weight" = 3`)).toBe(0);
@@ -394,7 +406,7 @@ describe("offline and optimistic", () => {
           ...(random(3) === 0 ? {} : { weight: random(5) - 2 }),
         },
       })),
-    });
+    }, engineConfig);
     const reader = claimFor("alice", WORKSPACE_ROLE_LEVELS.OWNER);
     const rows = executeQueryWithPageInfo(sql, reader, { query: { task: { $: {} } } }).data.task as Array<Record<string, unknown>>;
 
@@ -442,9 +454,9 @@ describe("offline and optimistic", () => {
 test("bulk writes cannot enumerate a root model whose read role is denied", () => {
   build({ task: { view: WORKSPACE_ROLE_LEVELS.ADMIN, update: WORKSPACE_ROLE_LEVELS.EDITOR, delete: WORKSPACE_ROLE_LEVELS.EDITOR } });
   const owner = claimFor("seed", WORKSPACE_ROLE_LEVELS.OWNER);
-  runTransaction(sql, WORKSPACE, owner, { txId: "seed-hidden", ops: [{ op: "insert", namespace: "task", id: "hidden", values: { title: "secret", ownerId: "seed", done: false } }] });
+  runTransaction(sql, WORKSPACE, owner, { txId: "seed-hidden", ops: [{ op: "insert", namespace: "task", id: "hidden", values: { title: "secret", ownerId: "seed", done: false } }] }, engineConfig);
   for (const op of [{ op: "patchMany", namespace: "task", where: {}, values: { done: true } }, { op: "deleteMany", namespace: "task", where: {} }]) {
-    expect(() => runTransaction(sql, WORKSPACE, claimFor("editor", WORKSPACE_ROLE_LEVELS.EDITOR), { txId: crypto.randomUUID(), ops: [op] })).toThrow(/not allowed to view/);
+    expect(() => runTransaction(sql, WORKSPACE, claimFor("editor", WORKSPACE_ROLE_LEVELS.EDITOR), { txId: crypto.randomUUID(), ops: [op] }, engineConfig)).toThrow(/not allowed to view/);
     expect(sql.one<{ title: string }>(`SELECT title FROM task WHERE id = 'hidden'`)?.title).toBe("secret");
   }
 });

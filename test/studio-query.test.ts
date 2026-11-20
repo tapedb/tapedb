@@ -48,7 +48,7 @@ const app = schema({
 });
 
 async function schemaDocument() {
-  defineTapeDB({ schema: app });
+  const tapedb = defineTapeDB({ schema: app });
   const db = new Database(":memory:");
   const ctx = {
     id: { name: TEST_WORKSPACE },
@@ -60,7 +60,7 @@ async function schemaDocument() {
     },
     getWebSockets: () => [],
   };
-  const room = new WorkspaceRoom(ctx as never, { DATA: new FakeR2Bucket(), TAPEDB_KEY_SECRET: "k".repeat(32) } as never);
+  const room = new tapedb.WorkspaceRoom(ctx as never, { DATA: new FakeR2Bucket(), TAPEDB_KEY_SECRET: "k".repeat(32) } as never);
   await ctx.ready;
   const claim = encodeTrustedRoleClaim({ sub: "u", workspaceId: TEST_WORKSPACE, role: WORKSPACE_ROLE_LEVELS.MEMBER, iat: 0, exp: Math.floor(Date.now() / 1000) + 60 });
   const response = await room.fetch(new Request("http://room/schema", { headers: { "x-tapedb-claims": claim } }));

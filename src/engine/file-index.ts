@@ -15,6 +15,7 @@
 import { ENGINE_TABLES } from "./registry";
 import { opsHash, stableStringify } from "./tx-hash";
 import { appendLogEntry } from "./tx-pipeline";
+import type { DeploymentConfig } from "./config";
 import type { SqlExecutor } from "./tx-sql";
 
 export interface FilePutOp {
@@ -108,7 +109,8 @@ export function applyFileOps(
 function commitFileOps(
   sql: SqlExecutor,
   ops: FileOp[],
-  actor: { sub: string | null; role: number | null }
+  actor: { sub: string | null; role: number | null },
+  config: DeploymentConfig
 ): number {
   return sql.transactionSync(() => {
     const at = Date.now();
@@ -117,7 +119,7 @@ function commitFileOps(
       ops: stableStringify(ops),
       opsHash: opsHash(ops),
       at,
-    });
+    }, config);
     return applyFileOps(sql, ops, at);
   });
 }
@@ -125,6 +127,7 @@ function commitFileOps(
 export function recordFileEntry(
   sql: SqlExecutor,
   record: FileRecord,
+  config: DeploymentConfig,
   actor: { sub: string | null; role: number | null } = { sub: null, role: null }
 ): void {
   commitFileOps(
@@ -140,7 +143,8 @@ export function recordFileEntry(
         ...(record.uploadedBy ? { uploadedBy: record.uploadedBy } : {}),
       },
     ],
-    actor
+    actor,
+    config
   );
 }
 
@@ -151,6 +155,7 @@ export function recordFileEntry(
 export function forgetFileEntry(
   sql: SqlExecutor,
   path: string,
+  config: DeploymentConfig,
   actor: { sub: string | null; role: number | null } = { sub: null, role: null }
 ): number {
   const present = sql.one(
@@ -158,5 +163,5 @@ export function forgetFileEntry(
     path
   );
   if (present === undefined) return 0;
-  return commitFileOps(sql, [{ op: "file:forget", path }], actor);
+  return commitFileOps(sql, [{ op: "file:forget", path }], actor, config);
 }

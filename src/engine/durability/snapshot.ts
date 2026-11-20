@@ -1,4 +1,4 @@
-import { auditEnabled } from "../audit";
+import { defaultDeploymentConfig, type DeploymentConfig } from "../config";
 import { opsHash } from "../tx-hash";
 import {
   MANIFEST_VERSION,
@@ -422,7 +422,9 @@ export async function snapshotWorkspace(
   sql: SqlExecutor,
   workspaceId: string,
   now: number,
-  options: SnapshotOptions = {}
+  options: SnapshotOptions = {},
+  /** The deployment being snapshotted; its audit flag adds `_tx_audit`. */
+  config: DeploymentConfig = defaultDeploymentConfig()
 ): Promise<SnapshotResult> {
   const chunkRows = assertPositiveInteger(
     options.chunkRows ?? DEFAULT_SNAPSHOT_CHUNK_ROWS,
@@ -446,7 +448,7 @@ export async function snapshotWorkspace(
     ...namespaceTables(),
     ENGINE_TABLES.files,
     ENGINE_TABLES.txReceipts,
-    ...(auditEnabled() ? [ENGINE_TABLES.txAudit] : []),
+    ...(config.audit ? [ENGINE_TABLES.txAudit] : []),
   ];
   const staged: string[] = [];
   try {

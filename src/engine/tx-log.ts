@@ -22,14 +22,12 @@ import type { SqlExecutor, SqlValue } from "./tx-sql";
  * The most a stored part holds. Well under the 8 MB row limit, and small
  * enough that recovery applies one part (a few thousand rows) well inside a
  * Durable Object's 30 s of CPU, pausing between parts.
+ *
+ * A deployment's `DeploymentConfig.logPartBytes` is this value unless a test
+ * chooses a smaller one for the deployment it builds; there is no module-level
+ * override, so one deployment cannot resize another's parts.
  */
 export const LOG_PART_BYTES = 256 * 1024;
-let logPartBytes = LOG_PART_BYTES;
-
-/** Tests only: a smaller part size, so a multi-part entry needs few rows. */
-export function setLogPartBytesForTests(bytes: number | null): void {
-  logPartBytes = bytes ?? LOG_PART_BYTES;
-}
 
 /** Rows per compact bulk op in the log. */
 export const LOG_IDS_PER_OP = 1000;
@@ -51,7 +49,8 @@ export class LogWriter {
   constructor(
     private readonly sql: SqlExecutor,
     private readonly seq: number,
-    private readonly partBytes: number = logPartBytes
+    /** This deployment's part size; see `DeploymentConfig.logPartBytes`. */
+    private readonly partBytes: number = LOG_PART_BYTES
   ) {}
 
   push(op: unknown): void {
@@ -83,8 +82,13 @@ export class LogWriter {
 }
 
 /** Writes a whole op list (already in memory) as a log entry's parts. */
-export function writeLogOps(sql: SqlExecutor, seq: number, ops: readonly unknown[]): void {
-  const writer = new LogWriter(sql, seq);
+export function writeLogOps(
+  sql: SqlExecutor,
+  seq: number,
+  ops: readonly unknown[],
+  partBytes: number = LOG_PART_BYTES
+): void {
+  const writer = new LogWriter(sql, seq, partBytes);
   for (const op of ops) writer.push(op);
   writer.close();
 }

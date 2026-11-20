@@ -4,6 +4,7 @@ import { NAMESPACES } from "./registry";
 import { filesPrefix } from "./r2-keys";
 import { validateEnvelope } from "./tx-validate";
 import { appendLogEntry } from "./tx-pipeline";
+import type { DeploymentConfig } from "./config";
 import { LogWriter } from "./tx-log";
 import { opsHash, stableStringify } from "./tx-hash";
 import { applyFileOps, type FilePutOp } from "./file-index";
@@ -19,7 +20,7 @@ export function assertEmpty(sql: SqlExecutor): void {
 }
 
 /** A checked stream is staged in SQLite, then applied and logged atomically. */
-export async function importWorkspace(sql: SqlExecutor, request: Request, claim: RoleClaim, workspaceId: string, personal?: PersonalRuntime): Promise<number> {
+export async function importWorkspace(sql: SqlExecutor, request: Request, claim: RoleClaim, workspaceId: string, config: DeploymentConfig, personal?: PersonalRuntime): Promise<number> {
   assertEmpty(sql);
   sql.exec(`CREATE TABLE IF NOT EXISTS "_tapedb_import" (n INTEGER PRIMARY KEY, data TEXT NOT NULL)`);
   sql.exec(`DELETE FROM "_tapedb_import"`);
@@ -72,8 +73,8 @@ export async function importWorkspace(sql: SqlExecutor, request: Request, claim:
       if (!Number.isSafeInteger(start.seq) || (start.seq as number) < 0) throw new Error("Invalid export sequence.");
       sql.exec(`UPDATE "_tx_state" SET high_water_seq = ? WHERE id = 1`, start.seq as number);
       sql.exec("PRAGMA defer_foreign_keys = ON");
-      const seq = appendLogEntry(sql, { clientTxId: null, ops: "[]", opsHash: opsHash([]), at: Date.now() });
-      const log = new LogWriter(sql, seq);
+      const seq = appendLogEntry(sql, { clientTxId: null, ops: "[]", opsHash: opsHash([]), at: Date.now() }, config);
+      const log = new LogWriter(sql, seq, config.logPartBytes);
       log.push({ op: "import:begin" });
       for (let at = 0;;) {
         const batch = sql.all<{ n: number; data: string }>(`SELECT n, data FROM "_tapedb_import" WHERE n > ? ORDER BY n LIMIT 100`, at);

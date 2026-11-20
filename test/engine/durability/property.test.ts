@@ -19,6 +19,7 @@ import { describe, expect, test } from "bun:test";
 
 import { WORKSPACE_ROLE_LEVELS, type RoleClaim } from "../../../src/claims";
 import { namespaceTables } from "../../fixtures/registry";
+import { defaultDeploymentConfig } from "../../../src/engine/config";
 import { runTransaction } from "../../../src/engine/tx-pipeline";
 import type {
   SqlExecutor as TxSqlExecutor,
@@ -30,6 +31,9 @@ import { recoverWorkspace, type RecoverySqlExecutor } from "../../../src/engine/
 import { snapshotWorkspace } from "../../../src/engine/durability/snapshot";
 import type { SqlExecutor as DurabilitySql, SqlValue } from "../../../src/engine/durability/sql";
 import { FakeR2Bucket, openTestDb, TEST_WORKSPACE } from "../../fixtures/test-support";
+
+/** These tests run the unconfigured engine: audit off, role file rules. */
+const engineConfig = defaultDeploymentConfig();
 
 const SEEDS = 16;
 const CLAIM_ROLE = WORKSPACE_ROLE_LEVELS.MODERATOR;
@@ -151,7 +155,7 @@ function claim(): RoleClaim {
 }
 
 function run(store: Store, envelope: TxEnvelope): number {
-  return runTransaction(txExecutor(store.db), TEST_WORKSPACE, claim(), envelope)
+  return runTransaction(txExecutor(store.db), TEST_WORKSPACE, claim(), envelope, engineConfig)
     .seq;
 }
 
