@@ -26,26 +26,50 @@ export interface StoredSubscription {
   query: QueryDocument;
 }
 
-export interface PresenceState {
-  /** Presence target, e.g. a diagram id. */
-  target: string;
+/** What one socket publishes in one presence room (one target). */
+export interface PresenceEntry {
   /** Arbitrary JSON presence (name, colour, ...); never persisted. */
   presence?: unknown;
   cursor?: unknown;
   drag?: unknown;
 }
 
+/**
+ * A socket's presence rooms, keyed by target (a diagram id, say). A socket
+ * holds several at once — up to the deployment's `maxPresenceRooms` — and
+ * leaving one leaves the others alone.
+ */
+export type PresenceState = Record<string, PresenceEntry>;
+
 export interface PresencePeer {
   clientId: string;
   presence: unknown;
   cursor?: unknown;
   drag?: unknown;
+  /**
+   * Set on the entry that is the caller itself, which the client only
+   * includes when asked for (`peers({ includeSelf: true })`).
+   */
+  isSelf?: true;
 }
 
 export const PRESENCE_TARGET_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/;
 
 export function isPresenceTarget(value: unknown): value is string {
   return typeof value === "string" && PRESENCE_TARGET_PATTERN.test(value);
+}
+
+/** The targets this socket holds a presence room in, in join order. */
+export function presenceTargets(attachment: Pick<SocketAttachment, "presence">): string[] {
+  return attachment.presence ? Object.keys(attachment.presence) : [];
+}
+
+/** This socket's presence in one target, if it joined that room. */
+export function presenceEntry(
+  attachment: Pick<SocketAttachment, "presence">,
+  target: string
+): PresenceEntry | undefined {
+  return attachment.presence?.[target];
 }
 
 export interface SocketAttachment {
@@ -138,6 +162,12 @@ export interface SessionReadyMessage {
   type: "session:ready";
   workspaceId: string;
   connections: number;
+  /**
+   * The id of this socket's session, stable for its lifetime — the id that
+   * appears in peer lists. Absent from a Worker older than multiple presence
+   * rooms, in which case a client cannot tell which peer it is.
+   */
+  clientId?: string;
 }
 
 export interface SessionErrorMessage {
@@ -294,16 +324,52 @@ export function parseSocketAttachment(value: unknown): SocketAttachment | null {
   };
 }
 
+/**
+ * The whole per-target presence state of one socket, in bytes as stored.
+ *
+ * Rooms are cheap; bytes are what the attachment pays for and what a client
+ * can abuse: past `INLINE_STATE_BYTES` (12 KiB) the state moves to
+ * `_socket_state`, and from then on every cursor move is a SQLite write
+ * instead of an attachment rewrite. So the room cap is paired with a byte
+ * budget, checked before a `presence:set` is stored.
+ */
+export const PRESENCE_STATE_BYTES = 8192;
+
+const presenceEncoder = new TextEncoder();
+
+/** Bytes `presence` takes in the attachment's JSON. */
+export function presenceStateBytes(presence: PresenceState | undefined): number {
+  return presence === undefined ? 0 : presenceEncoder.encode(JSON.stringify(presence)).byteLength;
+}
+
+/**
+ * A socket's presence, from the attachment. Accepts the shape stored before
+ * multiple rooms existed — one `{ target, presence, cursor, drag }` per
+ * socket — so a socket that hibernated across an upgrade keeps its room.
+ */
 function parsePresenceState(value: unknown): PresenceState | undefined | null {
   if (value === undefined) return undefined;
   if (!isRecord(value)) return null;
-  if (!isPresenceTarget(value.target)) return null;
-  return {
-    target: value.target,
-    presence: value.presence,
-    cursor: value.cursor,
-    drag: value.drag,
-  };
+
+  if (typeof value.target === "string") {
+    if (!isPresenceTarget(value.target)) return null;
+    return { [value.target]: entryOf(value) };
+  }
+
+  const rooms: PresenceState = {};
+  for (const [target, stored] of Object.entries(value)) {
+    if (!isPresenceTarget(target) || !isRecord(stored)) return null;
+    rooms[target] = entryOf(stored);
+  }
+  return Object.keys(rooms).length > 0 ? rooms : undefined;
+}
+
+function entryOf(value: Record<string, unknown>): PresenceEntry {
+  const entry: PresenceEntry = {};
+  if ("presence" in value) entry.presence = value.presence;
+  if ("cursor" in value) entry.cursor = value.cursor;
+  if ("drag" in value) entry.drag = value.drag;
+  return entry;
 }
 
 /** Rebuilds the claim used for permission checks on an accepted socket. */
