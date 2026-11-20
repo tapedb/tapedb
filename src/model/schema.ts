@@ -19,6 +19,7 @@ import {
   EnumField,
   Field,
   HasMany,
+  VectorField,
   type KindInput,
   type KindOutput,
   type ModelMember,
@@ -213,21 +214,33 @@ type OutputOf<S> = S extends EnumField<infer V, infer O, boolean>
     ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never)
     : never;
 
+/** Fields holding an embedding: left out of a row unless a `select` names one. */
+export type VectorKeys<F> = {
+  [K in ScalarKeys<F>]: F[K] extends Field<"vector", boolean, boolean> ? K : never;
+}[ScalarKeys<F>];
+
 type ForeignKeyOf<S> = S extends BelongsTo<string, infer O>
   ? string | (O extends true ? null : never)
   : never;
 
-/** A stored row: its fields, the foreign keys of its `belongsTo` relations, and the system fields. */
+/**
+ * A stored row: its fields, the foreign keys of its `belongsTo` relations, and
+ * the system fields. Vector fields are optional here because a read leaves them
+ * out unless its `select` names them: that is what keeps an embedding out of a
+ * default projection.
+ */
 export type Row<F> = { id: string; createdAt: number; updatedAt: number; $erased?: string[] } & {
-  [K in ScalarKeys<F>]: OutputOf<F[K]>;
+  [K in Exclude<ScalarKeys<F>, VectorKeys<F>>]: OutputOf<F[K]>;
+} & {
+  [K in VectorKeys<F>]?: OutputOf<F[K]>;
 } & {
   [K in BelongsToKeys<F> as `${K}Id`]: ForeignKeyOf<F[K]>;
 };
 
-/** Fields filterable and sortable: scalars except json, foreign keys and `id`. */
+/** Fields filterable and sortable: scalars except json, vectors, foreign keys and `id`. */
 export type FilterKeys<F> =
   | "id"
-  | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string } ? never : F[K] extends Field<"json", boolean, boolean> ? never : K }[ScalarKeys<F>]
+  | { [K in ScalarKeys<F>]: F[K] extends { personalSubject: string } ? never : F[K] extends Field<"json" | "vector", boolean, boolean> ? never : K }[ScalarKeys<F>]
   | `${BelongsToKeys<F>}Id`;
 
 type InputOf<S> = S extends EnumField<infer V, infer O, boolean>
@@ -448,7 +461,7 @@ export interface RelationInfo {
 
 export interface ModelInfo {
   key: string;
-  scalars: Record<string, { kind: ScalarKind; optional: boolean; hasDefault: boolean; defaultValue: unknown }>;
+  scalars: Record<string, { kind: ScalarKind; optional: boolean; hasDefault: boolean; defaultValue: unknown; dimensions?: number }>;
   relations: Record<string, RelationInfo>;
   /** Attributes a filter may name: id, non-json scalars, foreign keys. */
   filterable: Set<string>;
@@ -560,6 +573,7 @@ export function schema<M extends Models>(
           indexed: member.isIndexed || undefined,
           unique: member.isUnique || undefined,
           ...(member instanceof EnumField ? { values: member.values } : {}),
+          ...(member instanceof VectorField ? { dimensions: member.dimensions } : {}),
           ...(member.hasDefault && !subject ? { default: storedDefault(member.kind, member.defaultValue) } : {}),
         } as AttributeDefinition;
         info.scalars[name] = {
@@ -567,8 +581,11 @@ export function schema<M extends Models>(
           optional: member.isOptional,
           hasDefault: member.hasDefault,
           defaultValue: member.defaultValue,
+          ...(member instanceof VectorField ? { dimensions: member.dimensions } : {}),
         };
-        if (member.kind !== "json" && !subject) info.filterable.add(name);
+        // An embedding is a fixed-length blob of base64: no filter, sort or
+        // group can mean anything on it, and the engine refuses one that tries.
+        if (member.kind !== "json" && member.kind !== "vector" && !subject) info.filterable.add(name);
       } else if (member instanceof BelongsTo) {
         if (!(member.target in allModels)) {
           throw new Error(`"${key}.${name}" belongs to "${member.target}", which is not a model.`);

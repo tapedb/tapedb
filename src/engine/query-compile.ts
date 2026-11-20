@@ -528,10 +528,17 @@ function unique(values: string[]): string[] {
   return [...new Set(values)];
 }
 
-/** Every column of a namespace: what a read without `select` returns. */
+/**
+ * Every column of a namespace: what a read without `select` returns.
+ *
+ * A vector field is not one of them. An embedding is large, opaque and never
+ * part of a default projection: a read returns it only when its `select` names
+ * the attribute, which `compileSelect` allows. `$export` asks for it by name.
+ */
 export function selectColumns(namespace: NamespaceDefinition): string[] {
   const columns = new Set<string>(["id"]);
-  for (const attribute of Object.keys(namespace.attributes)) {
+  for (const [attribute, definition] of Object.entries(namespace.attributes)) {
+    if (definition.type === "vector") continue;
     columns.add(toSnakeCase(attribute));
   }
   columns.add("created_at");
@@ -1165,6 +1172,7 @@ function normaliseFilterValue(
       );
     }
     case "json":
+    case "vector":
     case "any":
       throw invalidValue(`Cannot filter on non-scalar attribute "${name}".`);
   }

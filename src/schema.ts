@@ -148,6 +148,11 @@ export const SQL_TYPE: Record<string, string> = {
   any: "TEXT",
   number: "REAL",
   boolean: "INTEGER",
+  /**
+   * An embedding column: the whole value is one opaque string, so TEXT, never
+   * a blob: every row read, log part and export carries it as JSON.
+   */
+  vector: "TEXT",
 };
 
 /** A SQL literal for a column default. Numbers must be finite; strings are quoted. */
@@ -318,6 +323,8 @@ export function defineSchema(config: SchemaConfig): TapeDBSchema {
 // `schema()` builds on.
 export { t } from "./model/fields";
 export type { DeleteBehaviour, ScalarKind } from "./model/fields";
+/** A vector field's value and its one codec: `f32le:v1:<base64>`. */
+export { encodeVector, decodeVector, VECTOR_TAG, VECTOR_MAX_DIMENSIONS } from "./model/vector";
 export { schema, model, role, filter, check, fileCheck, attachedTo, Model } from "./model/schema";
 export type {
   ModelOptions,

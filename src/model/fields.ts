@@ -6,7 +6,9 @@
  * parameters carry what the client needs to infer rows and inputs.
  */
 
-export type ScalarKind = "string" | "number" | "boolean" | "date" | "json";
+import { assertVectorDimensions } from "./vector";
+
+export type ScalarKind = "string" | "number" | "boolean" | "date" | "json" | "vector";
 
 /** The TypeScript type a stored value comes back as. */
 export interface KindOutput {
@@ -16,6 +18,11 @@ export interface KindOutput {
   /** Epoch milliseconds. */
   date: number;
   json: unknown;
+  /**
+   * The stored form, `f32le:v1:<base64>`. A read returns it only when a
+   * `select` names the field; pass it to `decodeVector()` for the numbers.
+   */
+  vector: string;
 }
 
 /** What a write accepts for each kind. */
@@ -25,6 +32,8 @@ export interface KindInput {
   boolean: boolean;
   date: number | Date | string;
   json: unknown;
+  /** The embedding, as the numbers the model produced. */
+  vector: number[];
 }
 
 export type DeleteBehaviour = "setNull" | "cascade" | "restrict";
@@ -125,6 +134,50 @@ export class EnumField<
   }
 }
 
+/**
+ * An embedding: a fixed-length list of numbers, stored as one string.
+ *
+ * The value is `f32le:v1:<base64>` (see `src/model/vector.ts`), so it survives
+ * every JSON row pipeline byte for byte. A write supplies `number[]`; the
+ * engine checks the length, converts to float32, refuses a non-finite or
+ * all-zero vector, and stores the string. Reads leave it out unless a `select`
+ * names it.
+ */
+export class VectorField<
+  O extends boolean = boolean,
+> extends Field<"vector", O, false> {
+  constructor(
+    /** The declared length: an integer from 1 to 1,536. */
+    readonly dimensions: number,
+    isOptional: O
+  ) {
+    super("vector", isOptional, false);
+  }
+
+  /** The field may be null, and may be left out of `create`. */
+  override optional(): VectorField<true> {
+    return new VectorField(this.dimensions, true);
+  }
+
+  /** An embedding is supplied per row: there is no sensible one for all rows. */
+  override default(): never {
+    throw new Error("t.vector() cannot have a default: every row carries its own embedding.");
+  }
+
+  /** A column of base64 is not a filter or sort key. */
+  override index(): never {
+    throw new Error("t.vector() cannot be indexed: embeddings are not filterable or sortable.");
+  }
+
+  override unique(): never {
+    throw new Error("t.vector() cannot be unique.");
+  }
+
+  override personal(): never {
+    throw new Error("t.vector() cannot be personal: the codec needs the plaintext bytes.");
+  }
+}
+
 export class PersonalField<K extends "string" | "json" = "string" | "json", O extends boolean = boolean, D extends boolean = boolean, S extends string = string> extends Field<K, O, D> {
   constructor(kind: K, optional: O, hasDefault: D, readonly personalSubject: S, defaultValue?: unknown) {
     super(kind, optional, hasDefault, defaultValue);
@@ -187,6 +240,18 @@ export const t = {
   date: () => new Field("date", false, false),
   /** Any JSON value. Not filterable or sortable. */
   json: () => new Field("json", false, false),
+  /**
+   * An embedding: `dimensions` numbers, 1 to 1,536. Stored as one
+   * `f32le:v1:<base64>` string; supplied as `number[]`. Optional per field.
+   */
+  vector: (options: { dimensions: number }) => {
+    if (typeof options !== "object" || options === null) {
+      throw new Error(
+        "t.vector() takes { dimensions }: an integer from 1 to 1,536."
+      );
+    }
+    return new VectorField(assertVectorDimensions(options.dimensions), false);
+  },
   /**
    * A string with a closed set of values. Stored as TEXT, checked on every
    * write, narrowed to the union in `Row` and `CreateData`.

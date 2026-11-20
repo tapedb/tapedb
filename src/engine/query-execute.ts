@@ -738,6 +738,9 @@ function toApiEntity(entity: HydratedEntity): Record<string, unknown> {
   const attributes = new Set<string>(["id"]);
 
   for (const [attribute, definition] of Object.entries(namespace.attributes)) {
+    // A vector field is not part of a default projection: it is returned only
+    // when the read selects it, so it is not even named here.
+    if (definition.type === "vector") continue;
     output[attribute] = fromStoredValue(
       definition.type,
       entity.row[toSnakeCase(attribute)]
