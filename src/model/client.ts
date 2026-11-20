@@ -17,6 +17,7 @@ import {
   type StoredFile,
 } from "../client/data-client";
 import { stableStringify } from "../client/stable";
+import type { Outbox, OutboxFactory } from "../client/outbox";
 import type { StorageObject } from "../client/storage-client";
 import type {
   AggregateGroup,
@@ -355,6 +356,19 @@ export interface ClientConfig<M extends Models> {
   getToken?: () => Promise<string>;
   /** A queued write the engine refused for good during a background flush. */
   onWriteRejected?: (rejection: WriteRejection) => void;
+  /**
+   * Where writes wait for the network. Leave it out in a browser: the default
+   * is an IndexedDB queue scoped to `userId`, replayed when the page loads.
+   * Elsewhere that default does not survive a restart, so a runtime without
+   * IndexedDB passes its own — React Native uses
+   * `createReactNativeClient()` from `@tapedb/react-native`, which supplies
+   * `AsyncStorageOutbox`. A factory is called once, for this client and the
+   * `$across` clients it creates, so they share one queue.
+   *
+   * An injected outbox also replaces the browser's `userId` requirement: the
+   * caller has already decided where the queue lives and how it is scoped.
+   */
+  outbox?: Outbox | OutboxFactory;
 }
 
 // ---- Runtime ---------------------------------------------------------------
@@ -493,6 +507,10 @@ export function createClient<M extends Models>(
   config: ClientConfig<M>,
   deps: ClientDeps = {}
 ): Client<M> {
+  // One queue for this client and every `$across` workspace client: resolve a
+  // factory here, so it is called once rather than once per workspace.
+  const injected = typeof config.outbox === "function" ? config.outbox() : config.outbox;
+  const outbox = injected ?? deps.outbox;
   const { client: parts, impl } = createClientParts(
     {
       workspaceId: config.workspace,
@@ -502,7 +520,7 @@ export function createClient<M extends Models>(
       schema: config.schema.clientSchema,
       onWriteRejected: config.onWriteRejected,
     },
-    deps
+    outbox ? { ...deps, outbox } : deps
   );
   const runtime: Runtime = { impl, parts, graph: config.schema.graph, snapshots: new Map() };
 
@@ -584,6 +602,9 @@ export function createClient<M extends Models>(
           {
             ...config,
             workspace: workspaceId,
+            // The same queue, already resolved: one outbox holds entries for
+            // every workspace, keyed by `workspaceId`.
+            ...(outbox ? { outbox } : {}),
             ...(options.getToken ? { getToken: () => acrossTokens.get(workspaceId)!(workspaceId) } : {}),
           },
           deps

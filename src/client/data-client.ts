@@ -443,12 +443,15 @@ class DataClientImpl {
         void this.flushOutbox();
       };
       window.addEventListener("online", this.onlineHandler);
-
-      // Load pending writes from IndexedDB and replay them once the app boots.
-      queueMicrotask(() => {
-        void this.flushOutbox();
-      });
     }
+
+    // Replay whatever the outbox still holds, in every runtime and not only in
+    // a browser: a page reload has IndexedDB behind it, and a React Native app
+    // that was killed has whatever outbox the app injected. Waiting for a
+    // `window` here is what used to make a mobile restart lose its queue.
+    queueMicrotask(() => {
+      void this.flushOutbox().catch(() => undefined);
+    });
   }
 
   /**
