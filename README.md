@@ -48,10 +48,31 @@ ship as their own package, and each one is a re-export of the core's entry:
 | `@tapedb/react` | `import { useLive } from "@tapedb/react"` | `@tapedb/tapedb/react` |
 | `@tapedb/auth` | `import { tapedbAuth } from "@tapedb/auth"` | `@tapedb/tapedb/auth` |
 | `@tapedb/email` | `import { mailer } from "@tapedb/email"` | `@tapedb/tapedb/email` |
+| `@tapedb/react-native` | `import { createReactNativeClient } from "@tapedb/react-native"` | the hooks plus an AsyncStorage queue |
 
 Every `@tapedb/tapedb/<x>` subpath in this README still resolves to the same
 module as its package: the subpath is not deprecated, the package is just the
 preferred name and pins the core version it ships with.
+
+### React Native
+
+React Native has no IndexedDB, so the browser's offline queue does not exist there and a write made
+offline would be fire-and-forget. `@tapedb/react-native` supplies the queue and wires it in:
+
+```bash
+npm install @tapedb/tapedb @tapedb/react-native @react-native-async-storage/async-storage react
+```
+
+```tsx
+import { createReactNativeClient, useLive } from "@tapedb/react-native";
+
+const db = createReactNativeClient({ schema, url, userId });   // queue lives in AsyncStorage
+```
+
+It exports the same hooks as `@tapedb/react` — one module, same release — and the queue is scoped by
+`url` + `userId`, so one account's pending writes are never replayed with the next account's claim.
+Pass `storage` to use a different key-value store, or `outbox` to supply your own; the packages peer on
+`@react-native-async-storage/async-storage` v1, v2 or v3 and never import `react-native` themselves.
 
 ## The schema
 
@@ -247,7 +268,7 @@ const stop = db.task
 ```
 
 ```tsx
-// React (@tapedb/tapedb/react)
+// React (@tapedb/react, or @tapedb/tapedb/react)
 const { data, isLoading } = useLive(
   db.task.findMany({ where: { columnId }, orderBy: { position: "asc" } })
 );
