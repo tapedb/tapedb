@@ -8,9 +8,10 @@
  * filter the child table by its foreign key, reverse links look the parent up
  * by id.
  *
- * Supported subset: equality and `$ne`/`$in`/`$gt`/`$gte`/`$lt`/`$lte` on
- * scalar attributes, `order` and `limit` (1..1000). JSON/`any` attributes are
- * returned but cannot be filtered or ordered on. Links nest as deep as the
+ * Supported subset: equality and `$ne`/`$in`/`$nin`/`$gt`/`$gte`/`$lt`/`$lte`
+ * on scalar attributes, `$isNull`, `$like`/`$ilike` on string attributes,
+ * `order` and `limit` (1..1000). JSON/`any` attributes are returned but cannot
+ * be filtered or ordered on. Links nest as deep as the
  * document asks (one statement per level). Relation filters nest as deep as
  * the document asks too: past a few hops, and past a statement length SQLite
  * accepts, the filter is cut into stages that run first (`query-stages.ts`).
@@ -35,6 +36,7 @@ import {
   isPlainObject,
   parseQueryOptions,
   parseWhere,
+  parseLikePattern,
   decodeQueryCursor,
   type QueryComparison,
   type QueryOptions,
@@ -1038,6 +1040,34 @@ function compileComparison(
         params.push(value);
         break;
       }
+      case "$isNull": {
+        if (typeof operand !== "boolean") {
+          throw invalidValue(`"$isNull" on "${name}" takes true or false.`);
+        }
+        clauses.push(operand ? `${column} IS NULL` : `${column} IS NOT NULL`);
+        break;
+      }
+      case "$like":
+      case "$ilike": {
+        // `LIKE` compares text. A number or a timestamp read as text would
+        // match by luck rather than by intent.
+        if (type !== "string") {
+          throw invalidValue(
+            `"${operator}" on "${name}" matches text, and "${name}" is a ${type} attribute.`
+          );
+        }
+        if (typeof operand !== "string") {
+          throw invalidValue(`"${operator}" on "${name}" takes a string pattern.`);
+        }
+        if (operator === "$like") {
+          clauses.push(`${column} GLOB ?`);
+          params.push(likeToGlob(parseLikePattern(operand, `$like on "${name}"`)));
+        } else {
+          clauses.push(`LOWER(${column}) LIKE LOWER(?) ESCAPE '\\'`);
+          params.push(parseLikePattern(operand, `$ilike on "${name}"`));
+        }
+        break;
+      }
     }
   }
 
@@ -1048,6 +1078,44 @@ function compileComparison(
         : "1 = 1",
     params,
   };
+}
+
+/**
+ * Translates a validated `LIKE` pattern into the `GLOB` pattern that matches
+ * the same text case-sensitively.
+ *
+ * SQLite's `LIKE` folds ASCII case, and `CAST(x AS BLOB) LIKE ?` folds it too,
+ * so the only other lever is `PRAGMA case_sensitive_like` — a connection-wide
+ * setting tapedb cannot take without changing what every other query means.
+ * `GLOB` compares case-sensitively and has the same single-character wildcard,
+ * so the pattern is translated instead: `%` becomes `*`, `_` becomes `?`, an
+ * escaped `%`, `_` or backslash becomes a bracket expression of itself, and
+ * GLOB's own metacharacters `*`, `?` and `[` become bracket expressions too.
+ * `parseLikePattern` has already refused every other backslash.
+ */
+function likeToGlob(pattern: string): string {
+  let glob = "";
+  for (let index = 0; index < pattern.length; index += 1) {
+    const char = pattern[index];
+    if (char === "\\") {
+      const escaped = pattern[index + 1];
+      // The parser refuses a lone trailing backslash, so this cannot be one.
+      if (escaped === undefined) continue;
+      glob += escaped === "\\" ? "\\" : `[${escaped}]`;
+      index += 1;
+      continue;
+    }
+    if (char === "%") {
+      glob += "*";
+    } else if (char === "_") {
+      glob += "?";
+    } else if (char === "*" || char === "?" || char === "[") {
+      glob += `[${char}]`;
+    } else {
+      glob += char;
+    }
+  }
+  return glob;
 }
 
 function normaliseOperand(
