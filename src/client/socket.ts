@@ -6,6 +6,7 @@
  * never in the URL. A fresh token is fetched for every reconnect attempt.
  */
 
+import { randomUuid } from "./id";
 import { MAX_SOCKET_MESSAGE_BYTES, MAX_SOCKET_PENDING_BYTES, MAX_SOCKET_MESSAGE_PARTS, socketProtocols } from "../socket-protocol";
 import type { ClientMessage, ServerMessage } from "./types";
 
@@ -73,7 +74,7 @@ function splitText(text: string, size: number): string[] {
 export function framesFor(message: ClientMessage, size = FRAME_PART_CHARS): string[] {
   const text = JSON.stringify(message);
   if (text.length <= size) return [text];
-  const id = crypto.randomUUID();
+  const id = randomUuid();
   if (message.type === "topic:send" && "message" in message) {
     const parts = splitText(JSON.stringify(message.message), size);
     return parts.map((data, index) =>
