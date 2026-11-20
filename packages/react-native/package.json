@@ -1,6 +1,6 @@
 {
   "name": "@tapedb/react-native",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "React Native bindings for tapedb: the hooks, plus a durable AsyncStorage outbox so offline writes survive the app being killed.",
   "type": "module",
   "exports": {
@@ -19,7 +19,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@tapedb/tapedb": "0.2.1"
+    "@tapedb/tapedb": "0.2.2"
   },
   "peerDependencies": {
     "@react-native-async-storage/async-storage": "^1.17.0 || ^2.0.0 || ^3.0.0",
