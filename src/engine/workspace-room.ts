@@ -79,8 +79,18 @@ import { migratePersonal } from "./personal-migrate";
 import { PersonalRuntime, hasPersonalFields, personalKeyPrefix } from "./personal";
 import { installPersonalCapture, runPersonalTransaction } from "./personal-write";
 import { runTransaction } from "./tx-pipeline";
+import { validateEnvelope } from "./tx-validate";
+import {
+  countWrites,
+  releaseWriteBudget,
+  reserveWriteBudget,
+  resolveWriteLimits,
+  type LimitsOptions,
+  type ResolvedWriteLimits,
+  type WriteBudget,
+} from "./rate-limits";
 import { durableObjectSqlExecutor, type SqlValue, type SqlExecutor } from "./tx-sql";
-import { TxError, type TxErrorCode } from "./tx-types";
+import { TxError, type TxErrorCode, type TxResult } from "./tx-types";
 import { acceptVerifiedSocket } from "./ws-handshake";
 import { offeredProtocols, SOCKET_PROTOCOL } from "../socket-protocol";
 import {
@@ -146,6 +156,18 @@ export function setRecoveryBudgetsForTests(boot: number, step: number): void {
 const ERASED_TABLE = "_tapedb_erased";
 const ERASING_TABLE = "_tapedb_erasing";
 
+/**
+ * What one room is configured with. `defineTapeDB` hands each deployment's
+ * own options down through the class it returns, so two deployments (or two
+ * rooms) in one process never share a budget.
+ */
+export interface WorkspaceRoomOptions {
+  /** Per-model and per-workspace write budgets; absent means none are checked. */
+  limits?: LimitsOptions;
+  /** Clock for budget windows. Tests inject one; a deployment uses the wall clock. */
+  clock?: () => number;
+}
+
 export class WorkspaceRoom extends DurableObject<Env> {
   /**
    * Last emitted result per socket client id and subscription id. This is a
@@ -192,13 +214,21 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private limiter = false;
   private misplaced: string | null = null;
   private invalidationTimer: ReturnType<typeof setTimeout> | null = null;
+  /** This deployment's write budgets, already validated; absent means none. */
+  private readonly writeLimits?: ResolvedWriteLimits;
+  /** The clock budget windows are measured against. */
+  private readonly clock: () => number;
 
-  constructor(ctx: DurableObjectState, env: Env) {
+  constructor(ctx: DurableObjectState, env: Env, options: WorkspaceRoomOptions = {}) {
     super(ctx, env);
     this.roomEnv = env.TAPEDB_MOVE_FROM !== undefined &&
       (ctx.id.jurisdiction ?? undefined) === jurisdiction(env.TAPEDB_MOVE_FROM) &&
       jurisdiction(env.TAPEDB_MOVE_FROM) !== jurisdiction(env.TAPEDB_JURISDICTION)
       ? sourceEnvironment(env) : env;
+    // Validated once per room: a bad limit fails at construction, not on the
+    // first write, and an unconfigured room keeps `undefined` and pays one check.
+    this.writeLimits = resolveWriteLimits(options.limits?.writes);
+    this.clock = options.clock ?? Date.now;
     void ctx.blockConcurrencyWhile(() => this.boot());
   }
 
@@ -932,6 +962,27 @@ export class WorkspaceRoom extends DurableObject<Env> {
     return this.personal ? this.personal.read(run) : Promise.resolve(run());
   }
 
+  /**
+   * Charges one transaction against this deployment's write budgets, or
+   * throws `rate_limited` and charges nothing. `null` when no budget is
+   * configured, which is the whole cost of the feature then.
+   */
+  private chargeWriteBudget(sql: SqlExecutor, envelope: unknown): WriteBudget | null {
+    const limits = this.writeLimits;
+    if (limits === undefined) return null;
+    // Validation before counting: a write the engine would refuse never
+    // spends budget, and an invalid envelope still answers as it always did.
+    const tx = validateEnvelope(envelope);
+    if (
+      tx.clientTxId !== undefined &&
+      sql.one(`SELECT 1 AS found FROM "_tx_receipts" WHERE id = ?`, tx.clientTxId) !== undefined
+    ) {
+      // A retry of a write already applied is not another write.
+      return null;
+    }
+    return reserveWriteBudget(sql, limits, countWrites(limits, tx.ops.map((op) => op.namespace)), this.clock());
+  }
+
   private async transact(request: Request): Promise<Response> {
     let envelope: unknown;
     try {
@@ -953,9 +1004,18 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const workspaceId = this.workspaceId;
       const claim = readTrustedRoleClaim(request, workspaceId);
       const sql = durableObjectSqlExecutor(this.ctx.storage);
-      const result = this.personal
-        ? await this.ctx.storage.transaction(() => runPersonalTransaction(sql, this.personal!, workspaceId, claim, envelope))
-        : runTransaction(sql, workspaceId, claim, envelope);
+      // Charged before any row moves, and given back if the write does not
+      // commit, so only writes that actually landed spend budget.
+      const budget = this.chargeWriteBudget(sql, envelope);
+      let result: TxResult;
+      try {
+        result = this.personal
+          ? await this.ctx.storage.transaction(() => runPersonalTransaction(sql, this.personal!, workspaceId, claim, envelope))
+          : runTransaction(sql, workspaceId, claim, envelope);
+      } catch (error) {
+        if (budget !== null) releaseWriteBudget(sql, budget);
+        throw error;
+      }
       try {
         await this.scheduleNextDurabilityAlarm(Date.now());
       } catch (error) {
@@ -986,10 +1046,17 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return json({ ok: true, result });
     } catch (error) {
       if (error instanceof TxError) {
-        return json(
+        const response = json(
           { ok: false, error: error.toJSON() },
           statusForTxError(error.code)
         );
+        // The same time the body carries, in the header a retrying client
+        // already reads.
+        const retryAfterMs = error.detail?.retryAfterMs;
+        if (retryAfterMs !== undefined) {
+          response.headers.set("retry-after", String(Math.max(1, Math.ceil(retryAfterMs / 1000))));
+        }
+        return response;
       }
       throw error;
     }
@@ -2539,6 +2606,8 @@ function statusForTxError(code: TxErrorCode): number {
       return 409;
     case "retry_expired":
       return 410;
+    case "rate_limited":
+      return 429;
     case "storage_error":
       return 500;
     default:

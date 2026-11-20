@@ -730,6 +730,7 @@
           "topics": "TopicOptions | undefined @experimental",
           "audit": "boolean | undefined",
           "retention": "RetentionOptions | undefined",
+          "limits": "LimitsOptions | undefined @experimental",
           "webhooks": "readonly WebhookOptions[] | undefined @experimental"
         }
       },
@@ -753,6 +754,12 @@
           "TAPEDB_CLAIM_AUDIENCE": "string | undefined",
           "TAPEDB_DEV_CLAIMS": "string | undefined",
           "TAPEDB_DEV_CLAIMS_TOKEN": "string | undefined"
+        }
+      },
+      "LimitsOptions": {
+        "kind": "interface",
+        "shape": {
+          "writes": "WriteLimitsOptions | undefined"
         }
       },
       "MAX_UPLOAD_BYTES": {
@@ -888,6 +895,20 @@
       "WORKSPACE_ROLE_LEVELS": {
         "kind": "value",
         "shape": "{ readonly GUEST: 0; readonly USER: 1; readonly MEMBER: 2; readonly EDITOR: 3; readonly MODERATOR: 4; readonly ADMIN: 5; readonly OWNER: 6; readonly FOUNDER: 7; readonly DEVELOPER: 8; }"
+      },
+      "WriteLimit": {
+        "kind": "interface",
+        "shape": {
+          "count": "number",
+          "windowSeconds": "number"
+        }
+      },
+      "WriteLimitsOptions": {
+        "kind": "interface",
+        "shape": {
+          "models": "Readonly<Record<string, WriteLimit>> | undefined",
+          "workspace": "WriteLimit | undefined"
+        }
       }
     },
     "@tapedb/tapedb/email": {
