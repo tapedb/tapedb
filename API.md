@@ -269,6 +269,7 @@ the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
 | `audit` | `true` records the writer (`sub`, role) of every write and keeps a per-row history for `$history`, within `retention`; default off |
 | `realtime` | **experimental**: `RealtimeOptions` `{ authorize?, maxPresenceRooms?, replaySeconds? }`: one `RealtimeAuthorizer` for presence rooms and broadcast topics, the rooms one socket may hold (default 4, `0` refuses presence), and the seconds of each topic kept for a listener that reconnects (default 60, `0` keeps none) — see [Presence](#presence) |
 | `topics` | **experimental**, **deprecated** alias of `realtime`: `TopicOptions` `{ authorize?, replaySeconds? }`, whose `authorize` covers topic kinds only and is consulted only when `realtime.authorize` is absent |
+| `limits` | **experimental**: `LimitsOptions` `{ writes?: { models?: { [model]: { count, windowSeconds } }, workspace?: { count, windowSeconds } } }` — per-model and per-workspace write budgets, see [Write budgets](#write-budgets) |
 
 Also exported: `signRoleClaim(secret, { sub, workspaceId, role, iss?, aud?,
 ttlSeconds? }, now?)` → `{ token, expiresAt, expiresIn }` and
@@ -283,7 +284,63 @@ allow consumers to emit declarations without leaking private names.
 `ModelOptions` is also exported from `@tapedb/tapedb/schema`.
 `TopicAction`, `TopicAuthorizer` and `TopicGap` are **experimental**, and so are
 `RealtimeOptions`, `RealtimeAuthorizer`, `RealtimeAuthorizeContext` and
-`RealtimeKind`.
+`RealtimeKind`, and `LimitsOptions`, `WriteLimitsOptions` and `WriteLimit`.
+
+### Write budgets
+
+```ts
+defineTapeDB({
+  schema,
+  limits: {
+    writes: {
+      models: { task: { count: 60, windowSeconds: 60 } },
+      workspace: { count: 600, windowSeconds: 60 },
+    },
+  },
+});
+```
+
+A budget is `count` writes per `windowSeconds`, counted in **fixed windows**:
+the window opens on the first write charged to it, and the counter starts again
+at zero when it closes. The burst this allows is the fixed-window one — a caller
+can spend a whole budget as one window closes and another immediately after, so
+up to `2 × count` writes in one window's span. It is not smoothed, and nothing
+here claims it is; the arithmetic is one row per budget, so what it does is
+checkable.
+
+- **Per model**: one unit per write operation on that model, by API name. A
+  bulk `patchMany`/`deleteMany` is **one** operation: its rows are only known
+  inside the transaction that applies them.
+- **Workspace-wide**: `workspace` counts every operation across every model, so
+  it is the backstop under per-model budgets. Both are checked before the write
+  is applied.
+- **A rejected write spends nothing.** The envelope is validated first, so a
+  write the engine would refuse never reaches the counter, and a write that
+  fails inside the transaction (`unique_violation`, a row rule) returns its
+  charge. A retry carrying a `clientTxId` that already applied is not charged
+  again.
+- **Durable**: the counters are rows in the workspace's own SQLite
+  (`_write_limits`), so eviction, hibernation and a Worker restart keep them. A
+  budget held in memory would protect nothing. They are not part of the log, so
+  a workspace rebuilt from R2 after its storage was lost resumes with empty
+  counters.
+- **Off by default**: without `limits` no table is created and the write path
+  pays one check.
+
+A refusal is the usual transaction error envelope, `429`, with `Retry-After`
+set to the same whole seconds the body carries:
+
+```json
+{ "ok": false, "error": {
+  "code": "rate_limited",
+  "message": "The \"task\" model allows 60 writes per 60 s; this write would exceed it. Retry in 12 s.",
+  "model": "task", "limit": 60, "windowSeconds": 60, "retryAfterMs": 11840
+} }
+```
+
+`model` is `"workspace"` for the workspace-wide budget. The client already
+treats a `429` as retryable, so a queued offline write stays queued and is sent
+after the window rather than being dropped.
 
 ### Bindings and settings (`Env`)
 
@@ -546,7 +603,7 @@ usually handles:
 | `insufficient_role` | 403 | the claim's role is too low |
 | `not_a_member` | 403 | the claim route found no role for the caller in that workspace |
 | `role_above_membership` | 403 | the claim route was asked for a role above the caller's own |
-| `rate_limited` | 429 | a claim limit or `identity.allowRequest` refused a claim request; built-in limits send `Retry-After` |
+| `rate_limited` | 429 | a claim limit or `identity.allowRequest` refused a claim request, or a write budget (`limits.writes`) refused a write; `Retry-After` is set, and a write budget's error also carries `model`, `limit`, `windowSeconds` and `retryAfterMs` |
 | `unique_violation`, `foreign_key_violation` | 409 | a constraint refused the write |
 | `conflict` | 409 | a `clientTxId` reused with different operations |
 | `retry_expired` | 410 | an unknown retry before the fixed receipt boundary of a legacy upgrade or restore; send it as a new write if it still applies |
