@@ -711,7 +711,8 @@
           "realtime": "RealtimeOptions | undefined @experimental",
           "topics": "TopicOptions | undefined @experimental",
           "audit": "boolean | undefined",
-          "retention": "RetentionOptions | undefined"
+          "retention": "RetentionOptions | undefined",
+          "webhooks": "readonly WebhookOptions[] | undefined @experimental"
         }
       },
       "Env": {
@@ -840,6 +841,31 @@
       "verifyRoleClaim": {
         "kind": "function",
         "shape": "(token: string, env: ClaimVerificationEnv, expectedWorkspaceId: string) => Promise<RoleClaim>"
+      },
+      "WebhookEvent": {
+        "kind": "type",
+        "shape": "\"create\" | \"update\" | \"delete\""
+      },
+      "WebhookEventPayload": {
+        "kind": "interface",
+        "shape": {
+          "eventId": "string",
+          "seq": "number",
+          "workspaceId": "string",
+          "model": "string",
+          "op": "WebhookEvent",
+          "at": "number",
+          "row": "Record<string, unknown> | null"
+        }
+      },
+      "WebhookOptions": {
+        "kind": "interface",
+        "shape": {
+          "url": "string",
+          "events": "readonly WebhookEvent[]",
+          "models": "readonly string[] | undefined",
+          "secret": "string"
+        }
       },
       "WORKSPACE_ROLE_LEVELS": {
         "kind": "value",
