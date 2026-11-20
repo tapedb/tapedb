@@ -33,7 +33,13 @@ export interface AsyncStorageLike {
   setItem(key: string, value: string): Promise<void>;
   removeItem(key: string): Promise<void>;
   getAllKeys(): Promise<readonly string[]>;
-  multiRemove(keys: readonly string[]): Promise<void>;
+  /**
+   * v1 and v2 name the batch delete `multiRemove`; v3 renamed it `removeMany`.
+   * Either satisfies this interface, and a store with neither still works one
+   * key at a time.
+   */
+  multiRemove?(keys: readonly string[]): Promise<void>;
+  removeMany?(keys: readonly string[]): Promise<void>;
 }
 
 /** Every key this outbox writes starts here, so a shared store keeps other keys intact. */
@@ -57,6 +63,24 @@ export class AsyncStorageOutbox implements Outbox {
    * sees it. Retained until the same `clientTxId` commits or is removed.
    */
   private readonly fallback = new MemoryOutbox();
+
+  /**
+   * Delete a batch on whatever the installed release calls the batch delete.
+   * The rename in v3 is silent otherwise: `clear()` would throw, fall back to
+   * the in-memory queue, and leave every entry on disk looking cleared.
+   */
+  private async removeMany(keys: readonly string[]): Promise<void> {
+    if (keys.length === 0) return;
+    if (typeof this.storage.multiRemove === "function") {
+      await this.storage.multiRemove(keys);
+      return;
+    }
+    if (typeof this.storage.removeMany === "function") {
+      await this.storage.removeMany(keys);
+      return;
+    }
+    for (const key of keys) await this.storage.removeItem(key);
+  }
 
   constructor(storage: AsyncStorageLike, options: AsyncStorageOutboxOptions = {}) {
     this.storage = storage;
@@ -115,7 +139,7 @@ export class AsyncStorageOutbox implements Outbox {
         key.startsWith(this.prefix)
       );
       if (workspaceId === undefined) {
-        if (keys.length > 0) await this.storage.multiRemove(keys);
+        if (keys.length > 0) await this.removeMany(keys);
         return;
       }
 
@@ -124,7 +148,7 @@ export class AsyncStorageOutbox implements Outbox {
         const entry = parseEntry(values[index]);
         return entry !== null && entry.workspaceId === workspaceId;
       });
-      if (doomed.length > 0) await this.storage.multiRemove(doomed);
+      if (doomed.length > 0) await this.removeMany(doomed);
     } catch {
       // The memory fallback is already empty; a store that cannot be read has
       // no entries this client can vouch for.
