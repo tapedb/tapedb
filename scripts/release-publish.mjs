@@ -116,15 +116,23 @@ if (dryRun) {
 
 // ---------------------------------------------------------------- staging
 
+// No token is needed for staging: `npm stage publish` accepts any credential
+// type and never asks for a second factor. From a developer's machine the npm
+// session is enough, which is the path to prefer — a granular token now cannot
+// be issued without an expiry date, so a build secret is a standing chore.
+// NPM_TOKEN is used only when one is actually supplied.
 const token = process.env.NPM_TOKEN;
-if (!token) fail("NPM_TOKEN is not set in the build environment");
-
-// A private npmrc for this run only, so a developer's own `npm install` is never
-// affected by a token variable it does not have.
-const configDir = mkdtempSync(join(tmpdir(), "tapedb-release-"));
-const userconfig = join(configDir, "npmrc");
-writeFileSync(userconfig, `//registry.npmjs.org/:_authToken=${token}\n`, { mode: 0o600 });
-const env = { ...process.env, npm_config_userconfig: userconfig, NPM_CONFIG_USERCONFIG: userconfig };
+let configDir = null;
+let env = process.env;
+if (token) {
+  configDir = mkdtempSync(join(tmpdir(), "tapedb-release-"));
+  const userconfig = join(configDir, "npmrc");
+  writeFileSync(userconfig, `//registry.npmjs.org/:_authToken=${token}\n`, { mode: 0o600 });
+  env = { ...process.env, npm_config_userconfig: userconfig, NPM_CONFIG_USERCONFIG: userconfig };
+  console.log("using NPM_TOKEN from the environment");
+} else {
+  console.log("using your npm session (no NPM_TOKEN set) — staging needs no second factor");
+}
 
 function stage(dir, name) {
   console.log(`::group::stage ${name}`);
@@ -149,5 +157,5 @@ try {
   console.log("\nApprove with one passkey for the whole batch.");
   console.log("No provenance on these publishes: it needs OIDC, and this pipeline has no OIDC provider.");
 } finally {
-  rmSync(configDir, { recursive: true, force: true });
+  if (configDir) rmSync(configDir, { recursive: true, force: true });
 }
