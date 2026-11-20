@@ -140,79 +140,105 @@ try {
   command(process.execPath,[join(root,"node_modules/typescript/bin/tsc"),"-p",authApp],authApp);
   console.log("package smoke: auth scaffold, React override and public declarations passed");
 
-  // `npx tapedb-cli <command>`: the wrapper package runs the CLI of the @tapedb/tapedb it pins.
-  const cliPacked = command("npm", ["pack", "--json", "--pack-destination", scratch], join(root, "packages", "tapedb-cli"));
-  const cliArchive = join(scratch, JSON.parse(cliPacked.stdout)[0].filename);
-  const wrapper = join(scratch, "tapedb-cli");
-  mkdirSync(wrapper);
-  writeFileSync(join(wrapper, "package.json"), JSON.stringify({ name: "cli-consumer", private: true }));
-  command("npm", ["install", archive, cliArchive, "--ignore-scripts", "--no-audit", "--no-fund"], wrapper);
-  const bin = join(wrapper, "node_modules", ".bin", "tapedb-cli");
-  assert.match(command(bin, ["--help"], wrapper).stdout, /npx tapedb-cli init/);
-  const app = join(scratch, "tapedb-cli-app");
-  mkdirSync(app);
-  const initialised = command(bin, ["init", "--no-install", "--no-start"], app);
-  assert.match(initialised.stdout, /Ready\. Start the database with npx tapedb-cli dev/);
-  assert.ok(existsSync(join(app, "tapedb", "migrations", "0002_entities.sql")));
-  // Exit codes pass through: a failing command fails the wrapper.
-  writeFileSync(join(app, "tapedb.schema.ts"), "export default {};\n");
-  command(bin, ["migrate", "check"], app, 1);
-  console.log("package smoke: tapedb-cli passed");
-
-  // `@tapedb/react` is an alias, not a fork: it re-exports `@tapedb/tapedb/react`
-  // and pins the core version. Pack both and install both from disk, because the
-  // core release this pin names need not be on the registry yet.
-  const reactDir = join(root, "packages", "react");
-  const reactManifest = JSON.parse(readFileSync(join(reactDir, "package.json"), "utf8"));
+  // The wrappers. Each one is an alias for a single entry of this core release,
+  // so a wrapper left behind by a release fails here instead of on a consumer's
+  // machine: the version equals the core's, the core pin is exact, the tarball
+  // carries the declared files and nothing else, and the alias exports the
+  // subpath's own bindings. Every wrapper is installed beside the packed core
+  // tarball, never the registry: the version its pin names does not exist there
+  // yet, and "installed fine from npm" would prove nothing about this release.
   const coreManifest = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  assert.equal(reactManifest.version, coreManifest.version, "@tapedb/react must ship the core package version");
-  assert.equal(
-    reactManifest.dependencies["@tapedb/tapedb"],
-    coreManifest.version,
-    "the wrapper pins the exact core version, so a drifted wrapper fails this gate"
-  );
-  const reactPacked = JSON.parse(command("npm", ["pack", "--json", "--pack-destination", scratch], reactDir).stdout)[0];
-  const reactArchive = join(scratch, reactPacked.filename);
-  assert.deepEqual(
-    reactPacked.files.map(file => file.path).sort(),
-    ["LICENSE", "README.md", "index.d.ts", "index.mjs", "package.json"],
-    "@tapedb/react ships the alias and nothing else"
-  );
-  const reactApp = join(scratch, "react-alias");
-  mkdirSync(reactApp);
-  writeFileSync(join(reactApp, "package.json"), JSON.stringify({ name: "react-consumer", private: true, type: "module" }));
-  command("npm", ["install", archive, reactArchive, "react@19", "--ignore-scripts", "--no-audit", "--no-fund"], reactApp);
-  writeFileSync(join(reactApp, "probe.mjs"), [
-    'import assert from "node:assert/strict";',
-    'import * as alias from "@tapedb/react";',
-    'import * as subpath from "@tapedb/tapedb/react";',
-    "const { useLive, usePresence } = alias;",
-    'assert.equal(typeof useLive, "function", "@tapedb/react must export useLive");',
-    'assert.equal(typeof usePresence, "function", "@tapedb/react must export usePresence");',
-    "assert.deepEqual(Object.keys(alias).sort(), Object.keys(subpath).sort(), \"both import paths must export the same names\");",
-    "for (const name of Object.keys(subpath)) assert.equal(alias[name], subpath[name], name + \" must be the subpath's own binding, not a copy\");",
-    "console.log(Object.keys(alias).sort().join(\", \"));",
-  ].join("\n"));
-  const exportsSeen = command(process.execPath, ["probe.mjs"], reactApp).stdout.trim();
-  assert.match(exportsSeen, /useLive/);
-  // Declarations emitted through the alias must name every type the hooks name.
-  writeFileSync(join(reactApp, "consumer.ts"), [
-    'import { createClient } from "@tapedb/tapedb";',
-    'import { usePresence, type PresencePeersOptions } from "@tapedb/react";',
-    "export function peers(db: ReturnType<typeof createClient>, options: PresencePeersOptions = { includeSelf: false }) {",
-    '  return usePresence(db, "board:1", undefined, options);',
-    "}",
-  ].join("\n"));
-  writeFileSync(join(reactApp, "tsconfig.json"), JSON.stringify({
-    compilerOptions: {
-      target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true,
-      skipLibCheck: true, declaration: true, emitDeclarationOnly: true, outDir: "types",
-    },
-    include: ["consumer.ts"],
-  }));
-  command(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", reactApp], reactApp);
-  assert.match(readFileSync(join(reactApp, "types", "consumer.d.ts"), "utf8"), /PresencePeersOptions/);
-  console.log(`package smoke: @tapedb/react alias passed (${exportsSeen})`);
+  const wrappers = [
+    // The CLI is a command, not an import: its entry is the core's bin, so it
+    // asserts delegation (`--help` and exit codes come from the core CLI)
+    // where the other three assert export identity.
+    { dir: "packages/cli", name: "@tapedb/cli", entry: null, install: [], command: "tapedb-cli" },
+    { dir: "packages/react", name: "@tapedb/react", entry: "react", install: ["react@19"], type: "PresencePeersOptions" },
+    { dir: "packages/auth", name: "@tapedb/auth", entry: "auth", install: ["better-auth@1.7.25"], type: "TapeDBAuthOptions" },
+    { dir: "packages/email", name: "@tapedb/email", entry: "email", install: [], type: "MailerOptions" },
+  ];
+  for (const wrapper of wrappers) {
+    const manifest = JSON.parse(readFileSync(join(root, wrapper.dir, "package.json"), "utf8"));
+    assert.equal(manifest.name, wrapper.name, `${wrapper.dir} must be published as ${wrapper.name}`);
+    assert.equal(manifest.version, coreManifest.version, `${wrapper.name} must ship the core package version`);
+    assert.deepEqual(
+      manifest.dependencies,
+      { "@tapedb/tapedb": coreManifest.version },
+      `${wrapper.name} must pin the exact core version, so a drifted wrapper fails this gate`
+    );
+    assert.equal(manifest.repository.directory, wrapper.dir, `${wrapper.name} must point repository.directory at ${wrapper.dir}`);
+    assert.equal(manifest.publishConfig.access, "public", `${wrapper.name} must publish publicly`);
+
+    const packed = JSON.parse(command("npm", ["pack", "--json", "--pack-destination", scratch], join(root, wrapper.dir)).stdout)[0];
+    const wrapperArchive = join(scratch, packed.filename);
+    assert.deepEqual(
+      packed.files.map(file => file.path).sort(),
+      [...manifest.files, "package.json"].sort(),
+      `${wrapper.name} ships the alias and nothing else`
+    );
+
+    const app = join(scratch, wrapper.name.replace("@", "").replace("/", "-"));
+    mkdirSync(app);
+    writeFileSync(join(app, "package.json"), JSON.stringify({ name: `${wrapper.dir}-consumer`, private: true, type: "module" }));
+    command("npm", ["install", archive, wrapperArchive, ...wrapper.install, "--ignore-scripts", "--no-audit", "--no-fund"], app);
+    // Both sides came from disk: a registry fetch would mean the pin drifted.
+    const lockfile = JSON.parse(readFileSync(join(app, "package-lock.json"), "utf8"));
+    assert.match(lockfile.packages["node_modules/@tapedb/tapedb"].resolved, /\.tgz$/, `${wrapper.name} must install beside the packed core tarball, never the registry`);
+    assert.match(lockfile.packages[`node_modules/${wrapper.name}`].resolved, /\.tgz$/, `${wrapper.name} itself must be the packed tarball`);
+    assert.equal(
+      JSON.parse(readFileSync(join(app, "node_modules", "@tapedb", "tapedb", "package.json"), "utf8")).version,
+      coreManifest.version,
+      `${wrapper.name}'s exact pin must resolve to this core version`
+    );
+
+    if (wrapper.entry === null) {
+      const bin = join(app, "node_modules", ".bin", wrapper.command);
+      const coreCli = join(app, "node_modules", "@tapedb", "tapedb", "dist", "cli.js");
+      const coreHelp = command(process.execPath, [coreCli, "--help"], app).stdout;
+      assert.match(coreHelp, /npx tapedb-cli init/, "the core CLI's help still names the tapedb-cli command");
+      assert.equal(command(bin, ["--help"], app).stdout, coreHelp, `${wrapper.name} must run the core CLI, not a copy of it`);
+      const project = join(scratch, "cli-project");
+      mkdirSync(project);
+      const initialised = command(bin, ["init", "--no-install", "--no-start"], project);
+      assert.match(initialised.stdout, /Ready\. Start the database with npx tapedb-cli dev/);
+      assert.ok(existsSync(join(project, "tapedb", "migrations", "0002_entities.sql")), `${wrapper.name} must run a working init`);
+      // Exit codes pass through: a failing command fails the wrapper.
+      writeFileSync(join(project, "tapedb.schema.ts"), "export default {};\n");
+      command(bin, ["migrate", "check"], project, 1);
+      console.log(`package smoke: ${wrapper.name} passed (bin ${wrapper.command} delegates to the packed core CLI, exit codes pass through)`);
+      continue;
+    }
+
+    // One probe for both import paths in one process: the names must match and
+    // each value must be the subpath's own binding, not a copy of it.
+    writeFileSync(join(app, "probe.mjs"), [
+      'import assert from "node:assert/strict";',
+      `import * as alias from "${wrapper.name}";`,
+      `import * as subpath from "@tapedb/tapedb/${wrapper.entry}";`,
+      'assert.ok(Object.keys(subpath).length > 0, "the subpath must export names");',
+      `assert.deepEqual(Object.keys(alias).sort(), Object.keys(subpath).sort(), "${wrapper.name} and the subpath must export the same names");`,
+      `for (const name of Object.keys(subpath)) assert.equal(alias[name], subpath[name], name + " must be the subpath's own binding, not a copy");`,
+      'console.log(Object.keys(alias).sort().join(", "));',
+    ].join("\n"));
+    const exportsSeen = command(process.execPath, ["probe.mjs"], app).stdout.trim();
+    assert.ok(exportsSeen.length > 0, `${wrapper.name} must export the subpath's names`);
+
+    // Declarations emitted through the alias must name the subpath's types.
+    writeFileSync(join(app, "consumer.ts"), [
+      `import type { ${wrapper.type} } from "${wrapper.name}";`,
+      `export const probe: ${wrapper.type} | undefined = undefined;`,
+    ].join("\n"));
+    writeFileSync(join(app, "tsconfig.json"), JSON.stringify({
+      compilerOptions: {
+        target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true,
+        skipLibCheck: true, declaration: true, emitDeclarationOnly: true, outDir: "types",
+      },
+      include: ["consumer.ts"],
+    }));
+    command(process.execPath, [join(root, "node_modules/typescript/bin/tsc"), "-p", app], app);
+    assert.match(readFileSync(join(app, "types", "consumer.d.ts"), "utf8"), new RegExp(wrapper.type), `${wrapper.name} must carry the subpath's declarations`);
+    console.log(`package smoke: ${wrapper.name} passed (${exportsSeen})`);
+  }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
 }
