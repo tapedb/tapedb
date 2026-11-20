@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.2.1 - 2026-11-20
+
+- React Native keeps its offline writes. The queue was IndexedDB-backed and RN has no IndexedDB, so a write made offline there was fire-and-forget and nothing survived a restart. `createClient({ outbox })` now accepts `Outbox | OutboxFactory`, and `@tapedb/react-native` supplies `AsyncStorageOutbox` — one key per entry under a prefix, ordered by `createdAt` rather than by key order, with a retry replacing its own entry — plus `createReactNativeClient`, which wires AsyncStorage by default. The package peers on `@react-native-async-storage/async-storage` and `react` and does not import `react-native`. The adapter is contract-tested against a fake of the storage interface, not on a device.
+- The 0.2.0 README claimed `npx @tapedb/cli` brings the project's `@tapedb/tapedb` up to the same version. It does not: the wrapper resolves the core from its own pinned dependency, so it runs that release's CLI and leaves the project's copy alone. The paragraph now says what the pin does and why in-project hints read `npx tapedb-cli`.
+- API.md contradicted itself about presence: the section on presence said peers include the caller and refusals reach `onError`, while the hooks table still said the caller is left out and one paragraph still claimed there is no error channel. Both were leftovers from the fixes in 0.2.0; the statements now agree everywhere.
+
 ## 0.2.0 - 2026-11-20
 
 - Filters gain the three operators InstaQL had and tapedb did not: `$isNull`, `$like` and `$ilike`. `$like` compiles to GLOB rather than LIKE, because SQLite's LIKE is case-insensitive for ASCII and a case-sensitive operator that silently is not would be worse than none; `$ilike` folds with `LOWER()` and is therefore ASCII-only, which the docs say rather than implying otherwise. Both refuse a non-string field and a relation.
