@@ -14,7 +14,7 @@ import { stableStringify } from "../client/stable";
 import type { AcrossLiveState, AcrossQuery } from "../model/across";
 import type { PresencePeer, PresencePeersOptions } from "../client/types";
 import type { BroadcastTopic, LiveState, Page, PageQuery, PresenceRoom, Query } from "../model/client";
-import type { TopicSender } from "../client/types";
+import type { TopicGap, TopicSender } from "../client/types";
 
 /**
  * Live results for a query: `useLive(db.task.findMany({ where }))`.
@@ -92,21 +92,29 @@ export function usePresence(
 
 /**
  * Listens on a broadcast topic while mounted and returns its `send`. The
- * latest `onMessage` is always the one called, so it need not be memoised.
+ * latest `onMessage` and `onGap` are always the ones called, so neither need
+ * be memoised. `onGap` hears messages the replay window dropped.
  *
  * @experimental May change in a minor release.
  */
 export function useBroadcast<T = unknown>(
   db: { $broadcast<M>(topic: string): BroadcastTopic<M> },
   topic: string,
-  onMessage?: (message: T, from: TopicSender) => void
+  onMessage?: (message: T, from: TopicSender) => void,
+  onGap?: (gap: TopicGap) => void
 ): (message: T) => boolean | "queued" {
   const handle = useMemo(() => db.$broadcast<T>(topic), [db, topic]);
   const listener = useRef(onMessage);
   listener.current = onMessage;
+  const gapListener = useRef(onGap);
+  gapListener.current = onGap;
 
   useEffect(
-    () => handle.subscribe((message, from) => listener.current?.(message, from)),
+    () =>
+      handle.subscribe(
+        (message, from) => listener.current?.(message, from),
+        { onGap: (gap) => gapListener.current?.(gap) }
+      ),
     [handle]
   );
   return useCallback((message: T) => handle.send(message), [handle]);

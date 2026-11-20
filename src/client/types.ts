@@ -488,7 +488,23 @@ export interface TopicSender {
   userId: string;
 }
 
+/**
+ * A run of sequences a topic jumped over: `expected` never arrived, and
+ * `received` is the one that arrived past it.
+ *
+ * @experimental May change in a minor release.
+ */
+export interface TopicGap {
+  /** The topic that jumped. */
+  topic: string;
+  /** The first sequence this client did not see. */
+  expected: number;
+  /** The sequence that arrived past the missing ones. */
+  received: number;
+}
+
 export interface TopicListener {
   message: (message: unknown, from: TopicSender) => void;
   error?: (error: QueryError) => void;
+  gap?: (gap: TopicGap) => void;
 }

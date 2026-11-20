@@ -22,6 +22,7 @@ import type {
   AggregateGroup,
   PresencePeer,
   PresencePeersOptions,
+  TopicGap,
   TopicSender,
   QueryDocument,
   QueryError,
@@ -208,12 +209,29 @@ export interface BroadcastTopic<T = unknown> {
   /**
    * Listens until the returned function is called. Your own messages are not
    * delivered back to you. `onError` hears refusals, such as an `authorize`
-   * hook saying no.
+   * hook saying no. `onGap` hears a jump in the topic's sequence: messages
+   * the replay window dropped while this client was away.
    */
   subscribe(
     listener: (message: T, from: TopicSender) => void,
-    options?: { onError?: (error: QueryError) => void }
+    options?: {
+      onError?: (error: QueryError) => void;
+      onGap?: (gap: TopicGap) => void;
+    }
   ): () => void;
+  /**
+   * The highest sequence this client has seen on the topic, or `undefined`
+   * before the first one. Pass it to `subscribe` on a new listening session,
+   * or to your own storage, to resume without asking for what you have.
+   */
+  readonly lastSeq: number | undefined;
+  /**
+   * The last run of sequences this client jumped over, or `null`. It stays
+   * set until the topic is left: a lost message is a fact about this
+   * subscription, not a state that clears itself once new ones arrive.
+   * Resync from `lastSeq` and the gap stops being the last word on it.
+   */
+  readonly gap: TopicGap | null;
 }
 
 /** One line of `$export()`. */
@@ -516,7 +534,16 @@ export function createClient<M extends Models>(
           impl.subscribeTopic(topic, {
             message: (message, from) => listener(message as T, from),
             error: options?.onError,
+            gap: options?.onGap,
           }),
+        // Read through to the client: one topic, one position, however many
+        // times `$broadcast(topic)` is called.
+        get lastSeq() {
+          return impl.topicLastSeq(topic);
+        },
+        get gap() {
+          return impl.topicGap(topic);
+        },
       };
     },
     $erasePerson: (subject) => impl.erasePerson(subject),
