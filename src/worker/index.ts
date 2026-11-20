@@ -20,6 +20,7 @@ import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
 import { configureRealtime, type RealtimeOptions, type TopicOptions } from "../engine/topics";
 import { configureWebhooks, type WebhookOptions } from "../engine/webhooks";
+import { resolveWriteLimits, type LimitsOptions } from "../engine/rate-limits";
 import { configureAudit } from "../engine/audit";
 import { configureFileAccess, fileRulesConfigured } from "../engine/file-access";
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
@@ -119,6 +120,26 @@ export interface DefineTapeDBOptions {
    * Defaults to 30 days; at least 2.
    */
   retention?: RetentionOptions;
+  /**
+   * Write budgets, checked in the Durable Object before a row moves.
+   *
+   *   limits: { writes: {
+   *     models: { tasks: { count: 60, windowSeconds: 60 } },
+   *     workspace: { count: 600, windowSeconds: 60 },
+   *   } }
+   *
+   * A budget is a fixed window: `count` writes per `windowSeconds`, counted
+   * per model (one operation each) and, for `workspace`, across every model.
+   * A write past its budget is refused with `rate_limited` (429) carrying the
+   * model, the limit, the window and `retryAfterMs`; a write that fails
+   * validation, or does not commit, spends nothing. The counters are kept in
+   * the workspace's own SQLite, so they survive eviction and restarts.
+   *
+   * Leave it out and no table is created and no write is checked.
+   *
+   * @experimental May change in a minor release.
+   */
+  limits?: LimitsOptions;
   /**
    * Outbound webhooks: one POST per changed row, in the transaction's
    * sequence order, signed with `X-Tapedb-Signature`.
@@ -312,6 +333,9 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   configureAudit(options.audit);
   configureFileAccess(schema.files);
   configureRetention(options.retention);
+  // Refused here, when the Worker is defined, rather than on the first write.
+  // Each room resolves its own copy from these options; nothing is shared.
+  resolveWriteLimits(options.limits?.writes);
 
   const worker = {
     async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
@@ -464,7 +488,18 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
     },
   };
 
-  return { WorkspaceRoom, AuthRoom, worker };
+  /**
+   * This deployment's room: the engine's class with its limits attached. A
+   * module-level variable would let two deployments — or two rooms — in one
+   * process share one budget, so the configuration travels with the class.
+   */
+  class ConfiguredWorkspaceRoom extends WorkspaceRoom {
+    constructor(context: DurableObjectState, environment: Env) {
+      super(context, environment, options.limits === undefined ? {} : { limits: options.limits });
+    }
+  }
+
+  return { WorkspaceRoom: ConfiguredWorkspaceRoom, AuthRoom, worker };
 }
 
 // The public surface of `@tapedb/tapedb/worker`; see API.md. Everything else in this
@@ -477,6 +512,7 @@ export type { ClaimIdentity } from "../mint";
 export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
 export type { TopicAction, TopicAuthorizer, TopicOptions } from "../engine/topics";
 export type { WebhookEvent, WebhookEventPayload, WebhookOptions } from "../engine/webhooks";
+export type { LimitsOptions, WriteLimit, WriteLimitsOptions } from "../engine/rate-limits";
 export type {
   RealtimeAuthorizeContext,
   RealtimeAuthorizer,
