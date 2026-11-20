@@ -1032,8 +1032,8 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | --- | --- | --- |
 | `@tapedb/tapedb` | `createClient`, schema builders, `id` | no (zero runtime deps) |
 | `@tapedb/tapedb/schema` | `schema`, `model`, `t`, `role`, `filter`, `check` | no |
-| `@tapedb/react` | `useLive`, `useLivePage`, `usePresence` (alias of `@tapedb/tapedb/react`) | peer (React 19) |
-| `@tapedb/tapedb/react` | the same hooks, the core's own entry | peer (React 19) |
+| `@tapedb/react` | `useLive`, `useLivePage`, `usePresence` (alias of `@tapedb/tapedb/react`) | peer (React 18 or 19) |
+| `@tapedb/tapedb/react` | the same hooks, the core's own entry | peer (React 18 or 19) |
 | `@tapedb/auth` | `tapedbAuth`, `eraseAuthUser`, `authDatabase` (alias of `@tapedb/tapedb/auth`) | no |
 | `@tapedb/email` | `mailer` (alias of `@tapedb/tapedb/email`) | no |
 | `@tapedb/tapedb/worker` | `defineTapeDB`, claim helpers | no |
