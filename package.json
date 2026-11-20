@@ -101,22 +101,24 @@
     }
   },
   "devDependencies": {
+    "@better-auth/test-utils": "1.7.25",
     "@cloudflare/workers-types": "^5.20261110.1",
     "@happy-dom/global-registrator": "^21.0.4",
     "@playwright/test": "1.65.1",
+    "@react-native-async-storage/async-storage": "^2",
     "@types/node": "^26.6.6",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",
     "@xyflow/react": "^13.0.2",
+    "async-storage-v3": "npm:@react-native-async-storage/async-storage@^3",
+    "better-auth": "1.7.25",
     "esbuild": "^0.28.2",
     "fake-indexeddb": "6.2.8",
+    "miniflare": "5.20261117.0-beta",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "tsup": "^9.0.0",
     "typescript": "^5.7.2",
-    "@better-auth/test-utils": "1.7.25",
-    "better-auth": "1.7.25",
-    "miniflare": "5.20261117.0-beta",
     "vitest": "5.1.1"
   },
   "engines": {

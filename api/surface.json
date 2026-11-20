@@ -82,7 +82,8 @@
           "setItem": "(key: string, value: string) => Promise<void>",
           "removeItem": "(key: string) => Promise<void>",
           "getAllKeys": "() => Promise<readonly string[]>",
-          "multiRemove": "(keys: readonly string[]) => Promise<void>"
+          "multiRemove": "((keys: readonly string[]) => Promise<void>) | undefined",
+          "removeMany": "((keys: readonly string[]) => Promise<void>) | undefined"
         }
       },
       "AsyncStorageOutbox": {
