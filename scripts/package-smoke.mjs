@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { packedArchive, packedEntries } from "./packed-archive.mjs";
 
 // Exercise the artifact under Node, rather than letting Bun's module loader
 // hide differences in a consumer's package type. No published package needed.
@@ -16,7 +17,7 @@ function command(executable, args, cwd, expected = 0) {
 }
 try {
   const packed = command("npm", ["pack", "--json", "--pack-destination", scratch], root);
-  const archive = join(scratch, JSON.parse(packed.stdout)[0].filename);
+  const archive = join(scratch, packedArchive(packed.stdout));
   for (const type of [undefined, "commonjs", "module"]) {
     const dir = join(scratch, type ?? "default");
     mkdirSync(dir);
@@ -185,7 +186,7 @@ try {
     assert.equal(manifest.repository.directory, wrapper.dir, `${wrapper.name} must point repository.directory at ${wrapper.dir}`);
     assert.equal(manifest.publishConfig.access, "public", `${wrapper.name} must publish publicly`);
 
-    const packed = JSON.parse(command("npm", ["pack", "--json", "--pack-destination", scratch], join(root, wrapper.dir)).stdout)[0];
+    const packed = packedEntries(command("npm", ["pack", "--json", "--pack-destination", scratch], join(root, wrapper.dir)).stdout)[0];
     const wrapperArchive = join(scratch, packed.filename);
     assert.deepEqual(
       packed.files.map(file => file.path).sort(),
