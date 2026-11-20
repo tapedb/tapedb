@@ -615,6 +615,13 @@
           "(declaration)": "<R>"
         }
       },
+      "PresencePeersOptions": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "includeSelf": "boolean | undefined"
+        }
+      },
       "useBroadcast": {
         "kind": "function",
         "experimental": true,
@@ -1717,13 +1724,6 @@
       "PermissionRule (src/engine/tx-permissions.ts)": {
         "kind": "type",
         "shape": "(context: PermissionContext) => boolean"
-      },
-      "PresencePeersOptions (src/client/types.ts)": {
-        "kind": "interface",
-        "experimental": true,
-        "shape": {
-          "includeSelf": "boolean | undefined"
-        }
       },
       "QueryComparison (src/engine/query-types.ts)": {
         "kind": "interface",
