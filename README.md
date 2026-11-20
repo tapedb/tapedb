@@ -834,6 +834,77 @@ rules, the tape and the history see them exactly as they see a client's writes.
 A `personal()` field is refused: seeded personal data has to go through the app's
 own write path, which owns the encryption key.
 
+## Vector search
+
+```ts
+// tapedb.schema.ts
+note: model({
+  title: t.string(),
+  archived: t.boolean().default(false),
+  embedding: t.vector({ dimensions: 768 }).optional(),   // an embedding, 1 to 1,536
+})
+
+// worker.ts
+defineTapeDB({
+  schema,
+  vectorize: { index: "VECTORIZE", model: "note", field: "embedding", filterFields: ["archived"] },
+})
+```
+
+The deployment declares what it indexes in `wrangler.jsonc`, and `tapedb deploy`
+provisions the index before it uploads the Worker:
+
+```jsonc
+"tapedb": { "vectorize": { "model": "note", "field": "embedding", "filterFields": ["archived"] } }
+```
+
+The CLI validates that declaration against the schema, derives the index name
+from deployment identity (so a repeat or concurrent deploy converges on one
+index), creates the index and one metadata index per filter, records ownership
+in the file, and writes the binding. Every later deploy reads the live index
+and refuses to upload on a wrong dimension count, another metric, a metadata
+index of the wrong type or an ownership record that names another account.
+`eu` and `fedramp` deployments refuse vector search outright: Vectorize cannot
+meet that residency.
+
+An embedding is committed with the row, and the intent to index it is queued in
+the workspace's own SQLite by a trigger inside the same transaction, then
+drained from the durability alarm. The index being down costs a retry, never a
+write. Each publish carries a digest over the row, the vector's canonical bytes
+and the filter values, so an unchanged row is not re-sent and a changed filter
+value is.
+
+```ts
+const { rows, truncated } = await db.note.search({
+  vector: await embed("quarterly planning"),
+  limit: 10,
+  filter: { archived: false },
+  select: ["title", "excerpt"],
+});
+```
+
+Every candidate is re-read through the same path a `findMany` takes, so access
+rules decide what comes back: a row the caller may not see is absent, not
+blurred, and a row whose embedding changed since it was indexed is dropped
+rather than ranked on a vector it no longer has. Visibility is asynchronous —
+measured at 73–103 s behind an accepted upsert — so `pending` is the normal
+state. `GET /status` reports `pending`, `failing`, `deadLettered`, `indexed`,
+`fenced` and any running `rebuild`.
+
+Operators get three admin-or-owner routes on the engine:
+
+| route | |
+| --- | --- |
+| `POST …/vector/retry` | requeue failed and dead-lettered work; the next drain re-reads each row |
+| `POST …/vector/rebuild` | one crash-resumable job per workspace; search answers 503 with `retry-after` until it finishes |
+| `POST …/vector/rows` | `{ model, ids }` → `unindexed`, `pending`, `indexed` or `failed`, for rows the caller may read |
+
+Embedding generation stays with the application: tapedb stores and indexes the
+vector, and never calls a model. Text-to-vector search, hybrid ranking and
+cross-workspace search are not part of this release. The full contract,
+including the digest, batch ceilings and erasure semantics, is in
+[`API.md`](API.md#vector-search).
+
 ## Erasing a workspace
 
 ```bash

@@ -75,25 +75,33 @@ import { findNamespace } from "./registry";
 import {
   VECTOR_ERASURE_HOOK,
   adoptRestoredVectors,
+  advanceVectorRebuild,
   cloudflareVectorIndex,
   drainVectorQueue,
   dropVectorCapture,
   executeVectorSearch,
   installVectorCapture,
+  installVectorRebuild,
   isVectorPurgeFenced,
   isVectorizeBinding,
   materialiseVectorIntents,
   readVectorIdentity,
+  readVectorRebuild,
   recordVectorIdentity,
+  retryVectorWork,
+  startVectorRebuild,
   vectorIdsInWorkspace,
   vectorIndexMatches,
   vectorQueueCounts,
   vectorQueueDueAt,
+  vectorRowStates,
+  visibleRowIds,
   type ConfiguredVectorize,
   type VectorErasureHook,
   type VectorIndex,
   type VectorPurgeStatus,
   type VectorQueueStatus,
+  type VectorRebuildState,
   type VectorSearchRequest,
   type VectorSubmissionGate,
 } from "./vector-index";
@@ -220,6 +228,24 @@ export interface WorkspaceRoomOptions {
   limits?: LimitsOptions;
   /** Clock for budget windows. Tests inject one; a deployment uses the wall clock. */
   clock?: () => number;
+}
+
+/** The refusal a search gets while this workspace's index is being rebuilt. */
+function vectorSearchBusy(): Response {
+  return new Response(
+    JSON.stringify({
+      ok: false,
+      error: {
+        code: "vector_search_unavailable",
+        message: "This workspace's index is being rebuilt; search resumes when it completes.",
+        retryAfterSeconds: 30,
+      },
+    }),
+    {
+      status: 503,
+      headers: { "content-type": "application/json; charset=utf-8", "retry-after": "30" },
+    }
+  );
 }
 
 export class WorkspaceRoom extends DurableObject<Env> {
@@ -570,6 +596,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     try {
       const sql = durableObjectSqlExecutor(this.ctx.storage);
       installVectorCapture(sql, config);
+      installVectorRebuild(sql);
       // Which identity this workspace's queue and state belong to: a later
       // boot reads it back and knows whether the bookkeeping it restored is
       // its own (see `adoptRestoredVectors`).
@@ -848,6 +875,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const config = this.config.vectorize;
     if (config === null || this.drainingVectors) return;
     const sql = durableObjectSqlExecutor(this.ctx.storage);
+    // A rebuild enqueues from the database in bounded batches. Each wake
+    // advances it, drains what it produced, and schedules the next pass, so an
+    // evicted object resumes from its cursor instead of starting over.
+    if (readVectorRebuild(sql) !== null && advanceVectorRebuild(sql, config, Date.now()) !== null) {
+      await this.scheduleDurabilityAlarm(Date.now() + VECTOR_DRAIN_DELAY_MS);
+    }
     // An import or the auth projection writes without `/transact`; its captures
     // become intents here, exactly as the webhook drain does.
     await materialiseVectorIntents(sql, config, this.workspaceId, Date.now());
@@ -879,7 +912,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * deployment that never erased a workspace pays a `head` per status call and
    * nothing else.
    */
-  private async vectorStatus(): Promise<{ vectorize: VectorQueueStatus } | null> {
+  private async vectorStatus(): Promise<{ vectorize: VectorQueueStatus & { rebuild: VectorRebuildState | null } } | null> {
     const config = this.config.vectorize;
     if (config === null) return null;
     const counts = vectorQueueCounts(durableObjectSqlExecutor(this.ctx.storage));
@@ -888,13 +921,24 @@ export class WorkspaceRoom extends DurableObject<Env> {
         binding: config.binding,
         workspaceId: this.workspaceId,
       });
-      return { vectorize: { ...counts, fenced: purge?.fenced ?? false, purge } };
+      return {
+        vectorize: {
+          ...counts,
+          fenced: purge?.fenced ?? false,
+          purge,
+          // A running rebuild is why search answers 503, so it is part of the
+          // status an operator reads rather than a hidden cause.
+          rebuild: readVectorRebuild(durableObjectSqlExecutor(this.ctx.storage)),
+        },
+      };
     } catch (error) {
       // A ledger that cannot be read is reported as unfenced rather than
       // failing `/status`: the counts are still true, and the drain refuses to
       // submit on an unreadable fence anyway.
       console.error("workspace_vector_status_failed", { workspaceId: this.workspaceId, error: errorMessage(error) });
-      return { vectorize: { ...counts, fenced: false, purge: null } };
+      return {
+        vectorize: { ...counts, fenced: false, purge: null, rebuild: readVectorRebuild(durableObjectSqlExecutor(this.ctx.storage)) },
+      };
     }
   }
 
@@ -1231,6 +1275,21 @@ export class WorkspaceRoom extends DurableObject<Env> {
         );
       }
       return this.vectorSearch(request);
+    }
+
+    // The operator's surface for one workspace's index (operator.ts). Admin and
+    // owner only; an ordinary member is refused, not merely limited.
+    if (
+      url.pathname === "/vector/retry" ||
+      url.pathname === "/vector/rebuild" ||
+      url.pathname === "/vector/rows"
+    ) {
+      if (request.method !== "POST") {
+        return apiError(405, "method_not_allowed", `POST is required for ${url.pathname}.`);
+      }
+      if (url.pathname === "/vector/retry") return this.vectorRetry(request);
+      if (url.pathname === "/vector/rebuild") return this.vectorRebuild(request);
+      return this.vectorRowQuery(request);
     }
 
     // Who changed one row, and when (audit.ts). Admins and owners only: it
@@ -1638,6 +1697,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const config = this.config.vectorize;
       const raw = durableObjectSqlExecutor(this.ctx.storage);
       const sql = this.personal?.sql(raw) ?? raw;
+      // A half-built index would rank on a state the database no longer has.
+      if (config !== null && readVectorRebuild(raw) !== null) {
+        return vectorSearchBusy();
+      }
       const answer = await executeVectorSearch({
         sql,
         claim,
@@ -1657,6 +1720,137 @@ export class WorkspaceRoom extends DurableObject<Env> {
     } catch (error) {
       if (error instanceof TxError) {
         return json({ ok: false, error: error.toJSON() }, statusForQueryError(error.code));
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * The claim and configuration an operator action needs, or the refusal. An
+   * ordinary member is refused before anything else, so the answer cannot tell
+   * them whether vector search is even configured.
+   */
+  private vectorOperator(
+    request: Request
+  ): { claim: RoleClaim; config: ConfiguredVectorize } | Response {
+    try {
+      const claim = readTrustedRoleClaim(request, this.workspaceId);
+      if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
+        return apiError(403, "insufficient_role", "Vector index operations need an admin or owner.");
+      }
+      const config = this.config.vectorize;
+      if (config === null) {
+        return apiError(
+          404,
+          "vector_search_disabled",
+          "This deployment does not configure vector search."
+        );
+      }
+      return { claim, config };
+    } catch (error) {
+      if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+      throw error;
+    }
+  }
+
+  /**
+   * Requeues work that stopped retrying, without changing what the provider is
+   * expected to hold: the next drain recomputes every row from the database.
+   */
+  private async vectorRetry(request: Request): Promise<Response> {
+    const operator = this.vectorOperator(request);
+    if (operator instanceof Response) return operator;
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const requeued = retryVectorWork(sql, operator.config.model, Date.now());
+    await this.scheduleDurabilityAlarm(Date.now() + 1);
+    return json({ ok: true, data: { requeued, ...vectorQueueCounts(sql) } });
+  }
+
+  /**
+   * Starts a rebuild, or answers with the one already running. One workspace,
+   * one job: concurrent requests converge on its id (OPS-01).
+   */
+  private async vectorRebuild(request: Request): Promise<Response> {
+    const operator = this.vectorOperator(request);
+    if (operator instanceof Response) return operator;
+    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const now = Date.now();
+    const { state, started } = startVectorRebuild(sql, operator.config, now, crypto.randomUUID());
+    // One pass now, so a workspace with nothing to publish completes in the
+    // request that asked rather than on a later wake.
+    const after = advanceVectorRebuild(sql, operator.config, now);
+    await this.scheduleDurabilityAlarm(Date.now() + 1);
+    if (after !== null) console.log("workspace_vector_rebuild", { workspaceId: this.workspaceId, jobId: state.jobId, started });
+    return json({
+      ok: true,
+      data: {
+        jobId: state.jobId,
+        started,
+        active: after !== null,
+        phase: after?.phase ?? "complete",
+        enqueued: after?.enqueued ?? state.enqueued,
+      },
+    });
+  }
+
+  /**
+   * The index state of rows the caller may read. A hidden, deleted or
+   * out-of-view row is absent, exactly as it is from a read, so the answer
+   * cannot be used to discover that a row exists.
+   */
+  private async vectorRowQuery(request: Request): Promise<Response> {
+    const operator = this.vectorOperator(request);
+    if (operator instanceof Response) return operator;
+    let body: unknown;
+    try {
+      body = await request.json();
+    } catch {
+      return apiError(400, "invalid_vector_query", "Request body must be valid JSON.");
+    }
+    const input = (body ?? {}) as { model?: unknown; ids?: unknown };
+    if (input.model !== operator.config.model) {
+      return apiError(
+        400,
+        "invalid_vector_query",
+        `This deployment indexes ${operator.config.model}; ${JSON.stringify(input.model)} is not searchable.`
+      );
+    }
+    if (!Array.isArray(input.ids) || input.ids.length === 0 || input.ids.length > 100) {
+      return apiError(400, "invalid_vector_query", "ids must be an array of 1 to 100 row ids.");
+    }
+    const ids: string[] = [];
+    for (const id of input.ids) {
+      if (typeof id !== "string" || id.length === 0) {
+        return apiError(400, "invalid_vector_query", "Every id must be a non-empty string.");
+      }
+      ids.push(id);
+    }
+
+    const raw = durableObjectSqlExecutor(this.ctx.storage);
+    const sql = this.personal?.sql(raw) ?? raw;
+    try {
+      const visible = await visibleRowIds(
+        {
+          sql,
+          claim: operator.claim,
+          ...(this.personal === undefined ? {} : { reads: <T,>(fn: () => T) => this.personal!.read(fn) }),
+        },
+        operator.config.model,
+        ids
+      );
+      const states = await vectorRowStates(sql, operator.config, visible);
+      return json({
+        ok: true,
+        data: {
+          model: operator.config.model,
+          rows: ids
+            .filter((id) => states.has(id))
+            .map((id) => ({ id, status: states.get(id)! })),
+        },
+      });
+    } catch (error) {
+      if (error instanceof TxError) {
+        return apiError(statusForQueryError(error.code), error.code, error.message);
       }
       throw error;
     }

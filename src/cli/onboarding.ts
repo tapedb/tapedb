@@ -98,10 +98,18 @@ export function ignoreLocalFiles(root: string): void {
 export type CommandResult = { status: number | null; stdout: string; stderr: string };
 export type WranglerCommand = (args: string[], capture?: boolean) => CommandResult;
 type Bucket = { binding?: string; bucket_name?: string; jurisdiction?: string };
-export type DeployConfig = {
+/** A Vectorize binding, as Wrangler declares it in `wrangler.jsonc`. */
+export type VectorizeBinding = { binding?: string; index_name?: string };
+/** `tapedb.vectorize`: what this deployment indexes, and what it provisioned. */
+export type TapedbConfig = { vectorize?: import("./vectorize").VectorizeDeploymentConfig };
+type DeployEnvironment = {
   name?: string; account_id?: string; vars?: Record<string, string>;
-  r2_buckets?: Bucket[];
-  env?: Record<string, { name?: string; account_id?: string; vars?: Record<string, string>; r2_buckets?: Bucket[] }>;
+  r2_buckets?: Bucket[]; vectorize?: VectorizeBinding[]; tapedb?: TapedbConfig;
+};
+export type DeployConfig = DeployEnvironment & {
+  name?: string; account_id?: string; vars?: Record<string, string>;
+  r2_buckets?: Bucket[]; vectorize?: VectorizeBinding[]; tapedb?: TapedbConfig;
+  env?: Record<string, DeployEnvironment>;
   [key: string]: unknown;
 };
 
@@ -120,8 +128,21 @@ function requireSuccess(result: CommandResult, operation: string): string {
   return result.stdout;
 }
 
+/**
+ * A refusal the operator can fix. Thrown by a deploy hook that validated
+ * something before uploading; the CLI prints it and exits non-zero instead of
+ * a stack trace.
+ */
+export class DeployRefused extends Error {}
+
+/** What a deploy hook may do once the account is known and before the upload. */
+export type BeforeDeploy = (
+  command: WranglerCommand,
+  context: { account: string; worker: string; selected: DeployConfig; env: string | undefined }
+) => Promise<void> | void;
+
 /** Account-scoped, resumable provisioning; never overwrites an existing remote secret. */
-export async function provisionAndDeploy(root: string, config: DeployConfig, env: string | undefined, yes: boolean, createCommand: typeof wranglerCommand = wranglerCommand): Promise<number> {
+export async function provisionAndDeploy(root: string, config: DeployConfig, env: string | undefined, yes: boolean, createCommand: typeof wranglerCommand = wranglerCommand, beforeDeploy?: BeforeDeploy): Promise<number> {
   const selected = env ? config.env?.[env] : config;
   if (!selected) throw new Error("Unknown Wrangler environment: " + env);
   let command = createCommand(root);
@@ -149,12 +170,27 @@ export async function provisionAndDeploy(root: string, config: DeployConfig, env
   console.log("  R2: " + buckets.map(bucket => bucket.bucket_name).join(", "));
   console.log("  Existing buckets and secrets are kept. Missing secrets are generated.");
   if (!yes && !(await confirm("Deploy now?", true))) return 1;
+  const scoped = createCommand(root, account);
+  // Provisioning runs after the decision and before the upload: nothing is
+  // created in the account for a deploy the operator cancelled, and nothing is
+  // uploaded that needs a resource this step failed to create.
+  if (beforeDeploy !== undefined) {
+    try {
+      await beforeDeploy(scoped, { account, worker: workerName(config, env), selected, env });
+    } catch (error) {
+      if (error instanceof DeployRefused) {
+        console.error("Refusing to deploy: " + error.message);
+        return 1;
+      }
+      throw error;
+    }
+  }
   // Persist the chosen account and production mode only after the deployment decision.
   config.account_id = account;
   selected.vars ??= {};
   selected.vars.ENVIRONMENT = "production";
   writeFileSync(join(root, "wrangler.jsonc"), JSON.stringify(config, null, 2) + "\n");
-  command = createCommand(root, account);
+  command = scoped;
   const environmentArgs = env ? ["--env", env] : [];
   if(existsSync(join(root,"auth.ts"))){
     const sender=selected.vars?.EMAIL_FROM??config.vars?.EMAIL_FROM;

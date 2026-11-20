@@ -368,6 +368,27 @@ async function readRows(
 }
 
 /**
+ * Which of `ids` this caller may read, through the same query path a search's
+ * candidates take. A row that is hidden, deleted or outside the caller's view
+ * is simply absent from the answer, so an operator cannot use this to learn
+ * that a row exists.
+ */
+export async function visibleRowIds(
+  input: { sql: SqlExecutor; claim: RoleClaim; reads?: <T>(fn: () => T) => Promise<T> },
+  model: string,
+  ids: readonly string[]
+): Promise<string[]> {
+  if (ids.length === 0) return [];
+  const rows = await readRows(input, {
+    model,
+    select: ["id"],
+    where: { id: { $in: [...ids] } } as QueryWhere,
+    limit: ids.length,
+  });
+  return rows.map((row) => String(row.id));
+}
+
+/**
  * Whether the vector the index holds for this row is still the row's vector.
  *
  * The digest covers the vector bytes and the filter values, so a row whose
