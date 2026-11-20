@@ -1,16 +1,17 @@
 # @tapedb/react-native
 
-React Native bindings for [tapedb](https://tapedb.dev), a typed database for
-Cloudflare: the same hooks as `@tapedb/react`, plus a durable queue for writes
-made offline.
+React Native support for [tapedb](https://tapedb.dev), a typed database for
+Cloudflare: a durable queue for writes made offline, and a client factory that
+wires it. React Native is a runtime, not a view layer, so this package needs
+neither `react` nor `react-native`.
 
 ```bash
-npm install @tapedb/tapedb @tapedb/react-native @react-native-async-storage/async-storage react
+npm install @tapedb/tapedb @tapedb/react-native @react-native-async-storage/async-storage
 ```
 
 ```tsx
 import { createReactNativeClient } from "@tapedb/react-native";
-import { useLive } from "@tapedb/react-native";
+import { useLive } from "@tapedb/react";
 
 const db = createReactNativeClient({ schema, url, workspace, userId, getToken });
 
@@ -48,19 +49,17 @@ The queue is scoped by `url` and `userId`, exactly like the browser's, so
 recreating the client on an account change does not replay the previous
 account's pending writes.
 
-## Import paths
+## The hooks are `@tapedb/react`'s
 
-`@tapedb/react-native` re-exports `@tapedb/tapedb/react` and pins the exact
-`@tapedb/tapedb` version it ships with, so the hooks are the core's own
-bindings rather than a copy:
+There are no React bindings here. On a device, use the same package the web uses:
 
 ```tsx
-import { useLive } from "@tapedb/react-native";      // preferred
-import { useLive } from "@tapedb/tapedb/react";      // same module, still supported
+import { useLive } from "@tapedb/react";
 ```
 
-`react` and `@react-native-async-storage/async-storage` are peer dependencies, the
-latter accepted as `^1.17.0 || ^2.0.0 || ^3.0.0`.
+It peers on React, which a React Native app already has. `@tapedb/react-native`
+peers on `@react-native-async-storage/async-storage` (`^1.17.0 || ^2.0.0 || ^3.0.0`)
+and on nothing else.
 
 `@tapedb/react-native` never imports `react-native`, so it loads wherever JavaScript
 runs. The queue keeps one storage key per pending write under a prefix, ordered by

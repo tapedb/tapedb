@@ -161,13 +161,16 @@ try {
     // Its peer is a store, not a runtime: the package must install and run in
     // Node, with `--legacy-peer-deps` so AsyncStorage's own `react-native`
     // peer is not dragged in.
+    // React Native is a runtime, not a view layer, so this package carries the
+    // queue and the client factory and nothing from the React bindings. It is
+    // installed with **no React at all**: a framework peer would fail here.
     {
-      dir: "packages/react-native", name: "@tapedb/react-native", entry: "react",
-      install: ["react@19", "@react-native-async-storage/async-storage@2.2.0"],
+      dir: "packages/react-native", name: "@tapedb/react-native",
+      install: ["@react-native-async-storage/async-storage@2.2.0"],
       installOptions: ["--legacy-peer-deps"],
       type: "AsyncStorageOutbox",
       own: ["AsyncStorageOutbox", "createReactNativeClient"],
-      superset: true, functional: "react-native",
+      standalone: true, functional: "react-native",
     },
   ];
   for (const wrapper of wrappers) {
@@ -230,10 +233,20 @@ try {
     const probe = [
       'import assert from "node:assert/strict";',
       `import * as alias from "${wrapper.name}";`,
-      `import * as subpath from "@tapedb/tapedb/${wrapper.entry}";`,
-      'assert.ok(Object.keys(subpath).length > 0, "the subpath must export names");',
     ];
-    if (wrapper.superset) {
+    if (!wrapper.standalone) {
+      probe.push(
+        `import * as subpath from "@tapedb/tapedb/${wrapper.entry}";`,
+        'assert.ok(Object.keys(subpath).length > 0, "the subpath must export names");',
+      );
+    }
+    if (wrapper.standalone) {
+      probe.push(
+        `assert.deepEqual(Object.keys(alias).sort(), ${JSON.stringify(wrapper.own.slice().sort())}, "${wrapper.name} exports its own names and no framework bindings");`,
+        'const reactLoaded = await import("react").then(() => true).catch(() => false);',
+        'assert.equal(reactLoaded, false, "no React in the graph: this package must install and import without it");',
+      );
+    } else if (wrapper.superset) {
       probe.push(
         `for (const name of Object.keys(subpath)) assert.equal(alias[name], subpath[name], name + " must be the core react entry's own binding, not a copy");`,
         `assert.deepEqual(Object.keys(alias).filter((name) => !(name in subpath)).sort(), ${JSON.stringify(wrapper.own)}, "${wrapper.name} adds its own queue, and nothing else");`,

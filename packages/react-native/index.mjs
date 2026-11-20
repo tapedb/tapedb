@@ -1,13 +1,12 @@
-// `@tapedb/react-native` is `@tapedb/tapedb/react` — same hooks, same module,
-// same release — plus the one thing React Native needs that a browser gets for
-// free: a durable queue for writes made while offline. The view layer is thin
-// and this file has to run under Node too (its smoke test imports it there),
-// so nothing here imports `react-native`: the store is a peer module and an
-// interface the core defines, and the app's own AsyncStorage satisfies it.
+// `@tapedb/react-native` is the one thing React Native needs that a browser
+// gets for free: a durable queue for writes made while offline, and a client
+// factory that wires it. React Native is a runtime, not a view layer, so this
+// package depends on neither `react` nor `react-native`: the store is an
+// interface the core defines and the app's own AsyncStorage satisfies it. Use
+// `@tapedb/react` for the hooks — it is the same module on web and on device.
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { AsyncStorageOutbox, createClient, scopedOutboxName } from "@tapedb/tapedb";
 
-export * from "@tapedb/tapedb/react";
 export { AsyncStorageOutbox } from "@tapedb/tapedb";
 
 /**
