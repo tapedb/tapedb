@@ -11,6 +11,10 @@ import type { Models, Schema } from "../model/schema";
 import { dryTransport, SeedContext, type SeedOp, type SeedTransport } from "./context";
 import { Random } from "./rng";
 
+// `SeedContext.relations` is typed as `Record<string, RelationInfo>`, so the type
+// is already part of this entry's public surface. It is named here so a consumer
+// can write that type down without a TS2742 from declaration emit.
+export type { RelationInfo } from "../model/schema";
 export type { SeedContext, SeedModel, SeedOp, SeedTransport } from "./context";
 export { Random } from "./rng";
 

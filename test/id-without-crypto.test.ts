@@ -1,7 +1,6 @@
 /**
- * Hermes has no Web Crypto, so `globalThis.crypto` is absent on React Native.
- * Two call sites used it unguarded and the app died on the first render —
- * found by running the queue on a simulator, not by any test in Node.
+ * React Native has no Web Crypto, so `globalThis.crypto` is absent there and two
+ * call sites used it unguarded: the app died on the first render.
  *
  * These cases remove the global and check the ids still work, which is the
  * mechanism that crash depended on.

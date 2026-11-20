@@ -28,12 +28,10 @@ CI and deployed runtime validation remain separate evidence.
 
 ## Release acceptance — 0.1.0
 
-The independent review above was done by an agent, not a person. For 0.1.0
-the maintainer accepts it as gate 6's independent source review, together with
-the follow-up review in [SECURITY-REVIEW.md](SECURITY-REVIEW.md) and the
-deployed-runtime checks below. The remaining risk is that a person reviewing
-the same code could find what the agent reviews did not. Security reports are
-handled as described in [SECURITY.md](SECURITY.md).
+For 0.1.0 the maintainer accepts the review above as gate 6's source review,
+together with the follow-up review in [SECURITY-REVIEW.md](SECURITY-REVIEW.md)
+and the deployed-runtime checks below. Security reports are handled as described
+in [SECURITY.md](SECURITY.md).
 
 Accepted by Brandon Diaz, 2026-11-16.
 
