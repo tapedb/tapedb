@@ -270,6 +270,7 @@ the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
 | `realtime` | **experimental**: `RealtimeOptions` `{ authorize?, maxPresenceRooms?, replaySeconds? }`: one `RealtimeAuthorizer` for presence rooms and broadcast topics, the rooms one socket may hold (default 4, `0` refuses presence), and the seconds of each topic kept for a listener that reconnects (default 60, `0` keeps none) — see [Presence](#presence) |
 | `topics` | **experimental**, **deprecated** alias of `realtime`: `TopicOptions` `{ authorize?, replaySeconds? }`, whose `authorize` covers topic kinds only and is consulted only when `realtime.authorize` is absent |
 | `limits` | **experimental**: `LimitsOptions` `{ writes?: { models?: { [model]: { count, windowSeconds } }, workspace?: { count, windowSeconds } } }` — per-model and per-workspace write budgets, see [Write budgets](#write-budgets) |
+| `http` | **experimental**: `HttpApiOptions` `{ token }` — the admin HTTP API (`POST /v1/query`, `/v1/transact`, `/v1/claim`) for a backend server. `token` is the shared secret such a caller sends, at least 32 bytes: a string, refused when the Worker is defined if it is shorter, or `(env) => env.TAPEDB_API_TOKEN`, the form a deployment uses. Absent, the paths answer 404 — see [Admin HTTP API](#admin-http-api) |
 
 Also exported: `signRoleClaim(secret, { sub, workspaceId, role, iss?, aud?,
 ttlSeconds? }, now?)` → `{ token, expiresAt, expiresIn }` and
@@ -284,7 +285,8 @@ allow consumers to emit declarations without leaking private names.
 `ModelOptions` is also exported from `@tapedb/tapedb/schema`.
 `TopicAction`, `TopicAuthorizer` and `TopicGap` are **experimental**, and so are
 `RealtimeOptions`, `RealtimeAuthorizer`, `RealtimeAuthorizeContext` and
-`RealtimeKind`, and `LimitsOptions`, `WriteLimitsOptions` and `WriteLimit`.
+`RealtimeKind`, and `LimitsOptions`, `WriteLimitsOptions` and `WriteLimit`, and
+`HttpApiOptions` and `HttpApiToken`.
 
 ### Write budgets
 
@@ -483,6 +485,69 @@ An upgrade or restore from state with missing receipts preserves a fixed
 boundary: unknown retries with `issuedAt` at or before it return
 `retry_expired` (410). Known receipts are acknowledged even before that boundary.
 
+### Admin HTTP API
+
+A backend — a queue consumer, a cron job, your own API — can read, write and
+mint claims for a workspace without holding a browser socket. It is one option
+and three routes, off by default:
+
+```ts
+import { defineTapeDB } from "@tapedb/tapedb/worker";
+
+export default defineTapeDB({
+  schema,
+  http: { token: (env) => env.TAPEDB_API_TOKEN },
+});
+```
+
+`token` is at least 32 bytes, the same rule `TAPEDB_CLAIM_SECRET` follows; a
+literal string is refused when the Worker is defined, and the function form is
+refused on the request that reads it (`500 api_token_misconfigured`). Store it
+as a secret (`wrangler secret put TAPEDB_API_TOKEN`); the variable's name is
+yours to choose.
+
+**Off by default.** Without `http` these three paths answer `404 no_route`,
+like any other unknown path, so an API a deployment did not enable cannot be
+found by probing for it.
+
+Callers send `authorization: Bearer <token>`. The token is compared in
+constant time, before the body is read and before a workspace is addressed, and
+it never appears in a response. A missing or wrong token is `401
+unauthorized`; so is an engine claim presented in that header — the two secrets
+are different.
+
+| Route | |
+| --- | --- |
+| `POST /v1/query` | `{ workspace, as: { sub, role }, query }` → `{ ok, data, pageInfo }`: the answer the same read gives over the socket |
+| `POST /v1/transact` | `{ workspace, as: { sub, role }, writes, clientTxId? }` → `{ ok, result }`. `writes` is the transaction's `ops` array; `clientTxId` makes a retry a replay rather than a second write |
+| `POST /v1/claim` | `{ workspace, as: { sub, role } }` → `{ token, workspaceId, roleLevel, expiresAt, expiresIn }`: a claim for that subject, to hand to a client |
+
+`workspace` must be a workspace id (a UUID); anything else is `400
+invalid_workspace_id`, answered before a Durable Object is addressed. `as` is
+validated like any claim: `sub` non-empty and at most 256 characters (`400
+invalid_sub`), `role` a whole level from 0 to 8 (`400 invalid_role`), and the
+object itself `{ sub, role }` (`400 invalid_as`).
+
+**`as` is an identity, not a privilege.** Every request names who it acts as,
+and the engine evaluates the rules for that identity exactly as it does for a
+socket holding that claim: role levels, `filter` view rules, `check` write
+rules, file rules. Nothing is bypassed — a backend acting as `admin` still
+fails a rule that denies admins, and a `filter` rule still hides the rows that
+subject may not read. That is deliberate: an admin claim that skipped the rules
+would make one leaked token read every row of every workspace and turn the
+rules a deployment wrote into documentation instead of enforcement.
+
+Writes go through the same pipeline as a client's: validation, rules, the
+`limits.writes` budget, the log, webhooks and live-query invalidation.
+`POST /v1/transact` spends the budget like any other write, and a refusal is
+the same `429 rate_limited` with `Retry-After` (and `model`, `limit`,
+`windowSeconds`, `retryAfterMs` in the body) — the admin API is not a way
+around the limits, and a budget it exhausts refuses the socket path too.
+
+The claim `/v1/claim` mints is an ordinary claim: a client holding it reaches
+exactly the routes its role allows. Minting needs `TAPEDB_CLAIM_SECRET` and
+honours `TAPEDB_CLAIM_ISSUER` and `TAPEDB_CLAIM_AUDIENCE` when they are set.
+
 
 **Export format, version 1.** One JSON object per line: a
 `{"type":"header","format":"tapedb-export","version":1,…}` line, then `row`
@@ -614,6 +679,9 @@ usually handles:
 | `workspace_erased` | 410 | the workspace was erased |
 | `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds. The client retries on its own for up to a minute |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |
+| `unauthorized` | 401 | the admin HTTP API's bearer token is missing or wrong (see [Admin HTTP API](#admin-http-api)) |
+| `invalid_as` | 400 | the admin HTTP API's `as` is not `{ sub, role }` |
+| `api_token_misconfigured` | 500 | `http.token` resolved to nothing, or to fewer than 32 bytes |
 | `jurisdiction_mismatch` | 500 | the Worker reached a room outside `TAPEDB_JURISDICTION` |
 
 Socket refusals use their own codes rather than a status: `presence_denied`,
