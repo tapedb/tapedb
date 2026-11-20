@@ -569,6 +569,41 @@ Writes keep landing during an export; `end.consistent` is true when none did,
 and the export is then the workspace exactly at `end.seq`. An export that
 stops early ends with an `error` line instead of `end` (the CLI exits 1).
 
+## Backup and restore
+
+```bash
+npx tapedb-cli backup --workspace <uuid> --out ./backup   # TAPEDB_TOKEN, or a dev claim
+npx tapedb-cli backup --workspace <uuid> --out ./backup --dry-run
+npx tapedb-cli restore --from ./backup --into <uuid> --dry-run
+npx tapedb-cli restore --from ./backup --into <uuid>
+```
+
+`backup` writes a directory: `rows.ndjson` — the export above, saved as it
+arrives, so the `header`, `row`, `file` and `end` records are the engine's own
+bytes — `files/<path>` with the bytes of every file the export names, and
+`backup.json`, which holds the format, the version, the workspace, the
+sequence, the row counts and a sha256 and byte length for each part. An export
+that was not consistent (writes landed while it streamed) is refused, because
+the copy would not be one point in time. `backup --dry-run` streams the same
+records, hashes them and prints the counts, and writes nothing — not even the
+directory, so it is safe to run against a workspace you are unsure about.
+
+`restore` checks every part against `backup.json` before it writes anything: a
+missing file, one changed byte or a truncated export is named and refused, and
+the destination is untouched. It then posts the rows through
+`POST /engine/workspaces/:id/import` — the path `tapedb move` uses, which
+preserves row timestamps — and uploads each file's bytes through the file
+route, so the file index and R2 keys are rebuilt for that workspace instead of
+copied from the backup. `--into` picks the destination (default: the workspace
+the backup came from).
+
+The destination must be empty. Import needs a workspace with no rows, files or
+history, so a restore into one that already holds any of them is refused, and
+running the same restore twice is a clean error rather than a copy on top of a
+copy. An erased workspace stays erased (it answers 410), so restore it into a
+new one with `--into`. `--dry-run` verifies every part and prints the counts
+and hashes; it writes nothing and sends nothing.
+
 ## Audit
 
 ```ts
@@ -868,7 +903,7 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | `@tapedb/tapedb/seed` | `defineSeeder`, `runSeeder` | no |
 
 The CLI is a command, not an import: `npx tapedb-cli init | migrate | dev | studio
-| deploy | export | seed | erase | move`.
+| deploy | export | backup | restore | seed | erase | move`.
 
 [API.md](API.md) is the reference: every export and signature, what is stable
 and what is experimental, the HTTP routes, the export format and the error

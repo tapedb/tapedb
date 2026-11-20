@@ -28,6 +28,7 @@ import { migrateCheck, migrateDev, migrateRollback, readMigrations, readSnapshot
 import { migrateSquash } from "./squash";
 import { mintToken, startStudio } from "./studio";
 import { moveWorkspaces } from "./move";
+import { backupWorkspace, restoreWorkspace } from "./backup";
 import { loadSchema } from "./load-schema";
 import { parseFlags } from "./flags";
 import { seedProject } from "./seed";
@@ -427,6 +428,8 @@ Usage:
   npx tapedb-cli studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]
   npx tapedb-cli export --workspace <uuid> [--url <worker-url>] [--out <file>]
   npx tapedb-cli seed --workspace <uuid> [--file <tapedb.seed.ts>] [--url <worker-url>] [--seed <label>]
+  npx tapedb-cli backup --workspace <uuid> --out <dir> [--url <worker-url>] [--dry-run]
+  npx tapedb-cli restore --from <dir> [--into <uuid>] [--url <worker-url>] [--dry-run]
   npx tapedb-cli erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]
   npx tapedb-cli move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]
 
@@ -447,6 +450,14 @@ Commands:
   export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).
   seed    Run the project's seeder against a running Worker: --seed makes the
           same seed give the same rows. --dry-run checks without writing.
+  backup  Write a workspace as a directory: rows.ndjson (the export verbatim),
+          files/<path> with each file's bytes, and backup.json with a sha256 for
+          every part. --workspace may come from TAPEDB_WORKSPACE. --dry-run
+          reads and hashes and writes nothing.
+  restore Import a backup into an empty workspace: every hash is verified before
+          anything is written, and a destination that already holds rows or
+          files is refused. --into picks the workspace (default: the one the
+          backup came from). --dry-run verifies and prints counts and hashes.
   erase   Delete a workspace for good: its data, history and files (owner claim).
           --confirm must repeat the workspace id. The id answers 410 afterwards.
 `);
@@ -671,6 +682,8 @@ export async function run(argv: string[]): Promise<number> {
   if (command === "studio") return studio(argv.slice(1));
   if (command === "export") return exportWorkspace(argv.slice(1));
   if (command === "seed") return seedProject(argv.slice(1));
+  if (command === "backup") return backupWorkspace(argv.slice(1));
+  if (command === "restore") return restoreWorkspace(argv.slice(1));
   if (command === "erase") return eraseWorkspace(argv.slice(1));
   if (command === "move") return moveWorkspaces(argv.slice(1));
   if (command === undefined || command === "--help" || command === "-h") {
