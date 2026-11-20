@@ -97,6 +97,13 @@ Only after the gates and checks.
    on the private `tapedb-staging` repository — never from the public repo, and
    never from GitHub Actions, which this project does not use.
 
+   Workers Builds checks out the branch, not the tag, so the trigger states
+   which release it is building: set `RELEASE_TAG=vX.Y.Z` in its environment
+   variables alongside `NPM_TOKEN`. The script then checks that every package in
+   the checkout carries exactly that version and refuses the build if any of
+   them disagrees — the tag is an assertion the release makes, and the manifests
+   have to agree with it.
+
    The trigger's build command runs the gates (`bun install --frozen-lockfile &&
    bun run verify`) and its deploy command is one line:
 
