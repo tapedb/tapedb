@@ -197,6 +197,14 @@ describe("an embedding that cannot be stored", () => {
     expect(body.error.message).toContain("Cannot filter on non-scalar attribute");
   });
 
+  test("ordering by an embedding is refused", async () => {
+    const ordered = await query({ note: { $: { order: { embedding: "asc" } } } });
+    expect(ordered.status).toBe(400);
+    const body = (await ordered.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("invalid_value");
+    expect(body.error.message).toContain("Cannot order by non-scalar attribute");
+  });
+
   test("grouping and aggregating an embedding are refused", async () => {
     const grouped = await query({ note: { $: { limit: 0, aggregate: { groupBy: ["embedding"], count: true } } } });
     expect(grouped.status).toBe(400);
