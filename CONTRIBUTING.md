@@ -19,8 +19,8 @@ in-memory SQLite, and the client tests use a fake socket and a fake fetch.
 To try the product itself:
 
 ```bash
-npx tapedb-cli init     # writes a Worker, a schema, wrangler config and .dev.vars
-npx tapedb-cli dev      # local database, and the studio at http://localhost:8787/
+npx @tapedb/cli init     # writes a Worker, a schema, wrangler config and .dev.vars
+npx @tapedb/cli dev      # local database, and the studio at http://localhost:8787/
 ```
 
 ## What goes where
@@ -41,6 +41,37 @@ they are worth stating:
 2. **Nothing in `src/` may reference the application this was extracted from.**
    No product names, no table names, no bucket names. `bun test` does not check
    this; review does.
+
+## Packages and entry points
+
+One rule decides whether something becomes a package, so `@tapedb/tapedb/xyz →
+@tapedb/xyz` can never happen ad hoc:
+
+> **A package is a distribution unit with its own dependency or peer graph.
+> A subpath is an entry point of the core's own graph.
+> Framework bindings and optional-peer integrations are always packages.**
+
+Every package is a re-export of one core entry (`export * from
+"@tapedb/tapedb/<entry>"`), never a fork; the CLI is the one package that runs
+the core's bin instead. Each package carries the core version, pins
+`"@tapedb/tapedb"` to that exact version, and publishes publicly.
+
+| entry | form | notes |
+| --- | --- | --- |
+| core | `@tapedb/tapedb` | the product name; not renamed |
+| CLI | `@tapedb/cli` (`packages/cli`) | bin stays `tapedb-cli`; core keeps its `tapedb` bin |
+| React bindings | `@tapedb/react` (`packages/react`) | peer `react ^19`; `@tapedb/tapedb/react` stays as an alias indefinitely |
+| Auth integration | `@tapedb/auth` (`packages/auth`) | optional peer `better-auth` |
+| Email helper | `@tapedb/email` (`packages/email`) | |
+| React Native | `@tapedb/react-native` | when the AsyncStorage outbox adapter exists — it carries real code, so it is not a thin alias |
+| Vue / Svelte / Solid | `@tapedb/vue` etc. | only in the release where each wrapper lands; no placeholder packages |
+| core entry points | `./schema`, `./worker`, `./studio`, `./seed`, `./react`, `./auth`, `./email` | same package, same dependency graph, no peer |
+
+Adding a subpath to `src/` does not create a package, and adding a package does
+not move the entry: the subpath stays supported. A new framework or integration
+package means a new directory under `packages/` with the shape above, a case in
+`scripts/package-smoke.mjs`, and a line in [RELEASING.md](RELEASING.md)'s
+publish order — that is what keeps the two names one release.
 
 ## Tests
 
@@ -126,7 +157,7 @@ under `npx` and uploads refusing to run under `tapedb dev`, was invisible to
 bun run verify
 bun pm pack --destination /tmp/pack          # the published artifact
 cd $(mktemp -d) && npm init -y && npm i /tmp/pack/tapedb-*.tgz wrangler
-npx tapedb-cli init && npx tapedb-cli dev            # then drive it with a script:
+npx @tapedb/cli init && npx @tapedb/cli dev          # then drive it with a script:
                                              # writes, a live subscription,
                                              # an upload, a migration
 ```

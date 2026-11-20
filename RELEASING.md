@@ -62,9 +62,12 @@ gitleaks detect --source . --redact --no-banner --verbose   # gitleaks v8.30.1
 
 The package smoke test inside `verify` installs the tarball under Node in
 default npm, CommonJS and ESM projects. It uses Node 22.18 or newer and npm, and emits consumer TypeScript declarations.
-It also packs `packages/react`, installs it beside the packed core, and requires
-the alias to export the subpath's own bindings — and to pin the exact core
-version, so a wrapper left behind by a release fails the gate.
+It then packs every package under `packages/` — `@tapedb/cli`, `@tapedb/react`,
+`@tapedb/auth` and `@tapedb/email` — and installs each one beside the packed
+core tarball, never from the registry. Each case requires the package to carry
+the core version and pin it exactly, to ship only its declared files, and to
+hand back the subpath's own bindings (for the CLI, to run the core's own CLI
+with its exit codes), so a wrapper left behind by a release fails the gate.
 
 Exercise the packed product as a consumer would:
 
@@ -72,8 +75,8 @@ Exercise the packed product as a consumer would:
 cd "$(mktemp -d)"
 npm init -y
 npm install /tmp/pack/tapedb-tapedb-*.tgz /tmp/pack/tapedb-cli-*.tgz wrangler
-npx tapedb-cli init
-npx tapedb-cli dev
+npx @tapedb/cli init
+npx @tapedb/cli dev
 ```
 
 Drive that project through a write, a live subscription, an upload, a
@@ -84,27 +87,33 @@ migration and erasure. Do not release on the strength of the unit suite alone.
 Only after the gates and checks:
 
 1. Update `CHANGELOG.md` and set the intended version in `package.json`, and
-   the same version in `packages/tapedb-cli/package.json` and
-   `packages/react/package.json` (each one's `version` and its `@tapedb/tapedb`
-   dependency). All three move in lockstep: the wrappers pin the core version
-   exactly.
+   the same version in `packages/cli/package.json`, `packages/react/package.json`,
+   `packages/auth/package.json` and `packages/email/package.json` (each one's
+   `version` and its `@tapedb/tapedb` dependency). All five move in lockstep:
+   the four packages pin the core version exactly.
 2. Open the release pull request and remove `"private": true` there. Keep
    `publishConfig` and the repository metadata. Merge only after the checks
    pass.
 3. Create an annotated tag and GitHub release from the merged commit.
 4. From that tag on a clean checkout, run the package checks again.
-5. Publish:
+5. Publish, in this order:
 
    ```bash
    npm publish --access public
-   cd packages/tapedb-cli && npm publish --access public
+   cd packages/cli && npm publish --access public
    cd ../react && npm publish --access public
+   cd ../auth && npm publish --access public
+   cd ../email && npm publish --access public
    ```
 
-   Publish `@tapedb/tapedb` first, then `tapedb-cli`, then `@tapedb/react`: both
-   wrappers depend on that exact core version, so publishing either one first
-   puts a pin on the registry that resolves to nothing. The order is the whole
-   guarantee that `@tapedb/react` and `@tapedb/tapedb/react` are one release.
+   `@tapedb/tapedb` → `@tapedb/cli` → `@tapedb/react` → `@tapedb/auth` →
+   `@tapedb/email`. The order is forced by the exact pins: every package
+   depends on `"@tapedb/tapedb": "<this version>"`, so publishing any of them
+   before the core puts a pin on the registry that resolves to nothing, and a
+   consumer install fails until the core appears. Publishing in this order is
+   the whole guarantee that `@tapedb/react` and `@tapedb/tapedb/react` (and the
+   auth and email pairs) are one release. The wrappers may be published in any
+   order among themselves; the core must come first.
 
    Without an npm CI service there is no OIDC token, so this publish carries no
    provenance attestation. Do not add `--provenance` unless the publish runs in
@@ -114,9 +123,11 @@ Only after the gates and checks:
 
    ```bash
    npm view @tapedb/tapedb version dist-tags.latest
-   npm view tapedb-cli version dist-tags.latest
+   npm view @tapedb/cli version dist-tags.latest
    npm view @tapedb/react version dist-tags.latest
-   cd "$(mktemp -d)" && npx tapedb-cli init
+   npm view @tapedb/auth version dist-tags.latest
+   npm view @tapedb/email version dist-tags.latest
+   cd "$(mktemp -d)" && npx @tapedb/cli init
    ```
 
 7. Make the GitHub repository public and enable branch protection and secret
@@ -126,6 +137,10 @@ Only after the gates and checks:
 
 - Publish a GitHub release with the changelog.
 - Keep the previous version installable and document any migration steps.
+- Deprecate the unscoped `tapedb-cli` name in favour of `@tapedb/cli` once the
+  scoped package is installable: `npm deprecate tapedb-cli "Moved to @tapedb/cli"`
+  (or the equivalent message for the version range that still points at the old
+  name). A deprecated package still installs, so this breaks nobody.
 - If a release is broken, deprecate it with `npm deprecate` and publish a fixed
   version. Do not rewrite a published version or tag.
 - Never put `TAPEDB_CLAIM_SECRET`, claim tokens, Cloudflare credentials or
