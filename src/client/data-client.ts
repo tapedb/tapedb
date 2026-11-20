@@ -22,6 +22,7 @@ import type {
   InitConfig,
   OutboxEntry,
   PresencePeer,
+  PresencePeersOptions,
   QueryDocument,
   QueryEntity,
   QueryError,
@@ -373,7 +374,7 @@ class DataClientImpl {
   private readonly inFlight = new Set<string>();
   /** Unacked optimistic ops, replayed over server data until they are acked. */
   private readonly pendingOps = new Map<string, readonly TxOp[]>();
-  private readonly presencePeers = new Map<string, PresencePeer[]>();
+  private readonly peerCache = new Map<string, PresencePeer[]>();
   private readonly topicListeners = new Map<string, Set<TopicListener>>();
   /** Last sequence seen per joined topic; a rejoin asks for what came after. */
   private readonly topicSeq = new Map<string, number>();
@@ -381,9 +382,11 @@ class DataClientImpl {
   private readonly topicQueue = new Map<string, Array<{ message: unknown; at: number }>>();
   /** This client's id across connections: replay skips its own messages. */
   private readonly topicOrigin = crypto.randomUUID();
+  /** Who this socket is, from `session:ready`; undefined until then. */
+  private sessionClientId: string | undefined;
   private readonly presenceListeners = new Map<
     string,
-    Set<(peers: PresencePeer[]) => void>
+    Set<{ includeSelf: boolean; listener: (peers: PresencePeer[]) => void }>
   >();
   private readonly localPresence = new Map<
     string,
@@ -710,6 +713,11 @@ class DataClientImpl {
     return tracked;
   }
 
+  /** This socket's session id from `session:ready`; what peers are matched against. */
+  get clientId(): string | undefined {
+    return this.sessionClientId;
+  }
+
   publishPresence(target: string, presence: unknown): void {
     const entry = this.localPresence.get(target) ?? {};
     entry.presence = presence;
@@ -750,27 +758,58 @@ class DataClientImpl {
   clearPresence(target: string): void {
     this.localPresence.delete(target);
     this.socket?.send({ type: "presence:clear", target });
-    this.presencePeers.delete(target);
+    this.peerCache.delete(target);
     this.notifyPresence(target);
   }
 
   subscribePresence(
     target: string,
-    listener: (peers: PresencePeer[]) => void
+    listener: (peers: PresencePeer[]) => void,
+    options: PresencePeersOptions = {}
   ): () => void {
     let listeners = this.presenceListeners.get(target);
     if (!listeners) {
       listeners = new Set();
       this.presenceListeners.set(target, listeners);
     }
-    listeners.add(listener);
+    const entry = { includeSelf: options.includeSelf === true, listener };
+    listeners.add(entry);
     this.ensureSocket();
-    listener(this.presencePeers.get(target) ?? []);
+    listener(this.peersFor(target, entry.includeSelf));
 
     return () => {
-      listeners?.delete(listener);
+      listeners?.delete(entry);
       if (listeners?.size === 0) this.presenceListeners.delete(target);
     };
+  }
+
+  presencePeers(
+    target: string,
+    options: PresencePeersOptions = {}
+  ): Promise<PresencePeer[]> {
+    this.ensureSocket();
+    return Promise.resolve(this.peersFor(target, options.includeSelf === true));
+  }
+
+  /**
+   * A room's peers as this client should see them.
+   *
+   * The server sends every socket in the room, the caller included, because a
+   * client that predates `session:ready.clientId` has no other way to tell
+   * which cursor is its own. Here the caller's own entry is dropped — a peer
+   * list is about the others — unless `includeSelf` asks for it, in which case
+   * it is marked so an app can render "you" without guessing by name.
+   */
+  private peersFor(target: string, includeSelf: boolean): PresencePeer[] {
+    const peers = this.peerCache.get(target) ?? [];
+    const self = this.sessionClientId;
+    // No id yet (socket still opening) or an old Worker that never sent one:
+    // the list is shown as it came, which is what such a Worker always did.
+    if (self === undefined) return peers;
+    if (!includeSelf) return peers.filter((peer) => peer.clientId !== self);
+    return peers.map((peer) =>
+      peer.clientId === self ? { ...peer, isSelf: true as const } : peer
+    );
   }
 
   /**
@@ -1123,6 +1162,8 @@ class DataClientImpl {
       createWebSocket: this.createWebSocket,
       onSessionReady: () => {
         this.authFailures = 0;
+        // A reconnect is a new socket with a new id; the old one is gone.
+        this.sessionClientId = undefined;
         this.resubscribeAll();
         this.republishPresence();
         for (const topic of this.topicListeners.keys()) {
@@ -1164,25 +1205,33 @@ class DataClientImpl {
     clientId: string,
     patch: Partial<Pick<PresencePeer, "cursor" | "drag">>
   ): void {
-    const peers = this.presencePeers.get(target);
+    const peers = this.peerCache.get(target);
     if (!peers) return;
     const index = peers.findIndex((peer) => peer.clientId === clientId);
     if (index === -1) return;
     const next = [...peers];
     next[index] = { ...next[index], ...patch };
-    this.presencePeers.set(target, next);
+    this.peerCache.set(target, next);
     this.notifyPresence(target);
   }
 
   private notifyPresence(target: string): void {
-    const peers = this.presencePeers.get(target) ?? [];
     const listeners = this.presenceListeners.get(target);
     if (!listeners) return;
-    for (const listener of listeners) listener(peers);
+    for (const entry of [...listeners]) {
+      entry.listener(this.peersFor(target, entry.includeSelf));
+    }
   }
 
   private handleServerMessage(message: ServerMessage): void {
     switch (message.type) {
+      case "session:ready": {
+        // Who this socket is. Presence already cached may hold the caller's
+        // own entry, so every room re-announces with the id in hand.
+        this.sessionClientId = typeof message.clientId === "string" ? message.clientId : undefined;
+        for (const target of [...this.presenceListeners.keys()]) this.notifyPresence(target);
+        return;
+      }
       case "topic:joined": {
         // Where the topic stands. A room that restarted from scratch counts
         // from its own number, lower than ours.
@@ -1222,7 +1271,7 @@ class DataClientImpl {
         return;
       }
       case "presence:update": {
-        this.presencePeers.set(message.target, message.peers);
+        this.peerCache.set(message.target, message.peers);
         this.notifyPresence(message.target);
         return;
       }
@@ -1530,6 +1579,9 @@ export function createClientParts(
   const resolved = resolveConfig(config);
 
   const client: HeadlessDataClient = {
+    get clientId() {
+      return impl.clientId;
+    },
     transact: (input) => impl.transact(input),
     get files() {
       return createStorageClient({
@@ -1553,8 +1605,9 @@ export function createClientParts(
         publishCursor: (cursor) => impl.publishCursor(target, cursor),
         publishDrag: (drag) => impl.publishDrag(target, drag),
         clearDrag: () => impl.clearDrag(target),
-        subscribePresence: (listener) =>
-          impl.subscribePresence(target, listener),
+        peers: (options) => impl.presencePeers(target, options),
+        subscribePresence: (listener, options) =>
+          impl.subscribePresence(target, listener, options),
         leave: () => impl.clearPresence(target),
       };
     },
@@ -1569,8 +1622,9 @@ export function createClientParts(
     publishDrag: (target, drag) => impl.publishDrag(target, drag),
     clearDrag: (target) => impl.clearDrag(target),
     clearPresence: (target) => impl.clearPresence(target),
-    subscribePresence: (target, listener) =>
-      impl.subscribePresence(target, listener),
+    presencePeers: (target, options) => impl.presencePeers(target, options),
+    subscribePresence: (target, listener, options) =>
+      impl.subscribePresence(target, listener, options),
     connect: () => impl.connect(),
     close: () => impl.close(),
   };

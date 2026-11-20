@@ -1142,16 +1142,29 @@ describe("WorkspaceRoom live queries", () => {
       }
     });
 
-    test("carries presence of any size, and forgets a closed socket's stored state", async () => {
+    test("bounds a socket's presence in bytes, and forgets a closed socket's stored state", async () => {
       const big = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "big");
       const peer = await connect(WORKSPACE_ROLE_LEVELS.MEMBER, "peer");
-      const presence = { name: "x".repeat(40_000) };
       await send(peer, { type: "presence:set", target: "doc", presence: { name: "p" } });
       peer.clear();
-      await send(big, { type: "presence:set", target: "doc", presence });
-      const update = peer.messages().find((message) => message.type === "presence:update") as { peers: Array<{ presence: unknown }> };
-      expect(update.peers.map((entry) => entry.presence)).toContainEqual(presence);
 
+      // Presence has a byte budget of its own: rooms are cheap, bytes are what
+      // an attachment pays for and what a client can abuse.
+      const tooBig = { name: "x".repeat(40_000) };
+      await send(big, { type: "presence:set", target: "doc", presence: tooBig });
+      expect(big.messages().at(-1)).toMatchObject({ type: "error", code: "presence_state_too_large" });
+      // Refused before storing: the room heard nothing.
+      expect(peer.messages()).toEqual([]);
+
+      const fits = { name: "y".repeat(1_000) };
+      await send(big, { type: "presence:set", target: "doc", presence: fits });
+      const update = peer.messages().find((message) => message.type === "presence:update") as { peers: Array<{ presence: unknown }> };
+      expect(update.peers.map((entry) => entry.presence)).toContainEqual(fits);
+
+      // State past the attachment's 16 KiB (a wide subscription here) is
+      // stored instead, and a socket that closes takes it with it.
+      const ids = Array.from({ length: 4_000 }, (_, index) => `board-${index}`);
+      await send(big, { type: "query:subscribe", id: "wide", query: { kanbanBoards: { $: { where: { id: { $in: ids } } } } } });
       const stored = () => Number(db.query(`SELECT COUNT(*) AS n FROM "_socket_state"`).get()!.n as number);
       expect(stored()).toBeGreaterThan(0);
       room.webSocketClose(big as unknown as WebSocket, 1000, "bye");

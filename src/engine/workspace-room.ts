@@ -56,7 +56,7 @@ import { readMove, readMoveWithRetries, writeMove, sourceEnvironment, jurisdicti
 import { flushPending, snapshotWorkspace } from "./durability";
 import { describeAccess, viewDependsOnSubject } from "./tx-permissions";
 import { readLog } from "./log-read";
-import { isTopic, REPLAY_MESSAGES, topicAllowed, topicReplayMs } from "./topics";
+import { isTopic, REPLAY_MESSAGES, maxPresenceRooms, realtimeAllowed, topicReplayMs } from "./topics";
 import { auditEnabled, dropAuditCapture, rowHistory, syncAuditCapture } from "./audit";
 import { findNamespace } from "./registry";
 import { handleLimitRequest, isLimiterName } from "./claim-limits";
@@ -76,6 +76,10 @@ import {
   claimFromAttachment,
   isPresenceTarget,
   parseSocketAttachment,
+  PRESENCE_STATE_BYTES,
+  presenceEntry,
+  presenceStateBytes,
+  presenceTargets,
   type PresencePeer,
   type QueryDiffMessage,
   type SocketAttachment,
@@ -1007,6 +1011,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
       type: "session:ready",
       workspaceId: this.workspaceId,
       connections,
+      // Who this socket is, so a peer list can leave the caller out.
+      clientId: accepted.attachment.clientId,
     });
 
     // A client that offered subprotocols fails the handshake unless one is selected.
@@ -1120,28 +1126,28 @@ export class WorkspaceRoom extends DurableObject<Env> {
         this.handleUnsubscribe(ws, attachment, payload);
         return;
       case "presence:set":
-        this.handlePresenceSet(ws, attachment, payload);
+        await this.handlePresenceSet(ws, attachment, payload);
         return;
       case "presence:clear":
-        this.handlePresenceClear(ws, attachment, payload);
+        await this.handlePresenceClear(ws, attachment, payload);
         return;
       case "cursor:set":
-        this.handleCursorSet(ws, attachment, payload);
+        await this.handleCursorSet(ws, attachment, payload);
         return;
       case "drag:set":
-        this.handleDragSet(ws, attachment, payload);
+        await this.handleDragSet(ws, attachment, payload);
         return;
       case "drag:clear":
-        this.handleDragClear(ws, attachment, payload);
+        await this.handleDragClear(ws, attachment, payload);
         return;
       case "topic:join":
-        this.handleTopicJoin(ws, attachment, payload);
+        await this.handleTopicJoin(ws, attachment, payload);
         return;
       case "topic:leave":
         this.handleTopicLeave(ws, attachment, payload);
         return;
       case "topic:send":
-        this.handleTopicSend(ws, attachment, payload);
+        await this.handleTopicSend(ws, attachment, payload);
         return;
       default:
         this.send(ws, { type: "error", code: "unsupported_message_type" });
@@ -1209,17 +1215,17 @@ export class WorkspaceRoom extends DurableObject<Env> {
     this.send(ws, { type: "topic:error", topic: isTopic(topic) ? topic : null, code, message });
   }
 
-  private handleTopicJoin(
+  private async handleTopicJoin(
     ws: WebSocket,
     attachment: SocketAttachment,
     payload: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
     const topic = payload.topic;
     if (!isTopic(topic)) {
       this.topicError(ws, topic, "invalid_topic", "A topic is 1 to 128 of A-Z a-z 0-9 : _ . -");
       return;
     }
-    if (!topicAllowed(claimFromAttachment(attachment, this.workspaceId), topic, "join")) {
+    if (!(await realtimeAllowed(claimFromAttachment(attachment, this.workspaceId), "topic", topic, "join"))) {
       this.topicError(ws, topic, "permission_denied", `Not allowed to join topic "${topic}".`);
       return;
     }
@@ -1310,11 +1316,11 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * receivers join them: the room never holds a whole message, so a
    * broadcast has no size bound here.
    */
-  private handleTopicSend(
+  private async handleTopicSend(
     ws: WebSocket,
     attachment: SocketAttachment,
     payload: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
     const topic = payload.topic;
     const part = payload.part as { id?: unknown; index?: unknown; last?: unknown } | undefined;
     const isPart =
@@ -1329,7 +1335,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       this.topicError(ws, topic, "invalid_topic_message", "topic:send needs a topic and a message (or a part and its data).");
       return;
     }
-    if (!topicAllowed(claimFromAttachment(attachment, this.workspaceId), topic, "send")) {
+    if (!(await realtimeAllowed(claimFromAttachment(attachment, this.workspaceId), "topic", topic, "send"))) {
       this.topicError(ws, topic, "permission_denied", `Not allowed to send to topic "${topic}".`);
       return;
     }
@@ -1366,11 +1372,20 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
   }
 
-  private handlePresenceSet(
+  /**
+   * A socket's presence in one target, or a refusal.
+   *
+   * Three things are decided before anything is stored, in this order: the
+   * room cap (a new target past `maxPresenceRooms`), the deployment's
+   * authorizer (`realtime.authorize`, `kind: "presence"`), and the byte
+   * budget for the socket's whole presence state. A refusal in any of them
+   * sends one error and leaves the attachment exactly as it was.
+   */
+  private async handlePresenceSet(
     ws: WebSocket,
     attachment: SocketAttachment,
     payload: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
     const target = payload.target;
     if (!isPresenceTarget(target)) {
       this.send(ws, { type: "error", code: "invalid_target" });
@@ -1381,116 +1396,175 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
 
-    const previous = attachment.presence;
-    if (previous && previous.target !== target) {
-      this.broadcastPresence(previous.target, attachment.clientId);
+    const joined = presenceEntry(attachment, target) !== undefined;
+    if (!joined && presenceTargets(attachment).length >= maxPresenceRooms()) {
+      this.send(ws, { type: "error", code: "presence_rooms_exceeded" });
+      return;
     }
-    attachment.presence =
-      previous && previous.target === target
-        ? { ...previous, presence: payload.presence }
-        : { target, presence: payload.presence };
-    this.writeSocket(ws, attachment);
+    if (!(await this.authorizePresence(ws, attachment, target, joined ? "send" : "join"))) return;
+
+    // The authorizer may have awaited; decide on the state as it is now.
+    const current = this.readSocket(ws) ?? attachment;
+    const existing = presenceEntry(current, target);
+    if (existing === undefined && presenceTargets(current).length >= maxPresenceRooms()) {
+      this.send(ws, { type: "error", code: "presence_rooms_exceeded" });
+      return;
+    }
+
+    const next = {
+      ...(existing ?? {}),
+      presence: payload.presence,
+    };
+    const rooms = { ...(current.presence ?? {}), [target]: next };
+    if (presenceStateBytes(rooms) > PRESENCE_STATE_BYTES) {
+      this.send(ws, { type: "error", code: "presence_state_too_large" });
+      return;
+    }
+
+    current.presence = rooms;
+    this.writeSocket(ws, current);
     this.broadcastPresence(target);
   }
 
-  private handlePresenceClear(
+  /**
+   * Checks the authorizer for one presence message. Answers `presence_denied`
+   * itself and returns false when the caller may not.
+   */
+  private async authorizePresence(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    target: string,
+    action: "join" | "send"
+  ): Promise<boolean> {
+    const allowed = await realtimeAllowed(
+      claimFromAttachment(attachment, this.workspaceId),
+      "presence",
+      target,
+      action
+    );
+    if (allowed) return true;
+    this.send(ws, { type: "error", code: "presence_denied" });
+    return false;
+  }
+
+  private async handlePresenceClear(
     ws: WebSocket,
     attachment: SocketAttachment,
     payload: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
     const target = payload.target;
     if (!isPresenceTarget(target)) {
       this.send(ws, { type: "error", code: "invalid_target" });
       return;
     }
-    const current = attachment.presence;
-    if (!current || current.target !== target) return;
-    attachment.presence = undefined;
-    this.writeSocket(ws, attachment);
-    this.broadcastPresence(target, attachment.clientId);
+    if (presenceEntry(attachment, target) === undefined) return;
+    if (!(await this.authorizePresence(ws, attachment, target, "send"))) return;
+
+    const current = this.readSocket(ws) ?? attachment;
+    if (current.presence === undefined) return;
+    const rooms = { ...current.presence };
+    delete rooms[target];
+    if (Object.keys(rooms).length === 0) delete current.presence;
+    else current.presence = rooms;
+    this.writeSocket(ws, current);
+    this.broadcastPresence(target, current.clientId);
   }
 
-  private handleCursorSet(
+  private async handleCursorSet(
     ws: WebSocket,
     attachment: SocketAttachment,
     payload: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
+    await this.setPresenceValue(ws, attachment, payload, "cursor", { type: "cursor:update" });
+  }
+
+  private async handleDragSet(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    payload: Record<string, unknown>
+  ): Promise<void> {
+    await this.setPresenceValue(ws, attachment, payload, "drag", { type: "drag:update" });
+  }
+
+  /**
+   * `cursor:set` and `drag:set`: an already-joined target takes the new value
+   * and the room hears it. A target this socket never joined is
+   * `presence_target_unknown` rather than a write to no room at all.
+   */
+  private async setPresenceValue(
+    ws: WebSocket,
+    attachment: SocketAttachment,
+    payload: Record<string, unknown>,
+    field: "cursor" | "drag",
+    message: { type: "cursor:update" | "drag:update" }
+  ): Promise<void> {
     const target = payload.target;
-    if (!isPresenceTarget(target) || !("cursor" in payload)) {
-      this.send(ws, { type: "error", code: "invalid_cursor" });
+    if (!isPresenceTarget(target) || !(field in payload)) {
+      if (field === "cursor") this.send(ws, { type: "error", code: "invalid_cursor" });
+      else this.send(ws, { type: "error", code: "invalid_drag" });
       return;
     }
-    const current = attachment.presence;
-    if (!current || current.target !== target) {
-      this.send(ws, { type: "error", code: "not_in_target" });
+    if (presenceEntry(attachment, target) === undefined) {
+      this.send(ws, { type: "error", code: "presence_target_unknown" });
       return;
     }
-    current.cursor = payload.cursor;
-    this.writeSocket(ws, attachment);
+    if (!(await this.authorizePresence(ws, attachment, target, "send"))) return;
+
+    const current = this.readSocket(ws) ?? attachment;
+    const entry = presenceEntry(current, target);
+    if (entry === undefined || current.presence === undefined) {
+      this.send(ws, { type: "error", code: "presence_target_unknown" });
+      return;
+    }
+    const next = { ...entry, [field]: payload[field] };
+    const rooms = { ...current.presence, [target]: next };
+    if (presenceStateBytes(rooms) > PRESENCE_STATE_BYTES) {
+      this.send(ws, { type: "error", code: "presence_state_too_large" });
+      return;
+    }
+
+    current.presence = rooms;
+    this.writeSocket(ws, current);
     this.broadcastToTarget(
       target,
       {
-        type: "cursor:update",
+        ...message,
         target,
-        clientId: attachment.clientId,
-        cursor: payload.cursor,
+        clientId: current.clientId,
+        [field]: payload[field],
       },
-      attachment.clientId
+      current.clientId
     );
   }
 
-  private handleDragSet(
+  private async handleDragClear(
     ws: WebSocket,
     attachment: SocketAttachment,
     payload: Record<string, unknown>
-  ): void {
-    const target = payload.target;
-    if (!isPresenceTarget(target) || !("drag" in payload)) {
-      this.send(ws, { type: "error", code: "invalid_drag" });
-      return;
-    }
-    const current = attachment.presence;
-    if (!current || current.target !== target) {
-      this.send(ws, { type: "error", code: "not_in_target" });
-      return;
-    }
-    current.drag = payload.drag;
-    this.writeSocket(ws, attachment);
-    this.broadcastToTarget(
-      target,
-      {
-        type: "drag:update",
-        target,
-        clientId: attachment.clientId,
-        drag: payload.drag,
-      },
-      attachment.clientId
-    );
-  }
-
-  private handleDragClear(
-    ws: WebSocket,
-    attachment: SocketAttachment,
-    payload: Record<string, unknown>
-  ): void {
+  ): Promise<void> {
     const target = payload.target;
     if (!isPresenceTarget(target)) {
       this.send(ws, { type: "error", code: "invalid_target" });
       return;
     }
-    const current = attachment.presence;
-    if (!current || current.target !== target) return;
-    delete current.drag;
-    this.writeSocket(ws, attachment);
+    if (presenceEntry(attachment, target) === undefined) return;
+    if (!(await this.authorizePresence(ws, attachment, target, "send"))) return;
+
+    const current = this.readSocket(ws) ?? attachment;
+    const entry = presenceEntry(current, target);
+    if (entry === undefined || current.presence === undefined) return;
+    const { drag: _drag, ...rest } = entry;
+    current.presence = { ...current.presence, [target]: rest };
+    this.writeSocket(ws, current);
     this.broadcastToTarget(
       target,
       {
         type: "drag:update",
         target,
-        clientId: attachment.clientId,
+        clientId: current.clientId,
         drag: null,
       },
-      attachment.clientId
+      current.clientId
     );
   }
 
@@ -1513,6 +1587,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
   }
 
+  /**
+   * Everyone in a target, this socket included: a peer entry is a snapshot of
+   * the room, and the client drops its own entry from `peers()` unless asked
+   * for it. Leaving it out here would leave an old client — which has no
+   * `clientId` to compare against — unable to draw its own cursor.
+   */
   private presencePeers(
     target: string,
     excludeClientId?: string
@@ -1520,14 +1600,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const peers: PresencePeer[] = [];
     for (const { attachment } of this.socketsForTarget(target)) {
       if (excludeClientId && attachment.clientId === excludeClientId) continue;
-      const presence = attachment.presence;
-      if (!presence) continue;
+      const entry = presenceEntry(attachment, target);
+      if (!entry) continue;
       const peer: PresencePeer = {
         clientId: attachment.clientId,
-        presence: presence.presence ?? null,
+        presence: entry.presence ?? null,
       };
-      if (presence.cursor !== undefined) peer.cursor = presence.cursor;
-      if (presence.drag !== undefined) peer.drag = presence.drag;
+      if (entry.cursor !== undefined) peer.cursor = entry.cursor;
+      if (entry.drag !== undefined) peer.drag = entry.drag;
       peers.push(peer);
     }
     return peers.sort((left, right) =>
@@ -1541,17 +1621,20 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const sockets: Array<{ ws: WebSocket; attachment: SocketAttachment }> = [];
     for (const ws of this.ctx.getWebSockets?.() ?? []) {
       const attachment = this.readSocket(ws);
-      if (attachment?.presence?.target === target) {
+      if (attachment && presenceEntry(attachment, target) !== undefined) {
         sockets.push({ ws, attachment });
       }
     }
     return sockets;
   }
 
+  /** Tells every room this socket was in that it has gone. */
   private removePresence(ws: WebSocket): void {
     const attachment = this.readSocket(ws);
     if (!attachment?.presence) return;
-    this.broadcastPresence(attachment.presence.target, attachment.clientId);
+    for (const target of presenceTargets(attachment)) {
+      this.broadcastPresence(target, attachment.clientId);
+    }
   }
 
   private async handleSubscribe(

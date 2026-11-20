@@ -12,7 +12,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import { stableStringify } from "../client/stable";
 import type { AcrossLiveState, AcrossQuery } from "../model/across";
-import type { PresencePeer } from "../client/types";
+import type { PresencePeer, PresencePeersOptions } from "../client/types";
 import type { BroadcastTopic, LiveState, Page, PageQuery, PresenceRoom, Query } from "../model/client";
 import type { TopicSender } from "../client/types";
 
@@ -64,17 +64,22 @@ export function useLivePage<R>(query: PageQuery<R>): LivePage<R> {
 /**
  * Joins a presence room with `presence` and returns the other peers. Leaves
  * the room on unmount; publishes again whenever `presence` changes.
+ *
+ * Your own entry is left out — use `{ includeSelf: true }` to get it back,
+ * marked `isSelf: true`.
  */
 export function usePresence(
   db: { $presence(room: string): PresenceRoom },
   room: string,
-  presence?: unknown
+  presence?: unknown,
+  options?: PresencePeersOptions
 ): PresencePeer[] {
   const [peers, setPeers] = useState<PresencePeer[]>([]);
   const handle = useMemo(() => db.$presence(room), [db, room]);
   const serialised = presence === undefined ? undefined : stableStringify(presence);
+  const includeSelf = options?.includeSelf === true;
 
-  useEffect(() => handle.subscribe(setPeers), [handle]);
+  useEffect(() => handle.subscribe(setPeers, { includeSelf }), [handle, includeSelf]);
   useEffect(() => {
     if (presence !== undefined) handle.set(presence);
     // eslint-disable-next-line react-hooks/exhaustive-deps

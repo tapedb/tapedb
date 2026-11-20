@@ -406,7 +406,7 @@ describe("WorkspaceRoom presence", () => {
     await send(a, { type: "cursor:set", target, cursor: { x: 1, y: 2 } });
     expect(a.messages().at(-1)).toMatchObject({
       type: "error",
-      code: "not_in_target",
+      code: "presence_target_unknown",
     });
   });
 });
