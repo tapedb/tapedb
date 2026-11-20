@@ -486,14 +486,16 @@ submission: an index of another shape is refused, the intents stay queued, and
 `/status` keeps counting them.
 
 **Deploying the index.** The deployment declares what it indexes in
-`wrangler.jsonc`, and `tapedb deploy` provisions the index before it uploads the
-Worker:
+`tapedb.vectorize.json`, and `tapedb deploy` provisions the index before it
+uploads the Worker:
 
-```jsonc
-"tapedb": {
-  "vectorize": { "model": "note", "field": "embedding", "filterFields": ["archived"] }
-}
+```json
+{ "model": "note", "field": "embedding", "filterFields": ["archived"] }
 ```
+
+It is its own file rather than a key in `wrangler.jsonc` because Wrangler
+validates that file and warns about every field it does not know, so a correct
+project would print a warning on every deploy.
 
 The declaration is validated against `tapedb.schema.ts` first — the field must
 be that model's `t.vector({ dimensions })` attribute, filters must be flat,
@@ -502,8 +504,8 @@ identity, `tapedb-<worker>-<model>`, lower-cased and trimmed to the provider's
 64-byte ceiling. A repeat deploy, two concurrent deploys and a retry after a
 failed upload therefore converge on one index rather than creating more. On a
 first deploy the CLI creates the index and one metadata index per declared
-filter, records `tapedb.vectorize.index` and `tapedb.vectorize.ownership` in
-`wrangler.jsonc`, and adds the binding the Worker reads:
+filter, records `index` and `ownership` in `tapedb.vectorize.json`, and adds the
+binding the Worker reads to `wrangler.jsonc`:
 
 ```jsonc
 "vectorize": [{ "binding": "VECTORIZE", "index_name": "tapedb-app-note" }]
