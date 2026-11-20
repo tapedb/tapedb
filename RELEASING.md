@@ -93,27 +93,21 @@ Only after the gates and checks.
    wrapper pins the core version exactly.
 2. Open the release pull request, gate it, and merge.
 3. Create an annotated tag and a GitHub release from the merged commit.
-4. Publishing runs from the tag, through the Cloudflare Workers Builds pipeline
-   on the private `tapedb-staging` repository — never from the public repo, and
-   never from GitHub Actions, which this project does not use.
-
-   Workers Builds checks out the branch, not the tag, so the trigger states
-   which release it is building: set `RELEASE_TAG=vX.Y.Z` in its environment
-   variables alongside `NPM_TOKEN`. The script then checks that every package in
-   the checkout carries exactly that version and refuses the build if any of
-   them disagrees — the tag is an assertion the release makes, and the manifests
-   have to agree with it.
-
-   The trigger's build command runs the gates (`bun install --frozen-lockfile &&
-   bun run verify`) and its deploy command is one line:
+4. Publishing is staged from a clean checkout of the tag, by one command:
 
    ```bash
    bun run release:publish
    ```
 
-   `NPM_TOKEN` is a Workers Builds secret: a granular token with publish rights
-   and **no** bypass-2FA. A build environment should be able to fill the queue,
-   not empty it.
+   No token is involved. `npm stage publish` accepts whatever credential the
+   machine already has and never asks for a second factor, so the npm session is
+   enough — which is why staging replaces six `npm publish` runs. A granular
+   token cannot be issued without an expiry date, so keeping one in a build
+   environment would be a standing maintenance chore; this project publishes
+   from a developer machine and does not use GitHub Actions.
+
+   `NPM_TOKEN` and `RELEASE_TAG` are both optional: a token when one is supplied,
+   the tag when the checkout is not on it.
 
    The script stages all six with `npm stage publish` in the forced order
    (`@tapedb/tapedb` → `cli` → `react` → `auth` → `email` → `react-native`) and
