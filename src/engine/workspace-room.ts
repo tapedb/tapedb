@@ -358,7 +358,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     // vector for a workspace that asked to be gone. `head` is enough here —
     // the marker's contents are needed only when it stands.
     const fence = this.config.vectorize;
-    if (fence !== null) {
+    // A room addressed by something that is not a workspace id (a limiter, a
+    // move coordinator) has no purge to check, and asking for one would throw.
+    if (fence !== null && isWorkspaceId(ctx.id.name ?? "")) {
       try {
         if (await isVectorPurgeFenced(this.roomEnv.DATA, {
           deployment: this.deploymentName(),
@@ -682,16 +684,22 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // Read before the rewrite: after `adoptRestoredVectors` the queue is this
       // workspace's, and the source it came from is no longer recorded.
       const identity = readVectorIdentity(sql);
-      const fencedSource = identity !== null && identity.workspace !== this.workspaceId
+      const foreign = identity !== null && identity.workspace !== this.workspaceId;
+      // The reads below happen only when the bookkeeping names another
+      // workspace. A workspace that owns its bookkeeping had the fence checked
+      // at boot, and pays nothing here.
+      const fencedSource = foreign
         ? await isVectorPurgeFenced(this.roomEnv.DATA, {
             deployment: this.deploymentName(),
             workspace: identity.workspace,
           })
         : false;
-      const fencedDestination = await this.vectorErasure(config).isFenced({
-        binding: config.binding,
-        workspaceId: this.workspaceId,
-      });
+      const fencedDestination = foreign
+        ? await this.vectorErasure(config).isFenced({
+            binding: config.binding,
+            workspaceId: this.workspaceId,
+          })
+        : false;
       const outcome = adoptRestoredVectors(sql, {
         binding: config.binding,
         workspaceId: this.workspaceId,

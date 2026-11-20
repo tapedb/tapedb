@@ -532,7 +532,9 @@ document. A submission that fails keeps every intent in its batch, increments
 backoff the log flusher uses: 30 s, doubling, capped at one hour. An intent is
 never dropped for failing, and a retry always re-reads the row's current state
 first, so a row written again during a backoff is published with its latest
-values.
+values. After twelve failed attempts an intent stops being retried and is
+reported as **dead-lettered**: it stays in the workspace, counted, so an outage
+that outlasts the backoff is visible instead of silently retrying forever.
 
 **Pending is normal.** The provider accepts a submission asynchronously and its
 vectors become searchable later: measured on a live index, an accepted upsert was
@@ -544,11 +546,21 @@ replicas, so no confirmation may assume it moves forward. `GET /status` reports 
 count instead:
 
 ```json
-{ "vectorize": { "pending": 3, "failing": 1, "indexed": 412, "lastMutationId": "01J..." } }
+{
+  "vectorize": {
+    "pending": 3, "failing": 1, "deadLettered": 0, "indexed": 412,
+    "lastMutationId": "01J...", "fenced": false, "purge": null
+  }
+}
 ```
 
 `pending` is the queue depth, `failing` the intents whose last attempt was
-refused, and `indexed` the rows the provider has accepted a digest for.
+refused, `deadLettered` the intents that stopped being retried, and `indexed`
+the rows the provider has accepted a digest for. `fenced` is true while the
+workspace's erasure marker stands, and `purge` carries the erasure's phase when
+one exists — the three work states are separate on purpose, because "waiting",
+"failing" and "will not be retried" call for different answers, and because an
+erasure that is stuck is otherwise indistinguishable from a busy queue.
 
 **Deletes.** Deleting a row enqueues a delete of its vector, and clearing the
 vector field does the same; both are submitted like any other intent and are
@@ -590,15 +602,80 @@ read per call, and the answer ages the moment it is sent. A row written a moment
 ago is not searchable until the queue's upsert has been accepted and has become
 visible at the provider — 73–103 s, measured.
 
+**Erasing a workspace.** `DELETE /` erases the workspace's vectors as part of
+erasing the workspace. The flow is fence → drain → delete → verify, and each
+step is durable before the next one depends on it.
+
+*The fence.* A marker is written to the deployment's own `DATA` bucket at
+`vector-purge/<deployment>/<workspace>/marker.json` before any delete is issued,
+and it is never removed: it is the tombstone that rejects resurrection. While it
+stands, no submission begins for that workspace — not a fresh intent, not a
+retry recovered from `_vector_state` in a room that was evicted and re-created,
+not a restore, not a rebuild. The marker is read immediately before each
+submission, and that read and the start of the submission are one serialised
+step: a fence written while a batch is in flight waits for that batch, and
+nothing begins after it. An erase whose marker cannot be written deletes nothing
+and answers `erase_failed`.
+
+*The delete.* The inventory is read from the workspace's own `_vector_queue` and
+`_vector_state` before its storage is wiped, so an ID whose row was deleted from
+SQLite long ago is included and an upsert whose answer was lost is covered. IDs
+go out in batches of up to **1,000**, the same ceiling row deletes use, each
+batch its own immutable object under `vector-purge/<deployment>/<workspace>/ids/`.
+
+*The confirmation.* A batch is confirmed only when the index reports **the
+mutation ID that batch's own delete was accepted under**, or one this purge
+submitted after it. Nothing compares the watermark over time: it is
+replica-inconsistent and was observed going *backwards* between two reads, so
+"it advanced" says nothing, and a watermark that matches no mutation this purge
+recorded — another workspace's submission on a shared index, or a replica
+behind — confirms nothing. A confirmation, once recorded, is never withdrawn.
+`getByIds` is not used as evidence at all. Its answer arrives on the same
+asynchronous path an accepted upsert took 73–103 s to appear on, so an ID
+missing from it says nothing about the watermark having reached that delete,
+and an ID present says nothing about it not having been issued. The watermark is
+the only clock this purge reads, and only for the mutation IDs it recorded.
+
+*Interruption.* `vector-purge/<deployment>/<workspace>/ledger.json` is the
+durable truth: the fence's time, the inventory's batches, each batch's mutation
+ID, attempts, backoff and confirmation. An erasure interrupted at any step
+resumes from that ledger — after the Durable Object, its storage or its alarm is
+gone — whenever a room for that workspace runs again, which is what
+`resumeVectorPurge()` does and what an erased workspace's own alarm does. Until
+every batch is confirmed the erasure is reported as outstanding rather than
+complete. A batch that fails twelve times stops retrying and is reported as
+stalled with its error in the ledger.
+
+*What an operator sees.* `DELETE /` answers with the purge's phase; a phase that
+is not `complete` logs `workspace_vector_purge` with the number of IDs and of
+confirmed and pending batches. The ledger is readable in the bucket without the
+workspace: `phase`, `ids`, per-batch `mutationId`, `attempts` and `confirmedAt`,
+`lastError` and `completedAt`. `GET /status` carries the same status as
+`vectorize.purge` for a workspace that still answers, including `fenced` — a
+workspace whose fence stands with an empty ledger is a purge that has not
+started, which is what an operator needs to be able to see.
+
+*Restore.* A backup restored into a workspace — the same ID, or
+`tapedb restore --into` another — is re-indexed under the **destination**
+identity: the ID and the namespace are derived from the destination's workspace
+ID, so nothing is ever written under the source's, and a copy cannot revive an
+ID that was erased. The restore names the workspace it came from, and that
+source is checked before anything is published: when the source's marker stands,
+its rows import and no vector is written for them. Bookkeeping that names another
+identity — a `_vector_queue` or `_vector_state` copied from another workspace —
+is discarded when the room boots, and every surviving row is re-derived locally.
+A same-ID restore and a restore-as-copy reach the same rule, because it is stated
+about the identity an ID is derived from rather than about the workspace ID a
+request happens to carry.
+
 **Limits and what is not here.** Filter strings are truncated to the provider's
 64-byte indexed-string budget on a UTF-8 boundary when copied into metadata; the
 digest covers the untruncated value. Metadata indexes must exist *before* the
 vectors they index — adding a filter field later means re-publishing every
-vector, which this release does not do on its own. Erasing a **workspace** is
-not covered: rows are deleted from the index, a workspace's vectors are not, and
-the purge ledger, the fencing of new submissions and the reconciliation of an
-in-flight upsert belong to a later release (see `src/engine/vector-index/erasure.ts`
-for the seam).
+vector, which this release does not do on its own. A purge deletes the vectors
+this deployment wrote for the workspace; it does not inventory the provider, so a
+vector written under that identity by something other than this engine is out of
+scope.
 
 ### Bindings and settings (`Env`)
 
