@@ -1,5 +1,5 @@
-// Types for `@tapedb/react-native`: the core's hooks, re-exported, plus the
-// AsyncStorage queue and the client factory that wires it.
+// Types for `@tapedb/react-native`: the AsyncStorage queue and the client
+// factory that wires it. The hooks are `@tapedb/react`'s, unchanged.
 import type {
   AsyncStorageLike,
   Client,
@@ -8,7 +8,6 @@ import type {
   Outbox,
 } from "@tapedb/tapedb";
 
-export * from "@tapedb/tapedb/react";
 export { AsyncStorageOutbox } from "@tapedb/tapedb";
 
 /**
