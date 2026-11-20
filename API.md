@@ -182,7 +182,7 @@ disconnect leaves all of them.
 | `set(presence)` | publishes this client's presence in the room, joining it if it is new |
 | `cursor(cursor)`, `drag(drag)`, `clearDrag()` | the room's pointer state |
 | `peers({ includeSelf? })` | `Promise<PresencePeer[]>` |
-| `subscribe(listener, { includeSelf? })` | the same list live; returns an unsubscribe function |
+| `subscribe(listener, { includeSelf?, onError? })` | the same list live; returns an unsubscribe function |
 | `leave()` | leaves this room, and only this one |
 
 `PresencePeer` is `{ clientId, presence, cursor?, drag? }`. The peers of a room
@@ -228,9 +228,10 @@ is consulted only when `realtime.authorize` is absent, so a deployment that
 configures both gets one rule set per kind. `realtime.replaySeconds` carries the
 replay window `topics.replaySeconds` used to hold.
 
-Each refusal is one `{ type: "error", code }` message on the socket, and the
-client has no presence error channel of its own: the state simply does not
-change.
+Each refusal is one `{ type: "error", code, target }` message on the socket,
+which the client routes to the room's `onError`; the room keeps its last state
+and the subscription carries on, so an app can explain the refusal instead of
+leaving the caller to infer it from a cursor that never appears.
 
 | Code | Meaning |
 | --- | --- |
@@ -251,7 +252,7 @@ whatever that Worker sent.
 | --- | --- |
 | `useLive(query)` | `LiveState`: `{ data, isLoading, error }`; for an `AcrossQuery`, `AcrossLiveState` with `errors` too |
 | `useLivePage(pageQuery)` | `LivePage`: `{ rows, hasMore, isLoading, error, loadMore }` |
-| `usePresence(db, room, presence?, { includeSelf? })` | `PresencePeer[]`; publishes `presence` while mounted. Your own entry is left out unless `includeSelf` is `true` (see [Presence](#presence)) |
+| `usePresence(db, room, presence?, { includeSelf? })` | `PresencePeer[]`; publishes `presence` while mounted. Your own entry is included and marked `isSelf`; pass `{ includeSelf: false }` to leave it out (see [Presence](#presence)) |
 | `useBroadcast(db, topic, onMessage?)` | **experimental**: a `send(message) => boolean \| "queued"` function |
 
 ## `@tapedb/tapedb/worker`
