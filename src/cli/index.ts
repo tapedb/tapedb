@@ -33,7 +33,8 @@ import { loadSchema } from "./load-schema";
 import { parseFlags } from "./flags";
 import { seedProject } from "./seed";
 import { select } from "./prompts";
-import { ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, syncTapedb, type DeployConfig } from "./onboarding";
+import { DeployRefused, ask, confirm, ignoreLocalFiles, installProject, interactive, provisionAndDeploy, syncTapedb, type DeployConfig } from "./onboarding";
+import { provisionVectorize } from "./vectorize";
 
 /** How the docs and messages tell people to run the CLI. */
 const CLI = "npx tapedb-cli";
@@ -220,14 +221,29 @@ async function deploy(argv: string[]): Promise<number> {
     return 1;
   }
 
-  const check = migrateCheck(root, await loadSchema(root, flags));
+  const schema = await loadSchema(root, flags);
+  const check = migrateCheck(root, schema);
   if (!check.ok) {
     console.error(`Refusing to deploy:\n${check.problems.join("\n")}`);
     return 1;
   }
 
   if(existsSync(join(root,"auth.ts"))||existsSync(join(root,"tapedb.auth.tsx")))await prepareAuthPage(root);
-  return provisionAndDeploy(root, config, env, flags.yes === true);
+  return provisionAndDeploy(root, config, env, flags.yes === true, undefined, async (command, context) => {
+    try {
+      await provisionVectorize({
+        root,
+        selected: context.selected,
+        command,
+        account: context.account,
+        worker: context.worker,
+        jurisdiction: context.selected.vars?.TAPEDB_JURISDICTION,
+        schema,
+      });
+    } catch (error) {
+      throw new DeployRefused(error instanceof Error ? error.message : String(error));
+    }
+  });
 }
 
 const JURISDICTIONS = ["eu", "fedramp"];
