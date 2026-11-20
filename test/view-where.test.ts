@@ -209,11 +209,11 @@ describe("where view rules", () => {
 
   test("an unsupported operator is refused, not ignored", () => {
     const { sql } = setup({
-      notes: { view: { where: ({ sub }) => ({ ownerId: { $like: sub } } as never) } },
+      notes: { view: { where: ({ sub }) => ({ ownerId: { $regex: sub } } as never) } },
     });
     seedNotes(sql, [{ id: "n1", title: "A", ownerId: "alice" }]);
 
-    // Ignoring "$like" would compile to 1 = 1 and show every row.
+    // Ignoring "$regex" would compile to 1 = 1 and show every row.
     expect(() =>
       executeCompiledQueryWithPageInfo(sql, compileQuery({ notes: {} }), claimFor("alice"))
     ).toThrow(/View rule for "notes" returned an invalid filter/);
