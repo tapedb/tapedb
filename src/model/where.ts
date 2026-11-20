@@ -32,6 +32,19 @@ export interface FieldFilter<T = Scalar> {
   gte?: T;
   lt?: T;
   lte?: T;
+  /**
+   * True matches rows where the field is null, false where it is not. This is
+   * how "never set" is asked for: an optional field is stored as null, so
+   * `{ due: null }` and `{ due: { isNull: true } }` agree.
+   */
+  isNull?: boolean;
+  /**
+   * SQL `LIKE`, case-sensitive: `%` matches any run of characters, `_` exactly
+   * one, and `\` makes the next `%`, `_` or `\` literal. Text fields only.
+   */
+  like?: string;
+  /** `like`, case-insensitive for ASCII letters. Text fields only. */
+  ilike?: string;
 }
 
 /** Filters on a to-many relation: at least one, all, or no related row. */
@@ -81,6 +94,9 @@ const OPERATORS: Record<string, string> = {
   gte: "$gte",
   lt: "$lt",
   lte: "$lte",
+  isNull: "$isNull",
+  like: "$like",
+  ilike: "$ilike",
 };
 
 type EngineWhere = Record<string, unknown>;
@@ -119,6 +135,16 @@ function fieldConditions(field: string, value: unknown): EngineWhere[] {
       } else {
         comparison.$ne = scalar(operand);
       }
+    } else if (operator === "isNull") {
+      if (typeof operand !== "boolean") {
+        throw new Error(`"isNull" on "${field}" takes true or false.`);
+      }
+      comparison.$isNull = operand;
+    } else if (operator === "like" || operator === "ilike") {
+      if (typeof operand !== "string") {
+        throw new Error(`"${operator}" on "${field}" takes a string pattern.`);
+      }
+      comparison[OPERATORS[operator]] = operand;
     } else if (operator in OPERATORS) {
       comparison[OPERATORS[operator]] = Array.isArray(operand)
         ? operand.map(scalar)
@@ -129,6 +155,25 @@ function fieldConditions(field: string, value: unknown): EngineWhere[] {
   }
   if (Object.keys(comparison).length > 0) extra.push({ [field]: comparison });
   return extra;
+}
+
+/**
+ * Field operators do not describe a link. Left alone, `{ author: { isNull: 1 } }`
+ * would be translated into a link filter with an unknown key buried inside it,
+ * which is a worse error than saying so here.
+ */
+function refuseFieldOperator(
+  model: string,
+  key: string,
+  value: Record<string, unknown>,
+  hint: string
+): void {
+  for (const operator of ["isNull", "like", "ilike"]) {
+    if (!(operator in value)) continue;
+    throw new Error(
+      `"${model}.${key}" is a relation, so "${operator}" does not apply to it. ${hint}`
+    );
+  }
 }
 
 /** One relation filter, as the engine's `$link` entry. */
@@ -146,6 +191,12 @@ function relationCondition(
     if (!isFilterObject(value)) {
       throw new Error(`"${model.key}.${key}" takes a filter object or null.`);
     }
+    refuseFieldOperator(
+      model.key,
+      key,
+      value,
+      `Use { ${key}: null } for a missing parent, or filter a field of "${key}".`
+    );
     for (const mode of ["some", "every", "none"]) {
       if (mode in value) {
         throw new Error(
@@ -159,6 +210,12 @@ function relationCondition(
   if (!isFilterObject(value)) {
     throw new Error(`"${model.key}.${key}" takes { some }, { every } or { none }.`);
   }
+  refuseFieldOperator(
+    model.key,
+    key,
+    value,
+    `Use { ${key}: { some: { ... } } } to test a field of the linked rows.`
+  );
   const entries = Object.entries(value).filter(([, filter]) => filter !== undefined);
   if (entries.length === 0) {
     throw new Error(`"${model.key}.${key}" needs one of some, every or none.`);

@@ -218,7 +218,7 @@ describe("reads", () => {
     expect(
       db.task.findMany({ where: { column: { name: "x" } } as never }).document
     ).toEqual({ task: { $: { where: { $link: [{ label: "column", mode: "parent", where: { name: "x" } }] } } } });
-    expect(() => db.task.findMany({ where: { title: { like: "x" } } as never })).toThrow(/Unknown filter "like"/);
+    expect(() => db.task.findMany({ where: { title: { contains: "x" } } as never })).toThrow(/Unknown filter "contains"/);
     expect(() => db.task.findMany({ include: { nope: true } as never })).toThrow(/no relation "nope"/);
   });
 });

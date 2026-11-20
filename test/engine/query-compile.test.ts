@@ -234,7 +234,7 @@ describe("compileQuery", () => {
     expectCode(
       () =>
         compileQuery({
-          kanbanTasks: { $: { where: { title: { $like: "x" } } } },
+          kanbanTasks: { $: { where: { title: { $regex: "x" } } } },
         }),
       "invalid_value"
     );
