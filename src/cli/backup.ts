@@ -455,7 +455,7 @@ export async function restoreWorkspace(argv: string[]): Promise<number> {
     const exported = readFileSync(join(root, ...rowsPart.path.split("/")), "utf8");
     const imported = await fetch(engine(url, destination, "/import"), {
       method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/x-ndjson" },
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/x-ndjson", "x-tapedb-exported-from": manifest.workspaceId },
       body: rowsForImport(exported, destination),
     });
     const result = (await imported.json().catch(() => null)) as { ok?: boolean; imported?: { rows?: number }; error?: { message?: string } } | null;

@@ -19,6 +19,7 @@ export type {
   VectorQueryOptions,
   VectorQueryResult,
   VectorRecord,
+  VectorSubmissionGate,
 } from "./types";
 export {
   VECTOR_DIGEST_CODEC,
@@ -47,6 +48,7 @@ export {
 export { cloudflareVectorIndex, isVectorizeBinding, type VectorizeBinding } from "./cloudflare";
 export { MemoryVectorIndex } from "./memory";
 export {
+  VECTOR_DEAD_LETTER_ATTEMPTS,
   VECTOR_DELETE_BATCH,
   VECTOR_FILTER_MAX_BYTES,
   VECTOR_MATERIALISE_LIMIT,
@@ -64,5 +66,45 @@ export {
   vectorQueueDueAt,
   type VectorDrainSummary,
   type VectorQueueCounts,
+  type VectorQueueStatus,
 } from "./queue";
-export { VECTOR_ERASURE_HOOK, type VectorErasureHook } from "./erasure";
+export {
+  VECTOR_ERASURE_HOOK,
+  VectorPurgeErasure,
+  adoptRestoredVectors,
+  confirmVectorDeletes,
+  readVectorIdentity,
+  recordVectorIdentity,
+  vectorIdsInWorkspace,
+  vectorIndexWatermark,
+  type VectorErasureDeps,
+  type VectorErasureHook,
+  type VectorIdentity,
+  type VectorPurgeRun,
+  type VectorRestoreOutcome,
+} from "./erasure";
+export {
+  VECTOR_PURGE_BATCH,
+  VECTOR_PURGE_MAX_ATTEMPTS,
+  VECTOR_PURGE_PREFIX,
+  VECTOR_PURGE_VERSION,
+  createVectorPurgeLedger,
+  isVectorPurgeFenced,
+  purgeRetryDelay,
+  readVectorPurgeIds,
+  readVectorPurgeLedger,
+  readVectorPurgeMarker,
+  updateVectorPurgeLedger,
+  vectorPurgeIdsKey,
+  vectorPurgeLedgerKey,
+  vectorPurgeMarkerKey,
+  vectorPurgePrefix,
+  vectorPurgeStatus,
+  writeVectorPurgeIds,
+  writeVectorPurgeMarker,
+  type VectorPurgeBatch,
+  type VectorPurgeLedger,
+  type VectorPurgeMarker,
+  type VectorPurgeStatus,
+  type VectorPurgeTarget,
+} from "./purge-ledger";
