@@ -51,9 +51,21 @@ export type {
 } from "./schema";
 
 export { id } from "./client/id";
+/** The model map, the constraint on `Client`, `Schema` and every generic
+ *  `createClient` takes: a typed helper cannot be written without it. */
+export type { Models } from "./model/schema";
 export type { HistoryEntry, StoredFile } from "./client/data-client";
 export type { PresencePeer, PresenceError, PresenceSubscribeOptions, QueryError, TopicGap, TopicSender, WriteRejection } from "./client/types";
 export type { StorageObject } from "./client/storage-client";
+
+// The offline write queue: `createClient({ outbox })` takes one of these. The
+// browser default is an IndexedDB store, so a runtime without IndexedDB — React
+// Native — passes `AsyncStorageOutbox` from `@tapedb/react-native`.
+export { createOutbox, IndexedDbOutbox, MemoryOutbox, scopedOutboxName } from "./client/outbox";
+export type { Outbox, OutboxFactory, OutboxOptions } from "./client/outbox";
+export { ASYNC_STORAGE_OUTBOX_PREFIX, AsyncStorageOutbox } from "./client/async-storage-outbox";
+export type { AsyncStorageLike, AsyncStorageOutboxOptions } from "./client/async-storage-outbox";
+export type { OutboxEntry } from "./client/types";
 
 export { WORKSPACE_ROLE_LEVELS, hasRole, hasRoleLevel } from "./claims";
 export type { RoleClaim, WorkspaceRole } from "./claims";
