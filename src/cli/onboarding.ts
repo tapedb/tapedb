@@ -100,15 +100,11 @@ export type WranglerCommand = (args: string[], capture?: boolean) => CommandResu
 type Bucket = { binding?: string; bucket_name?: string; jurisdiction?: string };
 /** A Vectorize binding, as Wrangler declares it in `wrangler.jsonc`. */
 export type VectorizeBinding = { binding?: string; index_name?: string };
-/** `tapedb.vectorize`: what this deployment indexes, and what it provisioned. */
-export type TapedbConfig = { vectorize?: import("./vectorize").VectorizeDeploymentConfig };
 type DeployEnvironment = {
   name?: string; account_id?: string; vars?: Record<string, string>;
-  r2_buckets?: Bucket[]; vectorize?: VectorizeBinding[]; tapedb?: TapedbConfig;
+  r2_buckets?: Bucket[]; vectorize?: VectorizeBinding[];
 };
 export type DeployConfig = DeployEnvironment & {
-  name?: string; account_id?: string; vars?: Record<string, string>;
-  r2_buckets?: Bucket[]; vectorize?: VectorizeBinding[]; tapedb?: TapedbConfig;
   env?: Record<string, DeployEnvironment>;
   [key: string]: unknown;
 };
