@@ -122,7 +122,7 @@ resumes exactly leaves `gap` null.
 | `$across(workspaceIds, { getToken? })` | `Across`: per model `findMany`, `findFirst`, `findPage` and `count` over those workspaces, each with its own claim (`getToken(workspaceId)`, required unless the client uses the development claim route), merged in `orderBy` order; rows carry `workspaceId`; a page `cursor` holds a position per workspace. Results are `AcrossQuery` (awaitable, `subscribe`, `snapshot`, usable with `useLive`); live states add `errors` by workspace. A failed workspace rejects a one-off read with `AcrossError` (`errors`, `partial`) |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
 | `$history({ model, id })` | `Promise<HistoryEntry[]>`: each recorded change to the row, oldest first, as `{ seq, at, sub, role, action }` with `action` `"insert"`, `"update"` or `"delete"`; ADMIN or higher; needs `audit: true` on the Worker |
-| `$flush()` | waits until queued writes are acknowledged |
+| `$flush()` | makes one delivery attempt for the queued writes and resolves when that attempt finishes. It does **not** wait for acknowledgement: an unreachable server leaves the entry queued and a retry is scheduled, so read it as "try now", not "is synced". a caller that must know a write landed has to track that itself |
 | `clientId` | this socket's session id, assigned by the server on `session:ready` and the id a `PresencePeer` carries. `undefined` until the socket opens, and against a Worker that predates multiple presence rooms |
 | `$close()` | closes the socket |
 
@@ -148,7 +148,7 @@ at most once.
 | `IndexedDbOutbox` | the browser default, scoped to `userId` |
 | `AsyncStorageOutbox` | any async key-value store: `getItem`, `setItem`, `removeItem`, `getAllKeys`, and a batch delete (`multiRemove` on v1/v2, `removeMany` on v3, or neither — it then removes one key at a time). Keys are `prefix + clientTxId`, so two accounts on one device stay apart. Pass `prefix: scopedOutboxName(url, userId) + ":"` to scope it the way the browser does |
 
-`@tapedb/react-native` is the packaged form of this: `createReactNativeClient({ schema, url, userId })`
+`@tapedb/react-native` is the packaged form of this: `createReactNativeClient({ schema, url, workspace, userId })`
 wires an `AsyncStorageOutbox` for you and re-exports the React hooks. A store that fails a write does
 not lose it — the entry is held in memory and a later flush still sees it.
 
@@ -287,7 +287,7 @@ Peers: `react ^19`, `@react-native-async-storage/async-storage ^1.17 || ^2 || ^3
 ```tsx
 import { createReactNativeClient, useLive } from "@tapedb/react-native";
 
-const db = createReactNativeClient({ schema, url, userId });
+const db = createReactNativeClient({ schema, url, workspace, userId });
 ```
 
 `storage` overrides the store; `outbox` overrides the whole queue. Everything else is `createClient`'s
