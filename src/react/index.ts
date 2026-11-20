@@ -12,13 +12,13 @@ import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore
 
 import { stableStringify } from "../client/stable";
 import type { AcrossLiveState, AcrossQuery } from "../model/across";
-import type { PresencePeer, PresencePeersOptions } from "../client/types";
+import type { PresenceError, PresencePeer, PresencePeersOptions, PresenceSubscribeOptions } from "../client/types";
 import type { BroadcastTopic, LiveState, Page, PageQuery, PresenceRoom, Query } from "../model/client";
 import type { TopicGap, TopicSender } from "../client/types";
 
 // Public, because `usePresence` takes it and `PresenceRoom.peers()` returns to
 // it: a type a signature names must be nameable from the entry that names it.
-export type { PresencePeersOptions } from "../client/types";
+export type { PresenceError, PresencePeersOptions, PresenceSubscribeOptions } from "../client/types";
 
 /**
  * Live results for a query: `useLive(db.task.findMany({ where }))`.
@@ -70,20 +70,31 @@ export function useLivePage<R>(query: PageQuery<R>): LivePage<R> {
  * the room on unmount; publishes again whenever `presence` changes.
  *
  * Your own entry is included and marked `isSelf: true`; pass
- * `{ includeSelf: false }` to leave it out.
+ * `{ includeSelf: false }` to leave it out. `onError` hears the engine refuse
+ * a set for this room — an authorizer saying no, the room cap, the state byte
+ * budget — while the peers stay as they were.
  */
 export function usePresence(
   db: { $presence(room: string): PresenceRoom },
   room: string,
   presence?: unknown,
-  options?: PresencePeersOptions
+  options?: PresenceSubscribeOptions
 ): PresencePeer[] {
   const [peers, setPeers] = useState<PresencePeer[]>([]);
   const handle = useMemo(() => db.$presence(room), [db, room]);
   const serialised = presence === undefined ? undefined : stableStringify(presence);
   const includeSelf = options?.includeSelf !== false;
+  // The latest callback wins without resubscribing: a refusals handler is
+  // usually an inline arrow, and a new one each render must not restart the
+  // room's subscription.
+  const onError = useRef(options?.onError);
+  onError.current = options?.onError;
+  const reportError = useCallback((error: PresenceError) => onError.current?.(error), []);
 
-  useEffect(() => handle.subscribe(setPeers, { includeSelf }), [handle, includeSelf]);
+  useEffect(
+    () => handle.subscribe(setPeers, { includeSelf, onError: reportError }),
+    [handle, includeSelf, reportError]
+  );
   useEffect(() => {
     if (presence !== undefined) handle.set(presence);
     // eslint-disable-next-line react-hooks/exhaustive-deps
