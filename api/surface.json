@@ -891,6 +891,7 @@
           "retention": "RetentionOptions | undefined",
           "limits": "LimitsOptions | undefined @experimental",
           "webhooks": "readonly WebhookOptions[] | undefined @experimental",
+          "vectorize": "VectorizeOptions | undefined @experimental",
           "http": "HttpApiOptions | undefined @experimental"
         }
       },
@@ -901,6 +902,7 @@
           "AUTH": "DurableObjectNamespace<AuthRoom> | undefined",
           "DATA": "R2Bucket",
           "FILES": "R2Bucket | undefined",
+          "VECTORIZE": "VectorizeIndex | undefined",
           "DATA_FROM": "R2Bucket | undefined",
           "FILES_FROM": "R2Bucket | undefined",
           "WORKSPACE_FROM": "DurableObjectNamespace<WorkspaceRoom> | undefined",
@@ -1033,6 +1035,75 @@
           "replaySeconds": "number | undefined"
         }
       },
+      "VectorIndex": {
+        "kind": "interface",
+        "shape": {
+          "upsert": "(vectors: readonly VectorRecord[]) => Promise<VectorIndexMutation>",
+          "deleteByIds": "(ids: readonly string[]) => Promise<VectorIndexMutation>",
+          "query": "(vector: readonly number[], options?: VectorQueryOptions) => Promise<VectorQueryResult>",
+          "describe": "() => Promise<VectorIndexDescription>"
+        }
+      },
+      "VectorIndexDescription": {
+        "kind": "interface",
+        "shape": {
+          "name": "string | undefined",
+          "dimensions": "number | undefined",
+          "metric": "string | undefined"
+        }
+      },
+      "VectorIndexMutation": {
+        "kind": "interface",
+        "shape": {
+          "mutationId": "string"
+        }
+      },
+      "VectorizeOptions": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "index": "string",
+          "model": "string",
+          "field": "string",
+          "filterFields": "readonly string[] | undefined"
+        }
+      },
+      "VectorMatch": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "score": "number",
+          "values": "number[] | undefined",
+          "namespace": "string | undefined",
+          "metadata": "Record<string, string | number | boolean> | undefined"
+        }
+      },
+      "VectorQueryOptions": {
+        "kind": "interface",
+        "shape": {
+          "topK": "number | undefined",
+          "namespace": "string | undefined",
+          "filter": "Record<string, string | number | boolean> | undefined",
+          "returnValues": "boolean | undefined",
+          "returnMetadata": "\"none\" | \"indexed\" | \"all\" | undefined"
+        }
+      },
+      "VectorQueryResult": {
+        "kind": "interface",
+        "shape": {
+          "matches": "VectorMatch[]",
+          "count": "number"
+        }
+      },
+      "VectorRecord": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "values": "number[]",
+          "namespace": "string | undefined",
+          "metadata": "Record<string, string | number | boolean> | undefined"
+        }
+      },
       "verifyRoleClaim": {
         "kind": "function",
         "shape": "(token: string, env: ClaimVerificationEnv, expectedWorkspaceId: string) => Promise<RoleClaim>"
@@ -1153,6 +1224,7 @@
           "AUTH": "DurableObjectNamespace<import(\"src/auth/room\").AuthRoom> | undefined",
           "DATA": "R2Bucket",
           "FILES": "R2Bucket | undefined",
+          "VECTORIZE": "VectorizeIndex | undefined",
           "DATA_FROM": "R2Bucket | undefined",
           "FILES_FROM": "R2Bucket | undefined",
           "WORKSPACE_FROM": "DurableObjectNamespace<import(\"src/engine/workspace-room\").WorkspaceRoom> | undefined",

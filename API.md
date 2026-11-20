@@ -113,8 +113,10 @@ returns it. The client refuses to filter, order or group by a vector field, and
 the engine refuses a filter, a `groupBy` and every aggregate measure on one
 (`invalid_value`).
 
-Nothing here talks to Cloudflare Vectorize yet: this release defines the field,
-its encoding and its validation. Indexing and search come later.
+Nothing here talks to Cloudflare Vectorize: this is the field, its encoding and
+its validation. Mirroring it into an index is `defineTapeDB({ vectorize })`, in
+[`@tapedb/tapedb/worker`](#vector-search); searching that index is not part of
+this release.
 
 ## `@tapedb/tapedb` — client
 
@@ -365,6 +367,8 @@ the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
 | `realtime` | **experimental**: `RealtimeOptions` `{ authorize?, maxPresenceRooms?, replaySeconds? }`: one `RealtimeAuthorizer` for presence rooms and broadcast topics, the rooms one socket may hold (default 4, `0` refuses presence), and the seconds of each topic kept for a listener that reconnects (default 60, `0` keeps none) — see [Presence](#presence) |
 | `topics` | **experimental**, **deprecated** alias of `realtime`: `TopicOptions` `{ authorize?, replaySeconds? }`, whose `authorize` covers topic kinds only and is consulted only when `realtime.authorize` is absent |
 | `limits` | **experimental**: `LimitsOptions` `{ writes?: { models?: { [model]: { count, windowSeconds } }, workspace?: { count, windowSeconds } } }` — per-model and per-workspace write budgets, see [Write budgets](#write-budgets) |
+| `webhooks` | **experimental**: `readonly WebhookOptions[]` — signed change events to an endpoint, captured inside the write's transaction and delivered after the commit |
+| `vectorize` | **experimental**: `VectorizeOptions` `{ index, model, field, filterFields? }` — mirrors one model's `t.vector({ dimensions })` attribute into a Vectorize index; see [Vector search](#vector-search) |
 | `http` | **experimental**: `HttpApiOptions` `{ token }` — the admin HTTP API (`POST /v1/query`, `/v1/transact`, `/v1/claim`) for a backend server. `token` is the shared secret such a caller sends, at least 32 bytes: a string, refused when the Worker is defined if it is shorter, or `(env) => env.TAPEDB_API_TOKEN`, the form a deployment uses. Absent, the paths answer 404 — see [Admin HTTP API](#admin-http-api) |
 
 Also exported: `signRoleClaim(secret, { sub, workspaceId, role, iss?, aud?,
@@ -381,7 +385,10 @@ allow consumers to emit declarations without leaking private names.
 `TopicAction`, `TopicAuthorizer` and `TopicGap` are **experimental**, and so are
 `RealtimeOptions`, `RealtimeAuthorizer`, `RealtimeAuthorizeContext` and
 `RealtimeKind`, and `LimitsOptions`, `WriteLimitsOptions` and `WriteLimit`, and
-`HttpApiOptions` and `HttpApiToken`.
+`HttpApiOptions` and `HttpApiToken`. The vector types are **experimental** too:
+`VectorizeOptions`, `VectorIndex` (the four operations this engine uses),
+`VectorRecord`, `VectorIndexMutation`, `VectorQueryOptions`, `VectorQueryResult`,
+`VectorMatch` and `VectorIndexDescription`.
 
 ### Write budgets
 
@@ -439,6 +446,125 @@ set to the same whole seconds the body carries:
 treats a `429` as retryable, so a queued offline write stays queued and is sent
 after the window rather than being dropped.
 
+### Vector search
+
+```ts
+defineTapeDB({
+  schema,
+  vectorize: {
+    index: "VECTORIZE",          // the binding's name in Env
+    model: "note",
+    field: "embedding",          // note.embedding: t.vector({ dimensions: 768 })
+    filterFields: ["archived"],  // copied into the vector's metadata
+  },
+});
+```
+
+The option mirrors **one** vector attribute of **one** model into **one**
+Vectorize index. `index` names the binding, so a deployment without this option
+needs neither the option nor the binding: no table is created, no binding is
+read, nothing is written. `model` and `field` are checked against the schema
+when the Worker is defined, together with these rules:
+
+- `field` must be a `t.vector({ dimensions })` attribute, and its declared
+  dimensions are the index's: 1 to 1,536, the same declaration and the same
+  validator the field itself uses;
+- a `filterFields` entry must be a `string`, `number` or `boolean` attribute of
+  that model — a `json`, `date` or vector attribute has no metadata index to
+  filter on;
+- a `filterFields` entry must not be personal: metadata is stored at the
+  provider, which is a copy outside the workspace's storage;
+- at most **ten** filter fields, the provider's ceiling of ten metadata indexes
+  per index.
+
+A worker that fails any of these refuses to start, naming the option, rather
+than discovering it at the first write. Once a room is running, the index's own
+`dimensions` and metric are compared with the schema before the first
+submission: an index of another shape is refused, the intents stay queued, and
+`/status` keeps counting them.
+
+**What is published.** Each indexed row becomes one vector: the stored
+`f32le:v1:<base64>` bytes of the field, the configured filter values, and a
+**digest**. The vector ID is `hex(SHA-256(deployment, workspace, model, field,
+row id))` — exactly 64 characters — and the namespace is
+`base64url(SHA-256(deployment, workspace))` — 43 characters — both derived, never
+supplied, so one workspace cannot address another's vectors and neither an ID
+nor a metadata value carries a note, a workspace ID or an identity.
+
+**The digest** is what decides whether a row is published again. It is the
+SHA-256, as 64 hex characters, of a string containing, in order:
+
+1. `tapedb.vector.digest/1` — the rule's version;
+2. the codec tag (`f32le:v1:`) — a value written by another codec is another
+   state, even if it decodes to the same numbers;
+3. the model's API name and the row ID;
+4. the vector's **decoded canonical bytes** — decoded and re-encoded through the
+   one codec first, so two JavaScript inputs that round to the same float32 are
+   one state, and `-0` and `+0` are one state;
+5. every filter value, sorted by attribute name, each as `<name>` and a typed
+   value: `b0`/`b1` for a boolean, `n:<json>` for a number, `s:<json>` for a
+   string, `absent` for a field that is null or missing.
+
+The filter values are in it for a specific reason: the provider evaluates a
+metadata filter before ranking, so if `archived` goes from `false` to `true` and
+nothing is re-sent, the row keeps matching `{ archived: false }` and is stale in
+the index while SQLite says otherwise. Hashing the filters makes that write
+publish again, and hashing the canonical bytes makes a write that changes
+nothing cost nothing — an unchanged digest is never re-sent.
+
+**The queue.** The intent is captured **inside the write's transaction**, by a
+trigger on the indexed model, into `_vector_queue` in the workspace's own
+SQLite, keyed by `(model, row id)`: ten writes to one row in one transaction
+leave one intent, and a delete after an insert leaves a delete. The row and its
+intent commit together, so indexing can never fail or slow a commit — with the
+index unreachable, the write commits, reads succeed, and the intent waits.
+
+The intent is drained from the **durability alarm**, the same mechanism that
+flushes the log to R2, never from a request. A drain submits the oldest due
+upserts in one batch of up to **1,000 vectors** (the provider's ceiling for the
+Workers binding; its HTTP API takes 5,000, which this engine does not use) and
+the oldest due deletes in one batch of up to **1,000 IDs** — the limits page
+documents no delete ceiling for the binding, so deletes use the figure it does
+document. A submission that fails keeps every intent in its batch, increments
+`attempts`, and schedules `next_attempt_at` from the same capped exponential
+backoff the log flusher uses: 30 s, doubling, capped at one hour. An intent is
+never dropped for failing, and a retry always re-reads the row's current state
+first, so a row written again during a backoff is published with its latest
+values.
+
+**Pending is normal.** The provider accepts a submission asynchronously and its
+vectors become searchable later: measured on a live index, an accepted upsert was
+visible 73–103 s afterwards. This engine records the mutation ID the provider
+answers with and treats `pending` as the ordinary state of a fresh row. It does
+not poll per request, does not block a write on visibility, and does not treat
+the provider's `processedUpToMutation` as progress: it is not monotonic across
+replicas, so no confirmation may assume it moves forward. `GET /status` reports a
+count instead:
+
+```json
+{ "vectorize": { "pending": 3, "failing": 1, "indexed": 412, "lastMutationId": "01J..." } }
+```
+
+`pending` is the queue depth, `failing` the intents whose last attempt was
+refused, and `indexed` the rows the provider has accepted a digest for.
+
+**Deletes.** Deleting a row enqueues a delete of its vector, and clearing the
+vector field does the same; both are submitted like any other intent and are
+idempotent at the provider. Deleting an ID the index does not hold is not an
+error, so a delete is always queued rather than inferred from local state — an
+upsert whose answer was lost may still have reached the provider.
+
+**Limits and what is not here.** Filter strings are truncated to the provider's
+64-byte indexed-string budget on a UTF-8 boundary when copied into metadata; the
+digest covers the untruncated value. Metadata indexes must exist *before* the
+vectors they index — adding a filter field later means re-publishing every
+vector, which this release does not do on its own. Erasing a **workspace** is
+not covered: rows are deleted from the index, a workspace's vectors are not, and
+the purge ledger, the fencing of new submissions and the reconciliation of an
+in-flight upsert belong to a later release (see `src/engine/vector-index/erasure.ts`
+for the seam). Search is not here either: this publishes state to the index and
+never reads a query back.
+
 ### Bindings and settings (`Env`)
 
 | Name | Kind | |
@@ -446,6 +572,7 @@ after the window rather than being dropped.
 | `WORKSPACE` | Durable Object namespace | class `WorkspaceRoom` |
 | `DATA` | R2 bucket | log segments and snapshots |
 | `FILES` | R2 bucket, optional | uploads |
+| `VECTORIZE` | Vectorize index, optional | the index `vectorize.index` names; read by name, so any binding name works |
 | `TAPEDB_CLAIM_SECRET` | secret | HS256 key for claims, at least 32 bytes |
 | `TAPEDB_KEY_SECRET` | secret | stable wrapping and HMAC key for personal fields; required when the schema has personal fields |
 | `TAPEDB_CLAIM_ISSUER`, `TAPEDB_CLAIM_AUDIENCE` | var, optional | checked when set |
