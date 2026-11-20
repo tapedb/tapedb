@@ -19,6 +19,7 @@ import { configureRegistry, registryConfigured } from "../engine/registry";
 import { configureMigrations } from "../engine/migrations-bundle";
 import { configurePermissions } from "../engine/tx-permissions";
 import { configureRealtime, type RealtimeOptions, type TopicOptions } from "../engine/topics";
+import { configureWebhooks, type WebhookOptions } from "../engine/webhooks";
 import { configureAudit } from "../engine/audit";
 import { configureFileAccess, fileRulesConfigured } from "../engine/file-access";
 import { configureRetention, type RetentionOptions } from "../engine/durability/retention";
@@ -118,6 +119,21 @@ export interface DefineTapeDBOptions {
    * Defaults to 30 days; at least 2.
    */
   retention?: RetentionOptions;
+  /**
+   * Outbound webhooks: one POST per changed row, in the transaction's
+   * sequence order, signed with `X-Tapedb-Signature`.
+   *
+   *   webhooks: [{ url, events: ["create"], models: ["tasks"], secret }]
+   *
+   * The change is captured inside the write transaction, so a webhook can
+   * never fail or slow a commit. Delivery follows the commit, from the
+   * durability alarm; it is retried with backoff for up to 24 hours, then
+   * dead-lettered and counted on `GET /status`. Personal fields never appear
+   * in a payload.
+   *
+   * @experimental May change in a minor release.
+   */
+  webhooks?: readonly WebhookOptions[];
 }
 
 export interface TapeDBWorker {
@@ -292,6 +308,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   );
   configurePermissions(schema.permissions);
   configureRealtime(options.realtime, options.topics);
+  configureWebhooks(options.webhooks);
   configureAudit(options.audit);
   configureFileAccess(schema.files);
   configureRetention(options.retention);
@@ -459,6 +476,7 @@ export { signRoleClaim } from "../mint";
 export type { ClaimIdentity } from "../mint";
 export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
 export type { TopicAction, TopicAuthorizer, TopicOptions } from "../engine/topics";
+export type { WebhookEvent, WebhookEventPayload, WebhookOptions } from "../engine/webhooks";
 export type {
   RealtimeAuthorizeContext,
   RealtimeAuthorizer,
