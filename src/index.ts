@@ -34,6 +34,8 @@ export type {
 } from "./model/client";
 
 export { schema, model, t, role, filter, check } from "./schema";
+/** A vector field's value and its one codec: `f32le:v1:<base64>`. */
+export { encodeVector, decodeVector, VECTOR_TAG, VECTOR_MAX_DIMENSIONS } from "./schema";
 export type {
   Access,
   AccessAuth,

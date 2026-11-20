@@ -18,6 +18,7 @@ export type AttributeType =
   | "boolean"
   | "date"
   | "json"
+  | "vector"
   | "any";
 
 export type DeleteRule = "CASCADE" | "SET NULL" | "RESTRICT";
@@ -42,6 +43,11 @@ export interface AttributeDefinition {
   unique?: boolean;
   /** For `t.enum(...)`: the values a write may carry. Absent for a plain string. */
   values?: readonly string[];
+  /**
+   * For `t.vector({ dimensions })`: the declared length, 1 to 1,536. The
+   * column holds the `f32le:v1:<base64>` string the codec writes.
+   */
+  dimensions?: number;
   references?: AttributeReference;
 }
 
