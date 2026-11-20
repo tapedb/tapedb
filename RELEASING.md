@@ -84,54 +84,72 @@ migration and erasure. Do not release on the strength of the unit suite alone.
 
 ## Publishing
 
-Only after the gates and checks:
+Only after the gates and checks.
 
-1. Update `CHANGELOG.md` and set the intended version in `package.json`, and
-   the same version in `packages/cli/package.json`, `packages/react/package.json`,
-   `packages/auth/package.json` and `packages/email/package.json` (each one's
-   `version` and its `@tapedb/tapedb` dependency). All five move in lockstep:
-   the four packages pin the core version exactly.
-2. Open the release pull request and remove `"private": true` there. Keep
-   `publishConfig` and the repository metadata. Merge only after the checks
-   pass.
-3. Create an annotated tag and GitHub release from the merged commit.
-4. From that tag on a clean checkout, run the package checks again.
-5. Publish, in this order:
+1. Update `CHANGELOG.md` and set the intended version in `package.json` and in
+   all five wrappers — `packages/cli`, `packages/react`, `packages/auth`,
+   `packages/email`, `packages/react-native` — changing each one's `version`
+   *and* its `@tapedb/tapedb` dependency. All six move in lockstep: every
+   wrapper pins the core version exactly.
+2. Open the release pull request, gate it, and merge.
+3. Create an annotated tag and a GitHub release from the merged commit.
+4. Publishing runs from the tag, through the Cloudflare Workers Builds pipeline
+   on the private `tapedb-staging` repository — never from the public repo, and
+   never from GitHub Actions, which this project does not use.
+
+   The trigger's build command runs the gates (`bun install --frozen-lockfile &&
+   bun run verify`) and its deploy command is one line:
 
    ```bash
-   npm publish --access public
-   cd packages/cli && npm publish --access public
-   cd ../react && npm publish --access public
-   cd ../auth && npm publish --access public
-   cd ../email && npm publish --access public
+   bun run release:publish
    ```
 
-   `@tapedb/tapedb` → `@tapedb/cli` → `@tapedb/react` → `@tapedb/auth` →
-   `@tapedb/email`. The order is forced by the exact pins: every package
-   depends on `"@tapedb/tapedb": "<this version>"`, so publishing any of them
-   before the core puts a pin on the registry that resolves to nothing, and a
-   consumer install fails until the core appears. Publishing in this order is
-   the whole guarantee that `@tapedb/react` and `@tapedb/tapedb/react` (and the
-   auth and email pairs) are one release. The wrappers may be published in any
-   order among themselves; the core must come first.
+   `NPM_TOKEN` is a Workers Builds secret: a granular token with publish rights
+   and **no** bypass-2FA. A build environment should be able to fill the queue,
+   not empty it.
 
-   Without an npm CI service there is no OIDC token, so this publish carries no
-   provenance attestation. Do not add `--provenance` unless the publish runs in
-   CI.
+   The script stages all six with `npm stage publish` in the forced order
+   (`@tapedb/tapedb` → `cli` → `react` → `auth` → `email` → `react-native`) and
+   refuses to run when the tree is dirty, when HEAD is not a release tag, when
+   any package's version disagrees with the tag, or when a wrapper's pin is not
+   the tag's version. The core-first order matters because a pin on the registry
+   that resolves to nothing breaks `npm install` for every consumer until the
+   core appears.
 
-6. Verify the registry and the consumer path:
+   Locally the same script works for a rehearsal:
 
    ```bash
-   npm view @tapedb/tapedb version dist-tags.latest
-   npm view @tapedb/cli version dist-tags.latest
-   npm view @tapedb/react version dist-tags.latest
-   npm view @tapedb/auth version dist-tags.latest
-   npm view @tapedb/email version dist-tags.latest
+   node scripts/release-publish.mjs --check      # preconditions only
+   node scripts/release-publish.mjs --dry-run    # print the plan
+   ```
+
+5. Approve the batch once. Staging needs no second factor; approval is the
+   proof of presence, and one passkey covers the whole batch:
+
+   ```bash
+   npm stage list @tapedb/tapedb     # stage ids
+   npm stage approve <stage-id>      # or approve all of them on npmjs.com at once
+   ```
+
+   Approving on npmjs.com under **Staged Packages** takes one 2FA challenge for a
+   whole selection, so a release costs one passkey rather than six.
+
+6. These publishes carry no provenance attestation. Provenance needs an OIDC
+   trusted publisher, which npm supports for GitHub Actions and GitLab CI only;
+   this pipeline passes a token. Do not add `--provenance`, and do not describe
+   the packages as attested.
+
+7. Verify the registry and the consumer path once approved:
+
+   ```bash
+   for p in tapedb cli react auth email react-native; do
+     npm view "@tapedb/$p" version dist-tags.latest
+   done
    cd "$(mktemp -d)" && npx @tapedb/cli init
    ```
 
-7. Make the GitHub repository public and enable branch protection and secret
-   scanning. Update the package page and the documentation links.
+8. Update the package pages, the documentation links and the site's version
+   badge, then deprecate anything this release supersedes.
 
 ## After publishing
 

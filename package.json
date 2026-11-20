@@ -84,7 +84,8 @@
     "api:update": "bun scripts/api-surface.ts --write",
     "test:e2e": "node scripts/e2e.mjs",
     "test:browser": "playwright test --config scripts/browser/playwright.config.ts",
-    "test:auth": "vitest run --config scripts/auth/vitest.config.ts"
+    "test:auth": "vitest run --config scripts/auth/vitest.config.ts",
+    "release:publish": "node scripts/release-publish.mjs"
   },
   "dependencies": {},
   "peerDependencies": {
