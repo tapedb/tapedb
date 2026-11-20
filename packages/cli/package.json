@@ -1,6 +1,6 @@
 {
   "name": "@tapedb/cli",
-  "version": "0.2.2",
+  "version": "0.2.3",
   "description": "The tapedb command line: npx @tapedb/cli init, dev, deploy.",
   "type": "module",
   "bin": {
@@ -12,7 +12,7 @@
     "LICENSE"
   ],
   "dependencies": {
-    "@tapedb/tapedb": "0.2.2"
+    "@tapedb/tapedb": "0.2.3"
   },
   "engines": {
     "node": ">=22.18"
