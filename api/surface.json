@@ -1013,6 +1013,7 @@
       "TapeDBRoom": {
         "kind": "class",
         "shape": {
+          "resumeVectorPurge": "() => Promise<VectorPurgeStatus | null>",
           "fetch": "(request: Request) => Promise<Response>",
           "eraseAuthSubject": "(user: string) => Promise<void>",
           "syncAuthUsers": "(profiles: Array<{ id: string; name: string; image: string | null; }>) => Promise<void>",
@@ -1075,7 +1076,8 @@
         "shape": {
           "name": "string | undefined",
           "dimensions": "number | undefined",
-          "metric": "string | undefined"
+          "metric": "string | undefined",
+          "processedUpToMutation": "string | null | undefined"
         }
       },
       "VectorIndexMutation": {
@@ -2306,9 +2308,59 @@
         "kind": "type",
         "shape": "<M extends Models> [SchemaErrors<M>] extends [never] ? unknown : { readonly __schemaError: SchemaErrors<M> }"
       },
+      "VECTOR_PURGE_VERSION (src/engine/vector-index/purge-ledger.ts)": {
+        "kind": "value",
+        "shape": "1"
+      },
       "VectorKeys (src/model/schema.ts)": {
         "kind": "type",
         "shape": "<F> { [K in ScalarKeys<F>]: F[K] extends Field<\"vector\", boolean, boolean> ? K : never; }[ScalarKeys<F>]"
+      },
+      "VectorPurgeBatch (src/engine/vector-index/purge-ledger.ts)": {
+        "kind": "interface",
+        "shape": {
+          "n": "number",
+          "ids": "number",
+          "mutationId": "string | null",
+          "submittedAt": "number | null",
+          "confirmedAt": "number | null",
+          "attempts": "number",
+          "nextAttemptAt": "number",
+          "lastError": "string | null"
+        }
+      },
+      "VectorPurgeLedger (src/engine/vector-index/purge-ledger.ts)": {
+        "kind": "interface",
+        "shape": {
+          "version": "1",
+          "deployment": "string",
+          "workspace": "string",
+          "index": "string",
+          "namespace": "string",
+          "fencedAt": "number",
+          "phase": "\"inventory\" | \"deleting\" | \"verifying\" | \"complete\"",
+          "batches": "VectorPurgeBatch[]",
+          "ids": "number",
+          "updatedAt": "number",
+          "completedAt": "number | null",
+          "lastError": "string | null"
+        }
+      },
+      "VectorPurgeStatus (src/engine/vector-index/purge-ledger.ts)": {
+        "kind": "interface",
+        "shape": {
+          "phase": "\"inventory\" | \"deleting\" | \"verifying\" | \"complete\"",
+          "fenced": "boolean",
+          "batches": "number",
+          "ids": "number",
+          "submitted": "number",
+          "confirmed": "number",
+          "pending": "number",
+          "stalled": "boolean",
+          "lastError": "string | null",
+          "fencedAt": "number",
+          "completedAt": "number | null"
+        }
       },
       "ViewWhereRule (src/engine/tx-permissions.ts)": {
         "kind": "interface",

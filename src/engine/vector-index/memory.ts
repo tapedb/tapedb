@@ -45,6 +45,15 @@ export class MemoryVectorIndex implements VectorIndex {
    */
   failWith: string | null = null;
 
+  /**
+   * What the double reports as processed, which is the last mutation it
+   * accepted. A test overwrites it to model what a live index does and a double
+   * otherwise cannot: a replica whose watermark is *behind* the delete it was
+   * given, or one that moved backwards between two reads. Nothing here
+   * simulates the provider's real lag — that was measured on a live index.
+   */
+  processedUpToMutation: string | null = null;
+
   constructor(
     readonly name: string,
     readonly dimensions: number,
@@ -69,7 +78,7 @@ export class MemoryVectorIndex implements VectorIndex {
         metadata: { ...(vector.metadata ?? {}) },
       });
     }
-    return { mutationId: `memory-${++this.mutations}` };
+    return this.accept();
   }
 
   async deleteByIds(ids: readonly string[]): Promise<VectorIndexMutation> {
@@ -80,7 +89,7 @@ export class MemoryVectorIndex implements VectorIndex {
         if (key.endsWith(`\u001f${id}`)) this.vectors.delete(key);
       }
     }
-    return { mutationId: `memory-${++this.mutations}` };
+    return this.accept();
   }
 
   async query(vector: readonly number[], options: VectorQueryOptions = {}): Promise<VectorQueryResult> {
@@ -106,7 +115,19 @@ export class MemoryVectorIndex implements VectorIndex {
   }
 
   async describe(): Promise<VectorIndexDescription> {
-    return { name: this.name, dimensions: this.dimensions, metric: this.metric };
+    return {
+      name: this.name,
+      dimensions: this.dimensions,
+      metric: this.metric,
+      processedUpToMutation: this.processedUpToMutation,
+    };
+  }
+
+  /** A mutation the double accepted: the watermark reaches it immediately. */
+  private accept(): VectorIndexMutation {
+    const mutationId = `memory-${++this.mutations}`;
+    this.processedUpToMutation = mutationId;
+    return { mutationId };
   }
 
   /** How many vectors the index holds. */

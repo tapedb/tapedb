@@ -39,9 +39,10 @@ import { nextBackoffDelay } from "../durability/flusher";
 import { decodeVector } from "../../model/vector";
 import type { SqlExecutor, SqlRow, SqlValue } from "../tx-sql";
 import { vectorRowDigest } from "./digest";
+import type { VectorPurgeStatus } from "./purge-ledger";
 import { vectorIdFor, vectorNamespaceFor } from "./identity";
 import type { ConfiguredVectorize } from "./definition";
-import type { VectorIndex, VectorRecord } from "./types";
+import type { VectorIndex, VectorRecord, VectorSubmissionGate } from "./types";
 
 /** Intents waiting for the index, one row per (model, row). */
 export const VECTOR_QUEUE_TABLE = "_vector_queue";
@@ -69,6 +70,15 @@ export const VECTOR_MATERIALISE_LIMIT = 500;
  * candidate that is then rejected, never hide one.
  */
 export const VECTOR_FILTER_MAX_BYTES = 64;
+/**
+ * Failed attempts after which an intent stops being retried and is reported as
+ * dead-lettered. It is never dropped — the row and its intent stay in the
+ * workspace, visible in `/status`, so an operator can fix the cause and clear
+ * `attempts` — but a purge or a rebuild should not have to out-wait a queue
+ * that has been failing for a day. Twelve attempts is roughly six hours of
+ * capped backoff.
+ */
+export const VECTOR_DEAD_LETTER_ATTEMPTS = 12;
 
 const TRIGGER_PREFIX = "_tapedb_vector_";
 const MAX_ERROR_LENGTH = 500;
@@ -111,18 +121,43 @@ export interface VectorDrainSummary {
   nextAt: number | null;
   /** The mutation IDs this pass's submissions were accepted under. */
   mutations: string[];
+  /**
+   * The workspace is fenced: nothing was submitted, by this pass or by any
+   * later one, and the intents stay where they are. An erasure owns what
+   * happens next.
+   */
+  fenced: boolean;
+  /** Intents that have failed too many times to keep retrying. */
+  deadLettered: number;
 }
 
-/** What the queue holds, for `GET /status`. */
+/**
+ * What the queue holds, for `GET /status`.
+ *
+ * The three work states are separate on purpose: `pending` is normal, `failing`
+ * is a submission being retried, and `deadLettered` is work that stopped
+ * retrying and needs someone. A room with a purge adds `fenced` and the
+ * ledger's state (`VectorQueueStatus`), which is how a stuck erasure is visible.
+ */
 export interface VectorQueueCounts {
-  /** Intents waiting for the index. */
+  /** Intents in the queue: work the provider has not accepted, in any state. */
   pending: number;
-  /** Intents whose last attempt failed. */
+  /** Intents whose last attempt failed and are waiting for their retry. */
   failing: number;
+  /** Intents that exhausted `VECTOR_DEAD_LETTER_ATTEMPTS` and are not retried. */
+  deadLettered: number;
   /** Rows the provider has accepted a digest for. */
   indexed: number;
   /** The most recent mutation ID recorded, for correlation. */
   lastMutationId: string | null;
+}
+
+/** `VectorQueueCounts` plus what only the room knows: the fence and the purge. */
+export interface VectorQueueStatus extends VectorQueueCounts {
+  /** True while the workspace's erasure marker stands. */
+  fenced: boolean;
+  /** The purge's durable progress, or null when the workspace was never fenced. */
+  purge: VectorPurgeStatus | null;
 }
 
 // ---- Tables and capture --------------------------------------------------------
@@ -391,11 +426,21 @@ function filterValuesOf(
  * platform's batch size. A failed submission leaves every intent in its batch
  * with `attempts` incremented and `next_attempt_at` set from the same capped
  * exponential backoff the log flusher uses — the entry is never dropped, so an
- * outage costs latency and nothing else.
+ * outage costs latency and nothing else. After `VECTOR_DEAD_LETTER_ATTEMPTS` an
+ * intent stops being retried and is counted as dead-lettered; it stays in the
+ * table, because dropping it would silently lose the publish.
  *
  * The provider accepts asynchronously: a success here means "accepted", and the
  * vector may not be visible for a minute or two. Nothing in this function waits
  * for that, and no caller does either.
+ *
+ * **The fence.** When `gate` is given, every submission — upsert and delete —
+ * goes through it, so a workspace whose erasure marker stands submits nothing,
+ * including a retry recovered from `_vector_state` in a room that was evicted
+ * and re-created. The gate also owns the ordering guarantee: a fence written
+ * while a submission is in flight waits for that submission, and a submission
+ * that begins after the fence sees it. Refused work is not a failure: the
+ * intents keep their place and `summary.fenced` says why nothing was sent.
  */
 export async function drainVectorQueue(
   sql: SqlExecutor,
@@ -403,7 +448,14 @@ export async function drainVectorQueue(
   config: ConfiguredVectorize,
   workspaceId: string,
   now: number,
-  options: { upsertBatch?: number; deleteBatch?: number } = {}
+  options: {
+    upsertBatch?: number;
+    deleteBatch?: number;
+    /** Refuses a submission while an erasure fence stands. */
+    gate?: VectorSubmissionGate;
+    /** Attempts after which an intent stops being retried. */
+    deadLetterAfter?: number;
+  } = {}
 ): Promise<VectorDrainSummary> {
   const summary: VectorDrainSummary = {
     upserted: 0,
@@ -412,7 +464,10 @@ export async function drainVectorQueue(
     pending: 0,
     nextAt: null,
     mutations: [],
+    fenced: false,
+    deadLettered: 0,
   };
+  const deadLetterAfter = Math.max(1, options.deadLetterAfter ?? VECTOR_DEAD_LETTER_ATTEMPTS);
   const namespace = await vectorNamespaceFor(config.binding, workspaceId);
 
   const upserts = sql.all<QueueRow>(
@@ -420,9 +475,11 @@ export async function drainVectorQueue(
             created_at, next_attempt_at, attempts, last_error
        FROM "${VECTOR_QUEUE_TABLE}"
       WHERE kind = 'upsert' AND materialised_seq >= seq AND next_attempt_at <= ?
+        AND attempts < ?
       ORDER BY seq, rowid
       LIMIT ?`,
     now,
+    deadLetterAfter,
     Math.max(1, options.upsertBatch ?? VECTOR_UPSERT_BATCH)
   );
 
@@ -443,48 +500,78 @@ export async function drainVectorQueue(
     }
 
     if (records.length > 0) {
-      try {
-        const { mutationId } = await index.upsert(records);
-        acceptUpserts(sql, config, accepted, mutationId, now);
-        summary.upserted += records.length;
-        summary.mutations.push(mutationId);
-      } catch (error) {
-        failIntents(sql, accepted, now, errorMessage(error));
+      const submitted = await submitThrough(options.gate, () => index.upsert(records));
+      if (!submitted.ok) {
+        failIntents(sql, accepted, now, errorMessage(submitted.error));
         summary.retried += accepted.length;
+      } else if (submitted.value === null) {
+        // Fenced between the intent and its submission: submit nothing.
+        summary.fenced = true;
+      } else {
+        acceptUpserts(sql, config, accepted, submitted.value.mutationId, now);
+        summary.upserted += records.length;
+        summary.mutations.push(submitted.value.mutationId);
       }
     }
   }
 
-  const deletes = sql.all<QueueRow>(
-    `SELECT id, model, row_id, kind, seq, materialised_seq, vector_id, digest, payload,
-            created_at, next_attempt_at, attempts, last_error
-       FROM "${VECTOR_QUEUE_TABLE}"
-      WHERE kind = 'delete' AND materialised_seq >= seq AND next_attempt_at <= ?
-      ORDER BY seq, rowid
-      LIMIT ?`,
-    now,
-    Math.max(1, options.deleteBatch ?? VECTOR_DELETE_BATCH)
-  );
+  const deletes = summary.fenced
+    ? []
+    : sql.all<QueueRow>(
+        `SELECT id, model, row_id, kind, seq, materialised_seq, vector_id, digest, payload,
+                created_at, next_attempt_at, attempts, last_error
+           FROM "${VECTOR_QUEUE_TABLE}"
+          WHERE kind = 'delete' AND materialised_seq >= seq AND next_attempt_at <= ?
+            AND attempts < ?
+          ORDER BY seq, rowid
+          LIMIT ?`,
+        now,
+        deadLetterAfter,
+        Math.max(1, options.deleteBatch ?? VECTOR_DELETE_BATCH)
+      );
 
   if (deletes.length > 0) {
     const ids = deletes.map((row) => String(row.vector_id ?? ""));
-    try {
-      const { mutationId } = await index.deleteByIds(ids);
-      acceptDeletes(sql, config, deletes, mutationId, now);
-      summary.deleted += ids.length;
-      summary.mutations.push(mutationId);
-    } catch (error) {
-      failIntents(sql, deletes, now, errorMessage(error));
+    const submitted = await submitThrough(options.gate, () => index.deleteByIds(ids));
+    if (!submitted.ok) {
+      failIntents(sql, deletes, now, errorMessage(submitted.error));
       summary.retried += deletes.length;
+    } else if (submitted.value === null) {
+      summary.fenced = true;
+    } else {
+      acceptDeletes(sql, config, deletes, submitted.value.mutationId, now);
+      summary.deleted += ids.length;
+      summary.mutations.push(submitted.value.mutationId);
     }
   }
 
-  const waiting = sql.one<{ total: number; next_at: number | null }>(
-    `SELECT COUNT(*) AS total, MIN(next_attempt_at) AS next_at FROM "${VECTOR_QUEUE_TABLE}"`
+  const waiting = sql.one<{ total: number; next_at: number | null; dead: number }>(
+    `SELECT COUNT(*) AS total, MIN(next_attempt_at) AS next_at,
+            COALESCE(SUM(CASE WHEN attempts >= ? THEN 1 ELSE 0 END), 0) AS dead
+       FROM "${VECTOR_QUEUE_TABLE}"`,
+    deadLetterAfter
   );
   summary.pending = Number(waiting?.total ?? 0);
+  summary.deadLettered = Number(waiting?.dead ?? 0);
   summary.nextAt = waiting?.next_at === null || waiting?.next_at === undefined ? null : Number(waiting.next_at);
   return summary;
+}
+
+/**
+ * Runs one submission, through the fence when there is one. The three outcomes
+ * are kept apart on purpose: an error means nothing was accepted and the
+ * intents retry, `null` means the fence refused it and nothing was sent, and a
+ * value is the provider's acceptance.
+ */
+async function submitThrough<T>(
+  gate: VectorSubmissionGate | undefined,
+  operation: () => Promise<T>
+): Promise<{ ok: true; value: T | null } | { ok: false; error: unknown }> {
+  try {
+    return { ok: true, value: gate === undefined ? await operation() : await gate.submit(operation) };
+  } catch (error) {
+    return { ok: false, error };
+  }
 }
 
 /** The vector a queued upsert asks the index to hold, or null if unreadable. */
@@ -625,14 +712,27 @@ function failIntents(
  * more, and no watermark moves forward reliably).
  */
 export function vectorQueueCounts(sql: SqlExecutor): VectorQueueCounts {
-  const counts: VectorQueueCounts = { pending: 0, failing: 0, indexed: 0, lastMutationId: null };
+  const counts: VectorQueueCounts = {
+    pending: 0,
+    failing: 0,
+    deadLettered: 0,
+    indexed: 0,
+    lastMutationId: null,
+  };
   try {
-    const queue = sql.one<{ total: number; failing: number }>(
-      `SELECT COUNT(*) AS total, COALESCE(SUM(CASE WHEN attempts > 0 THEN 1 ELSE 0 END), 0) AS failing
-         FROM "${VECTOR_QUEUE_TABLE}"`
+    const queue = sql.one<{ total: number; failing: number; dead: number }>(
+      `SELECT COUNT(*) AS total,
+              COALESCE(SUM(CASE WHEN attempts > 0 AND attempts < ? THEN 1 ELSE 0 END), 0) AS failing,
+              COALESCE(SUM(CASE WHEN attempts >= ? THEN 1 ELSE 0 END), 0) AS dead
+         FROM "${VECTOR_QUEUE_TABLE}"`,
+      VECTOR_DEAD_LETTER_ATTEMPTS,
+      VECTOR_DEAD_LETTER_ATTEMPTS
     );
+    // `pending` is the depth of work not yet accepted, which includes the
+    // intents that stopped retrying: nothing about them has been published.
     counts.pending = Number(queue?.total ?? 0);
     counts.failing = Number(queue?.failing ?? 0);
+    counts.deadLettered = Number(queue?.dead ?? 0);
     const indexed = sql.one<{ total: number }>(
       `SELECT COUNT(*) AS total FROM "${VECTOR_STATE_TABLE}"`
     );
@@ -645,7 +745,7 @@ export function vectorQueueCounts(sql: SqlExecutor): VectorQueueCounts {
     }
   } catch {
     // Configured but not installed yet (a boot that has not finished).
-    return { pending: 0, failing: 0, indexed: 0, lastMutationId: null };
+    return { pending: 0, failing: 0, deadLettered: 0, indexed: 0, lastMutationId: null };
   }
   return counts;
 }
