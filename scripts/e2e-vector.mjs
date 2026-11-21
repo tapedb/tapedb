@@ -317,7 +317,23 @@ export default tapedb.worker;
   // The row leaves the answer as soon as the write commits, because every
   // candidate is re-read. The delete itself has to reach the provider, so wait
   // for the queue to empty rather than stopping at the gate.
-  const settled = await waitFor("the provider to accept the delete", async () => {
+  const afterDelete = await waitFor("the provider to accept the delete", async () => {
+    const answer = await call(token, `/engine/workspaces/${WORKSPACE}/status`);
+    const vectorize = answer.body?.vectorize;
+    return vectorize && vectorize.pending === 0 ? vectorize : null;
+  });
+  assert.equal(afterDelete.deadLettered, 0, "an intent was dead-lettered");
+
+  // The remaining row is deleted too: the dev workspace's storage is thrown
+  // away with the scratch project, so a vector left behind would sit in a
+  // shared index forever.
+  const cleanup = await call(token, `/engine/workspaces/${WORKSPACE}/transact`, {
+    method: "POST",
+    body: JSON.stringify({ txId: randomUUID(), ops: [{ op: "delete", namespace: "note", id: "e2e-open" }] }),
+  });
+  assert.equal(cleanup.status, 200, `cleanup delete answered ${cleanup.status}`);
+
+  const settled = await waitFor("the index to hold nothing from this run", async () => {
     const answer = await call(token, `/engine/workspaces/${WORKSPACE}/status`);
     const vectorize = answer.body?.vectorize;
     return vectorize && vectorize.pending === 0 ? vectorize : null;
