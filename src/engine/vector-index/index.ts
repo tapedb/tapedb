@@ -92,6 +92,14 @@ export {
   type VectorRestoreOutcome,
 } from "./erasure";
 export {
+  VECTOR_KEYWORD_TABLE,
+  dropKeywordIndex,
+  fuseRanks,
+  installKeywordIndex,
+  keywordMatches,
+  type KeywordMatch,
+} from "./keyword";
+export {
   VECTOR_REBUILD_BATCH,
   VECTOR_REBUILD_TABLE,
   advanceVectorRebuild,

@@ -67,6 +67,13 @@ export interface VectorizeOptions {
    * what a RAG pipeline does anyway when it embeds its corpus.
    */
   embed?: { binding: string; model?: string };
+  /**
+   * Text attributes indexed for keyword recall, so a search with words also
+   * matches exact terms the embedding blurs (a part number, an acronym, a
+   * name). Requires `embed`: keyword recall is applied to a text query.
+   * At most five, all strings, none personal.
+   */
+  keywordFields?: readonly string[];
 }
 
 /** The embedding models whose output length this build can check. */
@@ -109,6 +116,8 @@ export interface ConfiguredVectorize {
   readonly codec: string;
   /** The embedding binding a text query is sent through, or null. */
   readonly embed: { readonly binding: string; readonly model: string } | null;
+  /** Columns mirrored into the workspace's FTS5 table, in declaration order. */
+  readonly keywordFields: readonly { readonly attribute: string; readonly column: string }[];
 }
 
 function invalid(message: string): never {
@@ -219,6 +228,37 @@ export function resolveVectorize(options: VectorizeOptions | undefined): Configu
     embed = { binding, model: embeddingModel };
   }
 
+  // Keyword recall: a text query's lexical half, so it needs text.
+  const keywordFields: Array<{ attribute: string; column: string }> = [];
+  const declaredKeywords = options.keywordFields ?? [];
+  if (!Array.isArray(declaredKeywords)) {
+    invalid("vectorize.keywordFields must be an array of attribute names.");
+  }
+  if (declaredKeywords.length > 0 && options.embed === undefined) {
+    invalid(
+      "vectorize.keywordFields needs vectorize.embed: keyword recall is applied to a text query, and without an embedding binding there are no words to apply it to."
+    );
+  }
+  if (declaredKeywords.length > 5) {
+    invalid(`vectorize.keywordFields names ${declaredKeywords.length} attributes; at most five are indexed for keyword recall.`);
+  }
+  for (const [index, attribute] of declaredKeywords.entries()) {
+    const where = `vectorize.keywordFields[${index}]`;
+    if (typeof attribute !== "string") invalid(`${where} must be an attribute name.`);
+    if (keywordFields.some((entry) => entry.attribute === attribute)) {
+      invalid(`${where} repeats ${JSON.stringify(attribute)}.`);
+    }
+    const definition = model.attributes[attribute];
+    if (definition === undefined) invalid(`${where} names ${JSON.stringify(attribute)}, which ${model.apiName} does not have.`);
+    if (definition.type !== "string") {
+      invalid(`${where} names a ${definition.type} attribute; keyword recall indexes text, so a string is what it takes.`);
+    }
+    if (definition.personal !== undefined) {
+      invalid(`${where} names a personal attribute; its plaintext would sit in an FTS index outside the personal runtime.`);
+    }
+    keywordFields.push({ attribute, column: toSnakeCase(attribute) });
+  }
+
   return Object.freeze({
     binding,
     model: model.apiName,
@@ -229,6 +269,7 @@ export function resolveVectorize(options: VectorizeOptions | undefined): Configu
     filters: Object.freeze(filters),
     codec,
     embed,
+    keywordFields: Object.freeze(keywordFields),
   });
 }
 

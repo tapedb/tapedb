@@ -53,6 +53,7 @@ import { findNamespace, type NamespaceDefinition } from "../registry";
 import type { SqlExecutor, SqlRow } from "../tx-sql";
 import { TxError } from "../tx-types";
 import type { ConfiguredVectorize } from "./definition";
+import { fuseRanks, keywordMatches } from "./keyword";
 import { vectorRowDigest, type VectorFilterValue } from "./digest";
 import { vectorNamespaceFor } from "./identity";
 import { VECTOR_STATE_TABLE } from "./queue";
@@ -96,6 +97,13 @@ export interface VectorSearchRequest {
 export interface VectorSearchAnswer {
   /** The indexed model, so the payload can be keyed by it. */
   model: string;
+  /**
+   * How the rows were ranked. `vector` means the index alone and the score is
+   * the provider's cosine similarity. `hybrid` means the index and the
+   * workspace's FTS5 keyword index, merged by reciprocal rank, and the score is
+   * that fused rank: comparable within the answer, not a cosine.
+   */
+  mode: "vector" | "hybrid";
   /** Rows in rank order, each shaped like a read with the same `select`. */
   rows: Record<string, unknown>[];
   /** Score per row ID, for the rows in `rows`. */
@@ -162,16 +170,69 @@ export async function executeVectorSearch(input: {
     binding: config.binding,
   });
 
-  // A full page from the provider is the ceiling: rows may rank below it.
-  const truncated = candidates.length >= limit;
-  if (candidates.length === 0) return { model: config.model, rows: [], scores: {}, truncated };
-
-  const rowIds = rowsForDigests(sql, config.model, candidates);
-  if (rowIds.size === 0) return { model: config.model, rows: [], scores: {}, truncated };
-
-  const ids = [...rowIds.values()];
+  // The index's own order, and the digest each candidate was published under.
+  const digestToRow = rowsForDigests(sql, config.model, candidates);
+  const vectorIds: string[] = [];
   const digestByRowId = new Map<string, string>();
-  for (const [digest, rowId] of rowIds) digestByRowId.set(rowId, digest);
+  for (const candidate of candidates) {
+    const digest = candidate.metadata?.digest;
+    if (typeof digest !== "string") continue;
+    const rowId = digestToRow.get(digest);
+    if (rowId === undefined || digestByRowId.has(rowId)) continue;
+    digestByRowId.set(rowId, digest);
+    vectorIds.push(rowId);
+  }
+
+  // Keyword recall, when the deployment indexes text and the caller sent words.
+  // Its candidates come from this workspace's SQLite, so they are available
+  // before the provider has seen anything.
+  const useKeywords = config.keywordFields.length > 0 && typeof request.text === "string";
+  const keywordIds = useKeywords
+    ? keywordMatches(sql, config, request.text as string, limit, filter).map((match) => match.id)
+    : [];
+
+  // A full page from either side means rows may rank below the cut.
+  const truncated = candidates.length >= limit || keywordIds.length >= limit;
+
+  if (useKeywords) {
+    const fused = fuseRanks([vectorIds, keywordIds], limit);
+    if (fused.length === 0) {
+      return { model: config.model, mode: "hybrid", rows: [], scores: {}, truncated };
+    }
+    const candidateIds = fused.map((entry) => entry.id);
+    const rows = await readRows(input, {
+      model: config.model,
+      select: columnsForRead(config, select),
+      where: andWhere([where, filter, { id: { $in: candidateIds } }]),
+      limit: candidateIds.length,
+    });
+    const byId = new Map(rows.map((row) => [String(row.id), row]));
+    const hybridRanked: Array<{ row: Record<string, unknown>; score: number }> = [];
+    for (const entry of fused) {
+      const row = byId.get(entry.id);
+      if (row === undefined) continue;
+      // A vector candidate must still describe the row it ranked; a keyword
+      // candidate is a lexical hit on the current row and needs no digest.
+      const published = digestByRowId.get(entry.id);
+      if (published !== undefined && !(await isCurrent(row, entry.id, published, config))) continue;
+      hybridRanked.push({ row: project(row, select, config), score: entry.score });
+    }
+    const hybridScores: Record<string, number> = {};
+    for (const entry of hybridRanked) hybridScores[String(entry.row.id)] = entry.score;
+    return {
+      model: config.model,
+      mode: "hybrid",
+      rows: hybridRanked.map((entry) => entry.row),
+      scores: hybridScores,
+      truncated,
+    };
+  }
+
+  if (vectorIds.length === 0) {
+    return { model: config.model, mode: "vector", rows: [], scores: {}, truncated };
+  }
+
+  const ids = vectorIds;
 
   const found = await readRows(input, {
     model: config.model,
@@ -206,7 +267,7 @@ export async function executeVectorSearch(input: {
 
   const scores: Record<string, number> = {};
   for (const entry of ranked) scores[String(entry.row.id)] = entry.score;
-  return { model: config.model, rows: ranked.map((entry) => entry.row), scores, truncated };
+  return { model: config.model, mode: "vector", rows: ranked.map((entry) => entry.row), scores, truncated };
 }
 
 /** The limit a caller asked for, refused rather than clamped past the ceiling. */

@@ -1758,7 +1758,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return json({
         ok: true,
         data: { [answer.model]: answer.rows },
-        search: { scores: answer.scores, truncated: answer.truncated },
+        // `mode` tells a caller what the score means: a cosine from the index,
+        // or a fused rank when keyword recall joined the answer.
+        search: { scores: answer.scores, truncated: answer.truncated, mode: answer.mode },
       });
     } catch (error) {
       if (error instanceof TxError) {
