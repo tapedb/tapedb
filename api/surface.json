@@ -496,6 +496,7 @@
         "shape": {
           "rows": "R[]",
           "truncated": "boolean",
+          "mode": "\"vector\" | \"hybrid\"",
           "(declaration)": "<R>"
         }
       },
@@ -1095,7 +1096,8 @@
           "model": "string",
           "field": "string",
           "filterFields": "readonly string[] | undefined",
-          "embed": "{ binding: string; model?: string; } | undefined"
+          "embed": "{ binding: string; model?: string; } | undefined",
+          "keywordFields": "readonly string[] | undefined"
         }
       },
       "VectorMatch": {

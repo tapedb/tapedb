@@ -682,7 +682,7 @@ class DataClientImpl {
    */
   async searchOnce(
     request: VectorSearchRequest
-  ): Promise<{ rows: QueryEntity[]; scores: Record<string, number>; truncated: boolean }> {
+  ): Promise<{ rows: QueryEntity[]; scores: Record<string, number>; truncated: boolean; mode: "vector" | "hybrid" }> {
     const problem = this.configProblem();
     if (problem) throw new Error(problem);
 
@@ -701,7 +701,7 @@ class DataClientImpl {
     const payload = (await response.json().catch(() => null)) as {
       ok?: boolean;
       data?: Record<string, QueryEntity[]>;
-      search?: { scores?: Record<string, number>; truncated?: boolean };
+      search?: { scores?: Record<string, number>; truncated?: boolean; mode?: string };
     } | null;
     if (!response.ok || payload?.ok !== true || payload.data === undefined) {
       const error = readServerError(payload);
@@ -715,6 +715,7 @@ class DataClientImpl {
       rows: payload.data[request.model] ?? [],
       scores: payload.search?.scores ?? {},
       truncated: payload.search?.truncated === true,
+      mode: payload.search?.mode === "hybrid" ? "hybrid" : "vector",
     };
   }
 

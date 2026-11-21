@@ -853,6 +853,7 @@ defineTapeDB({
     field: "embedding",
     filterFields: ["archived"],
     embed: { binding: "AI" },   // optional: search with words, not just vectors
+    keywordFields: ["title", "excerpt"],  // optional: exact-term recall
   },
 })
 ```
@@ -898,6 +899,13 @@ build knows the `bge` lengths (384, 768, 1024). Without `embed`, send `vector`
 and run the model yourself, which is what a pipeline embedding a corpus does.
 The two are alternatives; sending both, or sending `text` where no binding is
 configured, is refused with a message that says which.
+
+`keywordFields` adds the other half of a text search: those attributes are
+mirrored into an FTS5 table in the workspace's own SQLite by triggers, so a text
+query also matches exact terms (a part number, an acronym, a name) and rows whose
+text changed after their vector was published. The two candidate lists are fused
+by reciprocal rank, and `search.mode` says which ranking answered: `vector` means
+`score` is the provider's cosine, `hybrid` means it is the fused rank.
 
 Every candidate is re-read through the same path a `findMany` takes, so access
 rules decide what comes back: a row the caller may not see is absent, not
