@@ -793,10 +793,11 @@ cannot erase plaintext already held in those copies.
 
 ## Seeding
 
-`tapedb` ships no fake names, postcodes or IBAN formats, and it should not: those
-are conventions of your domain, and a library that guesses them is right about one
-country. What it ships is the runner, so a seeder is a short file of plain
-TypeScript instead of an insertion script.
+`tapedb` ships no data of its own. What a realistic row looks like is your
+domain's business, and a library that guesses it is wrong everywhere but the
+place it was written. What the runner owns is the bookkeeping around the values:
+determinism from a seed, unique fields across a run, parent ids for foreign keys,
+and a rerun that writes the same rows instead of new ones.
 
 ```ts
 // tapedb.seed.ts
@@ -804,14 +805,15 @@ import { defineSeeder } from "@tapedb/tapedb/seed";
 import type app from "./tapedb.schema";
 
 export default defineSeeder<typeof app>(async ({ ctx }) => {
-  const users = await ctx.create("user", 20, (rng) => ({
-    email: ctx.unique("user", "email", (r) => `user${r.int(1, 1e6)}@mail.test`),
-    name: rng.pick(["Sanne", "Bram", "Noor"]),
+  const projects = await ctx.create("project", 6, (rng) => ({
+    name: ctx.unique("project", "name", (r) => `Project ${r.int(1, 1000)}`),
+    archived: rng.int(0, 9) === 0,
   }));
 
-  await ctx.create("post", 100, (rng) => ({
-    authorId: ctx.ref(users),
-    title: rng.pick(["First", "Second"]),
+  await ctx.create("task", 60, (rng) => ({
+    projectId: ctx.ref(projects),
+    title: rng.pick(["Draft", "Review", "Ship"]),
+    done: rng.int(0, 9) < 4,
   }));
 });
 ```
