@@ -847,7 +847,13 @@ note: model({
 // worker.ts
 defineTapeDB({
   schema,
-  vectorize: { index: "VECTORIZE", model: "note", field: "embedding", filterFields: ["archived"] },
+  vectorize: {
+    index: "VECTORIZE",
+    model: "note",
+    field: "embedding",
+    filterFields: ["archived"],
+    embed: { binding: "AI" },   // optional: search with words, not just vectors
+  },
 })
 ```
 
@@ -879,12 +885,19 @@ value is.
 
 ```ts
 const { rows, truncated } = await db.note.search({
-  vector: await embed("quarterly planning"),
+  text: "quarterly planning",   // embedded by the deployment's own model
   limit: 10,
   filter: { archived: false },
   select: ["title", "excerpt"],
 });
 ```
+
+`embed` names a Workers AI binding and defaults to `@cf/baai/bge-base-en-v1.5`;
+the model's output length must be the field's declared dimensions, and this
+build knows the `bge` lengths (384, 768, 1024). Without `embed`, send `vector`
+and run the model yourself, which is what a pipeline embedding a corpus does.
+The two are alternatives; sending both, or sending `text` where no binding is
+configured, is refused with a message that says which.
 
 Every candidate is re-read through the same path a `findMany` takes, so access
 rules decide what comes back: a row the caller may not see is absent, not
