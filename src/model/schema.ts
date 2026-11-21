@@ -731,7 +731,12 @@ function accessOverrides(
         where: (auth) => {
           const result = build({ auth });
           const branches = Array.isArray(result) ? result : [result];
-          return branches.map((branch) => toEngineWhere(graph[key], branch as Where<Fields>)) as QueryWhere[];
+          // The graph is what makes a relation branch resolvable. Without it
+          // `toEngineWhere` looks up `graph[relation.target]`, finds undefined
+          // and throws, and the engine treats a throwing read rule as "hide
+          // every row" — so a filter rule naming a relation silently denied
+          // every read instead of granting the grantee access.
+          return branches.map((branch) => toEngineWhere(graph[key], branch as Where<Fields>, graph)) as QueryWhere[];
         },
       };
     } else {
