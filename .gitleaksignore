@@ -1,0 +1,7 @@
+# False positives, fingerprinted rather than excused by a weaker rule.
+#
+# test/enum.test.ts declares `const SECRET = "..."` as a fixture for the enum
+# validator. It has no provider prefix, does not authenticate against anything,
+# and the two entries below are the same line as it existed in two commits.
+c1cc02e0daffe81aed3a052f5ecafe0be39f565e:test/enum.test.ts:generic-api-key:24
+bfeb1f7f3fd5b55bd58572d25db79e6930fcdfcb:test/enum.test.ts:generic-api-key:24
