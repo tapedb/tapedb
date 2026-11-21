@@ -1,10 +1,10 @@
 /**
  * Seeders, defined by the application and run by the CLI.
  *
- * The library does not know what a plausible customer looks like, and that is
- * deliberate: names, postcodes and IBAN formats are the application's business.
- * What it does own is everything around the values, so a seeder is a short file
- * of plain TypeScript instead of a hand-rolled insertion script.
+ * The library does not know what a plausible row looks like, and that is
+ * deliberate: the shape of realistic data is the application's domain. What it
+ * does own is everything around the values, so a seeder is a short file of plain
+ * TypeScript instead of a hand-rolled insertion script.
  */
 
 import type { Models, Schema } from "../model/schema";
@@ -33,11 +33,10 @@ export interface SeederDefinition<M extends Models> {
  * checks the row against that model's fields in the editor.
  *
  *   export default defineSeeder<typeof app>(async ({ ctx }) => {
- *     const users = await ctx.create("user", 20, (rng) => ({
- *       email: ctx.unique("user", "email", (r) => `user${r.int(1, 1e6)}@example.com`),
- *       name: rng.pick(["Sanne", "Bram"]),
+ *     const projects = await ctx.create("project", 6, (rng) => ({
+ *       name: ctx.unique("project", "name", (r) => `Project ${r.int(1, 1000)}`),
  *     }));
- *     await ctx.create("post", 100, (rng) => ({ authorId: ctx.ref(users) }));
+ *     await ctx.create("task", 60, (rng) => ({ projectId: ctx.ref(projects) }));
  *   });
  */
 export function defineSeeder<M extends Models>(run: Seeder<M>): SeederDefinition<M> {

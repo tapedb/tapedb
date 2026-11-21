@@ -3,8 +3,8 @@
  *
  * A seeder has to produce the same data twice from the same `--seed`, and it has
  * to produce the same row twice from the same identity, so that re-running it
- * does not rewrite a customer's IBAN. One stream per run cannot do the second;
- * `fork` gives a stream per label, derived from the seed.
+ * does not rewrite rows it already wrote. One stream per run cannot do the
+ * second; `fork` gives a stream per label, derived from the seed.
  *
  * No dependency: this is arithmetic, which is why it belongs in the core.
  */

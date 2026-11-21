@@ -810,9 +810,10 @@ scope.
 ## `@tapedb/tapedb/seed`
 
 A seeder is application code that fills a workspace with rows. The library ships
-no fake data: names, postcodes, IBAN formats and every other domain convention
-belong to the application. What this entry point owns is the bookkeeping around
-the values.
+no data of its own: what a plausible row looks like is a convention of the
+application's domain. What this entry point owns is the bookkeeping around the
+values: one deterministic stream per run, a stream per label so a rerun writes
+the same row, unique fields, parent ids, and resumability.
 
 ```ts
 // tapedb.seed.ts
@@ -820,15 +821,16 @@ import { defineSeeder } from "@tapedb/tapedb/seed";
 import type app from "./tapedb.schema";
 
 export default defineSeeder<typeof app>(async ({ ctx }) => {
-  const customers = await ctx.create("customer", 12, (rng) => ({
-    email: ctx.unique("customer", "email", (r) => `customer${r.int(1, 1e6)}@mail.test`),
-    name: rng.pick(["Sanne", "Bram", "Noor"]),
-    joinedAt: rng.past({ days: 400 }),
+  const projects = await ctx.create("project", 6, (rng) => ({
+    name: ctx.unique("project", "name", (r) => `Project ${r.int(1, 1000)}`),
+    archived: rng.int(0, 9) === 0,
+    createdAt: rng.past({ days: 400 }),
   }));
 
-  await ctx.create("account", 16, (rng) => ({
-    customerId: ctx.ref(customers),
-    balanceMinor: rng.int(1_000, 90_000),
+  await ctx.create("task", 60, (rng) => ({
+    projectId: ctx.ref(projects),
+    title: rng.pick(["Draft", "Review", "Ship"]),
+    done: rng.int(0, 9) < 4,
   }));
 });
 ```
