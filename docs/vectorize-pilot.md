@@ -52,6 +52,29 @@ filtered query was correct seconds later. The provider's own query tool
 metadata-index visibility lag, not a filter bug. A client must not treat an
 empty filtered answer immediately after indexing as proof that nothing matches.
 
+## Search latency and throughput
+
+Measured on a third deployment (`tapedb-bench`): one workspace, 200 notes with
+known 768-dimension embeddings, `embed`, `keywordFields` and `rerank` all
+configured, 40 text queries and 40 vector queries, from a laptop over the public
+internet. Reproduce with `scripts/bench-vector.mjs`.
+
+| path | p50 | p95 | max | what it includes |
+| --- | --- | --- | --- | --- |
+| `search({ text })` | 504 ms | 775 ms | 1973 ms | Workers AI embedding, FTS5 keyword query, vector query, RRF fusion, cross-encoder rerank, SQLite read |
+| `search({ vector })` | 182 ms | 239 ms | 242 ms | one Vectorize query, SQLite read, version gate |
+
+`mode: hybrid`, `reranked: true` on the text path; `mode: vector` on the other.
+The text path is dominated by the two Workers AI calls, which is where the time
+should be for a reranked answer: the engine's own work is the same read a
+`findMany` does.
+
+The visibility wait was also longer than the first pilot: 200 vectors written in
+one transaction were accepted in about 20 seconds and became searchable after
+more than three minutes, where single rows appeared in 52 to 69 seconds. The
+bench script waits for an answer instead of assuming a delay, and refuses to
+report timings from empty answers.
+
 ## Acceptance criteria
 
 Test names are the `bun test` names in `test/vector-*.test.ts` and
@@ -186,7 +209,7 @@ Teardown is four resources: `wrangler delete --name <worker> --force`,
 still holds the purge ledger under `vector-purge/<deployment>/<workspace>/` and
 refuses to delete until those objects are removed).
 
-## Defects this pilot found
+## Defects the pilots found
 
 1. Wrangler warned `Unexpected fields found in top-level field: "tapedb"` on
    every command, because the declaration lived inside `wrangler.jsonc`. It
@@ -199,3 +222,9 @@ refuses to delete until those objects are removed).
    provider's output.
 4. npm 12 changed `npm pack --json` from an array to an object keyed by package
    name, which broke `test:package` and `test:e2e` on the upgrade.
+5. Erasing a workspace that configured `keywordFields` failed with
+   `table _vector_keyword_data may not be modified: SQLITE_ERROR`. The wipe
+   deleted every table in turn, including FTS5's shadow tables, which refuse a
+   direct `DELETE`; the virtual table is dropped instead, and its shadows go with
+   it. Found on the benchmark deployment's teardown, which is exactly when an
+   erasure has to work.

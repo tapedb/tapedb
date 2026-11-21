@@ -218,6 +218,25 @@ test("keywordFields may only name string attributes", () => {
   ).toThrow(/names a number attribute; keyword recall indexes text/);
 });
 
+test("a workspace with keyword fields erases, FTS shadow tables and all", async () => {
+  const workspace = await makeWorkspace();
+  await write(workspace, [note("one", "Quarterly planning", "planning")]);
+  await workspace.room.alarm();
+
+  // The keyword table is FTS5, and its shadow tables refuse a direct DELETE;
+  // the erase path has to drop the virtual table rather than wipe its shadows.
+  const response = await workspace.room.fetch(
+    new Request("http://test/", {
+      method: "DELETE",
+      headers: { "x-tapedb-claims": encodeTrustedRoleClaim(claim()) },
+    })
+  );
+  const body = (await response.json()) as { ok?: boolean; error?: { message?: string } };
+  expect(body.error?.message ?? "").not.toContain("may not be modified");
+  expect(response.status).toBe(200);
+  expect(body.ok).toBe(true);
+});
+
 test("fusion ranks a row that both sides found above one only a single side found", () => {
   const fused = fuseRanks([["both", "vector-only"], ["keyword-only", "both"]], 10);
   expect(fused.map((entry) => entry.id)).toEqual(["both", "keyword-only", "vector-only"]);

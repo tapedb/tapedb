@@ -475,7 +475,6 @@
       },
       "SearchArgs": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "vector": "number[] | undefined",
           "text": "string | undefined",
@@ -492,7 +491,6 @@
       },
       "SearchResult": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "rows": "R[]",
           "truncated": "boolean",
@@ -1091,7 +1089,6 @@
       },
       "VectorizeOptions": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "index": "string",
           "model": "string",

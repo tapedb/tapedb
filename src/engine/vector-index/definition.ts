@@ -41,7 +41,7 @@ export const VECTORIZE_MAX_FILTER_FIELDS = 10;
 export const VECTORIZE_FILTER_TYPES = ["string", "number", "boolean"] as const;
 export type VectorizeFilterType = (typeof VECTORIZE_FILTER_TYPES)[number];
 
-/** `defineTapeDB({ vectorize })`. @experimental */
+/** `defineTapeDB({ vectorize })`: one indexed vector field, and how it is searched. */
 export interface VectorizeOptions {
   /**
    * The Vectorize binding's name in `Env` — `VECTORIZE` for
