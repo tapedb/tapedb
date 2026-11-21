@@ -854,6 +854,7 @@ defineTapeDB({
     filterFields: ["archived"],
     embed: { binding: "AI" },   // optional: search with words, not just vectors
     keywordFields: ["title", "excerpt"],  // optional: exact-term recall
+    rerank: { binding: "AI" },            // optional: cross-encoder reordering
   },
 })
 ```
@@ -899,6 +900,10 @@ build knows the `bge` lengths (384, 768, 1024). Without `embed`, send `vector`
 and run the model yourself, which is what a pipeline embedding a corpus does.
 The two are alternatives; sending both, or sending `text` where no binding is
 configured, is refused with a message that says which.
+
+`rerank` runs `@cf/baai/bge-reranker-base` over the answer's candidate window and
+uses its order and its relevance; `search.reranked` says whether it did, and a
+reranker that fails leaves the retrieval order rather than failing the search.
 
 `keywordFields` adds the other half of a text search: those attributes are
 mirrored into an FTS5 table in the workspace's own SQLite by triggers, so a text

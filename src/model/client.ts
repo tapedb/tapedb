@@ -193,6 +193,12 @@ export interface SearchResult<R> {
    * the query was text. Comparable within one answer, not across modes.
    */
   mode: "vector" | "hybrid";
+  /**
+   * True when the deployment's reranker decided the order and the scores. Its
+   * relevance replaces the retrieval score, so a reranked answer's score is not
+   * comparable with an unreranked one.
+   */
+  reranked: boolean;
 }
 
 export type Result<M extends Models, F extends Fields, A> = (A extends { select: infer S }
@@ -625,7 +631,7 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
       const score = answer.scores[String(row.id)];
       return score === undefined ? [] : [{ ...row, score }];
     });
-    return { rows, truncated: answer.truncated, mode: answer.mode };
+    return { rows, truncated: answer.truncated, mode: answer.mode, reranked: answer.reranked };
   };
 
   const client: Record<string, unknown> = {};

@@ -110,6 +110,8 @@ export interface VectorSearchAnswer {
   scores: Record<string, number>;
   /** True when the index returned as many candidates as it was asked for. */
   truncated: boolean;
+  /** True when a reranker decided the order and the scores. */
+  reranked: boolean;
 }
 
 /**
@@ -134,6 +136,12 @@ export async function executeVectorSearch(input: {
    * `vectorize.embed` names. Required only for a `text` query.
    */
   embed?: (text: string) => Promise<readonly number[]>;
+  /**
+   * Scores each passage against the query, through the reranker
+   * `vectorize.rerank` names. Applied only to a text query: a vector has no
+   * words for a cross-encoder to read.
+   */
+  rerank?: (query: string, passages: readonly string[]) => Promise<readonly number[]>;
 }): Promise<VectorSearchAnswer> {
   const { sql, claim, config, index, workspaceId, request } = input;
   if (config === null) {
@@ -197,7 +205,7 @@ export async function executeVectorSearch(input: {
   if (useKeywords) {
     const fused = fuseRanks([vectorIds, keywordIds], limit);
     if (fused.length === 0) {
-      return { model: config.model, mode: "hybrid", rows: [], scores: {}, truncated };
+      return { model: config.model, mode: "hybrid", rows: [], scores: {}, truncated, reranked: false };
     }
     const candidateIds = fused.map((entry) => entry.id);
     const rows = await readRows(input, {
@@ -217,19 +225,21 @@ export async function executeVectorSearch(input: {
       if (published !== undefined && !(await isCurrent(row, entry.id, published, config))) continue;
       hybridRanked.push({ row: project(row, select, config), score: entry.score });
     }
+    const rerankedRows = await rerankRows(input.rerank, request, config, hybridRanked);
     const hybridScores: Record<string, number> = {};
-    for (const entry of hybridRanked) hybridScores[String(entry.row.id)] = entry.score;
+    for (const entry of rerankedRows.ranked) hybridScores[String(entry.row.id)] = entry.score;
     return {
       model: config.model,
       mode: "hybrid",
-      rows: hybridRanked.map((entry) => entry.row),
+      rows: rerankedRows.ranked.map((entry) => entry.row),
       scores: hybridScores,
       truncated,
+      reranked: rerankedRows.applied,
     };
   }
 
   if (vectorIds.length === 0) {
-    return { model: config.model, mode: "vector", rows: [], scores: {}, truncated };
+    return { model: config.model, mode: "vector", rows: [], scores: {}, truncated, reranked: false };
   }
 
   const ids = vectorIds;
@@ -265,9 +275,49 @@ export async function executeVectorSearch(input: {
   // which is the provider's tie-break and not this engine's invention.
   ranked.sort((left, right) => right.score - left.score);
 
+  const rerankedRows = await rerankRows(input.rerank, request, config, ranked);
   const scores: Record<string, number> = {};
-  for (const entry of ranked) scores[String(entry.row.id)] = entry.score;
-  return { model: config.model, mode: "vector", rows: ranked.map((entry) => entry.row), scores, truncated };
+  for (const entry of rerankedRows.ranked) scores[String(entry.row.id)] = entry.score;
+  return {
+    model: config.model,
+    mode: "vector",
+    rows: rerankedRows.ranked.map((entry) => entry.row),
+    scores,
+    truncated,
+    reranked: rerankedRows.applied,
+  };
+}
+
+/**
+ * Reorders the candidate window with the reranker and replaces the scores with
+ * its relevance. Only a text query can be reranked: a cross-encoder reads the
+ * query as words. A reranker that fails or answers a different number of
+ * passages leaves the retrieval order in place and says so in `reranked`,
+ * because an answer that is merely less well ordered is better than no answer.
+ */
+async function rerankRows(
+  rerank: ((query: string, passages: readonly string[]) => Promise<readonly number[]>) | undefined,
+  request: VectorSearchRequest,
+  config: ConfiguredVectorize,
+  ranked: Array<{ row: Record<string, unknown>; score: number }>
+): Promise<{ ranked: Array<{ row: Record<string, unknown>; score: number }>; applied: boolean }> {
+  if (rerank === undefined || typeof request.text !== "string" || ranked.length === 0) {
+    return { ranked, applied: false };
+  }
+  const passages = ranked.map((entry) =>
+    config.keywordFields.map((field) => String(entry.row[field.attribute] ?? "")).join("\n")
+  );
+  let scores: readonly number[];
+  try {
+    scores = await rerank(request.text, passages);
+  } catch {
+    return { ranked, applied: false };
+  }
+  if (scores.length !== ranked.length) return { ranked, applied: false };
+  const reordered = ranked
+    .map((entry, index) => ({ row: entry.row, score: Number(scores[index] ?? entry.score) }))
+    .sort((left, right) => right.score - left.score);
+  return { ranked: reordered, applied: true };
 }
 
 /** The limit a caller asked for, refused rather than clamped past the ceiling. */
@@ -568,7 +618,16 @@ function columnsForRead(config: ConfiguredVectorize, select: string[] | null): s
     (namespace === undefined
       ? ["id"]
       : [...defaultProjection(namespace), "createdAt", "updatedAt", "updatedSeq"]);
-  return [...new Set([...wanted, config.field, ...config.filters.map((entry) => entry.attribute)])];
+  return [
+    ...new Set([
+      ...wanted,
+      config.field,
+      ...config.filters.map((entry) => entry.attribute),
+      // A reranker reads the passage, so the read has to carry its text even
+      // when the caller's `select` does not.
+      ...config.keywordFields.map((entry) => entry.attribute),
+    ]),
+  ];
 }
 
 /** The attributes a read without `select` returns, in declaration order. */
