@@ -230,6 +230,12 @@ export interface WorkspaceRoomOptions {
   clock?: () => number;
 }
 
+/** Whether Env carries a Workers AI binding by this name. */
+function isAiBinding(env: unknown, name: string): boolean {
+  const binding = (env as Record<string, unknown> | null)?.[name] as { run?: unknown } | undefined;
+  return binding !== undefined && typeof binding.run === "function";
+}
+
 /** The refusal a search gets while this workspace's index is being rebuilt. */
 function vectorSearchBusy(): Response {
   return new Response(
@@ -799,6 +805,30 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * counts them, so a deployment that forgets the binding loses freshness, not
    * writes.
    */
+  /**
+   * The embedding function a `text` query goes through. Built from the
+   * deployment's binding, so the model that embedded the corpus is the model
+   * that embeds the question; a caller cannot substitute another.
+   */
+  private vectorEmbedder(config: ConfiguredVectorize): (text: string) => Promise<readonly number[]> {
+    const embed = config.embed;
+    if (embed === null) throw new Error("vectorEmbedder called for a deployment without embed");
+    const binding = (this.roomEnv as unknown as Record<string, unknown>)[embed.binding] as
+      | { run: (model: string, input: { text: string[] }) => Promise<unknown> }
+      | undefined;
+    if (binding === undefined) throw new Error(`No AI binding named ${embed.binding}`);
+    return async (text: string) => {
+      const response = (await binding.run(embed.model, { text: [text] })) as
+        | { data?: unknown }
+        | undefined;
+      const data = response?.data;
+      if (!Array.isArray(data) || !Array.isArray(data[0])) {
+        throw new Error("The embedding binding answered without vectors.");
+      }
+      return (data[0] as unknown[]).map((value) => Number(value));
+    };
+  }
+
   private vectorIndexFor(config: ConfiguredVectorize): VectorIndex | null {
     if (this.vectorIndexOverride !== null) return this.vectorIndexOverride;
     if (this.resolvedVectorIndex?.binding === config.binding) return this.resolvedVectorIndex.index;
@@ -1701,6 +1731,18 @@ export class WorkspaceRoom extends DurableObject<Env> {
       if (config !== null && readVectorRebuild(raw) !== null) {
         return vectorSearchBusy();
       }
+      // A deployment that configured an embedding binding but has no such
+      // binding in Env is a deployment error, not a caller error, and a text
+      // query cannot be answered at all.
+      const missingEmbed =
+        config !== null && config.embed !== null && !isAiBinding(this.roomEnv, config.embed.binding);
+      if (config !== null && config.embed !== null && missingEmbed) {
+        return apiError(
+          503,
+          "vector_search_unavailable",
+          `This deployment configures vectorize.embed with the binding ${JSON.stringify(config.embed.binding)}, but Env has no AI binding by that name.`
+        );
+      }
       const answer = await executeVectorSearch({
         sql,
         claim,
@@ -1708,6 +1750,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         index: config === null ? null : this.vectorIndexFor(config),
         workspaceId: this.workspaceId,
         request: (body ?? {}) as VectorSearchRequest,
+        ...(config === null || config.embed === null ? {} : { embed: this.vectorEmbedder(config) }),
         // A read that touches a personal field defers its key fetches; the
         // personal runtime answers by running the read again.
         ...(this.personal === undefined ? {} : { reads: <T,>(fn: () => T) => this.personal!.read(fn) }),

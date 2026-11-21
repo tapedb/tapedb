@@ -73,8 +73,15 @@ export const VECTOR_SEARCH_DEFAULT_LIMIT = 10;
 export interface VectorSearchRequest {
   /** The indexed model's API name. */
   model?: unknown;
-  /** The query embedding, as the numbers a write takes. */
+  /** The query embedding, as the numbers a write takes. Alternative to `text`. */
   vector?: unknown;
+  /**
+   * The query in words. The engine embeds it through the deployment's
+   * `vectorize.embed` binding, so a caller does not have to run the same model
+   * the corpus was embedded with. Refused when the deployment configures no
+   * embedding binding.
+   */
+  text?: unknown;
   /** 1 to {@link VECTOR_SEARCH_MAX_LIMIT}. */
   limit?: unknown;
   /** Equality on the declared filter fields only. */
@@ -114,6 +121,11 @@ export async function executeVectorSearch(input: {
    * schema has personal fields.
    */
   reads?: <T>(fn: () => T) => Promise<T>;
+  /**
+   * Embeds one text into the field's declared length, through the binding
+   * `vectorize.embed` names. Required only for a `text` query.
+   */
+  embed?: (text: string) => Promise<readonly number[]>;
 }): Promise<VectorSearchAnswer> {
   const { sql, claim, config, index, workspaceId, request } = input;
   if (config === null) {
@@ -137,7 +149,7 @@ export async function executeVectorSearch(input: {
 
   const limit = searchLimit(request.limit);
   const filter = searchFilter(config, request.filter);
-  const vector = searchVector(config, request.vector);
+  const vector = await searchQueryVector(config, request, input.embed);
   const select = searchSelect(request.select);
   const where = searchWhere(request.where);
 
@@ -215,6 +227,48 @@ function searchLimit(value: unknown): number {
  * The query embedding, through the codec a write uses: the same length check,
  * the same float32 conversion, and the same message when it is wrong.
  */
+/**
+ * The query vector, from either the numbers the caller sent or the words it
+ * asked to embed. Both are alternatives: sending both is ambiguous, and
+ * sending words to a deployment with no embedding binding is a deployment
+ * error the caller can see rather than an empty answer.
+ */
+async function searchQueryVector(
+  config: ConfiguredVectorize,
+  request: VectorSearchRequest,
+  embed: ((text: string) => Promise<readonly number[]>) | undefined
+): Promise<number[]> {
+  const hasVector = request.vector !== undefined && request.vector !== null;
+  const hasText = request.text !== undefined && request.text !== null;
+  if (hasVector && hasText) {
+    throw invalidValue('"vector" and "text" are alternatives; send one of them.');
+  }
+  if (!hasText) return searchVector(config, request.vector);
+
+  if (typeof request.text !== "string" || request.text.trim() === "") {
+    throw invalidValue('"text" must be a non-empty string.');
+  }
+  if (config.embed === null || embed === undefined) {
+    throw invalidValue(
+      `This deployment does not configure an embedding binding, so it cannot embed a text query. Send "vector", or set defineTapeDB({ vectorize: { embed: { binding: "AI" } } }).`
+    );
+  }
+  let values: readonly number[];
+  try {
+    values = await embed(request.text);
+  } catch (error) {
+    // The binding's failure is not the caller's fault; its text may name
+    // provider internals, so the answer says only that embedding is unavailable.
+    throw new TxError(
+      "storage_error",
+      `The embedding binding did not answer (${error instanceof Error ? error.message : String(error)}); retry shortly.`
+    );
+  }
+  // The same validator a write and a vector query pass: length, finiteness,
+  // and the all-zero refusal.
+  return searchVector(config, values);
+}
+
 function searchVector(config: ConfiguredVectorize, value: unknown): number[] {
   try {
     return decodeVector(canonicalVectorValue(value, config.dimensions), config.dimensions);
