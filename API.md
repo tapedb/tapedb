@@ -460,6 +460,7 @@ defineTapeDB({
     filterFields: ["archived"],  // copied into the vector's metadata
     embed: { binding: "AI" },    // optional: lets a caller search with words
     keywordFields: ["title", "excerpt"],  // optional: exact-term recall
+    rerank: { binding: "AI" },            // optional: cross-encoder reordering
   },
 });
 ```
@@ -637,6 +638,16 @@ name the embedding blurs is found exactly. And because the keyword side is local
 a row written a second ago is findable by its exact words while its vector is
 still pending.
 
+`rerank` adds a cross-encoder pass over the answer's candidate window:
+`@cf/baai/bge-reranker-base` by default, scoring each candidate's passage (the
+`keywordFields`) against the question. Its order replaces the fused one and its
+relevance becomes the score, so a reranked answer's score is not comparable with
+an unreranked one; `search.reranked` says which you got. A reranker that fails
+or answers the wrong number of passages leaves the retrieval order in place and
+reports `reranked: false`, because a less well ordered answer beats no answer.
+`rerank` requires `keywordFields` (it reads the passage text) and `embed` (it
+scores words), and only a text query is reranked: a vector has no words to read.
+
 `search.mode` says which ranking produced the answer: `vector` means the index
 alone and `score` is the provider's cosine similarity; `hybrid` means the two
 lists were fused and `score` is the fused rank. A fused score is comparable
@@ -682,8 +693,9 @@ workspace's index. An ordinary member is refused with `403 insufficient_role`
 before anything else, so the answer cannot tell them whether vector search is
 configured at all.
 
-`POST /search` answers `search: { scores, truncated, mode }`, where `mode` is
-`vector` or `hybrid` as described above.
+`POST /search` answers `search: { scores, truncated, mode, reranked }`, where
+`mode` is `vector` or `hybrid` as described above and `reranked` says whether a
+cross-encoder decided the order.
 
 | route | | |
 | --- | --- | --- |
