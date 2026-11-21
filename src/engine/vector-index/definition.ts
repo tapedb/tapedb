@@ -74,7 +74,17 @@ export interface VectorizeOptions {
    * At most five, all strings, none personal.
    */
   keywordFields?: readonly string[];
+  /**
+   * Optional reranker, applied to the answer's candidate window. `binding` is a
+   * Workers AI binding and `model` defaults to `@cf/baai/bge-reranker-base`.
+   * The passages sent to it are the `keywordFields`, so a reranked deployment
+   * must name both, and the ranking it returns replaces the fused one.
+   */
+  rerank?: { binding: string; model?: string };
 }
+
+/** The reranker used when `vectorize.rerank.model` is omitted. */
+export const DEFAULT_RERANK_MODEL = "@cf/baai/bge-reranker-base";
 
 /** The embedding models whose output length this build can check. */
 export const EMBEDDING_MODEL_DIMENSIONS: Readonly<Record<string, number>> = Object.freeze({
@@ -118,6 +128,8 @@ export interface ConfiguredVectorize {
   readonly embed: { readonly binding: string; readonly model: string } | null;
   /** Columns mirrored into the workspace's FTS5 table, in declaration order. */
   readonly keywordFields: readonly { readonly attribute: string; readonly column: string }[];
+  /** The reranker binding, or null when the answer is ranked by retrieval. */
+  readonly rerank: { readonly binding: string; readonly model: string } | null;
 }
 
 function invalid(message: string): never {
@@ -259,6 +271,29 @@ export function resolveVectorize(options: VectorizeOptions | undefined): Configu
     keywordFields.push({ attribute, column: toSnakeCase(attribute) });
   }
 
+  let rerank: { binding: string; model: string } | null = null;
+  if (options.rerank !== undefined) {
+    const binding = options.rerank?.binding;
+    if (typeof binding !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding)) {
+      invalid(
+        `vectorize.rerank.binding must name a Workers AI binding in Env, such as "AI"; ${JSON.stringify(binding)} is not a binding name.`
+      );
+    }
+    if (keywordFields.length === 0) {
+      invalid(
+        "vectorize.rerank needs vectorize.keywordFields: a reranker reads the passage text, and those are the attributes it is built from."
+      );
+    }
+    if (options.embed === undefined) {
+      invalid("vectorize.rerank needs vectorize.embed: a reranker scores a text query against each passage.");
+    }
+    const rerankModel = options.rerank.model ?? DEFAULT_RERANK_MODEL;
+    if (typeof rerankModel !== "string" || rerankModel.trim() === "") {
+      invalid("vectorize.rerank.model must name a reranker model.");
+    }
+    rerank = { binding, model: rerankModel };
+  }
+
   return Object.freeze({
     binding,
     model: model.apiName,
@@ -270,6 +305,7 @@ export function resolveVectorize(options: VectorizeOptions | undefined): Configu
     codec,
     embed,
     keywordFields: Object.freeze(keywordFields),
+    rerank,
   });
 }
 
