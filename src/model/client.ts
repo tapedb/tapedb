@@ -187,6 +187,12 @@ export interface SearchResult<R> {
    * for: there may be matches ranked below the last one returned.
    */
   truncated: boolean;
+  /**
+   * What the score means: `vector` is the provider's cosine similarity,
+   * `hybrid` is a fused rank because the deployment indexes keyword fields and
+   * the query was text. Comparable within one answer, not across modes.
+   */
+  mode: "vector" | "hybrid";
 }
 
 export type Result<M extends Models, F extends Fields, A> = (A extends { select: infer S }
@@ -619,7 +625,7 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
       const score = answer.scores[String(row.id)];
       return score === undefined ? [] : [{ ...row, score }];
     });
-    return { rows, truncated: answer.truncated };
+    return { rows, truncated: answer.truncated, mode: answer.mode };
   };
 
   const client: Record<string, unknown> = {};
