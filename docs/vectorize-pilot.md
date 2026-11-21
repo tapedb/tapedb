@@ -64,7 +64,7 @@ Test names are the `bun test` names in `test/vector-*.test.ts` and
 | DEP-03 | covered | `a deploy that loses the creation race converges instead of failing`; pilot: repeat deploy and record reconstruction |
 | DEP-04 | covered | `an index of the wrong dimension count`, `an index with another metric`, `a metadata index of the wrong type`, `an index this deployment cannot prove it created`, `an ownership record that no longer matches the deployment`; pilot: tampered record refused before upload |
 | DEP-05 | covered | `a residency-restricted deployment, before any Vectorize call` (unit; no live `eu` deployment) |
-| DEP-06 | **not covered** | an existing workspace upgraded over pre-vector history was not exercised on a real deployment |
+| DEP-06 | covered | second pilot: rows written before the field stayed readable and reported `unindexed`; a field enabled later indexed a new row and search found it (below) |
 | VAL-01 | covered | `an all-zero vector is refused`, `a value that overflows float32 is refused`, `a length that is not the declared one is refused`, `a rejected embedding in an update leaves the stored one in place`; pilot: wrong shape `400 invalid_value` |
 | VAL-02 | covered | `an attribute the deployment did not declare is refused, not ignored`, `50 is the ceiling: it is answered, and 51 is refused rather than clamped`, `a model this deployment does not index is refused` |
 | WRI-01 | partly | `a commit succeeds with the index failing, and the queue keeps the intent` (in-memory outage, not a live one) |
@@ -88,23 +88,81 @@ Test names are the `bun test` names in `test/vector-*.test.ts` and
 | OPS-01 | covered | pilot: member `403`, two concurrent rebuilds get one `jobId`; unit: `an ordinary member cannot retry or rebuild`, `two concurrent requests converge on one job` |
 | CLOUD-01 | covered | this document |
 
+## DEP-06: a workspace that already had rows
+
+A second deployment (`tapedb-dep06-pilot`) started with the field absent, which
+is the state every existing project is in:
+
+1. Deployed a schema with `note { title, excerpt, archived }` and no vector
+   configuration. Two rows were written and read back; `GET /status` carried no
+   `vectorize` key at all.
+2. Added `embedding: t.vector({ dimensions: 768 }).optional()`, added
+   `tapedb.vectorize.json`, ran `migrate dev --name add_embedding` (one
+   `ALTER TABLE … ADD COLUMN`), and redeployed. That deploy created
+   `tapedb-tapedb-dep06-pilot-note` (768, cosine), created the `archived`
+   metadata index and recorded ownership.
+3. On the first request after the upgrade the workspace applied the migration.
+   Both rows written before the field existed were still readable, unchanged.
+4. Their index state was `unindexed`, not `pending`: a row with no embedding has
+   nothing to publish, and search never invents one for it.
+5. A third row written with an embedding was accepted by the queue
+   (`pending: 0, indexed: 1`) and `indexed`; search returned it. Asking for
+   `select: ["embedding"]` on a search answered with the row and no embedding.
+
+So the upgrade path adds a column, indexes what is written afterwards, and
+leaves pre-existing rows readable and honestly reported. What it does not do is
+backfill: existing rows stay `unindexed` until something writes their embedding,
+which is the documented contract.
+
 ## Not covered, and why
 
-- **DEP-06** needs a workspace that existed before the vector field, restored
-  from pre-vector history. The pilot started fresh; the migration path is
-  covered by the schema/migration tests and by `unindexed` being the state of a
-  row without an embedding, but not on a real deployment.
-- **workerd e2e for the provider protocol.** `scripts/e2e/` has no Vectorize
-  emulation, and the Workers binding cannot be intercepted in workerd, so the
-  in-process double remains the protocol stand-in. `CONTRIBUTING.md`'s rule that
-  a protocol feature is not covered until `scripts/e2e/` exercises it is
-  therefore still unmet for this feature; the pilot above is what stands in for
-  it.
-- **REC-02** provider inventory: the engine knows the IDs it published; it does
-  not enumerate the index. `API.md` states this limit.
+- **REC-02 provider inventory.** The Workers binding exposes no listing call in
+  `@cloudflare/workers-types`, so the engine can neither enumerate an index nor
+  find an ID it never recorded. Closing this needs the Vectorize HTTP API and an
+  account-scoped token in the deployment, which is a credential and a surface
+  this feature does not add on its own. `API.md` states the limit.
 - **Two-workspace isolation on a live index** (SRC-02) and a **late older
   write** (WRI-05) were not run; both are unit-covered, neither is measured
   against the provider.
+
+## workerd e2e for the provider protocol
+
+`CONTRIBUTING.md` says a protocol feature is not covered until a scenario
+exercises it in workerd. Workerd has no local Vectorize emulation, but a binding
+can be declared `remote: true`, which makes `wrangler dev` proxy it to the real
+index. `scripts/e2e-vector.mjs` uses exactly that and is opt-in, because it
+needs an index and an account:
+
+```bash
+TAPEDB_VECTOR_INDEX=<index> bun run test:e2e:vector
+```
+
+The run asserts the binding is **remote** first, so a local binding cannot make
+it pass vacuously, then: writes two embedded rows, waits for the durability
+alarm to drain both intents through the binding (`pending: 0`, `indexed: 2`),
+searches and checks both rows come back, checks `filter { archived: false }`
+excludes the archived row at the provider (retrying, because metadata indexes
+become queryable after the vectors), checks the embedding never appears in a
+row, deletes a row, waits for it to leave the answer and for the provider to
+accept the delete (`pending: 0`), and asserts nothing was dead-lettered.
+
+Measured run (0.3.3, wrangler 4.166, the DEP-06 index):
+
+```
+ok   workerd runs the Worker with the vector index bound remotely
+ok   two rows committed with their embeddings
+ok   the durability alarm drained both intents through the binding
+ok   search returned both rows nearest first
+ok   the metadata filter excluded the archived row at the provider
+ok   the embedding is never returned in a row
+ok   the deleted row left the answer
+ok   queue settled: {"pending":0,"failing":0,"deadLettered":0,"indexed":1,...}
+e2e-vector: all passed
+```
+
+The dev server runs as its own process group and is killed as one: killing the
+`npx` wrapper alone leaves `wrangler` and `workerd` holding the port, which the
+first version of this script did.
 
 ## Reproducing the pilot
 
