@@ -59,7 +59,26 @@ export interface VectorizeOptions {
    * filters. At most ten, all flat scalars, none personal.
    */
   filterFields?: readonly string[];
+  /**
+   * Optional embedding binding, so a caller can search with words instead of a
+   * vector it computed itself. `binding` names a Workers AI binding in `Env`;
+   * `model` is a `@cf/baai/bge-*` model whose output length must be the field's
+   * declared dimensions. Without it the caller supplies the vector, which is
+   * what a RAG pipeline does anyway when it embeds its corpus.
+   */
+  embed?: { binding: string; model?: string };
 }
+
+/** The embedding models whose output length this build can check. */
+export const EMBEDDING_MODEL_DIMENSIONS: Readonly<Record<string, number>> = Object.freeze({
+  "@cf/baai/bge-small-en-v1.5": 384,
+  "@cf/baai/bge-base-en-v1.5": 768,
+  "@cf/baai/bge-large-en-v1.5": 1024,
+  "@cf/baai/bge-m3": 1024,
+});
+
+/** Used when `vectorize.embed.model` is omitted. */
+export const DEFAULT_EMBEDDING_MODEL = "@cf/baai/bge-base-en-v1.5";
 
 /** One filter attribute, resolved against the schema. */
 export interface VectorizeFilterField {
@@ -88,6 +107,8 @@ export interface ConfiguredVectorize {
   readonly filters: readonly VectorizeFilterField[];
   /** The codec tag this build writes and reads. */
   readonly codec: string;
+  /** The embedding binding a text query is sent through, or null. */
+  readonly embed: { readonly binding: string; readonly model: string } | null;
 }
 
 function invalid(message: string): never {
@@ -176,6 +197,28 @@ export function resolveVectorize(options: VectorizeOptions | undefined): Configu
 
   const codec = assertReadableCodec();
 
+  // An embedding binding, when the deployment wants `search({ text })`.
+  let embed: { binding: string; model: string } | null = null;
+  if (options.embed !== undefined) {
+    const binding = options.embed?.binding;
+    if (typeof binding !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(binding)) {
+      invalid(
+        `vectorize.embed.binding must name a Workers AI binding in Env, such as "AI"; ${JSON.stringify(binding)} is not a binding name.`
+      );
+    }
+    const embeddingModel = options.embed.model ?? DEFAULT_EMBEDDING_MODEL;
+    if (typeof embeddingModel !== "string" || embeddingModel.trim() === "") {
+      invalid("vectorize.embed.model must name an embedding model.");
+    }
+    const known = EMBEDDING_MODEL_DIMENSIONS[embeddingModel];
+    if (known !== undefined && known !== dimensions) {
+      invalid(
+        `vectorize.embed.model "${embeddingModel}" produces ${known} values, but ${model.apiName}.${field} declares ${dimensions} dimensions. An embedding of another length cannot be searched in this index.`
+      );
+    }
+    embed = { binding, model: embeddingModel };
+  }
+
   return Object.freeze({
     binding,
     model: model.apiName,
@@ -185,6 +228,7 @@ export function resolveVectorize(options: VectorizeOptions | undefined): Configu
     dimensions,
     filters: Object.freeze(filters),
     codec,
+    embed,
   });
 }
 

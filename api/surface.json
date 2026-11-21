@@ -477,7 +477,8 @@
         "kind": "interface",
         "experimental": true,
         "shape": {
-          "vector": "number[]",
+          "vector": "number[] | undefined",
+          "text": "string | undefined",
           "limit": "number | undefined",
           "filter": "Partial<Record<FilterKeys<F>, string | number | boolean>> | undefined",
           "where": "Where<F, M> | undefined",
@@ -1093,7 +1094,8 @@
           "index": "string",
           "model": "string",
           "field": "string",
-          "filterFields": "readonly string[] | undefined"
+          "filterFields": "readonly string[] | undefined",
+          "embed": "{ binding: string; model?: string; } | undefined"
         }
       },
       "VectorMatch": {

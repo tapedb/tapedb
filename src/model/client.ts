@@ -145,8 +145,17 @@ export type SearchFilter<F extends Fields> = Partial<
  * @experimental May change in a minor release.
  */
 export interface SearchArgs<M extends Models, F extends Fields> {
-  /** The query embedding: the numbers a write takes for the same field. */
-  vector: number[];
+  /**
+   * The query embedding: the numbers a write takes for the same field. Send
+   * this or `text`, not both.
+   */
+  vector?: number[];
+  /**
+   * The query in words. The engine embeds it with the deployment's
+   * `vectorize.embed` binding, so the question goes through the same model the
+   * corpus was embedded with and the caller never runs that model itself.
+   */
+  text?: string;
   /**
    * At most this many matches. Defaults to 10. A search returns at most 50 —
    * the provider's ceiling for a query that returns metadata — and a larger
@@ -585,9 +594,16 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
       }
       fields = selected;
     }
+    if (args.vector === undefined && args.text === undefined) {
+      throw new Error(`"${model.key}.search" needs a query: send "text", or "vector" if you embed the question yourself.`);
+    }
+    if (args.vector !== undefined && args.text !== undefined) {
+      throw new Error(`"${model.key}.search" takes "text" or "vector", not both.`);
+    }
     const answer = await runtime.impl.searchOnce({
       model: model.key,
-      vector: args.vector,
+      ...(args.vector === undefined ? {} : { vector: args.vector }),
+      ...(args.text === undefined ? {} : { text: args.text }),
       ...(args.limit === undefined ? {} : { limit: args.limit }),
       ...(args.filter === undefined ? {} : { filter: args.filter as Record<string, string | number | boolean> }),
       // The client's `where` mirror does not carry the engine-only `$link`, so
