@@ -145,7 +145,7 @@ Per model, `db.<model>` is a `ModelClient`:
 | `count({ where? })` | `Query<number>` | |
 | `aggregate(args)` | `Query<…>` | **experimental**: count, sum, avg, min, max |
 | `groupBy(args)` | `Query<…[]>` | **experimental**: the same per group, at most 1000 groups |
-| `search({ vector, limit?, filter?, where?, select? })` | `Promise<{ rows, truncated }>` | **experimental**: nearest neighbour over the vector field this deployment indexes; rows come back nearest first, each carrying `score`; see [Vector search](#vector-search) |
+| `search({ text?\|vector?, limit?, filter?, where?, select? })` | `Promise<{ rows, truncated }>` | **experimental**: nearest neighbour over the vector field this deployment indexes; `text` is embedded by the deployment's own model, `vector` is a query the caller embedded; rows come back nearest first, each carrying `score`; see [Vector search](#vector-search) |
 | `create({ data })` | `Write` | nested create of related rows |
 | `update({ where: { id }, data })` | `Write` | |
 | `upsert({ where: { id }, create, update })` | `Write` | |
@@ -458,6 +458,7 @@ defineTapeDB({
     model: "note",
     field: "embedding",          // note.embedding: t.vector({ dimensions: 768 })
     filterFields: ["archived"],  // copied into the vector's metadata
+    embed: { binding: "AI" },    // optional: lets a caller search with words
   },
 });
 ```
@@ -478,6 +479,15 @@ when the Worker is defined, together with these rules:
   provider, which is a copy outside the workspace's storage;
 - at most **ten** filter fields, the provider's ceiling of ten metadata indexes
   per index.
+
+`embed` is optional and is what makes a text query possible. `binding` names a
+Workers AI binding in `Env` and `model` is an embedding model, defaulting to
+`@cf/baai/bge-base-en-v1.5`. The model's output length must be the field's
+declared dimensions, which this build checks for every model it knows
+(`bge-small-en-v1.5` 384, `bge-base-en-v1.5` 768, `bge-large-en-v1.5` 1024,
+`bge-m3` 1024); an unknown model is accepted and checked by the provider at the
+first text query. Without `embed`, callers send vectors they computed
+themselves, which is what a pipeline that embeds its corpus already does.
 
 A worker that fails any of these refuses to start, naming the option, rather
 than discovering it at the first write. Once a room is running, the index's own
@@ -615,6 +625,7 @@ answers with the rows this workspace still holds:
 | option | |
 | --- | --- |
 | `vector` | the query embedding: the numbers a write takes, the field's declared length. Another length is refused with the message a write gives (`invalid_value`). |
+| `text` | the query in words, embedded by the deployment's `vectorize.embed` binding through the same model that embedded the corpus, so a caller never runs that model itself. `text` and `vector` are alternatives: sending both is refused (`invalid_value`), and so is `text` on a deployment with no `embed`. An empty or non-string `text` is refused before the binding is called; an embedding binding that fails answers `storage_error` with retry guidance rather than an empty result. |
 | `limit` | matches to return, 1 to 50. Defaults to **10**. A larger number is **refused** (`invalid_value`), never clamped: a caller who asked for 200 and got 50 would read the answer as "this is all there is". |
 | `filter` | equality on the deployment's `filterFields` only, each value typed as its attribute (a string, a number or a boolean). An attribute the deployment did not declare is refused (`invalid_value`) rather than matched against nothing, because the index carries no metadata for it. Applied before the ranking, so a filtered search returns `limit` matches rather than whatever survives a filter over an unfiltered ranking. |
 | `where` | the same filter a read takes, applied to the rows the index returned. |
@@ -756,6 +767,7 @@ scope.
 | `TAPEDB_JURISDICTION` | var, optional | `eu` or `fedramp`; relocate existing workspaces with `tapedb move` |
 | `TAPEDB_DEV_CLAIMS` | var or secret | development claim route on; never in production |
 | `TAPEDB_DEV_CLAIMS_TOKEN` | secret, optional | the development claim route then needs `x-tapedb-dev-token` |
+| `AI` | Workers AI binding, optional | the model `vectorize.embed.binding` names, used to embed a `text` query; without it a text query answers `503 vector_search_unavailable` |
 
 ## `@tapedb/tapedb/seed`
 

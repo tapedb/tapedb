@@ -150,8 +150,10 @@ export type QueryPageInfo = Record<string, PageInfo>;
 export interface VectorSearchRequest {
   /** The indexed model's API name. */
   model: string;
-  /** The query embedding. */
-  vector: number[];
+  /** The query embedding. Alternative to `text`. */
+  vector?: number[];
+  /** The query in words; the engine embeds it with the deployment's binding. */
+  text?: string;
   /** 1 to 50; the engine's ceiling. */
   limit?: number;
   /** Equality on the declared filter fields. */
