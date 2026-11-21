@@ -32,6 +32,14 @@ describe("public API surface", () => {
     expect(model.findMany).not.toContain("@experimental");
   });
 
+  test("keeps vector search out of the experimental set", () => {
+    const model = current.entries["@tapedb/tapedb"].ModelClient.shape as Record<string, string>;
+    expect(model.search).not.toContain("@experimental");
+    const options = current.entries["@tapedb/tapedb/worker"].DefineTapeDBOptions.shape as Record<string, string>;
+    expect(options.vectorize).not.toContain("@experimental");
+    expect(options.vectorize).toContain("VectorizeOptions");
+  });
+
   test("keeps server internals out of @tapedb/tapedb/worker", () => {
     for (const internal of ["TRUSTED_CLAIM_HEADER", "encodeTrustedRoleClaim", "authenticateEngineRequest", "extractClaimToken", "mintDevClaim", "mintClaim", "WorkspaceRoom"]) {
       expect(current.entries["@tapedb/tapedb/worker"][internal]).toBeUndefined();
