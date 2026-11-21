@@ -214,10 +214,17 @@ export interface ModelClient<M extends Models, F extends Fields> {
    * than scored null — and a row the index still holds but the database no
    * longer does is dropped, so what comes back is what exists now.
    *
+   * Send `vector`, or `text` when the deployment configures `vectorize.embed`
+   * and the engine should embed the words itself; sending both is refused.
+   * With `vectorize.keywordFields` a text query also searches the workspace's
+   * FTS5 mirror, and `mode` says which ranking answered: `vector` means the
+   * index alone and `score` is the provider's cosine, `hybrid` means the vector
+   * and keyword lists were fused and `score` is a rank comparable only inside
+   * one answer. A configured `vectorize.rerank` replaces the order and sets
+   * `reranked`.
+   *
    * `vector` must be the field's declared length and `limit` 1 to 50 (default
    * 10); anything else is refused by the engine with `invalid_value`.
-   *
-   * @experimental May change in a minor release.
    */
   search<A extends SearchArgs<M, F> = SearchArgs<M, F>>(
     args: A

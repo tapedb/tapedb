@@ -158,10 +158,12 @@ export interface DefineTapeDBOptions {
    */
   webhooks?: readonly WebhookOptions[];
   /**
-   * Mirrors one model's vector attribute into a Cloudflare Vectorize index.
+   * Mirrors one model's vector attribute into a Cloudflare Vectorize index, and
+   * answers `search` over it.
    *
    *   vectorize: { index: "VECTORIZE", model: "note", field: "embedding",
-   *                filterFields: ["archived"] }
+   *                filterFields: ["archived"], embed: { binding: "AI" },
+   *                keywordFields: ["title"], rerank: { binding: "AI" } }
    *
    * `index` names the binding in `Env`; `model` and `field` say what is
    * indexed, and `filterFields` which scalar attributes are copied into the
@@ -170,18 +172,23 @@ export interface DefineTapeDBOptions {
    * not a `t.vector({ dimensions })` attribute, a filter that is not a flat
    * string, number or boolean, and a personal filter are all refused there.
    *
+   * `embed` lets a caller search with words: the deployment embeds the query
+   * through that binding, so the question and the corpus go through one model.
+   * `keywordFields` mirrors those string attributes into an FTS5 table in the
+   * workspace's own SQLite, so a text query also matches an exact term the
+   * embedding blurs, and the two ranked lists are fused by rank. `rerank`
+   * scores the candidate window against the question and replaces that order.
+   * Each of the three needs `embed`, because each is applied to a text query.
+   *
    * A write commits its row and its indexing intent in one transaction, so
    * indexing can never fail or slow a commit; the intent is drained from the
    * durability alarm, retried with backoff, and visible on `GET /status`. A
-   * vector is not searchable the moment it is written — batch indexing is
+   * vector is not searchable the moment it is written: batch indexing is
    * asynchronous at the provider and was measured 73–103 s behind an accepted
-   * upsert — so `pending` is the normal state of a fresh row. Search itself is
-   * not part of this option yet: this publishes state to the index.
+   * upsert, so `pending` is the normal state of a fresh row.
    *
    * Leave it out and no table is created, no binding is read and nothing is
    * written.
-   *
-   * @experimental May change in a minor release.
    */
   vectorize?: VectorizeOptions;
   /**
