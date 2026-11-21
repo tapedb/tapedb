@@ -145,7 +145,7 @@ Per model, `db.<model>` is a `ModelClient`:
 | `count({ where? })` | `Query<number>` | |
 | `aggregate(args)` | `Query<…>` | **experimental**: count, sum, avg, min, max |
 | `groupBy(args)` | `Query<…[]>` | **experimental**: the same per group, at most 1000 groups |
-| `search({ text?\|vector?, limit?, filter?, where?, select? })` | `Promise<{ rows, truncated }>` | **experimental**: nearest neighbour over the vector field this deployment indexes; `text` is embedded by the deployment's own model, `vector` is a query the caller embedded; rows come back nearest first, each carrying `score`; see [Vector search](#vector-search) |
+| `search({ text?\|vector?, limit?, filter?, where?, select? })` | `Promise<{ rows, truncated, mode, reranked }>` | nearest neighbour over the vector field this deployment indexes, with keyword recall and an optional reranker; `text` is embedded by the deployment's own model, `vector` is a query the caller embedded; rows come back nearest first, each carrying `score`; see [Vector search](#vector-search) |
 | `create({ data })` | `Write` | nested create of related rows |
 | `update({ where: { id }, data })` | `Write` | |
 | `upsert({ where: { id }, create, update })` | `Write` | |
@@ -188,7 +188,7 @@ Also exported: `id()` (time-ordered ids), `Query`, `PageQuery`, `Write`,
 types `Client`, `ClientConfig`, `ModelClient`, `FindArgs`, `PageArgs`,
 `Page`, `Result`, `LiveState`, `WriteResult`, `HistoryEntry`, `Across`, `AcrossModel`, `AcrossOptions`, `AcrossQuery`, `AcrossLiveState`, `AcrossError`, `QueryError`,
 `WriteRejection`, `PresenceRoom`, `PresencePeer`, `RoleClaim`,
-`WorkspaceRole`, `ExportRecord`, and **experimental** `BroadcastTopic`, `TopicSender`, `SearchArgs`, `SearchFilter` and `SearchResult`.
+`WorkspaceRole`, `ExportRecord`, `SearchArgs`, `SearchFilter` and `SearchResult`, and **experimental** `BroadcastTopic` and `TopicSender`.
 
 ### Offline queue
 
@@ -370,7 +370,7 @@ the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
 | `topics` | **experimental**, **deprecated** alias of `realtime`: `TopicOptions` `{ authorize?, replaySeconds? }`, whose `authorize` covers topic kinds only and is consulted only when `realtime.authorize` is absent |
 | `limits` | **experimental**: `LimitsOptions` `{ writes?: { models?: { [model]: { count, windowSeconds } }, workspace?: { count, windowSeconds } } }` — per-model and per-workspace write budgets, see [Write budgets](#write-budgets) |
 | `webhooks` | **experimental**: `readonly WebhookOptions[]` — signed change events to an endpoint, captured inside the write's transaction and delivered after the commit |
-| `vectorize` | **experimental**: `VectorizeOptions` `{ index, model, field, filterFields? }` — mirrors one model's `t.vector({ dimensions })` attribute into a Vectorize index; see [Vector search](#vector-search) |
+| `vectorize` | `VectorizeOptions` `{ index, model, field, filterFields?, embed?, keywordFields?, rerank? }` — mirrors one model's `t.vector({ dimensions })` attribute into a Vectorize index; see [Vector search](#vector-search) |
 | `http` | **experimental**: `HttpApiOptions` `{ token }` — the admin HTTP API (`POST /v1/query`, `/v1/transact`, `/v1/claim`) for a backend server. `token` is the shared secret such a caller sends, at least 32 bytes: a string, refused when the Worker is defined if it is shorter, or `(env) => env.TAPEDB_API_TOKEN`, the form a deployment uses. Absent, the paths answer 404 — see [Admin HTTP API](#admin-http-api) |
 
 Also exported: `signRoleClaim(secret, { sub, workspaceId, role, iss?, aud?,
