@@ -459,6 +459,7 @@ defineTapeDB({
     field: "embedding",          // note.embedding: t.vector({ dimensions: 768 })
     filterFields: ["archived"],  // copied into the vector's metadata
     embed: { binding: "AI" },    // optional: lets a caller search with words
+    keywordFields: ["title", "excerpt"],  // optional: exact-term recall
   },
 });
 ```
@@ -619,6 +620,28 @@ idempotent at the provider. Deleting an ID the index does not hold is not an
 error, so a delete is always queued rather than inferred from local state — an
 upsert whose answer was lost may still have reached the provider.
 
+**Hybrid recall.** `keywordFields` names up to five string attributes of the
+indexed model. Their text is mirrored into an FTS5 table in the workspace's own
+SQLite by triggers inside the write's transaction, so it is written, changed and
+deleted with the row and never waits for the provider. A text query then has two
+halves: the vector candidates from the index, and `bm25` candidates from that
+table, merged by reciprocal rank. The keyword half needs `embed` (there is no
+text query without it), refuses to index a personal field, and indexes only
+strings. Its hits are filtered by the same `filter` and read through the same
+access rules, and a hit is kept only for a row that has an embedding.
+
+The two sides disagree in useful ways. A row whose text changed after its vector
+was published is dropped from the vector side by the version gate, but the
+keyword hit is on the current row, so it stays. A part number, an acronym or a
+name the embedding blurs is found exactly. And because the keyword side is local,
+a row written a second ago is findable by its exact words while its vector is
+still pending.
+
+`search.mode` says which ranking produced the answer: `vector` means the index
+alone and `score` is the provider's cosine similarity; `hybrid` means the two
+lists were fused and `score` is the fused rank. A fused score is comparable
+within one answer only, never across modes.
+
 **Searching.** `db.note.search({ vector })` asks the index for candidates and
 answers with the rows this workspace still holds:
 
@@ -658,6 +681,9 @@ visible at the provider — 73–103 s, measured.
 workspace's index. An ordinary member is refused with `403 insufficient_role`
 before anything else, so the answer cannot tell them whether vector search is
 configured at all.
+
+`POST /search` answers `search: { scores, truncated, mode }`, where `mode` is
+`vector` or `hybrid` as described above.
 
 | route | | |
 | --- | --- | --- |

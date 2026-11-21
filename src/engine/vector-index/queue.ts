@@ -39,6 +39,7 @@ import { nextBackoffDelay } from "../durability/flusher";
 import { decodeVector } from "../../model/vector";
 import type { SqlExecutor, SqlRow, SqlValue } from "../tx-sql";
 import { vectorRowDigest } from "./digest";
+import { installKeywordIndex } from "./keyword";
 import type { VectorPurgeStatus } from "./purge-ledger";
 import { vectorIdFor, vectorNamespaceFor } from "./identity";
 import type { ConfiguredVectorize } from "./definition";
@@ -243,6 +244,9 @@ export function installVectorCapture(sql: SqlExecutor, config: ConfiguredVectori
   for (const action of ["INSERT", "UPDATE", "DELETE"] as const) {
     sql.exec(captureTrigger(config, action));
   }
+  // The lexical half of a text query lives in the same database, maintained by
+  // its own triggers, and needs nothing from the provider.
+  installKeywordIndex(sql, config);
 }
 
 /**
@@ -251,11 +255,18 @@ export function installVectorCapture(sql: SqlExecutor, config: ConfiguredVectori
  * turned off so capture stops at the next boot.
  */
 export function dropVectorCapture(sql: SqlExecutor): void {
-  for (const row of sql.all<{ name: string }>(
-    `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE '\\_tapedb\\_vector\\_%' ESCAPE '\\'`
-  )) {
-    sql.exec(`DROP TRIGGER IF EXISTS "${row.name}"`);
+  for (const prefix of ["_tapedb_vector_", "_tapedb_keyword_"]) {
+    // The underscores are literal: escape them rather than letting LIKE treat
+    // each as a single-character wildcard.
+    const pattern = [...prefix].map((char) => (char === "_" ? "\\_" : char)).join("") + "%";
+    for (const row of sql.all<{ name: string }>(
+      `SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE ? ESCAPE '\\'`,
+      pattern
+    )) {
+      sql.exec(`DROP TRIGGER IF EXISTS "${row.name}"`);
+    }
   }
+  sql.exec(`DROP TABLE IF EXISTS "_vector_keyword"`);
 }
 
 // ---- Materialise ---------------------------------------------------------------
