@@ -829,6 +829,36 @@ export class WorkspaceRoom extends DurableObject<Env> {
     };
   }
 
+  /**
+   * The reranker a text query goes through: the deployment's model scores each
+   * candidate passage against the question, and its ranking replaces the fused
+   * one. A failure is reported as `reranked: false`, not as an empty answer.
+   */
+  private vectorReranker(config: ConfiguredVectorize): (query: string, passages: readonly string[]) => Promise<readonly number[]> {
+    const rerank = config.rerank;
+    if (rerank === null) throw new Error("vectorReranker called for a deployment without rerank");
+    const binding = (this.roomEnv as unknown as Record<string, unknown>)[rerank.binding] as
+      | { run: (model: string, input: unknown) => Promise<unknown> }
+      | undefined;
+    if (binding === undefined) throw new Error(`No AI binding named ${rerank.binding}`);
+    return async (query: string, passages: readonly string[]) => {
+      const response = (await binding.run(rerank.model, {
+        query,
+        top_k: passages.length,
+        contexts: passages.map((text) => ({ text })),
+      })) as { response?: Array<{ id?: number; score?: number }> } | undefined;
+      const entries = response?.response;
+      if (!Array.isArray(entries)) throw new Error("The reranker answered without scores.");
+      const scores = new Array<number>(passages.length).fill(0);
+      for (const entry of entries) {
+        const index = Number(entry?.id);
+        if (!Number.isInteger(index) || index < 0 || index >= scores.length) continue;
+        scores[index] = Number(entry?.score ?? 0);
+      }
+      return scores;
+    };
+  }
+
   private vectorIndexFor(config: ConfiguredVectorize): VectorIndex | null {
     if (this.vectorIndexOverride !== null) return this.vectorIndexOverride;
     if (this.resolvedVectorIndex?.binding === config.binding) return this.resolvedVectorIndex.index;
@@ -1734,14 +1764,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // A deployment that configured an embedding binding but has no such
       // binding in Env is a deployment error, not a caller error, and a text
       // query cannot be answered at all.
-      const missingEmbed =
-        config !== null && config.embed !== null && !isAiBinding(this.roomEnv, config.embed.binding);
-      if (config !== null && config.embed !== null && missingEmbed) {
-        return apiError(
-          503,
-          "vector_search_unavailable",
-          `This deployment configures vectorize.embed with the binding ${JSON.stringify(config.embed.binding)}, but Env has no AI binding by that name.`
-        );
+      // A configured AI binding that Env does not carry is a deployment error:
+      // the text query cannot be embedded, and a reranked one cannot be scored.
+      for (const [option, bindingName] of [
+        ["embed", config?.embed?.binding],
+        ["rerank", config?.rerank?.binding],
+      ] as const) {
+        if (bindingName !== undefined && !isAiBinding(this.roomEnv, bindingName)) {
+          return apiError(
+            503,
+            "vector_search_unavailable",
+            `This deployment configures vectorize.${option} with the binding ${JSON.stringify(bindingName)}, but Env has no AI binding by that name.`
+          );
+        }
       }
       const answer = await executeVectorSearch({
         sql,
@@ -1751,6 +1786,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         workspaceId: this.workspaceId,
         request: (body ?? {}) as VectorSearchRequest,
         ...(config === null || config.embed === null ? {} : { embed: this.vectorEmbedder(config) }),
+        ...(config === null || config.rerank === null ? {} : { rerank: this.vectorReranker(config) }),
         // A read that touches a personal field defers its key fetches; the
         // personal runtime answers by running the read again.
         ...(this.personal === undefined ? {} : { reads: <T,>(fn: () => T) => this.personal!.read(fn) }),
@@ -1760,7 +1796,12 @@ export class WorkspaceRoom extends DurableObject<Env> {
         data: { [answer.model]: answer.rows },
         // `mode` tells a caller what the score means: a cosine from the index,
         // or a fused rank when keyword recall joined the answer.
-        search: { scores: answer.scores, truncated: answer.truncated, mode: answer.mode },
+        search: {
+          scores: answer.scores,
+          truncated: answer.truncated,
+          mode: answer.mode,
+          reranked: answer.reranked,
+        },
       });
     } catch (error) {
       if (error instanceof TxError) {
