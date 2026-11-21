@@ -40,6 +40,18 @@ describe("public API surface", () => {
     expect(options.vectorize).toContain("VectorizeOptions");
   });
 
+  test("tags no vector or search type experimental", () => {
+    const tagged: string[] = [];
+    for (const [entry, exported] of Object.entries(current.entries as Record<string, Record<string, unknown>>)) {
+      for (const [name, value] of Object.entries(exported)) {
+        if (!/^Vector|^Search/.test(name)) continue;
+        const flagged = (value as { experimental?: boolean } | null)?.experimental === true;
+        if (flagged || JSON.stringify(value).includes("@experimental")) tagged.push(`${entry} ${name}`);
+      }
+    }
+    expect(tagged).toEqual([]);
+  });
+
   test("keeps server internals out of @tapedb/tapedb/worker", () => {
     for (const internal of ["TRUSTED_CLAIM_HEADER", "encodeTrustedRoleClaim", "authenticateEngineRequest", "extractClaimToken", "mintDevClaim", "mintClaim", "WorkspaceRoom"]) {
       expect(current.entries["@tapedb/tapedb/worker"][internal]).toBeUndefined();

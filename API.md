@@ -387,7 +387,7 @@ allow consumers to emit declarations without leaking private names.
 `TopicAction`, `TopicAuthorizer` and `TopicGap` are **experimental**, and so are
 `RealtimeOptions`, `RealtimeAuthorizer`, `RealtimeAuthorizeContext` and
 `RealtimeKind`, and `LimitsOptions`, `WriteLimitsOptions` and `WriteLimit`, and
-`HttpApiOptions` and `HttpApiToken`. The vector types are **experimental** too:
+`HttpApiOptions` and `HttpApiToken`. The vector types are stable as of 0.3.4:
 `VectorizeOptions`, `VectorIndex` (the four operations this engine uses),
 `VectorRecord`, `VectorIndexMutation`, `VectorQueryOptions`, `VectorQueryResult`,
 `VectorMatch` and `VectorIndexDescription`.
