@@ -140,9 +140,8 @@ export type SearchFilter<F extends Fields> = Partial<
 >;
 
 /**
- * What `search` takes: a query embedding, and what narrows the rows it ranks.
- *
- * @experimental May change in a minor release.
+ * What `search` takes: words or a query embedding, and what narrows the rows it
+ * ranks. `text` and `vector` are alternatives.
  */
 export interface SearchArgs<M extends Models, F extends Fields> {
   /**
@@ -175,9 +174,7 @@ export interface SearchArgs<M extends Models, F extends Fields> {
 
 /**
  * What a search answers: rows in rank order, each with the score it was found
- * by.
- *
- * @experimental May change in a minor release.
+ * by, and `mode`/`reranked` saying what that score means.
  */
 export interface SearchResult<R> {
   /** Nearest first. A row the caller may not read is simply not here. */
