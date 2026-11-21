@@ -83,6 +83,7 @@
     "test": "bun test test",
     "api:update": "bun scripts/api-surface.ts --write",
     "test:e2e": "node scripts/e2e.mjs",
+    "test:e2e:vector": "node scripts/e2e-vector.mjs",
     "test:browser": "playwright test --config scripts/browser/playwright.config.ts",
     "test:auth": "vitest run --config scripts/auth/vitest.config.ts",
     "release:publish": "node scripts/release-publish.mjs"

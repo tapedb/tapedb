@@ -319,7 +319,7 @@ export async function provisionVectorize(args: ProvisionVectorizeArgs): Promise<
       filters: resolved.filters,
       created_at: new Date().toISOString(),
     };
-    log(`  Vectorize: recorded ownership of ${index} in wrangler.jsonc.`);
+    log(`  Vectorize: recorded ownership of ${index} in ${VECTORIZE_RECORD_FILE}.`);
   }
   if (!created) log(`  Vectorize: kept ${index}.`);
   // Persist before the upload: if the upload fails, the index still exists and
