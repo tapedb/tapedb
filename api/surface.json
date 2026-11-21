@@ -276,7 +276,7 @@
         "kind": "interface",
         "shape": {
           "findMany": "<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A) => Query<Result<M, F, A>[]>",
-          "search": "<A extends SearchArgs<M, F> = SearchArgs<M, F>>(args: A) => Promise<SearchResult<Array<Result<M, F, A> & { score: number; }>>> @experimental",
+          "search": "<A extends SearchArgs<M, F> = SearchArgs<M, F>>(args: A) => Promise<SearchResult<Array<Result<M, F, A> & { score: number; }>>>",
           "findFirst": "<A extends FindArgs<M, F> = FindArgs<M, F>>(args?: A) => Query<Result<M, F, A> | null>",
           "findUnique": "<A extends { where: { id: string; }; include?: Include<M, F>; select?: Select<M, F>; }>(args: A) => Query<Result<M, F, A> | null>",
           "findPage": "<A extends PageArgs<M, F> = PageArgs<M, F>>(args?: A) => PageQuery<Result<M, F, A>>",
@@ -918,7 +918,7 @@
           "retention": "RetentionOptions | undefined",
           "limits": "LimitsOptions | undefined @experimental",
           "webhooks": "readonly WebhookOptions[] | undefined @experimental",
-          "vectorize": "VectorizeOptions | undefined @experimental",
+          "vectorize": "VectorizeOptions | undefined",
           "http": "HttpApiOptions | undefined @experimental"
         }
       },
