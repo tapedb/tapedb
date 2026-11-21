@@ -116,7 +116,22 @@ TAPEDB_DEV_CLAIMS_TOKEN=<token> node scripts/e2e.mjs --url https://<staging work
 
 It packs this checkout, installs the tarball and wrangler into an empty
 project, runs `tapedb init` and `tapedb dev`, and runs each scenario in
-`scripts/e2e/` as a consumer would. Locally it then runs the drills: seed past
+`scripts/e2e/` as a consumer would.
+
+Vector search is the one feature whose protocol is remote: workerd has no local
+Vectorize emulation, so the binding is declared `remote: true` and the e2e runs
+against a real index. It is opt-in because it needs one and an account.
+
+```bash
+TAPEDB_VECTOR_INDEX=<index> bun run test:e2e:vector   # 768 dimensions, cosine, an `archived` metadata index
+```
+
+That run boots the Worker in workerd with the binding remote, writes two
+embedded rows, waits for the durability alarm to drain them through the binding,
+searches, checks the metadata filter, checks the embedding never comes back in a
+row, deletes one row and waits for the provider to accept the delete. It asserts
+the binding is remote first, because a local binding would make the whole run
+prove nothing. Locally it then runs the drills: seed past
 a snapshot, let the durability alarm flush and snapshot, rebuild a referenced
 table through a migration, wipe the Durable Object's storage, and check the
 workspace comes back from R2 identical — every row, the file index, the
