@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.5 - 2026-11-21
+
+- No runtime change: this release corrects what 0.3.4 said about itself. 0.3.4 shipped with no changelog section and an empty GitHub release body, and `README.md`, which ships in the tarball, closed its vector section by saying that embedding generation stays with the application, that tapedb never calls a model, and that text-to-vector and hybrid search were not part of the release. The section above it documents all three, and `API.md` does too. The paragraph now says what a write calls and what a search calls, and names the three things that really are absent: subscriptions to search results, ranking across workspaces, and providers other than Vectorize.
+
+- `API.md` no longer lists `VectorizeOptions`, `VectorIndex`, `VectorRecord`, `VectorIndexMutation`, `VectorQueryOptions`, `VectorQueryResult`, `VectorMatch` and `VectorIndexDescription` as experimental. 0.3.4 removed the tag from those types and the inventory paragraph was not updated with it.
+
+- The two doc comments that generate the API reference no longer mark `search` or the `vectorize` option experimental, and the `vectorize` block documents `embed`, `keywordFields` and `rerank` instead of saying search is not part of the option. `api/surface.json` records the new shapes, and the public-surface test fails if any `Vector*` or `Search*` export is tagged experimental again.
+
+- The docs site gates its generated API pages: the generator's `--check` mode compares every page with what the current package build produces and refuses when the build is older than the source, so a reference from a previous release cannot deploy.
+
 ## 0.3.4 - 2026-11-21
 
 - `db.<model>.search({ text })` searches with words. The deployment embeds the query itself through the Workers AI binding named by `vectorize.embed` (default `@cf/baai/bge-base-en-v1.5`), so the question and the corpus go through one model and the caller never runs one. `text` and `vector` are alternatives and sending both is refused; empty or non-string text is refused before the binding is called; a configured binding missing from `Env` answers `503 vector_search_unavailable` naming it; an embedder that throws answers `storage_error` with retry guidance instead of an empty answer that reads as nothing matched. The resulting vector goes through the validator a write uses, so a length that disagrees with the declared dimensions fails with the write's own message.
