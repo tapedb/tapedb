@@ -930,11 +930,16 @@ Operators get three admin-or-owner routes on the engine:
 | `POST …/vector/rebuild` | one crash-resumable job per workspace; search answers 503 with `retry-after` until it finishes |
 | `POST …/vector/rows` | `{ model, ids }` → `unindexed`, `pending`, `indexed` or `failed`, for rows the caller may read |
 
-Embedding generation stays with the application: tapedb stores and indexes the
-vector, and never calls a model. Text-to-vector search, hybrid ranking and
-cross-workspace search are not part of this release. The full contract,
-including the digest, batch ceilings and erasure semantics, is in
-[`API.md`](API.md#vector-search).
+Writes never call a model: an embedding is application-supplied, and the models
+a search calls are the ones the deployment configures, `embed` and `rerank`,
+never a model the caller chooses. Three things stay outside this release, and
+each is a mechanism of its own rather than an unfinished part of search:
+subscriptions to search results, ranking across workspaces, and providers other
+than Vectorize. Cross-workspace ranking is a different design rather than a
+wider query, because every candidate is re-read through one workspace's access
+rules, and fusing lists from several workspaces would rank rows before those
+rules could refuse them. The full contract, including the digest, batch ceilings
+and erasure semantics, is in [`API.md`](API.md#vector-search).
 
 ## Erasing a workspace
 
