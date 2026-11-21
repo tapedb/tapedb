@@ -2758,9 +2758,23 @@ export class WorkspaceRoom extends DurableObject<Env> {
         sql.exec("PRAGMA defer_foreign_keys = ON");
         for (const { name } of sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'trigger'`).toArray()) sql.exec(`DROP TRIGGER IF EXISTS "${name.replaceAll('"', '""')}"`);
         const tables = sql.exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' AND name NOT GLOB '_cf_*'`).toArray();
+        // An FTS5 table owns shadow tables (`<name>_data`, `_idx`, `_content`,
+        // `_docsize`, `_config`) that refuse a direct DELETE, so the virtual
+        // table is dropped instead and its shadows go with it. The wipe below
+        // skips them: the erasure of a workspace with keyword recall would
+        // otherwise fail with "may not be modified: SQLITE_ERROR".
+        const virtualTables = sql
+          .exec<{ name: string }>(`SELECT name FROM sqlite_master WHERE type = 'table' AND sql LIKE 'CREATE VIRTUAL TABLE%'`)
+          .toArray()
+          .map((row) => row.name);
+        const shadows = new Set<string>();
+        for (const virtual of virtualTables) {
+          for (const { name } of tables) if (name.startsWith(`${virtual}_`)) shadows.add(name);
+        }
+        const wipe = tables.filter(({ name }) => !shadows.has(name));
         // Empty rows while all referenced tables still exist. Otherwise DROP
         // can run cascade actions against a table already removed above it.
-        for (const { name } of tables) sql.exec(`DELETE FROM "${name.replaceAll('"', '""')}"`);
+        for (const { name } of wipe) sql.exec(`DELETE FROM "${name.replaceAll('"', '""')}"`);
         const children = new Map<string, string[]>();
         for (const { name } of tables) {
           for (const fk of sql.exec<{ table: string }>(`PRAGMA foreign_key_list("${name.replaceAll('"', '""')}")`).toArray()) {
@@ -2774,7 +2788,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
           for (const child of children.get(name) ?? []) drop(child);
           sql.exec(`DROP TABLE IF EXISTS "${name.replaceAll('"', '""')}"`);
         };
-        for (const { name } of tables) drop(name);
+        for (const { name } of wipe) drop(name);
         sql.exec(`CREATE TABLE "${ERASED_TABLE}" (at INTEGER NOT NULL)`);
         sql.exec(`INSERT INTO "${ERASED_TABLE}" (at) VALUES (?)`, Date.now());
     });
