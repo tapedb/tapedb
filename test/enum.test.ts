@@ -21,7 +21,7 @@ mock.module("cloudflare:workers", () => ({ DurableObject: MockDurableObject }));
 
 const { defineTapeDB } = await import("../src/worker/index");
 
-const SECRET = "enum-test-secret-32-characters-long";
+const SECRET = "enum-test-secret-32-characters-long";  // gitleaks:allow (test fixture, not a credential)
 
 const orders = schema({
   order: model({
