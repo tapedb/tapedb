@@ -15,6 +15,7 @@
  * no setter anywhere, so one deployment cannot change another's answer.
  */
 
+import type { ConfiguredQuery } from "./sql-query";
 import type { FileRules } from "./file-access";
 import type { RealtimeAuthorizer } from "./topics";
 import { DEFAULT_MAX_PRESENCE_ROOMS, DEFAULT_TOPIC_REPLAY_MS } from "./topics";
@@ -54,6 +55,8 @@ export interface DeploymentConfig {
   readonly vectorize: ConfiguredVectorize | null;
   /** Bytes per stored log part (see tx-log.ts). */
   readonly logPartBytes: number;
+  /** `schema({ queries })`: the named SQL queries, prepared at definition time (sql-query.ts). */
+  readonly queries: Readonly<Record<string, ConfiguredQuery>>;
   /**
    * The network webhooks post to; `null` means `fetch`. A test replaces it for
    * the one deployment it builds instead of globally.
@@ -86,6 +89,7 @@ export function deploymentConfig(overrides: Partial<DeploymentConfig>): Deployme
     webhooks: Object.freeze([...(overrides.webhooks ?? [])]),
     vectorize: overrides.vectorize ?? null,
     logPartBytes: overrides.logPartBytes ?? LOG_PART_BYTES,
+    queries: overrides.queries ?? Object.freeze({}),
     webhookTransport: overrides.webhookTransport ?? null,
   });
 }

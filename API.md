@@ -42,11 +42,23 @@ then records the new surface with `bun run api:update`.
 ## `@tapedb/tapedb/schema` — stable
 
 `schema`, `model`, `t` (field builders), `role`, `filter`, `check`,
-`fileCheck`, `attachedTo`, `encodeVector`, `decodeVector`, `VECTOR_TAG`,
+`fileCheck`, `attachedTo`, `sqlQuery`, `encodeVector`, `decodeVector`, `VECTOR_TAG`,
 `VECTOR_MAX_DIMENSIONS`, and the types `Schema`, `Row`, `Where`,
 `FieldFilter`, `OrderBy`, `Include`, `CreateData`, `UpdateData`,
 `DeleteBehaviour`, `ScalarKind`, `Access`, `AccessAuth`, `CheckContext`,
-`FileAccess`, `FileCheckContext`, `FileInfo`.
+`FileAccess`, `FileCheckContext`, `FileInfo`, `SqlQuery`, `SqlQueries`,
+`SqlQueryOptions`, `QueryParams`, `QueryColumns`, `QueryParamValues`, `QueryRow`.
+
+`schema(models, { queries? })`: named SQL queries, each
+`sqlQuery({ sql, params?, returns, role?, bypassReadRules? })`. `sql` is one
+`SELECT` (`WITH` and `WITH RECURSIVE` included) with `:name` parameters; every
+`:name` must be in `params` (or be `:authSub` / `:authRole`, bound by the
+engine) and every param used. `params` and `returns` take `t.string()`,
+`t.number()`, `t.boolean()`, `t.date()`, `t.json()`, optional or not. `role`
+defaults to `member`. `schema()` throws on more than one statement, a write,
+`?` placeholders, unknown or unused params, an unknown role and empty
+`returns`. Run with `db.$query` (below); see the README's
+[SQL queries](README.md#sql-queries) for what the engine enforces.
 
 `schema(models, { files? })`: `files` is `{ read?, write?, delete? }`, each a
 `role(...)`, `fileCheck(({ auth, file, existing }) => boolean)` or
@@ -179,6 +191,7 @@ resumes exactly leaves `gap` null.
 | `$across(workspaceIds, { getToken? })` | `Across`: per model `findMany`, `findFirst`, `findPage` and `count` over those workspaces, each with its own claim (`getToken(workspaceId)`, required unless the client uses the development claim route), merged in `orderBy` order; rows carry `workspaceId`; a page `cursor` holds a position per workspace. Results are `AcrossQuery` (awaitable, `subscribe`, `snapshot`, usable with `useLive`); live states add `errors` by workspace. A failed workspace rejects a one-off read with `AcrossError` (`errors`, `partial`) |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
 | `$history({ model, id })` | `Promise<HistoryEntry[]>`: each recorded change to the row, oldest first, as `{ seq, at, sub, role, action }` with `action` `"insert"`, `"update"` or `"delete"`; ADMIN or higher; needs `audit: true` on the Worker |
+| `$query(name, params?)` | `Promise<rows>`: runs a named SQL query from the schema as the signed-in caller; `params` and the rows are typed from the query's `params` and `returns`. See [HTTP](#http) (`/sql`) for its errors |
 | `$flush()` | makes one delivery attempt for the queued writes and resolves when that attempt finishes. It does **not** wait for acknowledgement: an unreachable server leaves the entry queued and a retry is scheduled, so read it as "try now", not "is synced". a caller that must know a write landed has to track that itself |
 | `clientId` | this socket's session id, assigned by the server on `session:ready` and the id a `PresencePeer` carries. `undefined` until the socket opens, and against a Worker that predates multiple presence rooms |
 | `$close()` | closes the socket |
@@ -908,6 +921,7 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `POST /_tapedb/claim` | `{ workspaceId, role? }` → `{ token, workspaceId, roleLevel, expiresAt, expiresIn }` from the identity adapter. `role` asks for a claim at the caller's own role or below it (403 `role_above_membership` above it). The development route takes `{ workspaceId, role?, sub? }` (default OWNER and `dev-user`) and answers `{ token, workspaceId, roleLevel, expiresIn }` |
 | `POST /engine/workspaces/:id/transact` | a transaction: `{ txId, clientTxId?, issuedAt?, ops }` |
 | `POST /engine/workspaces/:id/query` | a one-off read |
+| `POST /engine/workspaces/:id/sql` | a named SQL query: `{ name, params? }` → `{ ok, data: { rows } }`. 404 `unknown_query`; 400 `invalid_query_params`, `query_refused` (the statement writes, reads something other than a model's table, or reads a personal field) or `query_failed` (SQLite refused the run); 403 `query_forbidden` (the query's role, or a read model's read rule); 500 `query_result_mismatch` (the columns or nulls disagree with `returns`) |
 | `POST /engine/workspaces/:id/search` | `{ model, vector, limit?, filter?, where?, select? }` → `{ ok, data: { <model>: rows }, search: { scores, truncated } }`; see [Vector search](#vector-search). 503 `vector_search_unavailable` while that workspace's index is being rebuilt |
 | `POST /engine/workspaces/:id/vector/retry` | ADMIN or higher; requeue failed and dead-lettered index work for this workspace → `{ ok, data: { requeued, pending, failing, deadLettered, indexed } }` |
 | `POST /engine/workspaces/:id/vector/rebuild` | ADMIN or higher; start or join this workspace's one rebuild job → `{ ok, data: { jobId, started, active, phase, enqueued } }` |
@@ -1129,6 +1143,7 @@ usually handles:
 | `workspace_moved` | 308 | the old workspace moved; use the move-aware destination Worker |
 | `workspace_importing` | 409 | an import is in progress |
 | `audit_disabled` | 409 | `$history` on a Worker without `audit: true` |
+| `unknown_query`, `invalid_query_params`, `query_refused`, `query_failed`, `query_forbidden`, `query_result_mismatch` | 404/400/400/400/403/500 | `$query`; see the `/sql` route under [HTTP](#http) |
 | `workspace_erased` | 410 | the workspace was erased |
 | `workspace_recovering` | 503 | the workspace is being restored from R2; retry after `Retry-After` seconds. The client retries on its own for up to a minute |
 | `invalid_claim`, `claim_expired`, `invalid_signature`, `missing_token`, `wrong_workspace` | 401/403 | the claim |

@@ -15,6 +15,10 @@
   ciphertext unreadable in SQL, logs, snapshots and recovery copies. Ordinary
   plaintext and copies from before encryption follow the history retention
   and Cloudflare's 30-day recovery window.
+- **SQL is the developer's, never the request's.** Raw SQL runs only as a
+  named query declared in the schema, read-only, over models the caller may
+  read in full (or a query that filters per-row rules itself). It is a one-off
+  read of one workspace, outside live updates, and cannot read personal fields.
 - **Migrations are files you review.** Destructive changes need
   `--accept-data-loss`; renames need an explicit rename; new required fields
   need a default or must be optional. `migrate rollback` writes the migration
