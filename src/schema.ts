@@ -326,6 +326,8 @@ export type { DeleteBehaviour, ScalarKind } from "./model/fields";
 /** A vector field's value and its one codec: `f32le:v1:<base64>`. */
 export { encodeVector, decodeVector, VECTOR_TAG, VECTOR_MAX_DIMENSIONS } from "./model/vector";
 export { schema, model, role, filter, check, fileCheck, attachedTo, Model } from "./model/schema";
+export { sqlQuery } from "./model/queries";
+export type { SqlQuery, SqlQueries, SqlQueryOptions, QueryParams, QueryColumns, QueryParamValues, QueryRow } from "./model/queries";
 export type {
   ModelOptions,
   Access,

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.3.6 - 2026-11-22
+
+- Named SQL queries. `schema(models, { queries: { name: sqlQuery({ sql, params, returns, role?, bypassReadRules? }) } })` declares a SQLite statement in the schema file, and `db.$query(name, params)` runs it, typed from `params` and `returns`. Use it for what the query builder cannot express: recursive CTEs, window functions, joins with their own grouping. A request names a query and passes values, which are always bound; the client never sends SQL.
+- The engine runs a named query read-only: one `SELECT` (or `WITH … SELECT`, or `VALUES`), inside a transaction that is always rolled back. Before the first run it reads SQLite's own plan for the statement (`EXPLAIN`), so it knows every table and column read, through CTEs and subqueries, and refuses engine tables, `sqlite_schema` and personal fields. Each run checks the query's `role` and, for every model read, that its read rule is a role the caller meets; a model with a `filter()` or `check()` read rule needs `bypassReadRules: true` and filtering in the SQL with `:authSub` and `:authRole`, which the engine binds from the claim. Results come back in API form and must match `returns` exactly, with null only in optional columns.
+- `migrate check` and `deploy` prepare every named query against the tables the migrations build, with the engine's checks, so a renamed column or a refused read fails in CI rather than on a request. New route `POST /engine/workspaces/:id/sql` and error codes `unknown_query`, `invalid_query_params`, `query_refused`, `query_failed`, `query_forbidden` and `query_result_mismatch`.
+- Named queries are one-off reads of one workspace; they do not take part in live updates.
+
 ## 0.3.5 - 2026-11-21
 
 - No runtime change: this release corrects what 0.3.4 said about itself. 0.3.4 shipped with no changelog section and an empty GitHub release body, and `README.md`, which ships in the tarball, closed its vector section by saying that embedding generation stays with the application, that tapedb never calls a model, and that text-to-vector and hybrid search were not part of the release. The section above it documents all three, and `API.md` does too. The paragraph now says what a write calls and what a search calls, and names the three things that really are absent: subscriptions to search results, ranking across workspaces, and providers other than Vectorize.
