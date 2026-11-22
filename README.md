@@ -308,6 +308,66 @@ read rejects with `AcrossError`: its `errors` name the failed workspaces and
 `partial` holds the rest. A live state keeps the other workspaces' rows and
 lists the failures in `errors`. Writes and transactions stay in one workspace.
 
+### SQL queries
+
+When a read needs SQL the query builder doesn't have (a recursive CTE, a
+window function, a join with its own grouping), write it as a named query in
+the schema and call it by name:
+
+```ts
+// tapedb.schema.ts
+import { model, schema, sqlQuery, t } from "@tapedb/tapedb/schema";
+
+export default schema({ /* models */ }, {
+  queries: {
+    columnStats: sqlQuery({
+      params: { boardId: t.string() },
+      returns: { name: t.string(), open: t.number() },
+      sql: `
+        WITH open AS (SELECT column_id, count(*) AS n FROM task WHERE done = 0 GROUP BY column_id)
+        SELECT c.name, coalesce(o.n, 0) AS open
+        FROM "column" c LEFT JOIN open o ON o.column_id = c.id
+        WHERE c.board_id = :boardId
+        ORDER BY c.position`,
+    }),
+  },
+});
+
+// anywhere with a client
+const rows = await db.$query("columnStats", { boardId }); // [{ name: string, open: number }]
+```
+
+The SQL is yours and lives in the schema file, reviewed like a migration; a
+request only names a query and passes values, which are always bound, never
+spliced in. Tables and columns are the ones the migrations create: a model's
+table is its key in snake_case (or its `table` option), and columns are field
+names in snake_case, with a belongs-to stored as `<name>_id`. `params` and
+`returns` take `t.string()`, `t.number()`, `t.boolean()`, `t.date()` and
+`t.json()`, optional or not; values arrive in the API's form (booleans as
+booleans, dates as epoch milliseconds, JSON parsed), and the result must have
+exactly the declared columns, with null only in optional ones.
+
+What the engine enforces:
+
+- **One read.** One `SELECT`, `WITH … SELECT` or `VALUES` statement; every run
+  happens in a transaction that is rolled back.
+- **Models only.** Before a query's first run the engine reads SQLite's own
+  plan for it, so it knows every table and column the statement reads, through
+  CTEs and subqueries alike. Engine tables, `sqlite_schema` and personal
+  fields (stored encrypted) are refused.
+- **The caller's access.** `role` (default `member`) is the lowest role that
+  may run it. Every model the statement reads must also let the caller read
+  every row: a role rule they meet. A model with a `filter()` or `check()`
+  read rule is refused unless the query sets `bypassReadRules: true` and
+  filters those rows itself, with `:authSub` and `:authRole`, which the engine
+  binds to the caller's claim on every run.
+- **Checked before deploy.** `migrate check` and `deploy` prepare every query
+  against the tables the migrations build, with the same checks, so a renamed
+  column or a refused read fails in CI instead of on a request.
+
+A named query is a one-off read: it doesn't take part in live updates, and it
+reads one workspace.
+
 ## Writes
 
 ```ts

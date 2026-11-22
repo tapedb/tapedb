@@ -578,6 +578,25 @@ class DataClientImpl {
     }
   }
 
+  /** Runs a named SQL query from the schema (POST /sql). */
+  async sqlQuery(name: string, params?: Record<string, unknown>): Promise<Array<Record<string, unknown>>> {
+    if (!name) throw new Error("A query name is required.");
+    const problem = this.configProblem();
+    if (problem) throw new Error(problem);
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(`${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/sql`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ name, params: params ?? {} }),
+    });
+    const body = (await response.json().catch(() => null)) as { ok?: boolean; data?: { rows?: Array<Record<string, unknown>> } } | null;
+    if (!response.ok || !body?.ok || !Array.isArray(body.data?.rows)) {
+      const error = readServerError(body);
+      throw new ServerError(error?.code ?? "http_error", error?.message ?? `Query failed with HTTP ${response.status}.`, response.status);
+    }
+    return body.data.rows;
+  }
+
   async history(model: string, id: string): Promise<HistoryEntry[]> {
     if (!model || !id) throw new Error("A model and a row id are required.");
     const token = await this.requireToken();

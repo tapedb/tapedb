@@ -502,3 +502,9 @@ export function readsEveryRow(claim: RoleClaim, namespace: string): boolean {
   const decision = decisionFor(namespace, "view");
   return typeof decision === "number" && claim.role >= decision;
 }
+
+/** The role a namespace's read rule requires, or null when the rule decides row by row (filter or check). */
+export function readRoleFor(namespace: string): number | null {
+  const decision = decisionFor(namespace, "view");
+  return typeof decision === "number" ? decision : null;
+}

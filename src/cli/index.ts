@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { checkQueries } from "./query-check";
 import { prepareAuthPage } from "./auth-page";
 import { AUTH_FILE, AUTH_WORKER_FILE } from "./auth-template";
 /**
@@ -107,8 +108,11 @@ async function migrate(argv: string[]): Promise<number> {
   }
 
   if (action === "check") {
-    const result = migrateCheck(root, await loadSchema(root, flags));
-    if (result.ok) {
+    const schema = await loadSchema(root, flags);
+    const result = migrateCheck(root, schema);
+    const queries = result.ok ? await checkQueries(schema, readMigrations(root)) : [];
+    if (queries.length > 0) result.problems.push(...queries);
+    if (result.ok && queries.length === 0) {
       console.log("Migrations match the schema.");
       return 0;
     }
@@ -223,7 +227,8 @@ async function deploy(argv: string[]): Promise<number> {
 
   const schema = await loadSchema(root, flags);
   const check = migrateCheck(root, schema);
-  if (!check.ok) {
+  if (check.ok) check.problems.push(...(await checkQueries(schema, readMigrations(root))));
+  if (check.problems.length > 0) {
     console.error(`Refusing to deploy:\n${check.problems.join("\n")}`);
     return 1;
   }

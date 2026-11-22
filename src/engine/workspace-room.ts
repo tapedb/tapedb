@@ -1,3 +1,4 @@
+import { analyzeQuery, runQuery, SqlQueryError, type QueryAnalysis, type SqlQueryStorage } from "./sql-query";
 import { DurableObject } from "cloudflare:workers";
 
 import { stableStringify } from "./tx-hash";
@@ -1220,7 +1221,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }
 
     if (this.moveState?.state === "frozen" &&
-      !(request.method === "GET" || url.pathname === "/query" || url.pathname === "/files/authorize")) {
+      !(request.method === "GET" || url.pathname === "/query" || url.pathname === "/sql" || url.pathname === "/files/authorize")) {
       return apiError(409, "workspace_moving", "Writes resume after this workspace finishes moving.");
     }
 
@@ -1324,6 +1325,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
         );
       }
       return this.query(request);
+    }
+
+    // A named SQL query from the schema (sql-query.ts).
+    if (url.pathname === "/sql") {
+      if (request.method !== "POST") {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      return this.namedQuery(request);
     }
 
     if (url.pathname === "/search") {
@@ -1690,6 +1699,47 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * Worker-forwarded header; `executeQuery` requires `view` on every requested
    * and traversed namespace before touching SQL.
    */
+  /** Each named query's plan, read once per room (sql-query.ts). */
+  private readonly queryPlans = new Map<string, QueryAnalysis>();
+
+  private queryStorage(): SqlQueryStorage {
+    const storage = this.ctx.storage;
+    return {
+      query(text, params) {
+        const cursor = storage.sql.exec(text, ...params);
+        const rows = [...cursor.raw()] as SqlValue[][];
+        return { columns: cursor.columnNames, rows };
+      },
+      transactionSync: (fn) => storage.transactionSync(fn),
+    };
+  }
+
+  private async namedQuery(request: Request): Promise<Response> {
+    let body: { name?: unknown; params?: unknown };
+    try {
+      body = (await request.json()) as typeof body;
+    } catch {
+      return apiError(400, "invalid_envelope", "Request body must be valid JSON.");
+    }
+    try {
+      const claim = readTrustedRoleClaim(request, this.workspaceId);
+      const name = typeof body?.name === "string" ? body.name : "";
+      const query = Object.hasOwn(this.config.queries, name) ? this.config.queries[name] : undefined;
+      if (!query) return apiError(404, "unknown_query", `There is no query "${name}" in the schema.`);
+      const storage = this.queryStorage();
+      let analysis = this.queryPlans.get(name);
+      if (!analysis) {
+        analysis = analyzeQuery(storage, query);
+        this.queryPlans.set(name, analysis);
+      }
+      return json({ ok: true, data: { rows: runQuery(storage, analysis, query, claim, body.params) } });
+    } catch (error) {
+      if (error instanceof SqlQueryError) return apiError(error.status, error.code, error.message);
+      if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+      return apiError(400, "query_failed", errorMessage(error));
+    }
+  }
+
   private async query(request: Request): Promise<Response> {
     let envelope: unknown;
     try {

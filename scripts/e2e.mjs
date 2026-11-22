@@ -86,7 +86,7 @@ writeFileSync(join(project, "package.json"), JSON.stringify({ name: "tapedb-e2e"
 run("npm", ["install", join(project, packed), "wrangler@4", "--no-audit", "--no-fund"], { cwd: project });
 run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "init", "--no-install", "--no-start", ...(jurisdiction ? ["--jurisdiction", jurisdiction] : [])], { cwd: project });
 
-const schemaSource = `import { fileCheck, model, schema, t } from "@tapedb/tapedb/schema";
+const schemaSource = `import { fileCheck, model, schema, sqlQuery, t } from "@tapedb/tapedb/schema";
 
 export default schema({
   person: model({ name: t.string().personal({ subject: "self" }), data: t.json().personal({ subject: "self" }).optional() }),
@@ -109,6 +109,21 @@ export default schema({
   files: {
     read: fileCheck(({ file }) => !file.path.startsWith("sealed/")),
     write: fileCheck(({ file }) => !file.path.startsWith("sealed/")),
+  },
+  queries: {
+    columnStats: sqlQuery({
+      params: { boardId: t.string() },
+      returns: { name: t.string(), open: t.number() },
+      sql: \`WITH open AS (SELECT column_id, count(*) AS n FROM task WHERE done = 0 GROUP BY column_id)
+            SELECT c.name, coalesce(o.n, 0) AS open FROM "column" c LEFT JOIN open o ON o.column_id = c.id
+            WHERE c.board_id = :boardId ORDER BY c.position\`,
+    }),
+    countdown: sqlQuery({
+      params: { upto: t.number() },
+      returns: { i: t.number() },
+      sql: \`WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < :upto) SELECT i FROM n\`,
+    }),
+    people: sqlQuery({ returns: { n: t.number() }, sql: \`SELECT count(id) AS n FROM person\` }),
   },
 });
 `;
