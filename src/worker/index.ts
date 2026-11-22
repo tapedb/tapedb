@@ -10,6 +10,9 @@
  *   export default tapedb.worker;
  */
 
+import { resolveQueries } from "../engine/sql-query";
+import { prepareSql } from "../model/queries";
+import { role, type RoleName } from "../model/schema";
 import { capturedEmails } from "../email/dev";
 import { serveAuthPage, type TapeDBAuthPage } from "../auth/page";
 import { AuthRoom } from "../auth/room";
@@ -395,6 +398,11 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
     realtime: resolveRealtime(options.realtime, options.topics),
     webhooks: resolveWebhooks(options.webhooks),
     vectorize: resolveVectorize(options.vectorize),
+    queries: resolveQueries(
+      (schema as { queries?: Parameters<typeof resolveQueries>[0] }).queries,
+      (name) => role(name as RoleName).level,
+      prepareSql
+    ),
   });
   // Refused here, when the Worker is defined, rather than on the first write.
   // Each room resolves its own copy from these options; nothing is shared.
@@ -530,7 +538,7 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
           if (env.TAPEDB_MOVE_FROM !== undefined && (await readMove(env.DATA, workspaceId))?.state !== "ready") {
             env = sourceEnvironment(env);
             const state = await readMove(env.DATA, workspaceId);
-            const read = request.method === "GET" || request.method === "HEAD" || roomPath === "/query";
+            const read = request.method === "GET" || request.method === "HEAD" || roomPath === "/query" || roomPath === "/sql";
             if (state?.state === "frozen" && !read) return apiError(409, "workspace_moving", "Writes resume after the move.");
           }
 

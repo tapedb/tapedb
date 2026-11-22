@@ -8,6 +8,7 @@
  * one log entry. Both are lazy, so building one costs nothing.
  */
 
+import type { QueryColumns, QueryParams, QueryParamValues, QueryRow, SqlQueries, SqlQuery } from "./queries";
 import {
   createClientParts,
   type ClientDeps,
@@ -373,6 +374,8 @@ export type ExportRecord<M extends Models = Models> =
   | { type: "error"; code: string; message: string };
 
 export interface ClientExtras {
+  /** Runs a named SQL query (typed on `Client`). */
+  $query(name: string, params?: Record<string, unknown>): Promise<Array<Record<string, unknown>>>;
   /** Sends several writes as one log entry: one sequence, all or nothing. */
   $transaction(writes: Write[]): Promise<WriteResult[]>;
   $files: FilesClient;
@@ -422,9 +425,25 @@ export interface AcrossOptions {
   getToken?: (workspaceId: string) => Promise<string>;
 }
 
-export type Client<M extends Models> = {
+/** What `$query(name, ...)` takes after the name: params, optional when every one is. */
+export type QueryArgs<Q> = Q extends SqlQuery<infer P, QueryColumns>
+  ? {} extends QueryParamValues<P>
+    ? [params?: QueryParamValues<P>]
+    : [params: QueryParamValues<P>]
+  : never;
+
+/** The rows `$query(name)` returns. */
+export type QueryRows<Q> = Q extends SqlQuery<QueryParams, infer R> ? Array<QueryRow<R>> : never;
+
+export type Client<M extends Models, Q extends SqlQueries = {}> = {
   [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>;
-} & Omit<ClientExtras, "$export" | "$history"> & {
+} & Omit<ClientExtras, "$export" | "$history" | "$query"> & {
+  /**
+   * Runs a named SQL query from the schema with these params, as the
+   * signed-in caller. The engine runs it read-only and checks its role and
+   * the read rules of every model it reads.
+   */
+  $query<N extends keyof Q & string>(name: N, ...args: QueryArgs<Q[N]>): Promise<QueryRows<Q[N]>>;
   /**
    * This socket's session id, assigned by the server on `session:ready` and
    * the same id a peer entry carries. Use it to tell which peer is you when
@@ -443,10 +462,10 @@ export type Client<M extends Models> = {
   $across(workspaceIds: string[], options?: AcrossOptions): Across<M>;
 };
 
-export interface ClientConfig<M extends Models> {
+export interface ClientConfig<M extends Models, Q extends SqlQueries = {}> {
   /** Claim subject; required for authenticated browser persistence. Recreate the client on account changes. */
   userId?: string;
-  schema: Schema<M>;
+  schema: Schema<M, Q>;
   /** The Worker's origin, e.g. https://tapedb-app.<account-subdomain>.workers.dev or http://localhost:8787. */
   url: string;
   /** Workspace id (a UUID): which database this client talks to. */
@@ -648,10 +667,10 @@ function modelClient(runtime: Runtime, model: ModelInfo): ModelClient<Models, Fi
 
 
 /** Creates a client for one workspace. */
-export function createClient<M extends Models>(
-  config: ClientConfig<M>,
+export function createClient<M extends Models, Q extends SqlQueries = {}>(
+  config: ClientConfig<M, Q>,
   deps: ClientDeps = {}
-): Client<M> {
+): Client<M, Q> {
   // One queue for this client and every `$across` workspace client: resolve a
   // factory here, so it is called once rather than once per workspace.
   const injected = typeof config.outbox === "function" ? config.outbox() : config.outbox;
@@ -717,6 +736,7 @@ export function createClient<M extends Models>(
     },
     $erasePerson: (subject) => impl.erasePerson(subject),
     $history: ({ model, id }) => impl.history(model, id),
+    $query: (name: string, params?: Record<string, unknown>) => impl.sqlQuery(name, params),
     $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),
     $close: () => {
@@ -780,5 +800,5 @@ export function createClient<M extends Models>(
   for (const [key, info] of Object.entries(config.schema.graph)) {
     client[key] = modelClient(runtime, info);
   }
-  return client as Client<M>;
+  return client as unknown as Client<M, Q>;
 }

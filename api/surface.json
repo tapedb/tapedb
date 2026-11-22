@@ -129,24 +129,24 @@
       },
       "Client": {
         "kind": "type",
-        "shape": "<M extends Models> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\" | \"$history\"> & { readonly clientId: string | undefined; $export(): AsyncIterable<ExportRecord<M>>; $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>; $across(workspaceIds: string[], options?: AcrossOptions): Across<M>; }"
+        "shape": "<M extends Models, Q extends SqlQueries = {}> { [K in keyof M & string]: ModelClient<M, FieldsOf<M[K]>>; } & Omit<ClientExtras, \"$export\" | \"$history\" | \"$query\"> & { $query<N extends keyof Q & string>(name: N, ...args: QueryArgs<Q[N]>): Promise<QueryRows<Q[N]>>; readonly clientId: string | undefined; $export(): AsyncIterable<ExportRecord<M>>; $history(target: { model: keyof M & string; id: string }): Promise<HistoryEntry[]>; $across(workspaceIds: string[], options?: AcrossOptions): Across<M>; }"
       },
       "ClientConfig": {
         "kind": "interface",
         "shape": {
           "userId": "string | undefined",
-          "schema": "Schema<M>",
+          "schema": "Schema<M, Q>",
           "url": "string",
           "workspace": "string",
           "getToken": "(() => Promise<string>) | undefined",
           "onWriteRejected": "((rejection: WriteRejection) => void) | undefined",
           "outbox": "Outbox | OutboxFactory | undefined",
-          "(declaration)": "<M extends Models>"
+          "(declaration)": "<M extends Models, Q extends SqlQueries = {}>"
         }
       },
       "createClient": {
         "kind": "function",
-        "shape": "<M extends Models>(config: ClientConfig<M>, deps?: ClientDeps) => Client<M>"
+        "shape": "<M extends Models, Q extends SqlQueries = {}>(config: ClientConfig<M, Q>, deps?: ClientDeps) => Client<M, Q>"
       },
       "CreateData": {
         "kind": "type",
@@ -454,19 +454,20 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<WithUsers<M>>"
+        "shape": "<M extends Models, Q extends SqlQueries = {}>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>, Q>) => Schema<WithUsers<M>, Q>"
       },
       "Schema": {
         "kind": "interface",
         "shape": {
           "models": "M",
           "graph": "Record<string, ModelInfo>",
+          "queries": "Q",
           "registry": "import(\"src/engine/registry\").RegistryDefinition",
           "permissions": "import(\"src/engine/tx-permissions\").PermissionConfig",
           "migrations": "import(\"src/engine/migrations-bundle\").BundledWorkspaceMigration[]",
           "clientSchema": "import(\"src/client/types\").SchemaDefinition",
           "files": "FileRules | undefined",
-          "(declaration)": "<M extends Models = Models> extends TapeDBSchema"
+          "(declaration)": "<M extends Models = Models, Q extends SqlQueries = {}> extends TapeDBSchema"
         }
       },
       "scopedOutboxName": {
@@ -498,6 +499,10 @@
           "reranked": "boolean",
           "(declaration)": "<R>"
         }
+      },
+      "sqlQuery": {
+        "kind": "function",
+        "shape": "<P extends QueryParams = {}, R extends QueryColumns = QueryColumns>(options: SqlQueryOptions<P, R>) => SqlQuery<P, R>"
       },
       "StorageObject": {
         "kind": "interface",
@@ -717,6 +722,22 @@
         "kind": "type",
         "shape": "<F> | Partial<Record<FilterKeys<F> | SystemKey, \"asc\" | \"desc\">> | Partial<Record<FilterKeys<F> | SystemKey, \"asc\" | \"desc\">>[]"
       },
+      "QueryColumns": {
+        "kind": "type",
+        "shape": "Record<string, QueryField>"
+      },
+      "QueryParams": {
+        "kind": "type",
+        "shape": "Record<string, QueryField>"
+      },
+      "QueryParamValues": {
+        "kind": "type",
+        "shape": "<P extends QueryParams> { [K in keyof P as P[K] extends Field<QueryKind, true, boolean> ? never : K]: P[K] extends Field<infer Kind, boolean, boolean> ? KindInput[Kind & QueryKind] : never; } & { [K in keyof P as P[K] extends Field<QueryKind, true, boolean> ? K : never]?: P[K] extends Field<infer Kind, boolean, boolean> ? KindInput[Kind & QueryKind] | null : never; }"
+      },
+      "QueryRow": {
+        "kind": "type",
+        "shape": "<R extends QueryColumns> { [K in keyof R]: R[K] extends Field<infer Kind, infer Optional, boolean> ? KindOutput[Kind & QueryKind] | (Optional extends true ? null : never) : never; }"
+      },
       "role": {
         "kind": "function",
         "shape": "(name: RoleName) => RoleDecision"
@@ -731,19 +752,51 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>>) => Schema<WithUsers<M>>"
+        "shape": "<M extends Models, Q extends SqlQueries = {}>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>, Q>) => Schema<WithUsers<M>, Q>"
       },
       "Schema": {
         "kind": "interface",
         "shape": {
           "models": "M",
           "graph": "Record<string, ModelInfo>",
+          "queries": "Q",
           "registry": "import(\"src/engine/registry\").RegistryDefinition",
           "permissions": "import(\"src/engine/tx-permissions\").PermissionConfig",
           "migrations": "import(\"src/engine/migrations-bundle\").BundledWorkspaceMigration[]",
           "clientSchema": "import(\"src/client/types\").SchemaDefinition",
           "files": "FileRules | undefined",
-          "(declaration)": "<M extends Models = Models> extends TapeDBSchema"
+          "(declaration)": "<M extends Models = Models, Q extends SqlQueries = {}> extends TapeDBSchema"
+        }
+      },
+      "SqlQueries": {
+        "kind": "type",
+        "shape": "Record<string, SqlQuery>"
+      },
+      "sqlQuery": {
+        "kind": "function",
+        "shape": "<P extends QueryParams = {}, R extends QueryColumns = QueryColumns>(options: SqlQueryOptions<P, R>) => SqlQuery<P, R>"
+      },
+      "SqlQuery": {
+        "kind": "interface",
+        "shape": {
+          "tag": "\"sqlQuery\"",
+          "sql": "string",
+          "params": "P",
+          "returns": "R",
+          "role": "RoleName",
+          "bypassReadRules": "boolean",
+          "(declaration)": "<P extends QueryParams = QueryParams, R extends QueryColumns = QueryColumns>"
+        }
+      },
+      "SqlQueryOptions": {
+        "kind": "interface",
+        "shape": {
+          "sql": "string",
+          "params": "P | undefined",
+          "returns": "R",
+          "role": "RoleName | undefined",
+          "bypassReadRules": "boolean | undefined",
+          "(declaration)": "<P extends QueryParams, R extends QueryColumns>"
         }
       },
       "t": {
@@ -1332,7 +1385,7 @@
       "RunSeederOptions": {
         "kind": "interface",
         "shape": {
-          "schema": "Schema<M>",
+          "schema": "Schema<M, {}>",
           "seeder": "SeederDefinition<M> | Seeder<M>",
           "transport": "SeedTransport",
           "seed": "string | undefined",
@@ -1598,6 +1651,7 @@
       "ClientExtras (src/model/client.ts)": {
         "kind": "interface",
         "shape": {
+          "$query": "(name: string, params?: Record<string, unknown>) => Promise<Array<Record<string, unknown>>>",
           "$transaction": "(writes: Write[]) => Promise<WriteResult[]>",
           "$files": "FilesClient",
           "$presence": "(room: string) => PresenceRoom",
@@ -2008,6 +2062,10 @@
         "kind": "type",
         "shape": "(context: PermissionContext) => boolean"
       },
+      "QueryArgs (src/model/client.ts)": {
+        "kind": "type",
+        "shape": "<Q> Q extends SqlQuery<infer P, QueryColumns> ? {} extends QueryParamValues<P> ? [params?: QueryParamValues<P>] : [params: QueryParamValues<P>] : never"
+      },
       "QueryComparison (src/engine/query-types.ts)": {
         "kind": "interface",
         "shape": {
@@ -2023,6 +2081,14 @@
           "$ilike": "string | undefined"
         }
       },
+      "QueryField (src/model/queries.ts)": {
+        "kind": "type",
+        "shape": "Field<QueryKind, boolean, boolean>"
+      },
+      "QueryKind (src/model/queries.ts)": {
+        "kind": "type",
+        "shape": "Exclude<ScalarKind, \"vector\">"
+      },
       "QueryRelationFilter (src/engine/query-types.ts)": {
         "kind": "interface",
         "shape": {
@@ -2030,6 +2096,10 @@
           "mode": "RelationMode",
           "where": "QueryWhere"
         }
+      },
+      "QueryRows (src/model/client.ts)": {
+        "kind": "type",
+        "shape": "<Q> Q extends SqlQuery<QueryParams, infer R> ? Array<QueryRow<R>> : never"
       },
       "QueryScalar (src/engine/query-types.ts)": {
         "kind": "type",
@@ -2139,7 +2209,8 @@
         "kind": "interface",
         "shape": {
           "files": "FileAccess<K> | undefined",
-          "(declaration)": "<K extends string = string>"
+          "queries": "Q | undefined",
+          "(declaration)": "<K extends string = string, Q extends SqlQueries = SqlQueries>"
         }
       },
       "Select (src/model/schema.ts)": {
@@ -2434,6 +2505,7 @@
     "invalid_path",
     "invalid_presence",
     "invalid_query",
+    "invalid_query_params",
     "invalid_role",
     "invalid_signature",
     "invalid_size",
@@ -2466,6 +2538,10 @@
     "presence_rooms_exceeded",
     "presence_state_too_large",
     "presence_target_unknown",
+    "query_failed",
+    "query_forbidden",
+    "query_refused",
+    "query_result_mismatch",
     "rate_limit_unavailable",
     "rate_limited",
     "retry_expired",
@@ -2479,6 +2555,7 @@
     "unknown_attribute",
     "unknown_link",
     "unknown_namespace",
+    "unknown_query",
     "unsupported_message_type",
     "upgrade_required",
     "upload_too_large",

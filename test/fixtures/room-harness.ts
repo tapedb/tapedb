@@ -8,12 +8,16 @@ import { Database } from "bun:sqlite";
 export function createSqlStorage(db: Database) {
   return {
     exec<T extends Record<string, unknown>>(query: string, ...params: unknown[]) {
-      const trimmed = query.trim();
+      // Leading comments do not make a read a write.
+      const trimmed = query.trim().replace(/^(?:--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)+/, "");
       const lower = trimmed.toLowerCase();
       const isRead = /^(select|with|explain)\b/i.test(trimmed) || (lower.startsWith("pragma") && !lower.includes("="));
       if (isRead) {
-        const rows = db.query(query).all(...(params as never[])) as T[];
+        const statement = db.query(query);
+        const rows = statement.all(...(params as never[])) as T[];
         return {
+          columnNames: statement.columnNames,
+          raw: () => (statement.values(...(params as never[])) as unknown[][])[Symbol.iterator](),
           toArray: () => rows,
           one: () => {
             if (rows.length === 0) throw new Error("Query returned no rows.");

@@ -7,6 +7,7 @@
  * friends into engine queries and ops.
  */
 
+import { checkSqlQuery, type SqlQueries, type SqlQuery } from "./queries";
 import type { FileRules } from "../engine/file-access";
 import { WORKSPACE_ROLE_LEVELS, type WorkspaceRole } from "../claims";
 import type { AttributeDefinition, DeleteRule, LinkDefinition } from "../engine/registry";
@@ -162,8 +163,10 @@ export interface FileAccess<K extends string = string> {
   delete?: FileRuleDecision<K>;
 }
 
-export interface SchemaOptions<K extends string = string> {
+export interface SchemaOptions<K extends string = string, Q extends SqlQueries = SqlQueries> {
   files?: FileAccess<K>;
+  /** Named SQL queries, run from the client with `db.$query(name, params)`. */
+  queries?: Q;
 }
 
 export interface Access<F extends Fields = Fields> {
@@ -467,9 +470,11 @@ export interface ModelInfo {
   filterable: Set<string>;
 }
 
-export interface Schema<M extends Models = Models> extends TapeDBSchema {
+export interface Schema<M extends Models = Models, Q extends SqlQueries = {}> extends TapeDBSchema {
   readonly models: M;
   readonly graph: Record<string, ModelInfo>;
+  /** The named SQL queries, as declared. */
+  readonly queries: Q;
 }
 
 const DELETE_RULES: Record<string, DeleteRule> = {
@@ -528,10 +533,10 @@ type WithUsers<M extends Models> = "$users" extends ModelTargets<M> ? M & {"$use
  * Throws on anything the engine would only discover later: a relation to a
  * model that does not exist, an ambiguous inverse, a reserved name.
  */
-export function schema<M extends Models>(
+export function schema<M extends Models, Q extends SqlQueries = {}>(
   models: M & ValidSchema<NoInfer<M>>,
-  options: SchemaOptions<Extract<keyof M, string>> = {}
-): Schema<WithUsers<M>> {
+  options: SchemaOptions<Extract<keyof M, string>, Q> = {}
+): Schema<WithUsers<M>, Q> {
   if(Object.hasOwn(models,"$users"))throw new Error("$users is managed by built-in auth.");
   const usesUsers=Object.values(models).some(definition=>Object.values(definition.fields).some(member=>member instanceof BelongsTo && member.target==='$users'));
   const allModels:Models=usesUsers?{...models,"$users":usersModel()}:models;
@@ -692,8 +697,14 @@ export function schema<M extends Models>(
     }
   }
 
+  const queries: Record<string, SqlQuery> = {};
+  for (const [name, query] of Object.entries(options.queries ?? {})) {
+    queries[name] = checkSqlQuery(name, query);
+    role(queries[name].role);
+  }
+
   const compiled = defineSchema({ entities, links, permissions, tables });
-  return { ...compiled, ...(files && Object.keys(files).length > 0 ? { files: files as unknown as FileRules } : {}), models:allModels, graph } as Schema<WithUsers<M>>;
+  return { ...compiled, ...(files && Object.keys(files).length > 0 ? { files: files as unknown as FileRules } : {}), models:allModels, graph, queries } as unknown as Schema<WithUsers<M>, Q>;
 }
 
 /** A default in the form the column stores it. */
