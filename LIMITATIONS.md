@@ -35,6 +35,14 @@
   — are read from SQLite and the socket list at request time, so those are
   exact and survive a restart. There is no aggregation across workspaces and no
   retention: a dashboard that wants history or totals polls and keeps its own.
+- **Webhook delivery is at-least-once, and a retry cannot change that.** A
+  delivery that timed out may have arrived; retrying it may deliver it twice.
+  Consumers key on `X-Tapedb-Event-Id`, which a retry preserves. Reviving a
+  dead event restores it as its endpoint's head, so that endpoint's newer
+  events wait behind it until it lands or dies again. The outbox is local
+  Durable Object state: it survives eviction, but a workspace whose storage is
+  destroyed loses deliveries that had not gone out, and `GET /webhooks` reports
+  only what the outbox still holds.
 
 ## Release gates
 

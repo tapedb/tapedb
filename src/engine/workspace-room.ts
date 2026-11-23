@@ -52,6 +52,14 @@ import {
   touchedNamespacesFromEnvelope,
 } from "./subscriptions";
 import { WorkspaceMetrics, type MetricsSnapshot } from "./metrics";
+import {
+  listWebhookDeliveries,
+  retryWebhooks,
+  webhookReport,
+  WEBHOOK_LIST_LIMIT,
+  WEBHOOK_RETRY_LIMIT,
+  type RetryRequest,
+} from "./webhook-ops";
 import { storageHandler } from "./storage-routes";
 import { exportStream } from "./export";
 import { importWorkspace, assertEmpty } from "./import-workspace";
@@ -255,6 +263,59 @@ function vectorSearchBusy(): Response {
       headers: { "content-type": "application/json; charset=utf-8", "retry-after": "30" },
     }
   );
+}
+
+/**
+ * Reads a retry request, refusing anything it cannot act on rather than
+ * guessing. Either exact ids or a filter, never both: a caller who sends both
+ * means one of them, and acting on the wrong one re-sends events they did not
+ * name.
+ */
+function parseRetryRequest(body: unknown): RetryRequest | string {
+  if (body === null || typeof body !== "object" || Array.isArray(body)) {
+    return "The body is an object with ids, or a status filter.";
+  }
+  const value = body as Record<string, unknown>;
+  const hasIds = "ids" in value;
+  const hasFilter = "status" in value || "endpoint" in value;
+  if (hasIds && hasFilter) return "Send ids, or a status and endpoint filter, not both.";
+
+  const request: RetryRequest = {};
+  if ("limit" in value) {
+    const limit = value.limit;
+    if (typeof limit !== "number" || !Number.isInteger(limit) || limit < 1 || limit > WEBHOOK_RETRY_LIMIT) {
+      return `limit is from 1 to ${WEBHOOK_RETRY_LIMIT}.`;
+    }
+    request.limit = limit;
+  }
+
+  if (hasIds) {
+    const ids = value.ids;
+    if (!Array.isArray(ids) || ids.length === 0 || ids.length > WEBHOOK_RETRY_LIMIT) {
+      return `ids is from 1 to ${WEBHOOK_RETRY_LIMIT} delivery ids.`;
+    }
+    if (!ids.every((id) => typeof id === "string" && id.length > 0)) return "Every id is a non-empty string.";
+    request.ids = ids as string[];
+    return request;
+  }
+
+  if ("status" in value) {
+    const status = value.status;
+    // "delivered" is missing on purpose: a delivered event is never re-sent.
+    if (status !== "pending" && status !== "dead") return 'status is "pending" or "dead".';
+    request.status = status;
+  }
+  if ("endpoint" in value) {
+    const endpoint = value.endpoint;
+    if (typeof endpoint !== "number" || !Number.isInteger(endpoint) || endpoint < 0) {
+      return "endpoint is an index into the deployment's webhooks.";
+    }
+    request.endpoint = endpoint;
+  }
+  if (request.status === undefined && request.endpoint === undefined) {
+    return "Name the deliveries: ids, or a status and endpoint filter.";
+  }
+  return request;
 }
 
 export class WorkspaceRoom extends DurableObject<Env> {
@@ -1433,6 +1494,72 @@ export class WorkspaceRoom extends DurableObject<Env> {
       }
       const document = this.metricsDocument();
       return json({ ok: true, health: this.health(document), ...document });
+    }
+
+    // The webhook outbox: why a delivery failed, and getting it moving again
+    // (webhook-ops.ts). Admins and owners only — a retry sends data to a
+    // third party, and the report says which endpoints a deployment talks to.
+    if (url.pathname === "/webhooks" || url.pathname === "/webhooks/deliveries" || url.pathname === "/webhooks/retry") {
+      const write = url.pathname === "/webhooks/retry";
+      if (request.method !== (write ? "POST" : "GET")) {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+        throw error;
+      }
+      if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
+        return apiError(403, "insufficient_role", "Inspecting or retrying webhook deliveries needs an admin or owner.");
+      }
+      if (!webhooksConfigured(this.config.webhooks)) {
+        return apiError(400, "webhooks_not_configured", "This deployment does not configure webhooks.");
+      }
+      const sql = durableObjectSqlExecutor(this.ctx.storage);
+
+      if (url.pathname === "/webhooks") {
+        return json({ ok: true, data: webhookReport(sql, this.config.webhooks, Date.now()) });
+      }
+
+      if (url.pathname === "/webhooks/deliveries") {
+        const status = url.searchParams.get("status");
+        const endpoint = url.searchParams.get("endpoint");
+        const before = url.searchParams.get("before");
+        const limit = url.searchParams.get("limit");
+        if (status !== null && status !== "pending" && status !== "delivered" && status !== "dead") {
+          return apiError(400, "invalid_webhook_query", 'status is "pending", "delivered" or "dead".');
+        }
+        if (endpoint !== null && !/^\d+$/.test(endpoint)) {
+          return apiError(400, "invalid_webhook_query", "endpoint is an index into the deployment's webhooks.");
+        }
+        if (before !== null && !/^\d+$/.test(before)) {
+          return apiError(400, "invalid_webhook_query", "before is a transaction sequence number.");
+        }
+        if (limit !== null && (!/^\d+$/.test(limit) || Number(limit) < 1 || Number(limit) > WEBHOOK_LIST_LIMIT)) {
+          return apiError(400, "invalid_webhook_query", `limit is from 1 to ${WEBHOOK_LIST_LIMIT}.`);
+        }
+        return json({
+          ok: true,
+          data: listWebhookDeliveries(sql, {
+            ...(status === null ? {} : { status }),
+            ...(endpoint === null ? {} : { endpoint: Number(endpoint) }),
+            ...(before === null ? {} : { before: Number(before) }),
+            ...(limit === null ? {} : { limit: Number(limit) }),
+          }),
+        });
+      }
+
+      let body: unknown;
+      try {
+        body = await request.json();
+      } catch {
+        return apiError(400, "invalid_webhook_retry", "The body must be JSON.");
+      }
+      const parsed = parseRetryRequest(body);
+      if (typeof parsed === "string") return apiError(400, "invalid_webhook_retry", parsed);
+      return json({ ok: true, data: retryWebhooks(sql, parsed, Date.now()) });
     }
 
     // The transaction log, newest first (log-read.ts). Admins and owners only:

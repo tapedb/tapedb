@@ -561,6 +561,68 @@
         "kind": "value",
         "shape": "\"f32le:v1:\""
       },
+      "WebhookDelivery": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "eventId": "string",
+          "endpoint": "number",
+          "url": "string",
+          "seq": "number",
+          "model": "string",
+          "op": "string",
+          "status": "\"pending\" | \"delivered\" | \"dead\"",
+          "attempts": "number",
+          "lastStatus": "number | null",
+          "lastError": "string | null",
+          "createdAt": "number",
+          "nextAttemptAt": "number",
+          "deliveredAt": "number | null",
+          "revivedAt": "number | null"
+        }
+      },
+      "WebhookEndpointHealth": {
+        "kind": "interface",
+        "shape": {
+          "endpoint": "number",
+          "url": "string",
+          "events": "string[]",
+          "models": "string[] | null",
+          "retired": "boolean",
+          "pending": "number",
+          "delivered": "number",
+          "dead": "number",
+          "head": "WebhookDelivery | null",
+          "backingOff": "boolean",
+          "oldestPendingAgeMs": "number | null"
+        }
+      },
+      "WebhookReport": {
+        "kind": "interface",
+        "shape": {
+          "endpoints": "WebhookEndpointHealth[]",
+          "totals": "{ pending: number; delivered: number; dead: number; }",
+          "policy": "{ firstRetryMs: number; maxRetryMs: number; maxAgeMs: number; maxAttempts: number; attemptsPerPass: number; retryLimit: number; }"
+        }
+      },
+      "WebhookRetryOutcome": {
+        "kind": "interface",
+        "shape": {
+          "requeued": "number",
+          "ids": "string[]",
+          "skipped": "{ id: string; reason: \"not_found\" | \"already_delivered\"; }[]",
+          "more": "boolean"
+        }
+      },
+      "WebhookRetryRequest": {
+        "kind": "interface",
+        "shape": {
+          "ids": "string[] | undefined",
+          "status": "\"pending\" | \"dead\" | undefined",
+          "endpoint": "number | undefined",
+          "limit": "number | undefined"
+        }
+      },
       "Where": {
         "kind": "type",
         "shape": "<F extends Fields = Fields, M extends Models = Models> Scalars<F> & SystemFilters & { [K in RelationKeys<F>]?: F[K] extends HasMany ? ManyFilter<Where<TargetFieldsOf<F[K], M>, M>> : Where<TargetFieldsOf<F[K], M>, M> | null; } & { AND?: Where<F, M> | Where<F, M>[]; OR?: Where<F, M>[]; NOT?: Where<F, M> | Where<F, M>[]; }"
@@ -1670,6 +1732,9 @@
           "$erasePerson": "(subject: string) => Promise<void>",
           "$history": "(target: { model: keyof Models & string; id: string; }) => Promise<HistoryEntry[]>",
           "$metrics": "() => Promise<WorkspaceMetricsReport>",
+          "$webhooks": "() => Promise<WebhookReport>",
+          "$webhookDeliveries": "(query?: { status?: \"pending\" | \"delivered\" | \"dead\"; endpoint?: number; before?: number; limit?: number; }) => Promise<WebhookDelivery[]>",
+          "$webhookRetry": "(request: WebhookRetryRequest) => Promise<WebhookRetryOutcome>",
           "$flush": "() => Promise<void>",
           "$close": "() => void"
         }
@@ -2527,6 +2592,8 @@
     "invalid_upload",
     "invalid_value",
     "invalid_vector_query",
+    "invalid_webhook_query",
+    "invalid_webhook_retry",
     "invalid_workspace_id",
     "json_required",
     "jurisdiction_mismatch",
@@ -2573,6 +2640,7 @@
     "user_not_found",
     "vector_search_disabled",
     "vector_search_unavailable",
+    "webhooks_not_configured",
     "workspace_erased",
     "workspace_importing",
     "workspace_moved",
