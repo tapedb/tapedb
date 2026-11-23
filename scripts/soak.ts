@@ -28,6 +28,7 @@ import {
 } from "../src/engine/durability/snapshot";
 import type { SqlValue } from "../src/engine/durability/sql";
 import { recordFileEntry, forgetFileEntry } from "../src/engine/file-index";
+import { defaultDeploymentConfig } from "../src/engine/config";
 import { configureMigrations } from "../src/engine/migrations-bundle";
 import { configureRegistry, namespaceTables } from "../src/engine/registry";
 import { configurePermissions } from "../src/engine/tx-permissions";
@@ -74,6 +75,13 @@ const app = schema({
     column: t.belongsTo("column").optional(),
   }),
 });
+
+/**
+ * The deployment this soak represents. Required by the write paths since the
+ * engine stopped reading a module global for it: without it the log entry
+ * cannot tell whether to record a writer.
+ */
+const config = defaultDeploymentConfig();
 
 configureRegistry(app.registry);
 configureMigrations(app.migrations);
@@ -193,12 +201,12 @@ function writeOnce(store: Store): { clientTxId: string; ops: Record<string, unkn
     // Files go through their own logged path, not a transaction.
     const path = `files/${nextId("f")}.bin`;
     paths.push(path);
-    recordFileEntry(store.tx, { path, key: `k/${path}`, size: Math.floor(random() * 5000), contentType: "application/octet-stream" });
+    recordFileEntry(store.tx, { path, key: `k/${path}`, size: Math.floor(random() * 5000), contentType: "application/octet-stream" }, config);
     return null;
   } else if (paths.length > 0) {
     const path = pick(paths);
     paths.splice(paths.indexOf(path), 1);
-    forgetFileEntry(store.tx, path);
+    forgetFileEntry(store.tx, path, config);
     return null;
   } else {
     const id = pick(boards);
@@ -209,7 +217,7 @@ function writeOnce(store: Store): { clientTxId: string; ops: Record<string, unkn
   // legitimate refusal, not a bug, so a failed transaction is just skipped.
   const clientTxId = `soak-${counter}`;
   try {
-    runTransaction(store.tx, TEST_WORKSPACE, claim, { txId: `tx-${counter}`, clientTxId, ops });
+    runTransaction(store.tx, TEST_WORKSPACE, claim, { txId: `tx-${counter}`, clientTxId, ops }, config);
     return { clientTxId, ops };
   } catch {
     return null;
@@ -246,7 +254,10 @@ function rows(db: Database): number {
 
 // ---- the drill --------------------------------------------------------------
 
-const bucket = new FakeR2Bucket();
+// Cast once here rather than at each call: the fake implements what the
+// flusher, the snapshotter and recovery use, and casting per call made three
+// of the four sites disagree about whether it needed one.
+const bucket = new FakeR2Bucket() as unknown as R2Bucket & FakeR2Bucket;
 let store = open();
 let lastWrite: { clientTxId: string; ops: Record<string, unknown>[] } | null = null;
 const timings: Array<Record<string, number>> = [];
@@ -280,7 +291,7 @@ for (let generation = 1; generation <= GENERATIONS; generation += 1) {
 
   // Wipe: a Durable Object that lost its SQLite entirely.
   const target = open();
-  const recovery = await recoverWorkspace(bucket as unknown as R2Bucket, target.recovery, TEST_WORKSPACE, {});
+  const recovery = await recoverWorkspace(bucket, target.recovery, TEST_WORKSPACE, {});
   const recoveredAt = performance.now();
 
   assert(recovery.recovered === true, `generation ${generation}: recovery refused (${JSON.stringify(recovery)})`);
@@ -300,13 +311,13 @@ for (let generation = 1; generation <= GENERATIONS; generation += 1) {
       txId: "retry",
       clientTxId: lastWrite.clientTxId,
       ops: lastWrite.ops,
-    });
+    }, config);
     assert(retry.applied === 0, `generation ${generation}: a retry inside the horizon was applied again`);
   }
 
   // Recovering a second time over the restored database must change nothing.
   const forced = dump(target.db);
-  await recoverWorkspace(bucket as unknown as R2Bucket, target.recovery, TEST_WORKSPACE, { force: true });
+  await recoverWorkspace(bucket, target.recovery, TEST_WORKSPACE, { force: true });
   assert(
     JSON.stringify(dump(target.db)) === JSON.stringify(forced),
     `generation ${generation}: a forced second recovery changed the database`

@@ -1,0 +1,15 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "rootDir": "..",
+    "types": [
+      "@cloudflare/workers-types",
+      "node",
+      "@types/bun"
+    ]
+  },
+  "include": [
+    "./*.ts"
+  ]
+}
