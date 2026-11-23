@@ -568,6 +568,14 @@
         "kind": "value",
         "shape": "{ readonly GUEST: 0; readonly USER: 1; readonly MEMBER: 2; readonly EDITOR: 3; readonly MODERATOR: 4; readonly ADMIN: 5; readonly OWNER: 6; readonly FOUNDER: 7; readonly DEVELOPER: 8; }"
       },
+      "WorkspaceMetricsReport": {
+        "kind": "interface",
+        "shape": {
+          "metrics": "{ since: number; uptimeMs: number; restartsCounters: true; counters: Record<string, number>; latency: { estimated: true; bucketsMs: number[]; timers: Record<string, { count: number; sumMs: number; maxMs: number; meanMs: number | null; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; buckets: number[]; }>; }; }",
+          "gauges": "Record<string, unknown>",
+          "measurement": "Record<string, string>"
+        }
+      },
       "WorkspaceRole": {
         "kind": "type",
         "shape": "(typeof WORKSPACE_ROLE_LEVELS)[keyof typeof WORKSPACE_ROLE_LEVELS]"
@@ -1659,6 +1667,7 @@
           "$export": "() => AsyncIterable<ExportRecord<Models>>",
           "$erasePerson": "(subject: string) => Promise<void>",
           "$history": "(target: { model: keyof Models & string; id: string; }) => Promise<HistoryEntry[]>",
+          "$metrics": "() => Promise<WorkspaceMetricsReport>",
           "$flush": "() => Promise<void>",
           "$close": "() => void"
         }

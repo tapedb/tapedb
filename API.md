@@ -928,6 +928,7 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `POST /engine/workspaces/:id/vector/rows` | `{ model, ids }` → `{ ok, data: { model, rows: [{ id, status }] } }` for rows the caller may read; status is `unindexed`, `pending`, `indexed` or `failed` |
 | `GET /engine/workspaces/:id/schema` | the schema document the workspace runs: `namespaces` (fields with type, default and `personal`, and `access`: each action's rule, `role`, `filter` with the caller's evaluated `where`, or `check`), `links` (with each foreign key's `onDelete`), `files` (each file action's rule) and `caller` (`{ sub, role }`) |
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2. With `?after=<seq>`, it answers once a transaction lands past `seq`, or after 25 seconds |
+| `GET /engine/workspaces/:id/metrics` | how hard the workspace is being worked → `{ ok, metrics, gauges, measurement }`; ADMIN or higher. See [Metrics](#metrics) |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
 | `GET /engine/workspaces/:id/history?model=…&id=…` | one row's recorded changes → `{ ok, data: HistoryEntry[] }`; ADMIN or higher; 409 `audit_disabled` without `audit: true` |
 | `GET /engine/workspaces/:id/log?before=&limit=&model=` | the transaction log, newest first → `{ ok, data: { entries, next } }`; ADMIN or higher. Each entry: `seq`, `at`, the writer (`sub`, `role`; null without `audit: true`), `rows` and `counts` (rows per model and op) and up to 100 `ops`. Values are shown only for models whose read rule is a role the caller meets, never for personal fields; other ops list the fields in `hidden`. `limit` 1–100 (default 50); `next` is the `before` of the following page, null at the start of the retained log |
@@ -951,6 +952,73 @@ without applying the submitted operations. The client sends `issuedAt` for you.
 An upgrade or restore from state with missing receipts preserves a fixed
 boundary: unknown retries with `issuedAt` at or before it return
 `retry_expired` (410). Known receipts are acknowledged even before that boundary.
+
+### Metrics
+
+`GET /engine/workspaces/:id/metrics` answers how hard one workspace is being
+worked. ADMIN or higher: the numbers are operational, and a member has no
+business reading them. It carries counts, sizes and durations only — no row
+values, no subjects, no claims and nothing from a personal field.
+
+The answer is in three parts, because they are trustworthy in different ways.
+
+**`metrics`** comes from the Durable Object's memory. `counters` and `latency`
+describe **one object's lifetime, not the workspace's history**: a Durable
+Object is evicted when it goes idle and starts again from zero, which
+`restartsCounters: true` says in every answer, with `since` and `uptimeMs` for
+the window the numbers cover. Nothing here is written to SQLite or R2 — a
+metric that cost a transaction would slow the path it measures.
+
+| Counter | |
+| --- | --- |
+| `transactions.committed`, `transactions.rows` | writes that landed, and rows they changed |
+| `transactions.refused`, `transactions.conflicts` | every rejection, and the subset where two writers met |
+| `transactions.deduped` | replays answered from a receipt without running again |
+| `queries.served`, `queries.refused` | typed reads |
+| `sql.served`, `sql.refused` | named SQL queries |
+| `sockets.accepted`, `sockets.closed` | live connections; a socket that drops also closes its live queries |
+| `subscriptions.opened`, `subscriptions.closed`, `subscriptions.updates` | live queries, and how often clients were woken |
+| `presence.updates`, `broadcast.messages` | realtime traffic that is not a query |
+| `durability.flushes`, `durability.flushFailures` | passes that moved the log to R2, and passes that could not |
+| `durability.snapshots`, `durability.snapshotFailures` | snapshot attempts |
+| `recovery.runs`, `recovery.failures` | restores from R2, and R2 refusing to answer one |
+
+`latency.timers` holds one histogram per timer: `query`, `transaction`, `sql`,
+`subscriptionUpdate`, `flush`, `snapshot` and `recovery`. `count`, `sumMs`,
+`maxMs` and `meanMs` are exact. **`p50Ms`, `p95Ms` and `p99Ms` are estimates**:
+samples are kept as fixed buckets rather than values, so memory per timer is a
+constant whatever the traffic, and a quantile is the upper bound of the bucket
+its rank falls in. `latency.bucketsMs` publishes those bounds so you can see
+how coarse an estimate is, and `latency.estimated` is always `true`. A sample
+past the last bound lands in an overflow bucket, so the estimate saturates
+while `maxMs` keeps the real figure.
+
+Every timer records failures as well as successes. A flush that never reached
+R2 is the sample most worth having.
+
+**`gauges`** is read from SQLite and the socket list when you ask, so it is
+exact and survives a restart: `sockets`, `subscriptions`, `presenceTargets`,
+`topics`, `storageBytes` (the database, engine tables and free pages
+included), `txLogRows`, `recovering`, `webhooks` when the deployment delivers
+them, and `durability`:
+
+| | |
+| --- | --- |
+| `seq`, `flushedSeq` | the log's high water mark, and how far it has reached R2 |
+| `pendingSeq` | how far ahead of R2 the log is. Non-zero between alarms is normal; growing without falling back is not |
+| `hasPending`, `lastFlushAt`, `lastFlushAgeMs` | whether work is waiting, and when a flush last succeeded |
+| `flushAttempts`, `nextAttemptAt`, `lastFlushError` | a failing flush and its backoff |
+| `snapshotSeq`, `snapshotStatus`, `snapshotAgeMs` | the snapshot a restore would start from, and how old it is |
+
+**`measurement`** labels each of the above `measured` or `estimated`, so a
+dashboard does not present a bucket estimate as a reading.
+
+**Reading it.** A workspace is healthy when `pendingSeq` falls back toward zero
+between alarms, `lastFlushError` is null, `subscriptions` tracks the clients
+you expect rather than climbing, and `transaction` p99 is stable. Durability is
+falling behind when `pendingSeq` grows across several reads or `lastFlushAgeMs`
+keeps rising; `flushAttempts` above zero with a `lastFlushError` says R2 is
+refusing and the pass is backing off.
 
 ### Admin HTTP API
 
