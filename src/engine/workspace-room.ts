@@ -2,6 +2,7 @@ import { analyzeQuery, runQuery, SqlQueryError, type QueryAnalysis, type SqlQuer
 import { DurableObject } from "cloudflare:workers";
 
 import { stableStringify } from "./tx-hash";
+import { assessHealth, type WorkspaceHealth } from "./health";
 import type { RoleClaim } from "../claims";
 import { apiError, discardBody, json } from "../http";
 import type { Env } from "../types";
@@ -1430,7 +1431,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
       if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
         return apiError(403, "insufficient_role", "Reading workspace metrics needs an admin or owner.");
       }
-      return json({ ok: true, ...this.metricsDocument() });
+      const document = this.metricsDocument();
+      return json({ ok: true, health: this.health(document), ...document });
     }
 
     // The transaction log, newest first (log-read.ts). Admins and owners only:
@@ -3622,6 +3624,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const now = Date.now();
     const highWater = this.highWaterSeq();
     const txLog = sql.exec<CountRow>(`SELECT COUNT(*) AS total FROM "_tx_log"`).one().total;
+    const oldestPendingAt = sql
+      .exec<{ at: number | null }>(`SELECT MIN(at) AS at FROM "_tx_log" WHERE seq > ?`, flush.lastSeq)
+      .toArray()[0]?.at ?? null;
 
     return {
       metrics: this.metrics.snapshot(),
@@ -3647,9 +3652,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
           flushAttempts: flush.attempts,
           nextAttemptAt: flush.nextAttemptAt,
           lastFlushError: flush.lastError,
+          // Commit time of the oldest write R2 does not have yet; null when
+          // everything is flushed.
+          oldestPendingAt,
           snapshotSeq: snapshot.baseSeq,
           snapshotStatus: snapshot.status,
           snapshotAgeMs: snapshot.completedAt === null ? null : Math.max(0, now - snapshot.completedAt),
+          snapshotCompletedAt: snapshot.completedAt,
+          // Half the retention after the last snapshot; null with nothing new.
+          snapshotDueAt: snapshotDueAt(sql),
         },
         // In progress now, not a count of past restores; `metrics.counters`
         // carries those.
@@ -3670,6 +3681,33 @@ export class WorkspaceRoom extends DurableObject<Env> {
         "gauges.storageBytes": "measured; includes engine tables and free pages",
       },
     };
+  }
+
+  /** The verdict over a metrics document (health.ts): every input is in the document. */
+  private health(document: ReturnType<WorkspaceRoom["metricsDocument"]>): WorkspaceHealth {
+    const gauges = document.gauges as {
+      recovering: boolean;
+      webhooks?: { dead: number };
+      durability: {
+        flushedSeq: number;
+        pendingSeq: number;
+        oldestPendingAt: number | null;
+        flushAttempts: number;
+        lastFlushError: string | null;
+        snapshotDueAt: number | null;
+        snapshotCompletedAt: number | null;
+      };
+    };
+    const { metrics } = document;
+    return assessHealth({
+      now: Date.now(),
+      recovering: gauges.recovering,
+      recoveryFailures: metrics.counters["recovery.failures"],
+      durability: gauges.durability,
+      webhooksDead: gauges.webhooks?.dead ?? null,
+      transaction: metrics.latency.timers.transaction,
+      subscriptionUpdate: metrics.latency.timers.subscriptionUpdate,
+    });
   }
 
   private async status(): Promise<Response> {
