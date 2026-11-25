@@ -61,6 +61,8 @@ export { id } from "./client/id";
 export type { Models } from "./model/schema";
 export type {
   HistoryEntry,
+  ProfiledStatement,
+  QueryProfile,
   StoredFile,
   WebhookDelivery,
   WebhookEndpointHealth,
