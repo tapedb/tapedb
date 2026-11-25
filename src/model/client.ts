@@ -774,7 +774,11 @@ export function createClient<M extends Models, Q extends SqlQueries = {}>(
       if (workspaceId === config.workspace) return { workspaceId, client: client as unknown as Client<M> };
       // The latest getToken given for a workspace is the one its client uses.
       if (options.getToken) acrossTokens.set(workspaceId, options.getToken);
-      let other = acrossClients.get(workspaceId);
+      // A client is made with a token source or without one (the development
+      // claim route), and cannot switch: keep one of each, so a getToken given
+      // after a call without one is used rather than ignored.
+      const key = `${options.getToken ? "token" : "dev"}:${workspaceId}`;
+      let other = acrossClients.get(key);
       if (!other) {
         other = createClient(
           {
@@ -787,7 +791,7 @@ export function createClient<M extends Models, Q extends SqlQueries = {}>(
           },
           deps
         );
-        acrossClients.set(workspaceId, other);
+        acrossClients.set(key, other);
       }
       return { workspaceId, client: other };
     });

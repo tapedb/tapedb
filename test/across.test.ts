@@ -202,6 +202,21 @@ describe("$across", () => {
     expect(() => client().$across([])).toThrow(/at least one/);
   });
 
+  test("a getToken given after a call without one is used, not ignored", async () => {
+    await seed(B, ["banana"]);
+    // A root client with no getToken: $across without one uses the development
+    // claim route, which this test has no server for, so that read fails.
+    const db = createClient(
+      { schema: appSchema, url: "http://engine.test", workspace: A },
+      { fetch: engine as never, outbox: new MemoryOutbox(), createWebSocket: () => { throw new Error("no socket"); } }
+    );
+    await expect(Promise.resolve(db.$across([B]).task.findMany())).rejects.toBeInstanceOf(AcrossError);
+    tokensSeen = [];
+    const rows = await db.$across([B], tokens).task.findMany();
+    expect(rows.map((row) => row.title)).toEqual(["banana"]);
+    expect(tokensSeen).toEqual([`${B}:Bearer token-${B}`]);
+  });
+
   test("a cursor from elsewhere is refused", async () => {
     await expect(Promise.resolve(client().$across([A, B], tokens).task.findPage({ after: "not-a-cursor" }))).rejects.toThrow(/\$across/);
   });
