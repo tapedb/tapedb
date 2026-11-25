@@ -750,7 +750,7 @@ try {
   for (const name of scenarios) {
     const result = await scenario(`${name}.mjs`);
     console.log(`${result.ok ? "ok  " : "FAIL"} ${name} (${result.ms} ms)`);
-    if (result.ok && name === "load") console.log(result.output.split("\n").map((line) => `     ${line}`).join("\n"));
+    if (result.ok && (name === "load" || name === "metrics")) console.log(result.output.split("\n").map((line) => `     ${line}`).join("\n"));
     if (!result.ok) {
       failed += 1;
       console.log(result.output.split("\n").map((line) => `     ${line}`).join("\n"));

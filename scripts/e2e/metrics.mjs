@@ -100,18 +100,24 @@ assert.equal(flushed.gauges.durability.flushedSeq, flushed.gauges.durability.seq
 assert.equal(flushed.gauges.durability.lastFlushError, null);
 assert.ok(flushed.gauges.durability.lastFlushAgeMs >= 0);
 assert.equal(flushed.metrics.counters["durability.flushFailures"], 0);
-// The counters live in the object's memory. On Cloudflare the object can be
-// evicted and started again between the alarm that flushed and this read, and
-// then `since` is later than it was before the flush and the flush was counted
-// by an object that no longer exists. That is the reset the answer declares
-// (`restartsCounters`); only an object that lived through the flush must have
-// counted it.
-if (flushed.metrics.since === pending.metrics.since) {
-  assert.ok(flushed.metrics.counters["durability.flushes"] >= 1);
-  assert.ok(flushed.metrics.latency.timers.flush.count >= 1, "the flush was timed");
+// The counters live in the object's memory, so they can only be held to a
+// flush this object is known to have run: the log was behind R2 at the first
+// read, and the same object (same `since`) answered both reads. If the alarm
+// flushed before the first read, the flush belongs to an earlier window and
+// says nothing about this one. Either way the numbers are
+// printed, so a run that skips the check still records why.
+const observed = {
+  pendingBefore: pending.gauges.durability.pendingSeq,
+  sameObject: flushed.metrics.since === pending.metrics.since,
+  flushes: flushed.metrics.counters["durability.flushes"],
+  flushTimer: flushed.metrics.latency.timers.flush.count,
+};
+if (observed.pendingBefore > 0 && observed.sameObject) {
+  assert.ok(observed.flushes >= 1, `the flush was not counted: ${JSON.stringify(observed)}`);
+  assert.ok(observed.flushTimer >= 1, `the flush was not timed: ${JSON.stringify(observed)}`);
 } else {
-  assert.ok(flushed.metrics.since > pending.metrics.since, "a restart only moves `since` forward");
-  console.log("metrics: the object restarted between the flush and the read; its flush counter started again, as declared");
+  assert.ok(flushed.metrics.since >= pending.metrics.since, "a restart only moves `since` forward");
+  console.log(`metrics: flush not observed inside one object's window, counter check skipped: ${JSON.stringify(observed)}`);
 }
 
 // Closing the socket closes its live query with it, so opened cannot drift
