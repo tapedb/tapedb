@@ -70,6 +70,9 @@ const TERMINAL_AUTH_CODES = new Set([
   "invalid_config",
 ]);
 
+export type { WorkspaceDiagnostics } from "../engine/diagnostics";
+import type { WorkspaceDiagnostics } from "../engine/diagnostics";
+
 /** One recorded change to a row (`db.$history`). */
 export interface HistoryEntry {
   /** Log sequence of the transaction. */
@@ -595,6 +598,20 @@ class DataClientImpl {
       throw new ServerError(error?.code ?? "http_error", error?.message ?? `Query failed with HTTP ${response.status}.`, response.status);
     }
     return body.data.rows;
+  }
+
+  async diagnostics(): Promise<WorkspaceDiagnostics> {
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/diagnostics`,
+      { method: "GET", headers: { authorization: `Bearer ${token}` } }
+    );
+    const body = (await response.json().catch(() => null)) as { ok?: boolean; data?: WorkspaceDiagnostics } | null;
+    if (!response.ok || !body?.ok || typeof body.data !== "object" || body.data === null) {
+      const error = readServerError(body);
+      throw new ServerError(error?.code ?? "http_error", error?.message ?? `Diagnostics failed with HTTP ${response.status}.`, response.status);
+    }
+    return body.data;
   }
 
   async history(model: string, id: string): Promise<HistoryEntry[]> {

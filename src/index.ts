@@ -60,6 +60,14 @@ export { id } from "./client/id";
  *  `createClient` takes: a typed helper cannot be written without it. */
 export type { Models } from "./model/schema";
 export type { HistoryEntry, StoredFile } from "./client/data-client";
+export type {
+  HealthReason,
+  HealthStatus,
+  LatencySummary,
+  MeasuredDiagnostics,
+  StoredDiagnostics,
+  WorkspaceDiagnostics,
+} from "./engine/diagnostics";
 export type { PresencePeer, PresenceError, PresenceSubscribeOptions, QueryError, TopicGap, TopicSender, WriteRejection } from "./client/types";
 export type { StorageObject } from "./client/storage-client";
 

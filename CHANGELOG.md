@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Workspace diagnostics. `db.$diagnostics()` and `GET /engine/workspaces/:id/diagnostics` (ADMIN or higher) give a health verdict (`ok`, `degraded`, `failing`, each reason with a code) and two sets of numbers. Stored numbers come from the engine's tables when you ask: R2 flush lag and the age of the oldest unflushed write, the last flush error, snapshot schedule, recovery state, webhook outbox counts, log size, connections and subscriptions. Measured numbers are counters and latency histograms kept in memory only, never written to SQLite, and reset when the object restarts. They cover transactions committed, unchanged, rejected (by code) and failed; reads; live re-runs and shared answers; presence and topic traffic; durability passes; and restore steps. The answer carries no rows, values, subjects or claims. Percentiles are bucket estimates and are labelled as such. API.md documents every field and threshold.
+
 ## 0.3.6 - 2026-11-22
 
 - Named SQL queries. `schema(models, { queries: { name: sqlQuery({ sql, params, returns, role?, bypassReadRules? }) } })` declares a SQLite statement in the schema file, and `db.$query(name, params)` runs it, typed from `params` and `returns`. Use it for what the query builder cannot express: recursive CTEs, window functions, joins with their own grouping. A request names a query and passes values, which are always bound; the client never sends SQL.

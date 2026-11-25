@@ -129,6 +129,7 @@ import { durableObjectSqlExecutor, type SqlValue, type SqlExecutor } from "./tx-
 import { TxError, type TxErrorCode, type TxResult } from "./tx-types";
 import { acceptVerifiedSocket } from "./ws-handshake";
 import { offeredProtocols, SOCKET_PROTOCOL } from "../socket-protocol";
+import { assessHealth, diagnosticError, WorkspaceMetrics, type StoredDiagnostics, type WorkspaceDiagnostics } from "./diagnostics";
 import {
   claimFromAttachment,
   isPresenceTarget,
@@ -268,6 +269,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
   /** Namespaces touched since the current debounce window opened. */
   private pendingInvalidationNamespaces = new Set<string>();
+  /** When the oldest write waiting for a live-update pass invalidated it. */
+  private pendingInvalidationSince: number | null = null;
+  /** In-memory counters and latencies for `/diagnostics` (diagnostics.ts). */
+  private readonly metrics = new WorkspaceMetrics();
   /** Status requests waiting for the next transaction (`/status?after=`). */
   private sequenceWaiters = new Set<() => void>();
 
@@ -458,6 +463,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // A failed boot would reset the object and fail every request with
       // an exception. The workspace answers 503 instead, and alarms retry.
       console.error("workspace_recovery_failed", { workspaceId: this.workspaceId, error: String(error) });
+      this.metrics.recoveryFailed(diagnosticError(error));
       this.recovering = true;
       await ctx.storage.setAlarm(Date.now() + DURABILITY_ALARM_DELAY_MS);
     }
@@ -535,12 +541,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (!recovery.recovered && recovery.reason === "unavailable") {
       // R2 did not answer. The progress is kept; try again shortly.
       console.error("workspace_recovery_r2_unavailable", { workspaceId: this.workspaceId, error: recovery.error });
+      this.metrics.recoveryFailed(diagnosticError(recovery.error ?? "R2 unavailable"));
       this.recovering = true;
       await this.ctx.storage.setAlarm(Date.now() + RECOVERY_R2_RETRY_MS);
       return;
     }
     if (!recovery.recovered && recovery.reason === "paused") {
       console.log("workspace_recovering", { workspaceId: this.workspaceId, stepMs: Date.now() - started, slowestMs: slowest, slowestUnit });
+      this.metrics.recoveryStep(Date.now() - started, false);
       this.recovering = true;
       await this.ctx.storage.setAlarm(Date.now());
       return;
@@ -553,6 +561,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
     if (recovery.recovered) {
+      this.metrics.recoveryStep(Date.now() - started, true);
       console.log("workspace_recovered", {
         workspaceId: this.workspaceId,
         baseSeq: recovery.baseSeq,
@@ -1361,6 +1370,25 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return this.vectorRowQuery(request);
     }
 
+    // Health, activity and durability (diagnostics.ts). Admins and owners
+    // only: it carries no rows, but it describes the whole workspace.
+    if (url.pathname === "/diagnostics") {
+      if (request.method !== "GET") {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+        throw error;
+      }
+      if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
+        return apiError(403, "insufficient_role", "Reading diagnostics needs an admin or owner.");
+      }
+      return json({ ok: true, data: this.diagnostics() });
+    }
+
     // Who changed one row, and when (audit.ts). Admins and owners only: it
     // names other users.
     if (url.pathname === "/history") {
@@ -1628,6 +1656,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       );
     }
 
+    const started = Date.now();
     try {
       const workspaceId = this.workspaceId;
       const claim = readTrustedRoleClaim(request, workspaceId);
@@ -1644,6 +1673,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         if (budget !== null) releaseWriteBudget(sql, budget);
         throw error;
       }
+      this.metrics.transactionDone(Date.now() - started, result.applied);
       try {
         await this.scheduleNextDurabilityAlarm(Date.now());
       } catch (error) {
@@ -1678,6 +1708,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return json({ ok: true, result });
     } catch (error) {
       if (error instanceof TxError) {
+        this.metrics.transactionRejected(error.code);
         const response = json(
           { ok: false, error: error.toJSON() },
           statusForTxError(error.code)
@@ -1690,6 +1721,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         }
         return response;
       }
+      this.metrics.transactionFailed();
       throw error;
     }
   }
@@ -1732,10 +1764,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
         analysis = analyzeQuery(storage, query);
         this.queryPlans.set(name, analysis);
       }
-      return json({ ok: true, data: { rows: runQuery(storage, analysis, query, claim, body.params) } });
+      const started = Date.now();
+      const rows = runQuery(storage, analysis, query, claim, body.params);
+      this.metrics.readDone("sql", Date.now() - started);
+      return json({ ok: true, data: { rows } });
     } catch (error) {
-      if (error instanceof SqlQueryError) return apiError(error.status, error.code, error.message);
-      if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+      if (error instanceof SqlQueryError) { this.metrics.readRejected(error.code); return apiError(error.status, error.code, error.message); }
+      if (error instanceof TxError) { this.metrics.readRejected(error.code); return apiError(statusForQueryError(error.code), error.code, error.message); }
+      this.metrics.readFailed();
       return apiError(400, "query_failed", errorMessage(error));
     }
   }
@@ -1762,10 +1798,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const claim = readTrustedRoleClaim(request, workspaceId);
       const raw = durableObjectSqlExecutor(this.ctx.storage);
       const run = () => executeQueryWithPageInfo(this.personal?.sql(raw) ?? raw, claim, envelope);
+      const started = Date.now();
       const { data, pageInfo } = this.personal ? await this.personal.read(run) : run();
+      this.metrics.readDone("query", Date.now() - started);
       return json({ ok: true, data, pageInfo });
     } catch (error) {
       if (error instanceof TxError) {
+        this.metrics.readRejected(error.code);
         return json(
           { ok: false, error: error.toJSON() },
           statusForQueryError(error.code)
@@ -2123,24 +2162,30 @@ export class WorkspaceRoom extends DurableObject<Env> {
         this.handlePing(ws, payload);
         return;
       case "query:subscribe":
+        this.metrics.subscribed();
         await this.handleSubscribe(ws, attachment, payload);
         return;
       case "query:unsubscribe":
         this.handleUnsubscribe(ws, attachment, payload);
         return;
       case "presence:set":
+        this.metrics.presenceMessage();
         await this.handlePresenceSet(ws, attachment, payload);
         return;
       case "presence:clear":
+        this.metrics.presenceMessage();
         await this.handlePresenceClear(ws, attachment, payload);
         return;
       case "cursor:set":
+        this.metrics.presenceMessage();
         await this.handleCursorSet(ws, attachment, payload);
         return;
       case "drag:set":
+        this.metrics.presenceMessage();
         await this.handleDragSet(ws, attachment, payload);
         return;
       case "drag:clear":
+        this.metrics.presenceMessage();
         await this.handleDragClear(ws, attachment, payload);
         return;
       case "topic:join":
@@ -2150,6 +2195,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         this.handleTopicLeave(ws, attachment, payload);
         return;
       case "topic:send":
+        this.metrics.topicMessage();
         await this.handleTopicSend(ws, attachment, payload);
         return;
       default:
@@ -2928,18 +2974,21 @@ export class WorkspaceRoom extends DurableObject<Env> {
       this.pendingInvalidationNamespaces.add(namespace);
     }
     if (this.pendingInvalidationNamespaces.size === 0) return;
+    this.pendingInvalidationSince ??= Date.now();
     if (this.invalidationTimer !== null) return;
 
     this.invalidationTimer = setTimeout(() => {
       this.invalidationTimer = null;
       const touched = this.pendingInvalidationNamespaces;
       this.pendingInvalidationNamespaces = new Set();
-      const work = this.trackWork(() => this.flushInvalidations(touched)).catch(error => console.error("workspace_invalidation_failed", error));
+      const since = this.pendingInvalidationSince ?? Date.now();
+      this.pendingInvalidationSince = null;
+      const work = this.trackWork(() => this.flushInvalidations(touched, since)).catch(error => console.error("workspace_invalidation_failed", error));
       this.ctx.waitUntil?.(work);
     }, DEFAULT_INVALIDATION_DEBOUNCE_MS);
   }
 
-  private async flushInvalidations(touched: ReadonlySet<string>): Promise<void> {
+  private async flushInvalidations(touched: ReadonlySet<string>, since: number = Date.now()): Promise<void> {
     if (this.erased) return;
     // `getWebSockets` is part of the Durable Object runtime. Guard the call so
     // non-WebSocket harnesses (and older test doubles) do not crash a deferred
@@ -2950,6 +2999,8 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const sql = durableObjectSqlExecutor(this.ctx.storage);
     const now = Math.floor(Date.now() / 1000);
     const runs = new Map<string, SubscriptionRun>();
+    let lookups = 0;
+    let sent = 0;
 
     for (const ws of sockets) {
       const attachment = this.readSocket(ws);
@@ -2988,6 +3039,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         // per flush and is shared.
         const bySubject = queriedNamespaces(compiled).some(viewDependsOnSubject);
         const key = `${bySubject ? attachment.sub : ""}\u0000${attachment.role}\u0000${stableStringify(subscription.query)}`;
+        lookups += 1;
         let run = runs.get(key);
         if (run === undefined) {
           run = await this.runSubscription(sql, compiled, claim);
@@ -3010,6 +3062,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
         if (previous === undefined) {
           subscription.seq += 1;
+          sent += 1;
           this.send(ws, {
             type: "query:data",
             id: subscription.id,
@@ -3024,6 +3077,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         const diffs = diffQueryResults(previous.data, data);
         if (diffs === null) {
           subscription.seq += 1;
+          sent += 1;
           this.send(ws, {
             type: "query:data",
             id: subscription.id,
@@ -3051,6 +3105,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         }
 
         subscription.seq += 1;
+        sent += 1;
         for (const [index, diff] of diffs.entries()) {
           const message: QueryDiffMessage = {
             type: "query:diff",
@@ -3070,6 +3125,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
       if (attachmentChanged) this.writeSocket(ws, attachment);
     }
+    this.metrics.liveFlush(Date.now() - since, runs.size, lookups - runs.size, sent);
   }
 
   /** One subscription's re-run for this flush: its result, or why it failed. */
@@ -3124,12 +3180,14 @@ export class WorkspaceRoom extends DurableObject<Env> {
         await this.recoverStep(RECOVERY_STEP_BUDGET_MS);
       } catch (error) {
         console.error("workspace_recovery_failed", { workspaceId: this.workspaceId, error: String(error) });
+        this.metrics.recoveryFailed(diagnosticError(error));
         await this.ctx.storage.setAlarm(Date.now() + DURABILITY_ALARM_DELAY_MS);
       }
       return;
     }
     const workspaceId = this.workspaceId;
 
+    const tickStarted = Date.now();
     try {
       const tick = await durabilityTick(
         this.roomEnv.DATA,
@@ -3141,7 +3199,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // A failed flush is retried with backoff; say so, or nobody knows the
       // log is not reaching R2.
       if (tick.flushError) console.error("workspace_flush_failed", { workspaceId, error: tick.flushError });
+      this.metrics.durabilityTick(Date.now() - tickStarted, tick.flushError ? diagnosticError(tick.flushError) : null);
     } catch (error) {
+      this.metrics.durabilityTickFailed(diagnosticError(error));
       console.error("workspace_durability_tick_failed", {
         workspaceId,
         error: String(error),
@@ -3158,7 +3218,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (webhooksConfigured(this.config.webhooks)) {
       try {
         await this.deliverPendingWebhooks();
+        this.metrics.webhookPass(null);
       } catch (error) {
+        this.metrics.webhookPass(diagnosticError(error));
         console.error("workspace_webhook_delivery_failed", { workspaceId, error: errorMessage(error) });
       }
     }
@@ -3439,6 +3501,71 @@ export class WorkspaceRoom extends DurableObject<Env> {
         })),
       },
     });
+  }
+
+  /**
+   * `GET /diagnostics`: the room's measured counters and latencies, the
+   * durability state its tables hold, and a verdict over both. Reads only
+   * engine tables and socket attachments' counts; never a row or a value.
+   */
+  private diagnostics(): WorkspaceDiagnostics {
+    const sql = this.ctx.storage.sql;
+    const now = Date.now();
+    const count = (query: string, ...params: unknown[]) => sql.exec<CountRow>(query, ...params).one().total;
+    const flush = readFlushState(sql);
+    const snapshot = readSnapshotState(sql);
+    const seq = sql.exec<{ seq: number | null }>(`SELECT high_water_seq AS seq FROM "_tx_state" WHERE "id" = 1`).toArray()[0]?.seq ?? 0;
+    const oldest = sql
+      .exec<{ at: number | null }>(`SELECT MIN(at) AS at FROM "_tx_log" WHERE seq > ?`, flush.lastSeq)
+      .toArray()[0]?.at ?? null;
+    const migrations = sql.exec<IdRow>(`SELECT id FROM "_migrations" ORDER BY id`).toArray();
+    let recoveryStatus: string | null = null;
+    try {
+      recoveryStatus = sql.exec<{ value: string }>(`SELECT value FROM "_engine_meta" WHERE "key" = 'recovery_status'`).toArray()[0]?.value ?? null;
+    } catch {
+      recoveryStatus = null;
+    }
+
+    let subscriptions = 0;
+    const topics = new Set<string>();
+    const presence = new Set<string>();
+    const sockets = this.ctx.getWebSockets?.() ?? [];
+    for (const ws of sockets) {
+      const attachment = this.readSocket(ws);
+      if (attachment === null) continue;
+      subscriptions += attachment.subscriptions.length;
+      for (const topic of attachment.topics ?? []) topics.add(topic);
+      for (const target of presenceTargets(attachment)) presence.add(target);
+    }
+
+    const databaseSize = (sql as { databaseSize?: unknown }).databaseSize;
+    const stored: StoredDiagnostics = {
+      storage: {
+        databaseBytes: typeof databaseSize === "number" ? databaseSize : null,
+        txLogRows: count(`SELECT COUNT(*) AS total FROM "_tx_log"`),
+        files: count(`SELECT COUNT(*) AS total FROM "${ENGINE_TABLES.files}"`),
+      },
+      durability: {
+        seq,
+        flushedSeq: flush.lastSeq,
+        unflushedTransactions: Math.max(0, seq - flush.lastSeq),
+        oldestUnflushedAt: oldest,
+        lastFlushAt: flush.lastFlushAt,
+        lastFlushError: flush.lastError === null ? null : diagnosticError(flush.lastError),
+        flushAttempts: flush.attempts,
+        nextFlushAttemptAt: flush.nextAttemptAt,
+        snapshotSeq: snapshot.baseSeq,
+        snapshotStatus: snapshot.status,
+        snapshotCompletedAt: snapshot.completedAt,
+        snapshotDueAt: snapshotDueAt(sql),
+      },
+      recovery: { status: recoveryStatus, recovering: this.recovering },
+      connections: { sockets: sockets.length, subscriptions, topics: topics.size, presenceTargets: presence.size },
+      webhooks: webhooksConfigured(this.config.webhooks) ? webhookCounts(durableObjectSqlExecutor(this.ctx.storage)) : null,
+      migrations: { applied: migrations.length, latest: migrations.at(-1)?.id ?? null },
+    };
+    const measured = this.metrics.snapshot();
+    return { workspaceId: this.workspaceId, at: now, health: assessHealth(measured, stored, now), measured, stored };
   }
 
   /**

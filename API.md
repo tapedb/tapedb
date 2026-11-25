@@ -190,6 +190,7 @@ resumes exactly leaves `gap` null.
 
 | `$across(workspaceIds, { getToken? })` | `Across`: per model `findMany`, `findFirst`, `findPage` and `count` over those workspaces, each with its own claim (`getToken(workspaceId)`, required unless the client uses the development claim route), merged in `orderBy` order; rows carry `workspaceId`; a page `cursor` holds a position per workspace. Results are `AcrossQuery` (awaitable, `subscribe`, `snapshot`, usable with `useLive`); live states add `errors` by workspace. A failed workspace rejects a one-off read with `AcrossError` (`errors`, `partial`) |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
+| `$diagnostics()` | `Promise<WorkspaceDiagnostics>`: the workspace's health verdict, its measured counters and latencies, and its durability state; ADMIN or higher; see [Diagnostics](#diagnostics) |
 | `$history({ model, id })` | `Promise<HistoryEntry[]>`: each recorded change to the row, oldest first, as `{ seq, at, sub, role, action }` with `action` `"insert"`, `"update"` or `"delete"`; ADMIN or higher; needs `audit: true` on the Worker |
 | `$query(name, params?)` | `Promise<rows>`: runs a named SQL query from the schema as the signed-in caller; `params` and the rows are typed from the query's `params` and `returns`. See [HTTP](#http) (`/sql`) for its errors |
 | `$flush()` | makes one delivery attempt for the queued writes and resolves when that attempt finishes. It does **not** wait for acknowledgement: an unreachable server leaves the entry queued and a retry is scheduled, so read it as "try now", not "is synced". a caller that must know a write landed has to track that itself |
@@ -460,6 +461,74 @@ set to the same whole seconds the body carries:
 `model` is `"workspace"` for the workspace-wide budget. The client already
 treats a `429` as retryable, so a queued offline write stays queued and is sent
 after the window rather than being dropped.
+
+### Diagnostics
+
+`db.$diagnostics()` (and `GET /engine/workspaces/:id/diagnostics`) answers whether
+a workspace is healthy, whether durability is falling behind, whether live
+subscriptions are piling up and whether writes are slow, without reading engine
+tables or Cloudflare logs. Admins and owners only; anyone else gets 403
+`insufficient_role`. The answer holds counts, durations, timestamps and error
+codes, never a row, a field value, a subject, a claim or a query parameter.
+
+The answer is `{ workspaceId, at, health, measured, stored }`.
+
+`health` is `{ status, reasons }`. `status` is `ok`, `degraded` or `failing`,
+and each reason is `{ code, status, message }`:
+
+| Code | Status | When |
+| --- | --- | --- |
+| `recovering` | degraded | A restore from R2 is in progress; requests answer 503 `workspace_recovering` |
+| `recovery_failing` | failing | The restore failed on its last attempt or attempts (`measured.recovery.consecutiveFailures`) |
+| `flush_failing` | failing | The last flush to R2 failed; writes past `flushedSeq` exist only in the Durable Object |
+| `flush_lagging` | degraded | The oldest write not yet in R2 is over 5 minutes old, or over 10,000 writes are waiting |
+| `snapshot_overdue` | degraded | The next snapshot is more than a day past its due time (half the retention after the last one) |
+| `webhooks_dead_lettered` | degraded | At least one webhook event is dead-lettered |
+| `write_latency_high` | degraded | Estimated p95 transaction latency is over 1 s, with at least 20 samples |
+| `live_updates_slow` | degraded | Estimated p95 live-update latency is over 2.5 s, with at least 20 samples |
+
+`stored` is read from the workspace's own tables when you ask, so it is still
+correct after the object restarts:
+
+| Field | Meaning |
+| --- | --- |
+| `storage.databaseBytes` | SQLite's size for this object, as the runtime reports it; null where it does not (local tests) |
+| `storage.txLogRows`, `storage.files` | Rows in the local transaction log (pruned with the retention) and in the file index |
+| `durability.seq`, `flushedSeq`, `unflushedTransactions` | The newest transaction, the newest one in R2, and the difference |
+| `durability.oldestUnflushedAt` | Commit time of the oldest write not yet in R2; null when everything is flushed |
+| `durability.lastFlushAt`, `lastFlushError`, `flushAttempts`, `nextFlushAttemptAt` | The flusher's state: a failed flush is retried with backoff |
+| `durability.snapshotSeq`, `snapshotStatus`, `snapshotCompletedAt`, `snapshotDueAt` | The newest snapshot and when the next one is due (null when nothing changed since) |
+| `recovery.status`, `recovery.recovering` | The restore's recorded state (`running`, `complete`, …) and whether this object is serving 503s for it |
+| `connections` | Open sockets, live subscriptions across them, and distinct topics and presence targets joined |
+| `webhooks` | The outbox's `{ pending, delivered, dead }`, or null when the deployment has no webhooks |
+| `migrations` | How many engine and app migrations are applied, and the latest id |
+
+`measured` is kept in the Durable Object's memory. Recording a sample is a few
+additions, nothing is written to SQLite, and memory stays the same however much
+traffic there is. The counters start again from zero whenever Cloudflare evicts
+or restarts the object. `since` is when they started, and `uptimeMs` is how long
+ago that was.
+
+| Field | Meaning |
+| --- | --- |
+| `rates` | Transactions and reads per second over the last 5 minutes (or since `since`, if later) |
+| `transactions` | `committed` (changed rows), `unchanged` (a replayed `clientTxId` or a no-op), `rejected` (refused by the engine, by code in `rejectedByCode`), `failed` (an unexpected error) |
+| `reads` | `query`, `sql` (named queries) counts, and `rejected` / `rejectedByCode` / `failed` |
+| `realtime` | `subscribes`, `liveReruns` (queries re-run after writes), `sharedReruns` (answers reused for subscribers with the same query and role), `updatesSent`, `presenceMessages` (presence, cursor and drag) and `topicMessages` |
+| `durability` | Durability passes (`ticks`), `flushFailures`, `tickFailures` and the last pass's time and error |
+| `recovery` | Restore `steps`, `completed`, `failures`, `consecutiveFailures`, the last error, and `lastDurationMs` from the first step to completion |
+| `webhookDelivery` | Delivery passes and passes that threw |
+| `latency` | `transaction`, `read`, `subscriptionUpdate` (from the first write a live pass covers to the last update it sends, including the batching delay), `durabilityTick` and `recoveryStep` |
+
+Each `latency` entry is `{ count, meanMs, maxMs, p50Ms, p95Ms, p99Ms, buckets }`.
+`count`, `meanMs` and `maxMs` are measured. The percentiles are **estimates**: the
+upper bound of the bucket the rank falls in (1, 2, 5, 10, 25, 50, 100, 250, 500,
+1,000, 2,500, 5,000, 10,000 and 30,000 ms, then an open bucket), capped at the
+largest sample.
+
+On Cloudflare, `Date.now()` only moves forward at I/O, so these durations are
+wall time between I/O boundaries. Purely synchronous SQL can read as 0 ms even
+when it used CPU. For CPU time, see `cpuTimeMs` in Workers Logs.
 
 ### Vector search
 
@@ -928,6 +997,7 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `POST /engine/workspaces/:id/vector/rows` | `{ model, ids }` → `{ ok, data: { model, rows: [{ id, status }] } }` for rows the caller may read; status is `unindexed`, `pending`, `indexed` or `failed` |
 | `GET /engine/workspaces/:id/schema` | the schema document the workspace runs: `namespaces` (fields with type, default and `personal`, and `access`: each action's rule, `role`, `filter` with the caller's evaluated `where`, or `check`), `links` (with each foreign key's `onDelete`), `files` (each file action's rule) and `caller` (`{ sub, role }`) |
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2. With `?after=<seq>`, it answers once a transaction lands past `seq`, or after 25 seconds |
+| `GET /engine/workspaces/:id/diagnostics` | ADMIN or higher; `{ ok, data: WorkspaceDiagnostics }`, see [Diagnostics](#diagnostics) |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
 | `GET /engine/workspaces/:id/history?model=…&id=…` | one row's recorded changes → `{ ok, data: HistoryEntry[] }`; ADMIN or higher; 409 `audit_disabled` without `audit: true` |
 | `GET /engine/workspaces/:id/log?before=&limit=&model=` | the transaction log, newest first → `{ ok, data: { entries, next } }`; ADMIN or higher. Each entry: `seq`, `at`, the writer (`sub`, `role`; null without `audit: true`), `rows` and `counts` (rows per model and op) and up to 100 `ops`. Values are shown only for models whose read rule is a role the caller meets, never for personal fields; other ops list the fields in `hidden`. `limit` 1–100 (default 50); `next` is the `before` of the following page, null at the start of the retained log |

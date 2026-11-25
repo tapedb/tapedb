@@ -221,6 +221,18 @@
         "kind": "function",
         "shape": "(role: WorkspaceRole, minimum: WorkspaceRole) => boolean"
       },
+      "HealthReason": {
+        "kind": "interface",
+        "shape": {
+          "code": "string",
+          "status": "\"degraded\" | \"failing\"",
+          "message": "string"
+        }
+      },
+      "HealthStatus": {
+        "kind": "type",
+        "shape": "\"ok\" | \"degraded\" | \"failing\""
+      },
       "HistoryEntry": {
         "kind": "interface",
         "shape": {
@@ -249,6 +261,18 @@
           "(declaration)": "implements Outbox"
         }
       },
+      "LatencySummary": {
+        "kind": "interface",
+        "shape": {
+          "count": "number",
+          "meanMs": "number | null",
+          "maxMs": "number | null",
+          "p50Ms": "number | null",
+          "p95Ms": "number | null",
+          "p99Ms": "number | null",
+          "buckets": "Record<string, number>"
+        }
+      },
       "LiveState": {
         "kind": "interface",
         "shape": {
@@ -256,6 +280,21 @@
           "isLoading": "boolean",
           "error": "QueryError | null",
           "(declaration)": "<T>"
+        }
+      },
+      "MeasuredDiagnostics": {
+        "kind": "interface",
+        "shape": {
+          "since": "number",
+          "uptimeMs": "number",
+          "rates": "{ windowMs: number; transactionsPerSecond: number; readsPerSecond: number; }",
+          "transactions": "{ committed: number; unchanged: number; rejected: number; failed: number; rejectedByCode: CodeCounts; }",
+          "reads": "{ query: number; sql: number; search: number; rejected: number; failed: number; rejectedByCode: CodeCounts; }",
+          "realtime": "{ subscribes: number; liveReruns: number; sharedReruns: number; updatesSent: number; presenceMessages: number; topicMessages: number; }",
+          "durability": "{ ticks: number; flushFailures: number; tickFailures: number; lastTickAt: number | null; lastTickError: string | null; }",
+          "recovery": "{ steps: number; completed: number; failures: number; consecutiveFailures: number; lastError: string | null; lastErrorAt: number | null; lastDurationMs: number | null; }",
+          "webhookDelivery": "{ passes: number; failures: number; lastError: string | null; }",
+          "latency": "Record<\"transaction\" | \"read\" | \"subscriptionUpdate\" | \"durabilityTick\" | \"recoveryStep\", LatencySummary>"
         }
       },
       "MemoryOutbox": {
@@ -514,6 +553,17 @@
           "contentType": "string"
         }
       },
+      "StoredDiagnostics": {
+        "kind": "interface",
+        "shape": {
+          "storage": "{ databaseBytes: number | null; txLogRows: number; files: number; }",
+          "durability": "{ seq: number; flushedSeq: number; unflushedTransactions: number; oldestUnflushedAt: number | null; lastFlushAt: number | null; lastFlushError: string | null; flushAttempts: number; nextFlushAttemptAt: number | null; snapshotSeq: number; snapshotStatus: string; snapshotCompletedAt: number | null; snapshotDueAt: number | null; }",
+          "recovery": "{ status: string | null; recovering: boolean; }",
+          "connections": "{ sockets: number; subscriptions: number; topics: number; presenceTargets: number; }",
+          "webhooks": "{ pending: number; delivered: number; dead: number; } | null",
+          "migrations": "{ applied: number; latest: string | null; }"
+        }
+      },
       "StoredFile": {
         "kind": "interface",
         "shape": {
@@ -567,6 +617,16 @@
       "WORKSPACE_ROLE_LEVELS": {
         "kind": "value",
         "shape": "{ readonly GUEST: 0; readonly USER: 1; readonly MEMBER: 2; readonly EDITOR: 3; readonly MODERATOR: 4; readonly ADMIN: 5; readonly OWNER: 6; readonly FOUNDER: 7; readonly DEVELOPER: 8; }"
+      },
+      "WorkspaceDiagnostics": {
+        "kind": "interface",
+        "shape": {
+          "workspaceId": "string",
+          "at": "number",
+          "health": "{ status: HealthStatus; reasons: HealthReason[]; }",
+          "measured": "MeasuredDiagnostics",
+          "stored": "StoredDiagnostics"
+        }
       },
       "WorkspaceRole": {
         "kind": "type",
@@ -1659,9 +1719,14 @@
           "$export": "() => AsyncIterable<ExportRecord<Models>>",
           "$erasePerson": "(subject: string) => Promise<void>",
           "$history": "(target: { model: keyof Models & string; id: string; }) => Promise<HistoryEntry[]>",
+          "$diagnostics": "() => Promise<WorkspaceDiagnostics>",
           "$flush": "() => Promise<void>",
           "$close": "() => void"
         }
+      },
+      "CodeCounts (src/engine/diagnostics.ts)": {
+        "kind": "type",
+        "shape": "Record<string, number>"
       },
       "DeleteRule (src/engine/registry.ts)": {
         "kind": "type",

@@ -13,6 +13,7 @@ import {
   createClientParts,
   type ClientDeps,
   type HistoryEntry,
+  type WorkspaceDiagnostics,
   type DataClientImpl,
   type HeadlessDataClient,
   type StoredFile,
@@ -399,6 +400,12 @@ export interface ClientExtras {
    * Admins and owners only; needs `defineTapeDB({ audit: true })`.
    */
   $history(target: { model: keyof Models & string; id: string }): Promise<HistoryEntry[]>;
+  /**
+   * The workspace's health, activity and durability: a verdict, the counters
+   * and latencies this object measured since it started, and the durability
+   * state its tables hold. Admins and owners only. Carries no rows or values.
+   */
+  $diagnostics(): Promise<WorkspaceDiagnostics>;
   /** Retries queued writes now (also runs on reconnect and when back online). */
   $flush(): Promise<void>;
   /** Closes the socket. */
@@ -736,6 +743,7 @@ export function createClient<M extends Models, Q extends SqlQueries = {}>(
     },
     $erasePerson: (subject) => impl.erasePerson(subject),
     $history: ({ model, id }) => impl.history(model, id),
+    $diagnostics: () => impl.diagnostics(),
     $query: (name: string, params?: Record<string, unknown>) => impl.sqlQuery(name, params),
     $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),
