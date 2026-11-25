@@ -100,24 +100,30 @@ assert.equal(flushed.gauges.durability.flushedSeq, flushed.gauges.durability.seq
 assert.equal(flushed.gauges.durability.lastFlushError, null);
 assert.ok(flushed.gauges.durability.lastFlushAgeMs >= 0);
 assert.equal(flushed.metrics.counters["durability.flushFailures"], 0);
-// The counters live in the object's memory, so they can only be held to a
-// flush this object is known to have run: the log was behind R2 at the first
-// read, and the same object (same `since`) answered both reads. If the alarm
-// flushed before the first read, the flush belongs to an earlier window and
-// says nothing about this one. Either way the numbers are
-// printed, so a run that skips the check still records why.
+// The gauge and the counter move at different moments of the same alarm:
+// `pendingSeq` drops when the flush commits, and `durability.flushes` is
+// counted when the whole durability pass (flush, then snapshot and pruning,
+// each awaiting R2) returns. A read can land in between, so wait for the
+// counter too. Staging's Workers Logs showed exactly that: two /metrics reads
+// with pendingSeq 0 inside the alarm that had not yet returned.
+let counted = flushed;
+for (const deadline = Date.now() + (process.env.TAPEDB_URL ? 60_000 : 15_000); Date.now() < deadline; ) {
+  if (counted.metrics.counters["durability.flushes"] >= 1) break;
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  counted = await db.$metrics();
+}
 const observed = {
-  pendingBefore: pending.gauges.durability.pendingSeq,
-  sameObject: flushed.metrics.since === pending.metrics.since,
-  flushes: flushed.metrics.counters["durability.flushes"],
-  flushTimer: flushed.metrics.latency.timers.flush.count,
+  sameObject: counted.metrics.since === pending.metrics.since,
+  flushes: counted.metrics.counters["durability.flushes"],
+  flushTimer: counted.metrics.latency.timers.flush.count,
 };
-if (observed.pendingBefore > 0 && observed.sameObject) {
+if (observed.sameObject) {
   assert.ok(observed.flushes >= 1, `the flush was not counted: ${JSON.stringify(observed)}`);
   assert.ok(observed.flushTimer >= 1, `the flush was not timed: ${JSON.stringify(observed)}`);
 } else {
-  assert.ok(flushed.metrics.since >= pending.metrics.since, "a restart only moves `since` forward");
-  console.log(`metrics: flush not observed inside one object's window, counter check skipped: ${JSON.stringify(observed)}`);
+  // An evicted object starts counting again; `since` says so.
+  assert.ok(counted.metrics.since > pending.metrics.since, "a restart only moves `since` forward");
+  console.log(`metrics: the object restarted, so its counters started again: ${JSON.stringify(observed)}`);
 }
 
 // Closing the socket closes its live query with it, so opened cannot drift

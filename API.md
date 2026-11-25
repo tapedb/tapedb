@@ -996,6 +996,12 @@ while `maxMs` keeps the real figure.
 Every timer records failures as well as successes. A flush that never reached
 R2 is the sample most worth having.
 
+Counters and gauges move at different moments of one durability pass. A
+flush updates `gauges.durability` (`pendingSeq` falls to zero) when it
+commits, but `durability.flushes` and the `flush` timer are recorded when the
+whole pass returns, after the snapshot and pruning that follow it. A read
+during the pass can see the flush in the gauges before it is counted.
+
 **`gauges`** is read from SQLite and the socket list when you ask, so it is
 exact and survives a restart: `sockets`, `subscriptions`, `presenceTargets`,
 `topics`, `storageBytes` (the database, engine tables and free pages
