@@ -84,6 +84,7 @@
     "api:update": "bun scripts/api-surface.ts --write",
     "test:e2e": "node scripts/e2e.mjs",
     "bench": "bun scripts/bench.ts",
+    "bench:e2e": "node scripts/e2e.mjs --suite bench --out bench/results/latest.json",
     "soak": "bun scripts/soak.ts",
     "test:e2e:vector": "node scripts/e2e-vector.mjs",
     "test:browser": "playwright test --config scripts/browser/playwright.config.ts",
