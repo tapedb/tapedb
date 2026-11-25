@@ -82,7 +82,9 @@ await db.$flush();
 // Polled by hand: `until` does not await its predicate, so an async one would
 // hand it a promise and pass on the first tick.
 let drained = null;
-for (const deadline = Date.now() + (process.env.TAPEDB_URL ? 30_000 : 15_000); Date.now() < deadline; ) {
+// A deployed Worker flushes on an alarm 30 s after the write
+// (DURABILITY_ALARM_DELAY_MS), so a 30 s wait races it.
+for (const deadline = Date.now() + (process.env.TAPEDB_URL ? 90_000 : 15_000); Date.now() < deadline; ) {
   const now = await db.$metrics();
   if (now.gauges.durability.pendingSeq === 0 && now.gauges.durability.lastFlushAt !== null) {
     drained = now;
