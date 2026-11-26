@@ -217,6 +217,53 @@ describe("$across", () => {
     expect(tokensSeen).toEqual([`${B}:Bearer token-${B}`]);
   });
 
+  test("asks at most `concurrency` workspaces at once (64 by default), claims included", async () => {
+    const ids = Array.from({ length: 100 }, (_, n) => `6f1c2f3e-6b1a-4c9a-9a6f-${String(n).padStart(12, "0")}`);
+    for (const id of ids) {
+      const db = new Database(":memory:");
+      for (const migration of appSchema.migrations) db.exec(migration.sql);
+      databases.set(id, executor(db));
+    }
+    let inFlight = 0;
+    let peak = 0;
+    let claims = 0;
+    let claimPeak = 0;
+    const slow = async (url: string, init: { method: string; headers: Record<string, string>; body?: string }) => {
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      try { return await engine(url, init); } finally { inFlight -= 1; }
+    };
+    const db = createClient(
+      { schema: appSchema, url: "http://engine.test", workspace: A, getToken: async () => `token-${A}` },
+      { fetch: slow as never, outbox: new MemoryOutbox(), createWebSocket: () => { throw new Error("no socket"); } }
+    );
+    const getToken = async (workspaceId: string) => {
+      claims += 1;
+      claimPeak = Math.max(claimPeak, claims);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      claims -= 1;
+      return `token-${workspaceId}`;
+    };
+
+    expect(await db.$across(ids, { getToken }).task.count()).toBe(0);
+    expect(peak).toBe(64);
+    expect(claimPeak).toBeLessThanOrEqual(64);
+
+    peak = 0;
+    claimPeak = 0;
+    expect(await db.$across(ids, { getToken, concurrency: 3 }).task.findMany()).toEqual([]);
+    expect(peak).toBe(3);
+    expect(claimPeak).toBeLessThanOrEqual(3);
+
+    peak = 0;
+    const page = await db.$across(ids, { getToken, concurrency: 5 }).task.findPage({ take: 10 });
+    expect(page.rows).toEqual([]);
+    expect(peak).toBe(5);
+
+    expect(() => db.$across(ids, { getToken, concurrency: 0 })).toThrow("positive integer");
+  });
+
   test("a cursor from elsewhere is refused", async () => {
     await expect(Promise.resolve(client().$across([A, B], tokens).task.findPage({ after: "not-a-cursor" }))).rejects.toThrow(/\$across/);
   });
