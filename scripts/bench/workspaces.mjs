@@ -1,7 +1,8 @@
 // Many workspaces: first-touch cost, independent writers in parallel, and
 // $across reads (merged client-side) over growing workspace counts.
 //   MANY_WORKSPACES (50 × SCALE); ACROSS_COUNTS (10,100); ACROSS_ROWS (20) rows each;
-//   ACROSS_READS (10) reads per count.
+//   ACROSS_READS (10) reads per count; ACROSS_SEED_CONCURRENCY (16) workspaces seeded at
+//   once; WORKSPACE_SCENARIOS (first-touch,parallel-writers,across) to run only some.
 import { randomUUID } from "node:crypto";
 import { createClient } from "@tapedb/tapedb";
 import { BASE, s } from "./common.mjs";
@@ -11,12 +12,16 @@ const MANY = env("MANY_WORKSPACES", scaled(50));
 const ACROSS = envList("ACROSS_COUNTS", [10, 100]);
 const ROWS = env("ACROSS_ROWS", 20);
 const READS = env("ACROSS_READS", 10);
+// WORKSPACE_SCENARIOS=across (or first-touch,parallel-writers,across) runs only those.
+const ONLY = process.env.WORKSPACE_SCENARIOS ? new Set(process.env.WORKSPACE_SCENARIOS.split(",")) : null;
+const runs = (name) => ONLY === null || ONLY.has(name);
 
 // ---- First touch: a new workspace's first write creates its Durable Object,
 // runs its migrations and checks R2 for a recovery.
 const fresh = [];
-for (let n = 0; n < MANY; n += 1) fresh.push({ id: randomUUID(), token: null });
+if (runs("first-touch") || runs("parallel-writers")) for (let n = 0; n < MANY; n += 1) fresh.push({ id: randomUUID(), token: null });
 for (const ws of fresh) ws.token = await tokenFor(ws.id);
+if (runs("first-touch")) {
 const first = await pool(MANY, 8, (index) => call(fresh[index], "/transact", { txId: "first", ops: taskOps("first", 1) }));
 const second = await pool(MANY, 8, (index) => call(fresh[index], "/transact", { txId: "second", ops: taskOps("second", 1) }));
 emit("workspaces", "first-touch", { workspaces: MANY, concurrency: 8 }, {
@@ -24,9 +29,10 @@ emit("workspaces", "first-touch", { workspaces: MANY, concurrency: 8 }, {
   secondWriteMs: summarize(second.latencies),
   errorRate: first.errorRate,
 });
+}
 
 // ---- Independent writers: the same total writes spread over N workspaces.
-for (const spread of [1, 8, 32]) {
+for (const spread of runs("parallel-writers") ? [1, 8, 32] : []) {
   const targets = fresh.slice(0, Math.min(spread, fresh.length));
   const total = 400;
   const run = await pool(total, 16, (index) => {
@@ -41,15 +47,18 @@ for (const spread of [1, 8, 32]) {
 }
 
 // ---- $across: one request per workspace, merged in the client.
-for (const count of ACROSS) {
+for (const count of runs("across") ? ACROSS : []) {
   const ids = Array.from({ length: count }, () => randomUUID());
-  for (let start = 0; start < ids.length; start += 16) {
-    await Promise.all(ids.slice(start, start + 16).map(async (id) => {
+  const seedStarted = performance.now();
+  const seedConcurrency = env("ACROSS_SEED_CONCURRENCY", 16);
+  for (let start = 0; start < ids.length; start += seedConcurrency) {
+    await Promise.all(ids.slice(start, start + seedConcurrency).map(async (id) => {
       const one = createClient({ schema: s, url: BASE, workspace: id });
       await one.$transaction(Array.from({ length: ROWS }, (_, n) => one.task.create({ data: { title: `${id.slice(0, 8)}-${String(n).padStart(3, "0")}` } })));
       one.$close();
     }));
   }
+  const seedMs = Math.round(performance.now() - seedStarted);
   const db = createClient({ schema: s, url: BASE, workspace: ids[0] });
   const across = db.$across(ids);
   const timings = { findMany: [], page: [], count: [] };
@@ -87,6 +96,7 @@ for (const count of ACROSS) {
 
   emit("workspaces", "across", { workspaces: count, rowsPerWorkspace: ROWS, reads: READS }, {
     rows,
+    seedMs,
     findManyMs: summarize(timings.findMany),
     findPage50Ms: summarize(timings.page),
     countMs: summarize(timings.count),

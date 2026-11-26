@@ -328,8 +328,12 @@ These follow from the measurements above, not from a target.
 - **A Durable Object's SQL limits.** The local suite runs on bun's SQLite,
   which is far more permissive. `scripts/e2e.mjs` is where SQL and socket
   behaviour is checked against workerd's real limits.
-- **`$across` at 1,000 workspaces.** The end-to-end suite covers 10 and 100;
-  `ACROSS_COUNTS=1000` runs it, but seeding takes a while.
+- **`$across` on Cloudflare at 1,000 workspaces.** A local run at 10, 100 and
+  1,000 (`WORKSPACE_SCENARIOS=across ACROSS_COUNTS=10,100,1000`) is in
+  `bench/results/local-2026-11-26-across.json`. It is discussed in
+  [docs/adr/0001-cross-workspace-reads.md](docs/adr/0001-cross-workspace-reads.md):
+  about 0.9 s at 100 workspaces and 20–25 s at 1,000, with one local workerd
+  running every object. A deployed run is still to be taken.
 - **R2 failing mid-run.** A client cannot cause it; the room tests cover it,
   and the staging drills cover a lost Durable Object.
 - **Cloudflare's own hardware.** The deployed-runtime run above is workerd on
