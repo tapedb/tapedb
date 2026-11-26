@@ -3,6 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 
 import { stableStringify } from "./tx-hash";
 import { assessHealth, type WorkspaceHealth } from "./health";
+import { explain, QueryProfiler, type ProfileSort, type QuerySource } from "./query-profile";
 import type { RoleClaim } from "../claims";
 import { apiError, discardBody, json } from "../http";
 import type { Env } from "../types";
@@ -135,7 +136,7 @@ import {
   type ResolvedWriteLimits,
   type WriteBudget,
 } from "./rate-limits";
-import { durableObjectSqlExecutor, type SqlValue, type SqlExecutor } from "./tx-sql";
+import { durableObjectSqlExecutor, profiledSqlExecutor, type SqlRow, type SqlValue, type SqlExecutor } from "./tx-sql";
 import { TxError, type TxErrorCode, type TxResult } from "./tx-types";
 import { acceptVerifiedSocket } from "./ws-handshake";
 import { offeredProtocols, SOCKET_PROTOCOL } from "../socket-protocol";
@@ -1450,6 +1451,30 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return this.vectorRowQuery(request);
     }
 
+    // The read statements that have cost the most (query-profile.ts). Admins
+    // and owners only: SQL text names every model and column, though never a
+    // value.
+    if (url.pathname === "/queries") {
+      if (request.method !== "GET" && request.method !== "DELETE") {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+        throw error;
+      }
+      if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
+        return apiError(403, "insufficient_role", "Reading query profiles needs an admin or owner.");
+      }
+      if (request.method === "DELETE") {
+        this.profiler.clear();
+        return json({ ok: true });
+      }
+      return this.queryProfile(url);
+    }
+
     // Who changed one row, and when (audit.ts). Admins and owners only: it
     // names other users.
     if (url.pathname === "/history") {
@@ -1892,13 +1917,28 @@ export class WorkspaceRoom extends DurableObject<Env> {
    */
   /** Each named query's plan, read once per room (sql-query.ts). */
   private readonly queryPlans = new Map<string, QueryAnalysis>();
+  /** Read statements by cost, for `GET /queries` (query-profile.ts). */
+  private readonly profiler = new QueryProfiler();
+
+  /** An executor whose reads are recorded under `source`. */
+  private profiledSql(source: QuerySource): SqlExecutor {
+    return profiledSqlExecutor(this.ctx.storage, (text, params, ms, returned, read) =>
+      this.profiler.record(source, text, params, ms, returned, read));
+  }
 
   private queryStorage(): SqlQueryStorage {
     const storage = this.ctx.storage;
+    const profiler = this.profiler;
     return {
       query(text, params) {
+        const started = Date.now();
         const cursor = storage.sql.exec(text, ...params);
         const rows = [...cursor.raw()] as SqlValue[][];
+        // The engine's own EXPLAIN when it first prepares a query is not a read.
+        if (!/^\s*EXPLAIN\b/i.test(text)) {
+          const read = (cursor as { rowsRead?: unknown }).rowsRead;
+          profiler.record("sql", text, params.length, Date.now() - started, rows.length, typeof read === "number" ? read : null);
+        }
         return { columns: cursor.columnNames, rows };
       },
       transactionSync: (fn) => storage.transactionSync(fn),
@@ -1959,7 +1999,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     try {
       const workspaceId = this.workspaceId;
       const claim = readTrustedRoleClaim(request, workspaceId);
-      const raw = durableObjectSqlExecutor(this.ctx.storage);
+      const raw = this.profiledSql("query");
       const run = () => executeQueryWithPageInfo(this.personal?.sql(raw) ?? raw, claim, envelope);
       const startedAt = Date.now();
       try {
@@ -2903,7 +2943,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const socketClaim = claimFromAttachment(attachment, this.workspaceId);
       const compiled = compileQuery(query, viewAccess(socketClaim));
       authorizeQuery(socketClaim, compiled);
-      const raw = durableObjectSqlExecutor(this.ctx.storage);
+      const raw = this.profiledSql("live");
       const run = () => executeCompiledQueryWithPageInfo(this.personal?.sql(raw) ?? raw, compiled, socketClaim);
       ({ data, pageInfo } = this.personal ? await this.personal.read(run) : run());
     } catch (error) {
@@ -3195,7 +3235,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const sockets = this.ctx.getWebSockets?.() ?? [];
     if (sockets.length === 0) return;
 
-    const sql = durableObjectSqlExecutor(this.ctx.storage);
+    const sql = this.profiledSql("live");
     const now = Math.floor(Date.now() / 1000);
     const runs = new Map<string, SubscriptionRun>();
 
@@ -3834,6 +3874,35 @@ export class WorkspaceRoom extends DurableObject<Env> {
       webhooksDead: gauges.webhooks?.dead ?? null,
       transaction: metrics.latency.timers.transaction,
       subscriptionUpdate: metrics.latency.timers.subscriptionUpdate,
+    });
+  }
+
+  /** `GET /queries`: the top statements, each explained by SQLite's planner. */
+  private queryProfile(url: URL): Response {
+    const sortParam = url.searchParams.get("sort") ?? "rowsRead";
+    const sorts: readonly ProfileSort[] = ["rowsRead", "totalMs", "count", "rowsReturned"];
+    if (!(sorts as readonly string[]).includes(sortParam)) {
+      return apiError(400, "invalid_profile_query", `sort is one of ${sorts.join(", ")}.`);
+    }
+    const limit = Number(url.searchParams.get("limit") ?? 20);
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      return apiError(400, "invalid_profile_query", "limit is from 1 to 100.");
+    }
+    // Model tables only: a scan of an engine table is not the app's to index.
+    const tables = new Map<string, string>(Object.values(NAMESPACES).map((namespace) => [namespace.table, namespace.apiName]));
+    const run = (text: string, params: SqlValue[]) => this.ctx.storage.sql.exec<SqlRow>(text, ...params).toArray();
+    const statements = this.profiler.top(sortParam as ProfileSort, limit).map(({ fullSql, params, ...stats }) => ({
+      ...stats,
+      ...(fullSql === null ? { plan: null } : explain(run, fullSql, params, tables) ?? { plan: null }),
+    }));
+    return json({
+      ok: true,
+      data: {
+        since: this.profiler.since,
+        recorded: this.profiler.size,
+        sort: sortParam,
+        statements,
+      },
     });
   }
 

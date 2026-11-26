@@ -405,6 +405,25 @@
           "(declaration)": "extends PresencePeersOptions"
         }
       },
+      "ProfiledStatement": {
+        "kind": "interface",
+        "shape": {
+          "id": "string",
+          "sources": "(\"query\" | \"live\" | \"sql\")[]",
+          "sql": "string",
+          "truncated": "boolean",
+          "count": "number",
+          "rowsReturned": "number",
+          "rowsRead": "number | null",
+          "totalMs": "number",
+          "maxMs": "number",
+          "lastAt": "number",
+          "plan": "{ id: number; parent: number; detail: string; }[] | null",
+          "fullScans": "string[] | undefined",
+          "indexes": "string[] | undefined",
+          "indexCandidates": "{ table: string; columns: string[]; }[] | undefined"
+        }
+      },
       "Query": {
         "kind": "class",
         "shape": {
@@ -423,6 +442,15 @@
         "shape": {
           "code": "string",
           "message": "string"
+        }
+      },
+      "QueryProfile": {
+        "kind": "interface",
+        "shape": {
+          "since": "number",
+          "recorded": "number",
+          "sort": "\"rowsRead\" | \"totalMs\" | \"count\" | \"rowsReturned\"",
+          "statements": "ProfiledStatement[]"
         }
       },
       "Result": {
@@ -1628,7 +1656,7 @@
       "AuthCommand (src/auth/types.ts)": {
         "kind": "interface",
         "shape": {
-          "action": "\"update\" | \"delete\" | \"create\" | \"findOne\" | \"findMany\" | \"count\" | \"updateMany\" | \"deleteMany\" | \"consumeOne\" | \"incrementOne\"",
+          "action": "\"update\" | \"delete\" | \"count\" | \"create\" | \"findOne\" | \"findMany\" | \"updateMany\" | \"deleteMany\" | \"consumeOne\" | \"incrementOne\"",
           "model": "string",
           "data": "Record<string, unknown> | undefined",
           "where": "AuthWhere[] | undefined",
@@ -1735,6 +1763,7 @@
           "$webhooks": "() => Promise<WebhookReport>",
           "$webhookDeliveries": "(query?: { status?: \"pending\" | \"delivered\" | \"dead\"; endpoint?: number; before?: number; limit?: number; }) => Promise<WebhookDelivery[]>",
           "$webhookRetry": "(request: WebhookRetryRequest) => Promise<WebhookRetryOutcome>",
+          "$queryProfile": "(options?: { sort?: QueryProfile[\"sort\"]; limit?: number; reset?: boolean; }) => Promise<QueryProfile | null>",
           "$flush": "() => Promise<void>",
           "$close": "() => void"
         }
@@ -2580,6 +2609,7 @@
     "invalid_part",
     "invalid_path",
     "invalid_presence",
+    "invalid_profile_query",
     "invalid_query",
     "invalid_query_params",
     "invalid_role",

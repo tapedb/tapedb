@@ -190,6 +190,7 @@ resumes exactly leaves `gap` null.
 
 | `$across(workspaceIds, { getToken?, concurrency? })` | `Across`: per model `findMany`, `findFirst`, `findPage` and `count` over those workspaces, each with its own claim (`getToken(workspaceId)`, required unless the client uses the development claim route), asking at most `concurrency` workspaces at once (default 64; claims included), merged in `orderBy` order; rows carry `workspaceId`; a page `cursor` holds a position per workspace. Results are `AcrossQuery` (awaitable, `subscribe`, `snapshot`, usable with `useLive`); live states add `errors` by workspace. A failed workspace rejects a one-off read with `AcrossError` (`errors`, `partial`) |
 | `$export()` | `AsyncIterable<ExportRecord>`: every row and file entry the claim may read |
+| `$queryProfile({ sort?, limit?, reset? }?)` | `Promise<QueryProfile \| null>`: the read statements that cost the workspace the most, each with SQLite's plan, full scans and index candidates; ADMIN or higher; see [Query profiles](#query-profiles) |
 | `$history({ model, id })` | `Promise<HistoryEntry[]>`: each recorded change to the row, oldest first, as `{ seq, at, sub, role, action }` with `action` `"insert"`, `"update"` or `"delete"`; ADMIN or higher; needs `audit: true` on the Worker |
 | `$query(name, params?)` | `Promise<rows>`: runs a named SQL query from the schema as the signed-in caller; `params` and the rows are typed from the query's `params` and `returns`. See [HTTP](#http) (`/sql`) for its errors |
 | `$flush()` | makes one delivery attempt for the queued writes and resolves when that attempt finishes. It does **not** wait for acknowledgement: an unreachable server leaves the entry queued and a retry is scheduled, so read it as "try now", not "is synced". a caller that must know a write landed has to track that itself |
@@ -460,6 +461,47 @@ set to the same whole seconds the body carries:
 `model` is `"workspace"` for the workspace-wide budget. The client already
 treats a `429` as retryable, so a queued offline write stays queued and is sent
 after the window rather than being dropped.
+
+### Query profiles
+
+`db.$queryProfile()` (`GET /engine/workspaces/:id/queries`) answers which reads
+cost this workspace the most and why. Admins and owners only. Every read
+statement the engine runs is recorded under its SQL text: a typed read
+(`query`), a live query's first answer or re-run (`live`), or a named SQL query
+(`sql`). For each statement it keeps how often it ran, the rows it returned,
+the rows SQLite read to produce them, and how long it took. The most
+expensive statements come back with SQLite's own plan (`EXPLAIN QUERY PLAN`).
+
+| Field | Meaning |
+| --- | --- |
+| `sql` | The statement as it ran, with `?` placeholders. Values are always bound, so no filter value, subject or field content is ever recorded. Cut to 4,000 characters (`truncated`) |
+| `sources` | Where it ran: `query`, `live`, `sql` |
+| `count`, `rowsReturned` | Runs, and rows returned across them |
+| `rowsRead` | Rows SQLite read across those runs, from the Durable Object's own cursor count (the figure Cloudflare bills reads by); null where the runtime doesn't report it, as in `bun test` |
+| `totalMs`, `maxMs` | Wall time. On Cloudflare the clock only advances at I/O, so a statement that never waits reads 0 ms; rank by `rowsRead` there |
+| `plan` | SQLite's plan steps, explained with every parameter bound to null (the plan's shape doesn't depend on the values) |
+| `fullScans` | Model tables the plan reads whole, without an index |
+| `indexes` | Indexes the plan uses |
+| `indexCandidates` | For each full scan, the columns the statement compares on that table: candidates for `.index()` in the schema |
+
+Options: `sort` (`rowsRead`, the default, or `totalMs`, `count`, `rowsReturned`),
+`limit` (1–100, default 20), and `reset: true`, which clears the record
+(`DELETE /queries`) and returns null.
+
+**Reading it.** A statement that is high in `rowsRead` and has a `fullScans`
+entry is reading whole tables. If its `indexCandidates` name a column you
+filter by, add `.index()` to that field and run `tapedb migrate dev`. If the
+candidates are columns you rarely filter by, rewrite the query: narrow it with
+an indexed field, or `take` fewer rows. A statement with a high `rowsRead` and
+no full scan returns many rows; page it. `live` statements run on every write
+that touches their models, so a scan there costs more than its `count`
+suggests.
+
+Like `/metrics`, the record is kept in the Durable Object's memory, starts again
+when the object does (`since`), and holds at most 200 statements: when full, the
+statement that has cost the fewest rows gives way. Recording a read costs one
+hash of its SQL text and a map update; nothing is written to SQLite. Nothing
+here changes an index or a migration.
 
 ### Vector search
 
@@ -932,6 +974,7 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `GET /engine/workspaces/:id/webhooks` | ADMIN or higher; per-endpoint delivery health and the retry schedule in force → `{ ok, data: WebhookReport }`. See [Webhook operations](#webhook-operations) |
 | `GET /engine/workspaces/:id/webhooks/deliveries` | ADMIN or higher; delivery bookkeeping, newest transaction first. `?status=pending\|delivered\|dead`, `?endpoint=<index>`, `?before=<seq>`, `?limit=` (1–200). 400 `invalid_webhook_query` |
 | `POST /engine/workspaces/:id/webhooks/retry` | ADMIN or higher; `{ ids }` or `{ status: "pending"\|"dead", endpoint?, limit? }` makes deliveries due now → `{ ok, data: { requeued, ids, skipped, more } }`. 400 `invalid_webhook_retry` |
+| `GET /engine/workspaces/:id/queries?sort=&limit=` | the costliest read statements with their plans → `{ ok, data: QueryProfile }`; ADMIN or higher; `DELETE` clears it. See [Query profiles](#query-profiles) |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
 | `GET /engine/workspaces/:id/history?model=…&id=…` | one row's recorded changes → `{ ok, data: HistoryEntry[] }`; ADMIN or higher; 409 `audit_disabled` without `audit: true` |
 | `GET /engine/workspaces/:id/log?before=&limit=&model=` | the transaction log, newest first → `{ ok, data: { entries, next } }`; ADMIN or higher. Each entry: `seq`, `at`, the writer (`sub`, `role`; null without `audit: true`), `rows` and `counts` (rows per model and op) and up to 100 `ops`. Values are shown only for models whose read rule is a role the caller meets, never for personal fields; other ops list the fields in `hidden`. `limit` 1–100 (default 50); `next` is the `before` of the following page, null at the start of the retained log |
