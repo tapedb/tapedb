@@ -7,26 +7,38 @@ import { stripVTControlCharacters } from "node:util";
 import { confirm, interactive, select } from "./prompts";
 export { ask, confirm, interactive } from "./prompts";
 
-export function installProject(root: string, version: string, auth=false): void {
-  const path = join(root, "package.json");
-  const pkg = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : { private: true, type: "module" };
+/**
+ * The project's package.json after init: tapedb, wrangler and the CLI the printed
+ * instructions name. Every message says `npx tapedb-cli …`, and that bin comes from
+ * @tapedb/cli; without it in the project, npx resolves the name on the registry,
+ * where the deprecated unscoped `tapedb-cli` package answers with an old engine.
+ */
+export function projectManifest(existing: Record<string, any> | null, version: string, auth = false, root?: string): Record<string, any> {
+  const pkg = existing ?? { private: true, type: "module" };
   pkg.dependencies ??= {};
   pkg.devDependencies ??= {};
   // A project that already depends on tapedb keeps its entry; syncTapedb below brings an older
   // installed copy up to this CLI's version after the install.
   if (!pkg.dependencies["@tapedb/tapedb"] && !pkg.devDependencies["@tapedb/tapedb"]) pkg.dependencies["@tapedb/tapedb"] = version;
   if (!pkg.dependencies.wrangler && !pkg.devDependencies.wrangler) pkg.devDependencies.wrangler = "^4.163.0";
+  if (!pkg.dependencies["@tapedb/cli"] && !pkg.devDependencies["@tapedb/cli"]) pkg.devDependencies["@tapedb/cli"] = version;
   if(auth){
     pkg.dependencies["better-auth"] ??= "^1.7.25";
     pkg.devDependencies.esbuild ??= "0.28.2";
     pkg.scripts ??= {};
     pkg.scripts["tapedb:auth:build"] ??= "tapedb auth build";
-    if(existsSync(join(root,"tapedb.auth.tsx"))){pkg.dependencies.react??="^19.0.0";pkg.dependencies["react-dom"]??="^19.0.0";pkg.devDependencies["@types/react"]??="19";pkg.devDependencies["@types/react-dom"]??="19";}
+    if(root && existsSync(join(root,"tapedb.auth.tsx"))){pkg.dependencies.react??="^19.0.0";pkg.dependencies["react-dom"]??="^19.0.0";pkg.devDependencies["@types/react"]??="19";pkg.devDependencies["@types/react-dom"]??="19";}
   }
   pkg.scripts ??= {};
   for (const [name, command] of Object.entries({ "tapedb:dev": "tapedb dev", "tapedb:studio": "tapedb studio", "tapedb:deploy": "tapedb deploy" })) {
     pkg.scripts[name] ??= command;
   }
+  return pkg;
+}
+
+export function installProject(root: string, version: string, auth=false): void {
+  const path = join(root, "package.json");
+  const pkg = projectManifest(existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : null, version, auth, root);
   writeFileSync(path, JSON.stringify(pkg, null, 2) + "\n");
   const manager = packageManager(root);
   if (!["npm", "bun", "pnpm", "yarn"].includes(manager)) throw new Error("Unsupported package manager: " + manager);
@@ -69,6 +81,15 @@ export function syncTapedb(root: string, version: string, run: PackageRunner = r
   const args = manager === "npm" ? ["install", ...(dev ? ["--save-dev"] : []), `@tapedb/tapedb@${version}`]
     : ["add", ...(dev ? [manager === "bun" ? "--dev" : "-D"] : []), `@tapedb/tapedb@${version}`];
   if (run(manager, args, root) !== 0) throw new Error(`Updating @tapedb/tapedb to ${version} failed; run \`${manager} ${args.join(" ")}\` in the project.`);
+  // @tapedb/cli pins the core exactly, so a project that has it must move with it.
+  const cliSpec = pkg.devDependencies?.["@tapedb/cli"] ?? pkg.dependencies?.["@tapedb/cli"];
+  if (cliSpec !== undefined && olderExactVersion(cliSpec, version)) {
+    const cliDev = !pkg.dependencies?.["@tapedb/cli"];
+    const cliArgs = manager === "npm" ? ["install", ...(cliDev ? ["--save-dev"] : []), `@tapedb/cli@${version}`]
+      : ["add", ...(cliDev ? [manager === "bun" ? "--dev" : "-D"] : []), `@tapedb/cli@${version}`];
+    console.log(`  updated  @tapedb/cli ${cliSpec} → ${version}`);
+    if (run(manager, cliArgs, root) !== 0) throw new Error(`Updating @tapedb/cli to ${version} failed; run \`${manager} ${cliArgs.join(" ")}\` in the project.`);
+  }
   return installed;
 }
 
