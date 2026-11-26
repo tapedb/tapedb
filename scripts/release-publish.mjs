@@ -13,7 +13,7 @@
  *
  *   NPM_TOKEN          granular token with publish rights, no bypass 2FA
  *   RELEASE_TAG        optional; defaults to the tag on HEAD (v0.2.1)
- *   --dry-run          print the plan and the preconditions, stage nothing
+ *   --dry-run          print the plan, check preconditions and build, stage nothing
  *   --check            preconditions only, exit non-zero if they fail
  */
 import { execFileSync } from "node:child_process";
@@ -109,6 +109,20 @@ if (checkOnly) {
   console.log("release-publish: preconditions pass");
   process.exit(0);
 }
+// dist/ is ignored by git, so a clean tree says nothing about it: whatever an
+// earlier build left there would be packed as this release. 0.4.0 shipped a
+// stale dist this way. Build from the tagged source every time.
+console.log("building dist/ from the tagged source");
+rmSync("dist", { recursive: true, force: true });
+try {
+  execFileSync("bun", ["run", "build"], { stdio: "inherit" });
+} catch {
+  fail("bun run build failed; nothing staged");
+}
+if (run("git", ["status", "--porcelain"])) {
+  fail("the build changed tracked files; a release is staged from what the tag holds");
+}
+
 if (dryRun) {
   console.log("release-publish: dry run, nothing staged");
   process.exit(0);
