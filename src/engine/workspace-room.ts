@@ -50,6 +50,7 @@ import {
   queryMatchesTouched,
   touchedNamespacesFromEnvelope,
 } from "./subscriptions";
+import { WorkspaceMetrics, type MetricsSnapshot } from "./metrics";
 import { storageHandler } from "./storage-routes";
 import { exportStream } from "./export";
 import { importWorkspace, assertEmpty } from "./import-workspace";
@@ -328,6 +329,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
   private vectorErasureRun: { key: string; erasure: VectorErasureHook } | null = null;
   /** The clock budget windows are measured against. */
   private readonly clock: () => number;
+  /**
+   * Counters and latency histograms for this object (metrics.ts). In memory
+   * and bounded: a metric that cost a transaction would slow the path it
+   * measures. The numbers start again when the object restarts, which
+   * `/metrics` says in its own answer.
+   */
+  private readonly metrics = new WorkspaceMetrics();
+  /**
+   * Milliseconds spent restoring so far, across the steps of one restore. A
+   * restore larger than a boot's budget continues on alarms, so the figure
+   * worth reporting is the sum, not the last step.
+   */
+  private recoveryElapsedMs = 0;
 
   constructor(ctx: DurableObjectState, env: Env, options: WorkspaceRoomOptions = {}) {
     super(ctx, env);
@@ -535,12 +549,15 @@ export class WorkspaceRoom extends DurableObject<Env> {
     if (!recovery.recovered && recovery.reason === "unavailable") {
       // R2 did not answer. The progress is kept; try again shortly.
       console.error("workspace_recovery_r2_unavailable", { workspaceId: this.workspaceId, error: recovery.error });
+      this.recoveryElapsedMs += Date.now() - started;
+      this.metrics.count("recovery.failures");
       this.recovering = true;
       await this.ctx.storage.setAlarm(Date.now() + RECOVERY_R2_RETRY_MS);
       return;
     }
     if (!recovery.recovered && recovery.reason === "paused") {
       console.log("workspace_recovering", { workspaceId: this.workspaceId, stepMs: Date.now() - started, slowestMs: slowest, slowestUnit });
+      this.recoveryElapsedMs += Date.now() - started;
       this.recovering = true;
       await this.ctx.storage.setAlarm(Date.now());
       return;
@@ -553,6 +570,16 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return;
     }
     if (recovery.recovered) {
+      // Every step this restore took, including the ones that paused. A
+      // workspace that was already populated recovers in one step of
+      // near-zero work, which is why this is recorded only when a restore
+      // actually ran.
+      this.recoveryElapsedMs += Date.now() - started;
+      if (recovery.replayed > 0 || recovery.rows > 0 || wasRecovering) {
+        this.metrics.count("recovery.runs");
+        this.metrics.observe("recovery", this.recoveryElapsedMs);
+      }
+      this.recoveryElapsedMs = 0;
       console.log("workspace_recovered", {
         workspaceId: this.workspaceId,
         baseSeq: recovery.baseSeq,
@@ -1386,6 +1413,26 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return json({ ok: true, data: rowHistory(durableObjectSqlExecutor(this.ctx.storage), model.table, id) });
     }
 
+    // Counters, latency and the durable gauges (metrics.ts). Admins and owners
+    // only: the numbers describe how hard the workspace is being worked, which
+    // is operational information, not a member's business.
+    if (url.pathname === "/metrics") {
+      if (request.method !== "GET") {
+        return apiError(405, "method_not_allowed", `${request.method} is not supported for ${url.pathname}.`);
+      }
+      let claim: RoleClaim;
+      try {
+        claim = readTrustedRoleClaim(request, this.workspaceId);
+      } catch (error) {
+        if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
+        throw error;
+      }
+      if (claim.role < WORKSPACE_ROLE_LEVELS.ADMIN) {
+        return apiError(403, "insufficient_role", "Reading workspace metrics needs an admin or owner.");
+      }
+      return json({ ok: true, ...this.metricsDocument() });
+    }
+
     // The transaction log, newest first (log-read.ts). Admins and owners only:
     // it names writers, and shows values only for models they may read in full.
     if (url.pathname === "/log") {
@@ -1636,6 +1683,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
       // commit, so only writes that actually landed spend budget.
       const budget = this.chargeWriteBudget(sql, envelope);
       let result: TxResult;
+      // Timed around the write itself, not the request: the webhook drain and
+      // the invalidation below are deliberately after the commit, and folding
+      // them in would report a latency the writer never waited for.
+      const startedAt = Date.now();
       try {
         result = this.personal
           ? await this.ctx.storage.transaction(() => runPersonalTransaction(sql, this.personal!, workspaceId, claim, envelope, this.config))
@@ -1643,6 +1694,13 @@ export class WorkspaceRoom extends DurableObject<Env> {
       } catch (error) {
         if (budget !== null) releaseWriteBudget(sql, budget);
         throw error;
+      } finally {
+        this.metrics.observe("transaction", Date.now() - startedAt);
+      }
+      if (result.deduped) this.metrics.count("transactions.deduped");
+      else {
+        this.metrics.count("transactions.committed");
+        this.metrics.count("transactions.rows", result.applied);
       }
       try {
         await this.scheduleNextDurabilityAlarm(Date.now());
@@ -1678,6 +1736,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
       return json({ ok: true, result });
     } catch (error) {
       if (error instanceof TxError) {
+        this.metrics.count("transactions.refused");
+        // A conflict is counted as well as refused: it means two writers met,
+        // which is read differently from a permission or validation refusal.
+        if (error.code === "conflict") this.metrics.count("transactions.conflicts");
         const response = json(
           { ok: false, error: error.toJSON() },
           statusForTxError(error.code)
@@ -1732,8 +1794,16 @@ export class WorkspaceRoom extends DurableObject<Env> {
         analysis = analyzeQuery(storage, query);
         this.queryPlans.set(name, analysis);
       }
-      return json({ ok: true, data: { rows: runQuery(storage, analysis, query, claim, body.params) } });
+      const startedAt = Date.now();
+      try {
+        const rows = runQuery(storage, analysis, query, claim, body.params);
+        this.metrics.count("sql.served");
+        return json({ ok: true, data: { rows } });
+      } finally {
+        this.metrics.observe("sql", Date.now() - startedAt);
+      }
     } catch (error) {
+      this.metrics.count("sql.refused");
       if (error instanceof SqlQueryError) return apiError(error.status, error.code, error.message);
       if (error instanceof TxError) return apiError(statusForQueryError(error.code), error.code, error.message);
       return apiError(400, "query_failed", errorMessage(error));
@@ -1762,10 +1832,19 @@ export class WorkspaceRoom extends DurableObject<Env> {
       const claim = readTrustedRoleClaim(request, workspaceId);
       const raw = durableObjectSqlExecutor(this.ctx.storage);
       const run = () => executeQueryWithPageInfo(this.personal?.sql(raw) ?? raw, claim, envelope);
-      const { data, pageInfo } = this.personal ? await this.personal.read(run) : run();
-      return json({ ok: true, data, pageInfo });
+      const startedAt = Date.now();
+      try {
+        const { data, pageInfo } = this.personal ? await this.personal.read(run) : run();
+        this.metrics.count("queries.served");
+        return json({ ok: true, data, pageInfo });
+      } finally {
+        // Recorded whether the query answered or was refused: a permission
+        // check that scans before it refuses costs the same time either way.
+        this.metrics.observe("query", Date.now() - startedAt);
+      }
     } catch (error) {
       if (error instanceof TxError) {
+        this.metrics.count("queries.refused");
         return json(
           { ok: false, error: error.toJSON() },
           statusForQueryError(error.code)
@@ -2009,6 +2088,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     });
     if (!accepted.accepted) return accepted.response;
 
+    this.metrics.count("sockets.accepted");
     const connections = Math.max(1, this.ctx.getWebSockets().length);
     this.send(accepted.server, {
       type: "session:ready",
@@ -2159,6 +2239,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
   webSocketClose(ws: WebSocket, code: number, reason: string): void {
     if (this.erased) { this.closeSocket(ws, 4410, "workspace erased"); return; }
+    this.countSocketClosed(ws);
     this.dropSubscriptionResults(ws);
     this.removePresence(ws);
     this.forgetSocketState(ws);
@@ -2171,10 +2252,23 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
   webSocketError(ws: WebSocket): void {
     if (this.erased) { this.closeSocket(ws, 4410, "workspace erased"); return; }
+    this.countSocketClosed(ws);
     this.dropSubscriptionResults(ws);
     this.removePresence(ws);
     this.forgetSocketState(ws);
     this.closeSocket(ws, 1011, "websocket error");
+  }
+
+  /**
+   * Counts a socket leaving, and the live queries that leave with it: a client
+   * that disconnects without unsubscribing would otherwise leave
+   * `subscriptions.opened` permanently ahead of `subscriptions.closed`, and
+   * the difference is the figure an operator reads as a leak.
+   */
+  private countSocketClosed(ws: WebSocket): void {
+    this.metrics.count("sockets.closed");
+    const open = this.readSocket(ws)?.subscriptions.length ?? 0;
+    this.metrics.count("subscriptions.closed", open);
   }
 
   /** A socket's attachment, with any state stored past its 16 KiB. */
@@ -2361,6 +2455,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
           : { type: "topic:message", topic, seq, message: payload.message, from, ...(origin ? { origin } : {}) }
       )
     );
+    this.metrics.count("broadcast.messages");
     const now = Math.floor(Date.now() / 1000);
     for (const other of this.ctx.getWebSockets?.() ?? []) {
       if (other === ws) continue;
@@ -2573,6 +2668,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
   }
 
   private broadcastPresence(target: string, excludeClientId?: string): void {
+    // Counted here rather than in each handler: set, clear, cursor, drag and a
+    // socket leaving all converge on this one publish, so one count per
+    // accepted change cannot drift from what peers were actually told.
+    this.metrics.count("presence.updates");
     const peers = this.presencePeers(target, excludeClientId);
     for (const { ws, attachment } of this.socketsForTarget(target)) {
       if (excludeClientId && attachment.clientId === excludeClientId) continue;
@@ -2694,6 +2793,9 @@ export class WorkspaceRoom extends DurableObject<Env> {
       id,
       query as QueryDocument
     );
+    // seq 1 means this id is new on this socket; a higher seq is the same
+    // subscription re-pointed at a different query, which opens nothing.
+    if (subscription.seq === 1) this.metrics.count("subscriptions.opened");
     this.writeSocket(ws, attachment);
     this.resultsFor(attachment.clientId).set(id, { data, pageInfo });
     this.send(ws, {
@@ -2725,6 +2827,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
       (subscription) => subscription.id !== id
     );
     if (remaining.length !== attachment.subscriptions.length) {
+      this.metrics.count("subscriptions.closed", attachment.subscriptions.length - remaining.length);
       attachment.subscriptions = remaining;
       this.writeSocket(ws, attachment);
     }
@@ -2939,7 +3042,23 @@ export class WorkspaceRoom extends DurableObject<Env> {
     }, DEFAULT_INVALIDATION_DEBOUNCE_MS);
   }
 
+  /**
+   * Re-runs every live query a write touched and pushes what changed.
+   *
+   * Timed as one pass, which is what "subscription update latency" means from
+   * the engine's side: the time from a committed write to the last socket
+   * having its update queued. It does not include the trip to the client.
+   */
   private async flushInvalidations(touched: ReadonlySet<string>): Promise<void> {
+    const startedAt = Date.now();
+    try {
+      await this.flushInvalidationsInner(touched);
+    } finally {
+      this.metrics.observe("subscriptionUpdate", Date.now() - startedAt);
+    }
+  }
+
+  private async flushInvalidationsInner(touched: ReadonlySet<string>): Promise<void> {
     if (this.erased) return;
     // `getWebSockets` is part of the Durable Object runtime. Guard the call so
     // non-WebSocket harnesses (and older test doubles) do not crash a deferred
@@ -3010,6 +3129,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
 
         if (previous === undefined) {
           subscription.seq += 1;
+          this.metrics.count("subscriptions.updates");
           this.send(ws, {
             type: "query:data",
             id: subscription.id,
@@ -3024,6 +3144,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
         const diffs = diffQueryResults(previous.data, data);
         if (diffs === null) {
           subscription.seq += 1;
+          this.metrics.count("subscriptions.updates");
           this.send(ws, {
             type: "query:data",
             id: subscription.id,
@@ -3051,6 +3172,10 @@ export class WorkspaceRoom extends DurableObject<Env> {
         }
 
         subscription.seq += 1;
+        // One update, however many diff frames carry it: an operator counting
+        // updates is asking how often clients were woken, not how many frames
+        // the wire took.
+        this.metrics.count("subscriptions.updates");
         for (const [index, diff] of diffs.entries()) {
           const message: QueryDiffMessage = {
             type: "query:diff",
@@ -3131,6 +3256,7 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const workspaceId = this.workspaceId;
 
     try {
+      const startedAt = Date.now();
       const tick = await durabilityTick(
         this.roomEnv.DATA,
         this.ctx.storage.sql,
@@ -3138,10 +3264,21 @@ export class WorkspaceRoom extends DurableObject<Env> {
         Date.now(),
         { config: this.config }
       );
+      // The pass, not one segment: a tick drains several, and what an operator
+      // wants to know is how long the object spent getting the log to R2.
+      if (tick.flushed || tick.flushError) this.metrics.observe("flush", Date.now() - startedAt);
+      if (tick.flushed) this.metrics.count("durability.flushes");
+      if (tick.flushError) this.metrics.count("durability.flushFailures");
+      if (tick.snapshot) {
+        this.metrics.count(tick.snapshot.snapshotted ? "durability.snapshots" : "durability.snapshotFailures");
+      }
       // A failed flush is retried with backoff; say so, or nobody knows the
       // log is not reaching R2.
       if (tick.flushError) console.error("workspace_flush_failed", { workspaceId, error: tick.flushError });
     } catch (error) {
+      // A tick that threw reached neither branch above, so count the failure
+      // here or a crashing flusher looks idle rather than broken.
+      this.metrics.count("durability.flushFailures");
       console.error("workspace_durability_tick_failed", {
         workspaceId,
         error: String(error),
@@ -3446,6 +3583,95 @@ export class WorkspaceRoom extends DurableObject<Env> {
    * tell pending from fenced from dead-lettered, and read a stuck erasure's
    * phase without listing R2.
    */
+  /**
+   * What `/metrics` answers.
+   *
+   * Three parts, kept apart because they are trustworthy in different ways:
+   *
+   * - `counters` and `latency` come from this object's memory and describe its
+   *   lifetime only (`restartsCounters`). Quantiles are bucket estimates.
+   * - `gauges` are read here, now, from SQLite and the socket list. They are
+   *   exact and survive a restart, because they are state rather than history.
+   * - `measurement` says which is which, so a dashboard does not present an
+   *   estimate as a reading.
+   *
+   * Everything is a count, a size or a duration. No row values, no claims, no
+   * subjects and no personal fields pass through here: `storageBytes` is the
+   * size of the database, not a description of what is in it.
+   */
+  private metricsDocument(): {
+    metrics: MetricsSnapshot;
+    gauges: Record<string, unknown>;
+    measurement: Record<string, string>;
+  } {
+    const sql = this.ctx.storage.sql;
+    const sockets = this.ctx.getWebSockets?.() ?? [];
+    let subscriptions = 0;
+    let presenceTargetCount = 0;
+    let topicCount = 0;
+    for (const socket of sockets) {
+      const attachment = this.readSocket(socket);
+      if (attachment === null) continue;
+      subscriptions += attachment.subscriptions.length;
+      presenceTargetCount += presenceTargets(attachment).length;
+      topicCount += attachment.topics?.length ?? 0;
+    }
+
+    const flush = readFlushState(sql);
+    const snapshot = readSnapshotState(sql);
+    const now = Date.now();
+    const highWater = this.highWaterSeq();
+    const txLog = sql.exec<CountRow>(`SELECT COUNT(*) AS total FROM "_tx_log"`).one().total;
+
+    return {
+      metrics: this.metrics.snapshot(),
+      gauges: {
+        // Live, from the socket list: what is connected right now.
+        sockets: sockets.length,
+        subscriptions,
+        presenceTargets: presenceTargetCount,
+        topics: topicCount,
+        // Bytes SQLite reports for this object's database, including the
+        // engine's own tables and any free pages it has not returned.
+        storageBytes: sql.databaseSize,
+        txLogRows: txLog,
+        durability: {
+          seq: highWater,
+          flushedSeq: flush.lastSeq,
+          // How far the log is ahead of R2. Non-zero is normal between
+          // alarms; growing without falling back is the thing to watch.
+          pendingSeq: Math.max(0, highWater - flush.lastSeq),
+          hasPending: flush.hasPending,
+          lastFlushAt: flush.lastFlushAt,
+          lastFlushAgeMs: flush.lastFlushAt === null ? null : Math.max(0, now - flush.lastFlushAt),
+          flushAttempts: flush.attempts,
+          nextAttemptAt: flush.nextAttemptAt,
+          lastFlushError: flush.lastError,
+          snapshotSeq: snapshot.baseSeq,
+          snapshotStatus: snapshot.status,
+          snapshotAgeMs: snapshot.completedAt === null ? null : Math.max(0, now - snapshot.completedAt),
+        },
+        // In progress now, not a count of past restores; `metrics.counters`
+        // carries those.
+        recovering: this.recovering,
+        ...(webhooksConfigured(this.config.webhooks)
+          ? { webhooks: webhookCounts(durableObjectSqlExecutor(this.ctx.storage)) }
+          : {}),
+      },
+      measurement: {
+        counters: "measured, since this object started; reset by eviction",
+        "latency.sumMs": "measured",
+        "latency.maxMs": "measured",
+        "latency.meanMs": "measured",
+        "latency.p50Ms": "estimated from buckets",
+        "latency.p95Ms": "estimated from buckets",
+        "latency.p99Ms": "estimated from buckets",
+        gauges: "measured, read at request time",
+        "gauges.storageBytes": "measured; includes engine tables and free pages",
+      },
+    };
+  }
+
   private async status(): Promise<Response> {
     const sql = this.ctx.storage.sql;
     const migrations = sql

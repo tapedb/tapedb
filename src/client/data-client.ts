@@ -83,6 +83,51 @@ export interface HistoryEntry {
   action: "insert" | "update" | "delete";
 }
 
+/**
+ * What `GET /metrics` answers for one workspace.
+ *
+ * Deliberately loose on the inner shapes: the counter and timer names are the
+ * engine's, and a client pinned to today's list would refuse to read a
+ * workspace that gained one. The parts that a reader must not get wrong are
+ * typed — the window the counters cover, and that the quantiles are estimates.
+ */
+export interface WorkspaceMetricsReport {
+  metrics: {
+    /** When the object serving this workspace started counting, ms since the epoch. */
+    since: number;
+    uptimeMs: number;
+    /**
+     * Always true: a Durable Object is evicted when idle and starts again from
+     * zero, so `counters` describe one object's lifetime, not the workspace's.
+     */
+    restartsCounters: true;
+    counters: Record<string, number>;
+    latency: {
+      /** Always true: quantiles are bucket bounds, not samples. */
+      estimated: true;
+      bucketsMs: number[];
+      timers: Record<string, {
+        count: number;
+        /** Exact. */
+        sumMs: number;
+        /** Exact. */
+        maxMs: number;
+        /** Exact; null when nothing was recorded. */
+        meanMs: number | null;
+        /** The bound of the bucket the rank falls in; null when nothing was recorded. */
+        p50Ms: number | null;
+        p95Ms: number | null;
+        p99Ms: number | null;
+        buckets: number[];
+      }>;
+    };
+  };
+  /** Read from storage and the socket list when you asked: exact, and survives a restart. */
+  gauges: Record<string, unknown>;
+  /** Each field above labelled `measured` or `estimated`. */
+  measurement: Record<string, string>;
+}
+
 export interface FetchResponseLike {
   body?: ReadableStream<Uint8Array> | null;
   ok: boolean;
@@ -611,6 +656,20 @@ class DataClientImpl {
       throw new ServerError(error?.code ?? "http_error", error?.message ?? `History failed with HTTP ${response.status}.`, response.status);
     }
     return body.data;
+  }
+
+  async metrics(): Promise<WorkspaceMetricsReport> {
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(
+      `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/metrics`,
+      { method: "GET", headers: { authorization: `Bearer ${token}` } }
+    );
+    const body = (await response.json().catch(() => null)) as ({ ok?: boolean } & Partial<WorkspaceMetricsReport>) | null;
+    if (!response.ok || !body?.ok || !body.metrics || !body.gauges) {
+      const error = readServerError(body);
+      throw new ServerError(error?.code ?? "http_error", error?.message ?? `Metrics failed with HTTP ${response.status}.`, response.status);
+    }
+    return { metrics: body.metrics, gauges: body.gauges, measurement: body.measurement ?? {} };
   }
 
   async *exportRecords(): AsyncGenerator<Record<string, unknown>> {
