@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.1 - 2026-11-26
+
+- 0.4.0 on npm was packed from a stale build: its `dist/` predates 0.4.0 and has none of its code (no `/metrics`, `/webhooks`, `/queries`, `$across` concurrency). 0.4.1 is 0.4.0 as tagged, built from its source. Use 0.4.1; 0.4.0 is deprecated.
+
+- `bun run release:publish` deletes `dist/` and builds it from the tagged source before staging, and refuses if the build changes tracked files. `dist/` is ignored by git, so the clean-tree check could not see what an earlier build had left there.
+
+- AUTH-COMPATIBILITY.md said three concurrent redemptions of one authorization code produce exactly one token. They produce at most one: Better Auth treats a reused code as a replay and revokes what it issued, so when a losing request's revocation lands first the redemption that consumed the code is refused too (`grant revoked during token issuance`). The test asserted exactly one and failed about one run in six; it now asserts at most one, every other answer `invalid_grant`.
+
 ## 0.4.0 - 2026-11-26
 
 - `GET /engine/workspaces/:id/metrics` answers how hard one workspace is being worked: counters for writes, reads, named SQL, sockets, live queries, presence, broadcast, flushes, snapshots and recoveries; latency histograms for `query`, `transaction`, `sql`, `subscriptionUpdate`, `flush`, `snapshot` and `recovery`; and gauges read from SQLite and the socket list — connections, live queries, `storageBytes`, `txLogRows` and the durability state, including how far ahead of R2 the log is. ADMIN or higher. It carries counts, sizes and durations only: no row values, no subjects, no claims, nothing from a personal field.
