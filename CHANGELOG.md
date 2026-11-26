@@ -36,6 +36,19 @@
   unindexed filter costs about 7x an indexed one at 20,000 rows and the gap
   grows; cursor pagination does not degrade with depth.
 
+- `bun run bench:e2e` widens the load scenario into a suite: writes at three
+  concurrencies and three transaction sizes, a contended row, bursts and a
+  sustained load; eleven reads through the client at two sizes; live-update,
+  presence and broadcast fan-out at 10/50/200 sockets; how far R2 trails
+  commits under load, from `/metrics`; and many workspaces, from first touch to
+  `$across` at 10 and 100 with a refused token. It runs against `tapedb dev` or
+  a deployed Worker, records every measurement with its environment in one
+  file, and `scripts/bench-report.mjs` renders it. BENCHMARKS.md gains its run
+  and four more bottlenecks: presence fan-out growing with the square of the
+  room, one writer saturating past about four concurrent writers, R2 trailing
+  commits by up to the 30 s alarm delay, and first-touch and per-workspace
+  `$across` cost.
+
 - `bun run typecheck` now covers `scripts/` as well as `src` and `test/types`,
   and `scripts/soak.ts` runs again. It had been broken since the deployment
   config stopped being a module global: `runTransaction`, `recordFileEntry`

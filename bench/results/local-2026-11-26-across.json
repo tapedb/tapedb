@@ -1,0 +1,157 @@
+{
+  "tapedb": "0.3.6",
+  "commit": "7b8aabfdc87db94804122168ac0116375b2d84db",
+  "target": "local (tapedb dev, workerd)",
+  "url": null,
+  "jurisdiction": null,
+  "startedAt": "2026-11-26T07:31:05.388Z",
+  "finishedAt": "2026-11-26T07:37:26.872Z",
+  "runner": {
+    "node": "v22.23.5",
+    "platform": "linux",
+    "arch": "x64",
+    "cpus": 2,
+    "cpuModel": "Intel(R) Xeon(R) Processor @ 2.10GHz",
+    "memoryBytes": 8413396992
+  },
+  "config": {
+    "ACROSS_READS": "3",
+    "ACROSS_COUNTS": "10,100,1000",
+    "ACROSS_SEED_CONCURRENCY": "32",
+    "ACROSS_ROWS": "2"
+  },
+  "measurements": [
+    {
+      "workload": "workspaces",
+      "scenario": "across",
+      "params": {
+        "workspaces": 10,
+        "rowsPerWorkspace": 2,
+        "reads": 3
+      },
+      "metrics": {
+        "rows": 20,
+        "seedMs": 1093,
+        "findManyMs": {
+          "n": 3,
+          "mean": 137.4,
+          "p50": 129.5,
+          "p95": 159.3,
+          "p99": 159.3,
+          "max": 159.3
+        },
+        "findPage50Ms": {
+          "n": 3,
+          "mean": 117.5,
+          "p50": 108.4,
+          "p95": 139.5,
+          "p99": 139.5,
+          "max": 139.5
+        },
+        "countMs": {
+          "n": 3,
+          "mean": 115.4,
+          "p50": 112.5,
+          "p95": 128.9,
+          "p99": 128.9,
+          "max": 128.9
+        },
+        "clientHeapGrowthBytes": 0,
+        "partialFailure": {
+          "failedWorkspaces": 1,
+          "partialRows": 18,
+          "code": "AcrossError"
+        },
+        "partialFailureMs": 120
+      }
+    },
+    {
+      "workload": "workspaces",
+      "scenario": "across",
+      "params": {
+        "workspaces": 100,
+        "rowsPerWorkspace": 2,
+        "reads": 3
+      },
+      "metrics": {
+        "rows": 200,
+        "seedMs": 8095,
+        "findManyMs": {
+          "n": 3,
+          "mean": 934.2,
+          "p50": 934.1,
+          "p95": 1004.9,
+          "p99": 1004.9,
+          "max": 1004.9
+        },
+        "findPage50Ms": {
+          "n": 3,
+          "mean": 954.5,
+          "p50": 963.9,
+          "p95": 1167,
+          "p99": 1167,
+          "max": 1167
+        },
+        "countMs": {
+          "n": 3,
+          "mean": 847.3,
+          "p50": 856.4,
+          "p95": 919.4,
+          "p99": 919.4,
+          "max": 919.4
+        },
+        "clientHeapGrowthBytes": 0,
+        "partialFailure": {
+          "failedWorkspaces": 1,
+          "partialRows": 198,
+          "code": "AcrossError"
+        },
+        "partialFailureMs": 865
+      }
+    },
+    {
+      "workload": "workspaces",
+      "scenario": "across",
+      "params": {
+        "workspaces": 1000,
+        "rowsPerWorkspace": 2,
+        "reads": 3
+      },
+      "metrics": {
+        "rows": 2000,
+        "seedMs": 95601,
+        "findManyMs": {
+          "n": 3,
+          "mean": 26376.3,
+          "p50": 24931,
+          "p95": 31748.3,
+          "p99": 31748.3,
+          "max": 31748.3
+        },
+        "findPage50Ms": {
+          "n": 3,
+          "mean": 20829.2,
+          "p50": 20665.2,
+          "p95": 22821.3,
+          "p99": 22821.3,
+          "max": 22821.3
+        },
+        "countMs": {
+          "n": 3,
+          "mean": 19926.9,
+          "p50": 19357.5,
+          "p95": 21470.8,
+          "p99": 21470.8,
+          "max": 21470.8
+        },
+        "clientHeapGrowthBytes": 94156448,
+        "partialFailure": {
+          "failedWorkspaces": 1,
+          "partialRows": 1998,
+          "code": "AcrossError"
+        },
+        "partialFailureMs": 20677
+      }
+    }
+  ]
+}

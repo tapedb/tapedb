@@ -15,6 +15,9 @@
 //                                           and recovery from R2 (needs CLOUDFLARE_API_TOKEN)
 //   node scripts/e2e.mjs --jurisdiction eu  init the project (and staging buckets) in a jurisdiction
 //   node scripts/e2e.mjs --only select,bulk only these scenarios; --no-drills skips the drills
+//   node scripts/e2e.mjs --suite bench [--out <file>]   the benchmark workloads in scripts/bench
+//                                           instead of the scenarios (no drills); their BENCH lines
+//                                           are collected into <file> with the run's environment
 //
 // Scenarios live in scripts/e2e/*.mjs. Each is a plain Node script against `tapedb` as a
 // consumer installs it; it throws (exits non-zero) on failure.
@@ -24,7 +27,7 @@ import { appendFileSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readF
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { packedArchive } from "./packed-archive.mjs";
-import { tmpdir } from "node:os";
+import os, { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -32,12 +35,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const plainFetch = globalThis.fetch;
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const suite = join(root, "scripts", "e2e");
 const args = process.argv.slice(2);
 const flag = (name) => {
   const index = args.indexOf(`--${name}`);
   return index === -1 ? undefined : args[index + 1];
 };
+const suiteName = flag("suite") ?? "e2e";
+if (suiteName !== "e2e" && suiteName !== "bench") throw new Error(`--suite is e2e or bench, not ${JSON.stringify(suiteName)}`);
+const bench = suiteName === "bench";
+const suite = join(root, "scripts", suiteName);
+const benchOut = flag("out");
 const deployName = flag("deploy");
 if (deployName !== undefined && !/^[a-z0-9-]{1,54}$/.test(deployName)) {
   throw new Error(`--deploy takes a Worker name (a-z 0-9 -), not ${JSON.stringify(deployName)}`);
@@ -131,6 +138,8 @@ writeFileSync(join(project, "tapedb.schema.ts"), schemaSource);
 run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "migrate", "dev", "--name", "personal_fields"], { cwd: project });
 run(process.execPath, [join(project, "node_modules/@tapedb/tapedb/dist/cli.js"), "migrate", "check"], { cwd: project });
 for (const file of readdirSync(suite)) copyFileSync(join(suite, file), join(project, file));
+// The workloads share the scenarios' schema and URL.
+if (bench) copyFileSync(join(root, "scripts", "e2e", "common.mjs"), join(project, "common.mjs"));
 
 // Presence refusals and webhook delivery are deployment configuration, not
 // request behaviour, so a local run bakes them into the Worker it generates
@@ -540,7 +549,7 @@ function scenario(file) {
     let output = "";
     child.stdout.on("data", (chunk) => (output += chunk));
     child.stderr.on("data", (chunk) => (output += chunk));
-    const timer = setTimeout(() => child.kill("SIGKILL"), 300_000);
+    const timer = setTimeout(() => child.kill("SIGKILL"), bench ? 3_600_000 : 300_000);
     child.on("exit", (code) => {
       clearTimeout(timer);
       resolveScenario({ ok: code === 0, ms: Date.now() - started, output });
@@ -716,14 +725,55 @@ async function drills() {
   console.log("  drill: the erased workspace recovered with nothing: R2 held none of it");
 }
 
+// ---- Benchmark results --------------------------------------------------------
+
+const benchResults = [];
+const benchStarted = new Date();
+
+/** The headline numbers of one measurement, for the console. */
+function benchLine(metrics) {
+  const parts = [];
+  for (const [key, value] of Object.entries(metrics)) {
+    if (typeof value === "number") parts.push(`${key} ${value}`);
+    else if (value && typeof value === "object" && "p50" in value) parts.push(`${key} p50 ${value.p50} p95 ${value.p95} p99 ${value.p99}`);
+  }
+  return parts.join("  ");
+}
+
+/** Writes every measurement with what it was measured on. */
+function writeBenchResults(file) {
+  const target = deployName ? "deployed (--deploy)" : remote ? "deployed (--url)" : "local (tapedb dev, workerd)";
+  const config = Object.fromEntries(
+    Object.entries(process.env).filter(([key]) =>
+      /^(SCALE|WRITE_|SUSTAIN_|QUERY_|SUBSCRIBERS|LIVE_|SUBS_|FANOUT_|DURABILITY_|MANY_|ACROSS_)/.test(key)
+    )
+  );
+  const commit = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).stdout?.trim() || null;
+  const results = {
+    tapedb: JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version,
+    commit,
+    target,
+    url: target.startsWith("local") ? null : base,
+    jurisdiction: jurisdiction ?? null,
+    startedAt: benchStarted.toISOString(),
+    finishedAt: new Date().toISOString(),
+    runner: { node: process.version, platform: process.platform, arch: process.arch, cpus: os.cpus().length, cpuModel: os.cpus()[0]?.model ?? null, memoryBytes: os.totalmem() },
+    config,
+    measurements: benchResults,
+  };
+  mkdirSync(dirname(resolve(file)), { recursive: true });
+  writeFileSync(file, `${JSON.stringify(results, null, 2)}\n`);
+  console.log(`bench: ${benchResults.length} measurements written to ${file}`);
+}
+
 // ---- Run --------------------------------------------------------------------
 
 const scenarios = readdirSync(suite)
-  .filter((file) => file.endsWith(".mjs") && file !== "common.mjs")
+  .filter((file) => file.endsWith(".mjs") && file !== "common.mjs" && file !== "lib.mjs")
   .map((file) => file.replace(/\.mjs$/, ""))
   // The load run measures rather than checks, and takes a while: only on request.
   .filter(name => name !== "workspace-move" || !deployName && !remote)
-  .filter((name) => (only === undefined ? name !== "load" || deployName !== undefined : only.includes(name)))
+  .filter((name) => (only === undefined ? bench || name !== "load" || deployName !== undefined : only.includes(name)))
   .sort();
 
 let failed = 0;
@@ -750,13 +800,21 @@ try {
   for (const name of scenarios) {
     const result = await scenario(`${name}.mjs`);
     console.log(`${result.ok ? "ok  " : "FAIL"} ${name} (${result.ms} ms)`);
+    if (bench) {
+      for (const line of result.output.split("\n")) {
+        if (!line.startsWith("BENCH ")) continue;
+        const measurement = JSON.parse(line.slice(6));
+        benchResults.push(measurement);
+        console.log(`     ${measurement.workload}/${measurement.scenario} ${JSON.stringify(measurement.params)} ${benchLine(measurement.metrics)}`);
+      }
+    }
     if (result.ok && (name === "load" || name === "metrics")) console.log(result.output.split("\n").map((line) => `     ${line}`).join("\n"));
     if (!result.ok) {
       failed += 1;
       console.log(result.output.split("\n").map((line) => `     ${line}`).join("\n"));
     }
   }
-  if (runDrills) {
+  if (runDrills && !bench) {
     try {
       await drills();
       console.log("ok   drills");
@@ -769,5 +827,6 @@ try {
   await stopDev();
   if (!args.includes("--keep")) rmSync(project, { recursive: true, force: true });
 }
+if (bench && benchOut) writeBenchResults(benchOut);
 console.log(failed === 0 ? "e2e: all passed" : `e2e: ${failed} failed`);
 process.exit(failed === 0 ? 0 : 1);

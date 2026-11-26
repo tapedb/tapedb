@@ -1,0 +1,1627 @@
+{
+  "tapedb": "0.3.6",
+  "commit": "04b9db1263f690588a9b2cdf173e0a7923b44cc2",
+  "target": "local (tapedb dev, workerd)",
+  "url": null,
+  "jurisdiction": null,
+  "startedAt": "2026-11-25T15:06:23.356Z",
+  "finishedAt": "2026-11-25T15:11:59.160Z",
+  "runner": {
+    "node": "v22.23.5",
+    "platform": "linux",
+    "arch": "arm64",
+    "cpus": 4,
+    "cpuModel": "unknown",
+    "memoryBytes": 4096434176
+  },
+  "config": {},
+  "measurements": [
+    {
+      "workload": "writes",
+      "scenario": "sequential",
+      "params": {
+        "rows": 1,
+        "concurrency": 1,
+        "transactions": 400
+      },
+      "metrics": {
+        "txPerSecond": 104.7,
+        "rowsPerSecond": 104.7,
+        "latencyMs": {
+          "n": 400,
+          "mean": 9.5,
+          "p50": 8.7,
+          "p95": 15,
+          "p99": 22.8,
+          "max": 54.7
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 400,
+          "meanMs": 3.55,
+          "maxMs": 25,
+          "p50Ms": 5,
+          "p95Ms": 10,
+          "p99Ms": 25,
+          "buckets": {
+            "1": 12,
+            "2": 71,
+            "5": 289,
+            "10": 22,
+            "25": 6,
+            "50": 0,
+            "100": 0,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 249856
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "concurrent",
+      "params": {
+        "rows": 1,
+        "concurrency": 4,
+        "transactions": 400
+      },
+      "metrics": {
+        "txPerSecond": 168.9,
+        "rowsPerSecond": 168.9,
+        "latencyMs": {
+          "n": 400,
+          "mean": 23.6,
+          "p50": 21.9,
+          "p95": 36.7,
+          "p99": 50.5,
+          "max": 52.2
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 400,
+          "meanMs": 2.7,
+          "maxMs": 17,
+          "p50Ms": 2,
+          "p95Ms": 5,
+          "p99Ms": 10,
+          "buckets": {
+            "1": 61,
+            "2": 147,
+            "5": 181,
+            "10": 8,
+            "25": 3,
+            "50": 0,
+            "100": 0,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 249856
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "concurrent",
+      "params": {
+        "rows": 1,
+        "concurrency": 16,
+        "transactions": 400
+      },
+      "metrics": {
+        "txPerSecond": 202.7,
+        "rowsPerSecond": 202.7,
+        "latencyMs": {
+          "n": 400,
+          "mean": 78.2,
+          "p50": 81.3,
+          "p95": 118.6,
+          "p99": 127,
+          "max": 140.3
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 400,
+          "meanMs": 2.64,
+          "maxMs": 21,
+          "p50Ms": 2,
+          "p95Ms": 5,
+          "p99Ms": 10,
+          "buckets": {
+            "1": 52,
+            "2": 197,
+            "5": 135,
+            "10": 12,
+            "25": 4,
+            "50": 0,
+            "100": 0,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 258048
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "multi-row",
+      "params": {
+        "rows": 10,
+        "concurrency": 1,
+        "transactions": 126
+      },
+      "metrics": {
+        "txPerSecond": 78.9,
+        "rowsPerSecond": 789,
+        "latencyMs": {
+          "n": 126,
+          "mean": 12.7,
+          "p50": 10.5,
+          "p95": 20.1,
+          "p99": 35.1,
+          "max": 112.9
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 126,
+          "meanMs": 5.17,
+          "maxMs": 70,
+          "p50Ms": 5,
+          "p95Ms": 10,
+          "p99Ms": 25,
+          "buckets": {
+            "1": 3,
+            "2": 9,
+            "5": 85,
+            "10": 27,
+            "25": 1,
+            "50": 0,
+            "100": 1,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 827392
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "multi-row",
+      "params": {
+        "rows": 10,
+        "concurrency": 4,
+        "transactions": 126
+      },
+      "metrics": {
+        "txPerSecond": 88.5,
+        "rowsPerSecond": 885,
+        "latencyMs": {
+          "n": 126,
+          "mean": 45.1,
+          "p50": 39.7,
+          "p95": 73,
+          "p99": 154.9,
+          "max": 184.1
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 126,
+          "meanMs": 5.79,
+          "maxMs": 126,
+          "p50Ms": 5,
+          "p95Ms": 25,
+          "p99Ms": 25,
+          "buckets": {
+            "1": 2,
+            "2": 16,
+            "5": 73,
+            "10": 25,
+            "25": 9,
+            "50": 0,
+            "100": 0,
+            "250": 1,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 827392
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "multi-row",
+      "params": {
+        "rows": 10,
+        "concurrency": 16,
+        "transactions": 126
+      },
+      "metrics": {
+        "txPerSecond": 110.9,
+        "rowsPerSecond": 1109,
+        "latencyMs": {
+          "n": 126,
+          "mean": 140.2,
+          "p50": 149,
+          "p95": 207.8,
+          "p99": 209.2,
+          "max": 209.2
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 126,
+          "meanMs": 4.87,
+          "maxMs": 16,
+          "p50Ms": 5,
+          "p95Ms": 16,
+          "p99Ms": 16,
+          "buckets": {
+            "1": 0,
+            "2": 6,
+            "5": 91,
+            "10": 21,
+            "25": 8,
+            "50": 0,
+            "100": 0,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 839680
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "multi-row",
+      "params": {
+        "rows": 100,
+        "concurrency": 1,
+        "transactions": 40
+      },
+      "metrics": {
+        "txPerSecond": 28.4,
+        "rowsPerSecond": 2840,
+        "latencyMs": {
+          "n": 40,
+          "mean": 35.1,
+          "p50": 32.7,
+          "p95": 52.2,
+          "p99": 63.2,
+          "max": 63.2
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 40,
+          "meanMs": 10.53,
+          "maxMs": 22,
+          "p50Ms": 10,
+          "p95Ms": 22,
+          "p99Ms": 22,
+          "buckets": {
+            "1": 0,
+            "2": 0,
+            "5": 1,
+            "10": 25,
+            "25": 14,
+            "50": 0,
+            "100": 0,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 1806336
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "multi-row",
+      "params": {
+        "rows": 100,
+        "concurrency": 4,
+        "transactions": 40
+      },
+      "metrics": {
+        "txPerSecond": 32.4,
+        "rowsPerSecond": 3240,
+        "latencyMs": {
+          "n": 40,
+          "mean": 120.9,
+          "p50": 111.6,
+          "p95": 180.6,
+          "p99": 184.1,
+          "max": 184.1
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 40,
+          "meanMs": 14.25,
+          "maxMs": 35,
+          "p50Ms": 25,
+          "p95Ms": 35,
+          "p99Ms": 35,
+          "buckets": {
+            "1": 0,
+            "2": 0,
+            "5": 0,
+            "10": 15,
+            "25": 22,
+            "50": 3,
+            "100": 0,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 1806336
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "multi-row",
+      "params": {
+        "rows": 100,
+        "concurrency": 16,
+        "transactions": 40
+      },
+      "metrics": {
+        "txPerSecond": 25.2,
+        "rowsPerSecond": 2520,
+        "latencyMs": {
+          "n": 40,
+          "mean": 574.9,
+          "p50": 614.9,
+          "p95": 746.5,
+          "p99": 748.7,
+          "max": 748.7
+        },
+        "errorRate": 0,
+        "errors": {},
+        "serverTransactionMs": {
+          "count": 40,
+          "meanMs": 19.93,
+          "maxMs": 51,
+          "p50Ms": 25,
+          "p95Ms": 50,
+          "p99Ms": 51,
+          "buckets": {
+            "1": 0,
+            "2": 0,
+            "5": 0,
+            "10": 0,
+            "25": 33,
+            "50": 6,
+            "100": 1,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "databaseBytesGrowth": 1867776
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "hot-row",
+      "params": {
+        "concurrency": 16,
+        "transactions": 400
+      },
+      "metrics": {
+        "txPerSecond": 116.9,
+        "latencyMs": {
+          "n": 400,
+          "mean": 136,
+          "p50": 111.3,
+          "p95": 279.4,
+          "p99": 665.5,
+          "max": 670.7
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "bursty",
+      "params": {
+        "bursts": 5,
+        "burstSize": 80
+      },
+      "metrics": {
+        "latencyMs": {
+          "n": 400,
+          "mean": 530.8,
+          "p50": 501,
+          "p95": 685.3,
+          "p99": 686.7,
+          "max": 687.1
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "writes",
+      "scenario": "sustained",
+      "params": {
+        "concurrency": 8,
+        "seconds": 20
+      },
+      "metrics": {
+        "txPerSecond": 125.6,
+        "latencyMs": {
+          "n": 2512,
+          "mean": 63.8,
+          "p50": 56.4,
+          "p95": 124.4,
+          "p99": 215.3,
+          "max": 336.1
+        },
+        "p95ByWindowMs": [
+          122.5,
+          100.4,
+          117.3,
+          148.5,
+          60.8
+        ],
+        "errorRate": 0,
+        "unflushedAtEnd": 2512,
+        "txLogRows": 2512,
+        "databaseBytes": 1847296
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "id-lookup",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 106,
+        "latencyMs": {
+          "n": 100,
+          "mean": 37.6,
+          "p50": 34.6,
+          "p95": 48.1,
+          "p99": 87.4,
+          "max": 90
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "indexed-filter",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 117.2,
+        "latencyMs": {
+          "n": 100,
+          "mean": 33.9,
+          "p50": 33.7,
+          "p95": 39.1,
+          "p99": 44.8,
+          "max": 45.2
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "non-indexed-filter",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 114.6,
+        "latencyMs": {
+          "n": 100,
+          "mean": 34.7,
+          "p50": 33.5,
+          "p95": 41.4,
+          "p99": 56.6,
+          "max": 57.4
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "filter-take-100",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 113.4,
+        "latencyMs": {
+          "n": 100,
+          "mean": 34.8,
+          "p50": 32.8,
+          "p95": 47.8,
+          "p99": 57.6,
+          "max": 59.3
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "relation-include",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 130.7,
+        "latencyMs": {
+          "n": 100,
+          "mean": 30.2,
+          "p50": 30.3,
+          "p95": 35.5,
+          "p99": 36.8,
+          "max": 37.3
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "relation-filter",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 123.8,
+        "latencyMs": {
+          "n": 100,
+          "mean": 32,
+          "p50": 31,
+          "p95": 40.1,
+          "p99": 46.8,
+          "max": 54.4
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "page-50",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 115.3,
+        "latencyMs": {
+          "n": 100,
+          "mean": 34.4,
+          "p50": 34.4,
+          "p95": 42.3,
+          "p99": 47.7,
+          "max": 47.7
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "count",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 120.4,
+        "latencyMs": {
+          "n": 100,
+          "mean": 33,
+          "p50": 31.8,
+          "p95": 44.3,
+          "p99": 46.9,
+          "max": 48.5
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "aggregate",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 121,
+        "latencyMs": {
+          "n": 100,
+          "mean": 32.7,
+          "p50": 31.8,
+          "p95": 43.4,
+          "p99": 55.9,
+          "max": 56.2
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "named-sql",
+      "params": {
+        "rows": 1000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 121.9,
+        "latencyMs": {
+          "n": 100,
+          "mean": 32.5,
+          "p50": 31.7,
+          "p95": 46.3,
+          "p99": 51,
+          "max": 59.7
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "full-read",
+      "params": {
+        "rows": 1000,
+        "reads": 10,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 79.6,
+        "latencyMs": {
+          "n": 10,
+          "mean": 45,
+          "p50": 43.2,
+          "p95": 60.7,
+          "p99": 60.7,
+          "max": 60.7
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "dataset",
+      "params": {
+        "rows": 1000
+      },
+      "metrics": {
+        "seedMs": 352,
+        "databaseBytes": 983040,
+        "txLogRows": 6
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "id-lookup",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 139.4,
+        "latencyMs": {
+          "n": 100,
+          "mean": 28.5,
+          "p50": 27.2,
+          "p95": 36.9,
+          "p99": 43.1,
+          "max": 43.3
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "indexed-filter",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 142.2,
+        "latencyMs": {
+          "n": 100,
+          "mean": 27.9,
+          "p50": 27.9,
+          "p95": 36.8,
+          "p99": 40.2,
+          "max": 40.4
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "non-indexed-filter",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 142.9,
+        "latencyMs": {
+          "n": 100,
+          "mean": 27.8,
+          "p50": 27,
+          "p95": 34.1,
+          "p99": 35.5,
+          "max": 35.8
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "filter-take-100",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 135.1,
+        "latencyMs": {
+          "n": 100,
+          "mean": 29.2,
+          "p50": 27.9,
+          "p95": 38.8,
+          "p99": 40.6,
+          "max": 41.4
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "relation-include",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 68.5,
+        "latencyMs": {
+          "n": 100,
+          "mean": 58,
+          "p50": 49.6,
+          "p95": 83.2,
+          "p99": 271,
+          "max": 271.8
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "relation-filter",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 103.2,
+        "latencyMs": {
+          "n": 100,
+          "mean": 38.6,
+          "p50": 37.8,
+          "p95": 51.5,
+          "p99": 69.3,
+          "max": 69.8
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "page-50",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 117.2,
+        "latencyMs": {
+          "n": 100,
+          "mean": 33.9,
+          "p50": 33.4,
+          "p95": 44.7,
+          "p99": 53,
+          "max": 53.4
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "count",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 115.9,
+        "latencyMs": {
+          "n": 100,
+          "mean": 34.3,
+          "p50": 33.4,
+          "p95": 44.3,
+          "p99": 45.8,
+          "max": 45.9
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "aggregate",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 91.3,
+        "latencyMs": {
+          "n": 100,
+          "mean": 43.6,
+          "p50": 33.8,
+          "p95": 100,
+          "p99": 179.1,
+          "max": 181.3
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "named-sql",
+      "params": {
+        "rows": 10000,
+        "reads": 100,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 88.7,
+        "latencyMs": {
+          "n": 100,
+          "mean": 44.5,
+          "p50": 41.2,
+          "p95": 65.7,
+          "p99": 89.6,
+          "max": 101.4
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "full-read",
+      "params": {
+        "rows": 10000,
+        "reads": 10,
+        "concurrency": 4
+      },
+      "metrics": {
+        "readsPerSecond": 14,
+        "latencyMs": {
+          "n": 10,
+          "mean": 261.2,
+          "p50": 272.9,
+          "p95": 324.4,
+          "p99": 324.4,
+          "max": 324.4
+        },
+        "errorRate": 0,
+        "errors": {}
+      }
+    },
+    {
+      "workload": "queries",
+      "scenario": "dataset",
+      "params": {
+        "rows": 10000
+      },
+      "metrics": {
+        "seedMs": 2209,
+        "databaseBytes": 8040448,
+        "txLogRows": 42
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "live-subscribers",
+      "params": {
+        "subscribers": 10,
+        "subsPerClient": 1,
+        "writes": 100
+      },
+      "metrics": {
+        "subscriptionsReadyMs": 78,
+        "writesPerSecond": 38.8,
+        "writeLatencyMs": {
+          "n": 100,
+          "mean": 25.7,
+          "p50": 19.4,
+          "p95": 62.9,
+          "p99": 175.2,
+          "max": 181.3
+        },
+        "seenByAllDelayMs": {
+          "n": 100,
+          "mean": 54.7,
+          "p50": 51,
+          "p95": 88.4,
+          "p99": 229.7,
+          "max": 236.9
+        },
+        "writesNotSeenByAll": 0,
+        "serverLiveUpdateMs": {
+          "count": 32,
+          "meanMs": 56.5,
+          "maxMs": 137,
+          "p50Ms": 100,
+          "p95Ms": 100,
+          "p99Ms": 137,
+          "buckets": {
+            "1": 0,
+            "2": 0,
+            "5": 0,
+            "10": 0,
+            "25": 0,
+            "50": 1,
+            "100": 30,
+            "250": 1,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "liveReruns": 32,
+        "sharedReruns": 288
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "live-subscribers",
+      "params": {
+        "subscribers": 50,
+        "subsPerClient": 1,
+        "writes": 100
+      },
+      "metrics": {
+        "subscriptionsReadyMs": 391,
+        "writesPerSecond": 57.3,
+        "writeLatencyMs": {
+          "n": 100,
+          "mean": 17.5,
+          "p50": 15.6,
+          "p95": 33,
+          "p99": 46.5,
+          "max": 59
+        },
+        "seenByAllDelayMs": {
+          "n": 100,
+          "mean": 49.8,
+          "p50": 47.4,
+          "p95": 80.2,
+          "p99": 95.1,
+          "max": 104
+        },
+        "writesNotSeenByAll": 0,
+        "serverLiveUpdateMs": {
+          "count": 25,
+          "meanMs": 53.92,
+          "maxMs": 59,
+          "p50Ms": 59,
+          "p95Ms": 59,
+          "p99Ms": 59,
+          "buckets": {
+            "1": 0,
+            "2": 0,
+            "5": 0,
+            "10": 0,
+            "25": 0,
+            "50": 0,
+            "100": 25,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "liveReruns": 25,
+        "sharedReruns": 1225
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "live-subscribers",
+      "params": {
+        "subscribers": 200,
+        "subsPerClient": 1,
+        "writes": 100
+      },
+      "metrics": {
+        "subscriptionsReadyMs": 1184,
+        "writesPerSecond": 50.2,
+        "writeLatencyMs": {
+          "n": 100,
+          "mean": 19.9,
+          "p50": 16.4,
+          "p95": 38.4,
+          "p99": 43.4,
+          "max": 44.7
+        },
+        "seenByAllDelayMs": {
+          "n": 100,
+          "mean": 63.6,
+          "p50": 62.1,
+          "p95": 105.7,
+          "p99": 112.1,
+          "max": 114.5
+        },
+        "writesNotSeenByAll": 0,
+        "serverLiveUpdateMs": {
+          "count": 26,
+          "meanMs": 58.04,
+          "maxMs": 66,
+          "p50Ms": 66,
+          "p95Ms": 66,
+          "p99Ms": 66,
+          "buckets": {
+            "1": 0,
+            "2": 0,
+            "5": 0,
+            "10": 0,
+            "25": 0,
+            "50": 0,
+            "100": 26,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "liveReruns": 26,
+        "sharedReruns": 5174
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "multi-subscription",
+      "params": {
+        "subscribers": 10,
+        "subsPerClient": 5,
+        "writes": 100
+      },
+      "metrics": {
+        "subscriptionsReadyMs": 74,
+        "writesPerSecond": 57.2,
+        "writeLatencyMs": {
+          "n": 100,
+          "mean": 17.5,
+          "p50": 15.9,
+          "p95": 25.1,
+          "p99": 32.7,
+          "max": 89
+        },
+        "seenByAllDelayMs": {
+          "n": 100,
+          "mean": 51.1,
+          "p50": 52.1,
+          "p95": 79.3,
+          "p99": 127.1,
+          "max": 140.4
+        },
+        "writesNotSeenByAll": 0,
+        "serverLiveUpdateMs": {
+          "count": 25,
+          "meanMs": 54.88,
+          "maxMs": 69,
+          "p50Ms": 69,
+          "p95Ms": 69,
+          "p99Ms": 69,
+          "buckets": {
+            "1": 0,
+            "2": 0,
+            "5": 0,
+            "10": 0,
+            "25": 0,
+            "50": 0,
+            "100": 25,
+            "250": 0,
+            "500": 0,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "liveReruns": 125,
+        "sharedReruns": 1125
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "presence-fanout",
+      "params": {
+        "peers": 10,
+        "updates": 50
+      },
+      "metrics": {
+        "allPeersDelayMs": {
+          "n": 50,
+          "mean": 1.7,
+          "p50": 1.5,
+          "p95": 3.3,
+          "p99": 5,
+          "max": 5
+        },
+        "updatesNotSeenByAll": 0
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "broadcast-fanout",
+      "params": {
+        "peers": 10,
+        "messages": 50
+      },
+      "metrics": {
+        "allPeersDelayMs": {
+          "n": 50,
+          "mean": 4.8,
+          "p50": 4.3,
+          "p95": 6.9,
+          "p99": 14.3,
+          "max": 14.3
+        },
+        "messagesNotSeenByAll": 0
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "presence-fanout",
+      "params": {
+        "peers": 50,
+        "updates": 50
+      },
+      "metrics": {
+        "allPeersDelayMs": {
+          "n": 50,
+          "mean": 5.7,
+          "p50": 4.4,
+          "p95": 11.6,
+          "p99": 35.2,
+          "max": 35.2
+        },
+        "updatesNotSeenByAll": 0
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "broadcast-fanout",
+      "params": {
+        "peers": 50,
+        "messages": 50
+      },
+      "metrics": {
+        "allPeersDelayMs": {
+          "n": 50,
+          "mean": 7.8,
+          "p50": 6.5,
+          "p95": 26.6,
+          "p99": 35.1,
+          "max": 35.1
+        },
+        "messagesNotSeenByAll": 0
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "presence-fanout",
+      "params": {
+        "peers": 200,
+        "updates": 50
+      },
+      "metrics": {
+        "allPeersDelayMs": {
+          "n": 50,
+          "mean": 70.7,
+          "p50": 60.3,
+          "p95": 134.8,
+          "p99": 162.1,
+          "max": 162.1
+        },
+        "updatesNotSeenByAll": 0
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "broadcast-fanout",
+      "params": {
+        "peers": 200,
+        "messages": 50
+      },
+      "metrics": {
+        "allPeersDelayMs": {
+          "n": 50,
+          "mean": 16.7,
+          "p50": 14.7,
+          "p95": 27.4,
+          "p99": 52.9,
+          "max": 52.9
+        },
+        "messagesNotSeenByAll": 0
+      }
+    },
+    {
+      "workload": "realtime",
+      "scenario": "connect-subscribe",
+      "params": {
+        "rounds": 10
+      },
+      "metrics": {
+        "socketToFirstDataMs": {
+          "n": 10,
+          "mean": 34.2,
+          "p50": 23.8,
+          "p95": 85.7,
+          "p99": 85.7,
+          "max": 85.7
+        }
+      }
+    },
+    {
+      "workload": "durability",
+      "scenario": "flush-under-load",
+      "params": {
+        "writes": 2000,
+        "concurrency": 8
+      },
+      "metrics": {
+        "txPerSecond": 116.1,
+        "writeLatencyMs": {
+          "n": 2000,
+          "mean": 68.8,
+          "p50": 58.7,
+          "p95": 145,
+          "p99": 315.4,
+          "max": 389.3
+        },
+        "errorRate": 0,
+        "maxUnflushedDuringLoad": 1991,
+        "maxOldestUnflushedAgeMs": 16961,
+        "flushCaughtUpAfterMs": 13752,
+        "durabilityTickMs": {
+          "count": 1,
+          "meanMs": 372,
+          "maxMs": 372,
+          "p50Ms": 372,
+          "p95Ms": 372,
+          "p99Ms": 372,
+          "buckets": {
+            "1": 0,
+            "2": 0,
+            "5": 0,
+            "10": 0,
+            "25": 0,
+            "50": 0,
+            "100": 0,
+            "250": 0,
+            "500": 1,
+            "1000": 0,
+            "2500": 0,
+            "5000": 0,
+            "10000": 0,
+            "30000": 0,
+            "+Inf": 0
+          }
+        },
+        "flushFailures": 0,
+        "health": "ok",
+        "txLogRows": 2000,
+        "databaseBytes": 1396736
+      }
+    },
+    {
+      "workload": "workspaces",
+      "scenario": "first-touch",
+      "params": {
+        "workspaces": 50,
+        "concurrency": 8
+      },
+      "metrics": {
+        "firstWriteMs": {
+          "n": 50,
+          "mean": 758.4,
+          "p50": 771.2,
+          "p95": 963.6,
+          "p99": 963.7,
+          "max": 963.7
+        },
+        "secondWriteMs": {
+          "n": 50,
+          "mean": 51.1,
+          "p50": 57.4,
+          "p95": 65.7,
+          "p99": 68.2,
+          "max": 68.2
+        },
+        "errorRate": 0
+      }
+    },
+    {
+      "workload": "workspaces",
+      "scenario": "parallel-writers",
+      "params": {
+        "workspaces": 1,
+        "writes": 400,
+        "concurrency": 16
+      },
+      "metrics": {
+        "txPerSecond": 159.8,
+        "latencyMs": {
+          "n": 400,
+          "mean": 100,
+          "p50": 100.1,
+          "p95": 152.9,
+          "p99": 155.6,
+          "max": 158
+        },
+        "errorRate": 0
+      }
+    },
+    {
+      "workload": "workspaces",
+      "scenario": "parallel-writers",
+      "params": {
+        "workspaces": 8,
+        "writes": 400,
+        "concurrency": 16
+      },
+      "metrics": {
+        "txPerSecond": 144.8,
+        "latencyMs": {
+          "n": 400,
+          "mean": 109.6,
+          "p50": 110.7,
+          "p95": 172.8,
+          "p99": 185,
+          "max": 189.7
+        },
+        "errorRate": 0
+      }
+    },
+    {
+      "workload": "workspaces",
+      "scenario": "parallel-writers",
+      "params": {
+        "workspaces": 32,
+        "writes": 400,
+        "concurrency": 16
+      },
+      "metrics": {
+        "txPerSecond": 103.1,
+        "latencyMs": {
+          "n": 400,
+          "mean": 153.7,
+          "p50": 127.3,
+          "p95": 267.7,
+          "p99": 744.8,
+          "max": 752.2
+        },
+        "errorRate": 0
+      }
+    },
+    {
+      "workload": "workspaces",
+      "scenario": "across",
+      "params": {
+        "workspaces": 10,
+        "rowsPerWorkspace": 20,
+        "reads": 10
+      },
+      "metrics": {
+        "rows": 200,
+        "findManyMs": {
+          "n": 10,
+          "mean": 238.3,
+          "p50": 161,
+          "p95": 602.1,
+          "p99": 602.1,
+          "max": 602.1
+        },
+        "findPage50Ms": {
+          "n": 10,
+          "mean": 225.2,
+          "p50": 185.1,
+          "p95": 368.8,
+          "p99": 368.8,
+          "max": 368.8
+        },
+        "countMs": {
+          "n": 10,
+          "mean": 132.8,
+          "p50": 138.7,
+          "p95": 191.6,
+          "p99": 191.6,
+          "max": 191.6
+        },
+        "clientHeapGrowthBytes": 2367784,
+        "partialFailure": {
+          "failedWorkspaces": 1,
+          "partialRows": 180,
+          "code": "AcrossError"
+        },
+        "partialFailureMs": 91
+      }
+    },
+    {
+      "workload": "workspaces",
+      "scenario": "across",
+      "params": {
+        "workspaces": 100,
+        "rowsPerWorkspace": 20,
+        "reads": 10
+      },
+      "metrics": {
+        "rows": 2000,
+        "findManyMs": {
+          "n": 10,
+          "mean": 603,
+          "p50": 514.7,
+          "p95": 1031.6,
+          "p99": 1031.6,
+          "max": 1031.6
+        },
+        "findPage50Ms": {
+          "n": 10,
+          "mean": 582.6,
+          "p50": 528.6,
+          "p95": 937.7,
+          "p99": 937.7,
+          "max": 937.7
+        },
+        "countMs": {
+          "n": 10,
+          "mean": 529.5,
+          "p50": 433.8,
+          "p95": 1186.3,
+          "p99": 1186.3,
+          "max": 1186.3
+        },
+        "clientHeapGrowthBytes": 8164568,
+        "partialFailure": {
+          "failedWorkspaces": 1,
+          "partialRows": 1980,
+          "code": "AcrossError"
+        },
+        "partialFailureMs": 2075
+      }
+    }
+  ]
+}

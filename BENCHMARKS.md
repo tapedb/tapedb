@@ -7,6 +7,7 @@ of them says anything about what a deployment serves.
 | --- | --- | --- |
 | `bun run bench` (`scripts/bench.ts`) | the real engine — `runTransaction`, `executeQuery`, the flusher, the snapshotter, recovery — over bun's SQLite, in process, with R2 in memory | the engine's own cost, and how it scales with the data |
 | `node scripts/e2e.mjs --only load` (`scripts/e2e/load.mjs`) | a packed build in workerd, or a deployed Worker, driven by real clients over real sockets | what a Worker and a Durable Object actually serve |
+| `bun run bench:e2e` (`scripts/bench/*.mjs`) | the same, widened: writes, reads, realtime fan-out, durability lag and many workspaces | what a client waits for, and where it starts to climb |
 
 **The local suite cannot tell you what a deployment can take.** bun's SQLite
 allows 32,766 bound parameters against a Durable Object's 100 and an expression
@@ -152,9 +153,97 @@ Two caveats, both load-bearing:
   cost for all of them. That is the first bottleneck below, visible end to
   end.
 
+## A recorded end-to-end run (`bun run bench:e2e`)
+
+`bun run bench:e2e` (`scripts/e2e.mjs --suite bench`, workloads in
+`scripts/bench/`) is the load scenario widened into a suite. It installs the
+same packed build into a clean project and runs five workloads as separate
+client processes over HTTP and real sockets, against `tapedb dev` or, with
+`--url` / `--deploy`, a deployed Worker. Every measurement is written to one
+JSON file along with the version, commit, target and runner, and
+`node scripts/bench-report.mjs <file>…` prints tables from it. Sizes come from
+environment variables (`WRITE_CONCURRENCY`, `QUERY_ROWS`, `SUBSCRIBERS`,
+`ACROSS_COUNTS`, …; see each workload's header), and `SCALE` multiplies them
+all.
+
+| Workload | What it measures |
+| --- | --- |
+| `writes` | Sequential and concurrent (1/4/16) writes, 1/10/100 rows per transaction, a contended row, bursts, and a sustained load measured in 5 s windows |
+| `queries` | Eleven read shapes through the client at 1,000 and 10,000 rows |
+| `realtime` | Delay from a write until every subscriber has it, at 10/50/200 subscribers; several subscriptions per client; presence and broadcast fan-out; connect to first data |
+| `durability` | How far R2 trails commits under sustained load, and how long after the last write it catches up, read from `GET /metrics` |
+| `workspaces` | A new workspace's first write; the same writes spread over 1/8/32 workspaces; `$across` over 10 and 100 workspaces, including a refused token |
+
+Recorded in `bench/results/local-2026-11-25.json`: tapedb 0.3.6 at `04b9db1`,
+workerd via `tapedb dev`, Linux arm64, 4 CPUs, 4 GiB, Node 22.23.5. The client
+processes shared those CPUs with the Worker. The `durability` workload in this
+run read the durability state from an earlier diagnostics route that has since
+been folded into `/metrics`; the numbers mean the same thing. Like the load run
+above, **this is a floor and a shape, not a deployment's capacity.**
+
+### Writes
+
+| scenario | tx/s | p50 | p95 | p99 |
+| --- | --- | --- | --- | --- |
+| 1 row, sequential | 104.7 | 8.7 ms | 15 ms | 22.8 ms |
+| 1 row, concurrency 4 | 168.9 | 21.9 ms | 36.7 ms | 50.5 ms |
+| 1 row, concurrency 16 | 202.7 | 81.3 ms | 118.6 ms | 127 ms |
+| 10 rows, concurrency 1 | 78.9 (789 rows/s) | 10.5 ms | 20.1 ms | 35.1 ms |
+| 100 rows, concurrency 1 | 28.4 (2,840 rows/s) | 32.7 ms | 52.2 ms | 63.2 ms |
+| 100 rows, concurrency 16 | 25.2 (2,520 rows/s) | 614.9 ms | 746.5 ms | 748.7 ms |
+| one row updated, concurrency 16 | 116.9 | 111.3 ms | 279.4 ms | 665.5 ms |
+| 5 bursts of 80 at once | – | 501 ms | 685.3 ms | 686.7 ms |
+| sustained, concurrency 8, 20 s | 125.6 | 56.4 ms | 124.4 ms | 215.3 ms |
+
+The sustained run's p95 per 5 s window was 122, 100, 117, 149 and 61 ms: no
+drift.
+
+### Reads through the client
+
+| scenario | 1,000 rows p50 / p95 | 10,000 rows p50 / p95 |
+| --- | --- | --- |
+| id lookup | 34.6 / 48.1 ms | 27.2 / 36.9 ms |
+| indexed filter | 33.7 / 39.1 ms | 27.9 / 36.8 ms |
+| unindexed filter | 33.5 / 41.4 ms | 27 / 34.1 ms |
+| include a column's tasks (~50 / ~500) | 30.3 / 35.5 ms | 49.6 / 83.2 ms (p99 271 ms) |
+| relation filter, take 100 | 31 / 40.1 ms | 37.8 / 51.5 ms |
+| page of 50 | 34.4 / 42.3 ms | 33.4 / 44.7 ms |
+| aggregate | 31.8 / 43.4 ms | 33.8 / 100 ms |
+| named SQL | 31.7 / 46.3 ms | 41.2 / 65.7 ms |
+| every row | 43.2 / 60.7 ms | 272.9 / 324.4 ms |
+
+Through a client, the engine's 7× gap between indexed and unindexed filters
+(above) disappears into the round trip at these sizes. What grows is what
+returns more data.
+
+### Realtime
+
+| scenario | write → every subscriber p50 / p95 / p99 |
+| --- | --- |
+| 10 subscribers | 51 / 88.4 / 229.7 ms |
+| 50 subscribers | 47.4 / 80.2 / 95.1 ms |
+| 200 subscribers (ready in 1.2 s) | 62.1 / 105.7 / 112.1 ms |
+| 10 clients × 5 subscriptions | 52.1 / 79.3 / 127.1 ms |
+
+| fan-out to every peer, p50 / p95 / p99 | 10 peers | 50 peers | 200 peers |
+| --- | --- | --- | --- |
+| presence update | 1.5 / 3.3 / 5 ms | 4.4 / 11.6 / 35.2 ms | 60.3 / 134.8 / 162.1 ms |
+| broadcast message | 4.3 / 6.9 / 14.3 ms | 6.5 / 26.6 / 35.1 ms | 14.7 / 27.4 / 52.9 ms |
+
+### Durability and many workspaces
+
+| scenario | result |
+| --- | --- |
+| 2,000 writes at concurrency 8 | 116 tx/s; at most 1,991 committed writes not yet in R2; R2 caught up 13.8 s after the last write; no flush failures |
+| first write to a new workspace (50) | 771 / 964 ms p50 / p95; the second write 57 / 66 ms |
+| 400 writes over 1 / 8 / 32 workspaces | 160 / 145 / 103 tx/s, all on one 4-CPU machine |
+| `$across` findMany, 10 workspaces × 20 rows | 161 ms p50, 602 ms p95 |
+| `$across` findMany, 100 workspaces × 20 rows | 515 ms p50, 1,032 ms p95 |
+| `$across` with one token refused | `AcrossError` naming that workspace, other rows in `partial` |
+
 ## Bottlenecks
 
-Four, in the order they are likely to matter.
+Eight. The first four come from the engine suite, the rest from the end-to-end one.
 
 1. **Live queries are a per-write tax, and the writer pays it.** A Durable
    Object is single-threaded, so re-running live queries happens between a
@@ -180,6 +269,29 @@ Four, in the order they are likely to matter.
    join over 20,000 rows. That is the cost of the expressiveness, and it is
    fine for a report; it is not a per-keystroke query.
 
+5. **Presence fan-out grows with the square of the room.** Every presence
+   update sends the whole peer list to every peer. At 200 peers that took
+   60 ms p50 and 162 ms p99, against 15 ms and 53 ms for a broadcast of the
+   same size to the same peers.
+
+6. **One workspace's writer saturates early.** Past about 4 concurrent
+   writers a workspace adds latency rather than throughput: 169 tx/s at 4,
+   203 at 16, with p50 going from 22 to 81 ms. A 100-row transaction queued
+   behind 15 others waited 615 ms.
+
+7. **R2 trails commits by up to the alarm delay.** The durability alarm runs
+   30 s after a write (`DURABILITY_ALARM_DELAY_MS`) so several writes go into
+   one segment. During that time a committed write is durable in the Durable
+   Object's storage, but recovery after losing that storage starts from R2.
+   `/metrics` reports the gap (`pendingSeq`, `oldestPendingAt`) and calls it
+   `flush_lagging` past 5 minutes.
+
+8. **A workspace's first request is expensive, and `$across` pays per
+   workspace.** The first write took about 770 ms against 57 ms for the next,
+   because it creates the object, runs migrations and checks R2 for a
+   restore. `$across` makes one request with one claim per workspace and
+   merges in the client: about 515 ms p50 at 100 workspaces.
+
 ## Operating guidelines
 
 These follow from the measurements above, not from a target.
@@ -194,6 +306,14 @@ These follow from the measurements above, not from a target.
   queries a write touches.
 - **Watch `pendingSeq`** from `GET /metrics`: it should fall back toward zero
   between alarms. Growing across several reads means durability is behind.
+- **Keep presence rooms small**, or use broadcast for frequent signals to
+  large rooms.
+- **Expect up to about 30 s between a commit and its R2 copy**, and alert on
+  `flush_lagging` / `flush_failing` from `/metrics`.
+- **Warm workspaces created ahead of use** with one request, if their first
+  request is latency-sensitive.
+- **Use `$across` for tens of workspaces.** For hundreds, a read model (a
+  projection kept by webhooks, for instance) is the better fit.
 - **One workspace is one writer.** Partition by whatever your transactions
   actually span — a workspace is the unit of serializability, so a workload
   that needs more write throughput than one object gives needs more
@@ -208,8 +328,15 @@ These follow from the measurements above, not from a target.
 - **A Durable Object's SQL limits.** The local suite runs on bun's SQLite,
   which is far more permissive. `scripts/e2e.mjs` is where SQL and socket
   behaviour is checked against workerd's real limits.
-- **Many workspaces.** `$across` fan-out at 10, 100 and 1,000 workspaces is
-  not covered by either suite yet.
+- **`$across` on Cloudflare at 1,000 workspaces.** A local run at 10, 100 and
+  1,000 (`WORKSPACE_SCENARIOS=across ACROSS_COUNTS=10,100,1000`) is in
+  `bench/results/local-2026-11-26-across.json`. It is discussed in
+  [docs/adr/0001-cross-workspace-reads.md](docs/adr/0001-cross-workspace-reads.md):
+  about 0.9 s at 100 workspaces and 20–25 s at 1,000, with one local workerd
+  running every object. The ADR also records a deployed run: on Cloudflare,
+  about 0.23–0.33 s at 100 and 3.9 s at 1,000 with concurrency 64.
+- **R2 failing mid-run.** A client cannot cause it; the room tests cover it,
+  and the staging drills cover a lost Durable Object.
 - **Cloudflare's own hardware.** The deployed-runtime run above is workerd on
   a shared machine. Take the real figure with
   `node scripts/e2e.mjs --url https://<worker> --only load`.
