@@ -1437,7 +1437,7 @@ Membership never appears as a side effect of claiming an arbitrary workspace. Th
 
 `t.belongsTo("$users")` adds a managed `tapedb_users` table with id, name and image. Claim issuance projects the workspace's member profiles through ordinary taped transactions. Apps cannot write these profiles. Includes and relation filters by user id work normally. Names and images use personal-field encryption and are not filterable. A schema referencing `$users` requires built-in auth.
 
-AuthRoom uses Durable Object SQLite persistence. Each adapter operation is atomic; asynchronous transactions spanning multiple Better Auth operations are not advertised as supported. Optional plugin columns can be added; renaming/removing fields or adding required columns needs an explicit migration. Do not rename an auth model or field on an existing database without migrating its stored data.
+AuthRoom uses Durable Object SQLite persistence. Each adapter operation is atomic; asynchronous transactions spanning multiple Better Auth operations are not advertised as supported. [AUTH-COMPATIBILITY.md](AUTH-COMPATIBILITY.md) lists which Better Auth plugins and flows are verified on this adapter in workerd (two-factor, magic link, organizations, admin, JWT, the OAuth 2.1 provider with PKCE and refresh rotation, device authorization, passkey registration options), how single-use tokens stay single-use under concurrent requests, and which flows can leave partial writes. Optional plugin columns can be added; renaming/removing fields or adding required columns needs an explicit migration. Do not rename an auth model or field on an existing database without migrating its stored data.
 
 ## Email
 
