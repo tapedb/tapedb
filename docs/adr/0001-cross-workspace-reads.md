@@ -1,6 +1,6 @@
 # ADR 0001: Cross-workspace reads stay client-side, for now
 
-Status: proposed (2026-11-26). Needs the owner's decision on the two follow-ups at the end.
+Status: accepted (2026-11-26).
 
 ## Context
 
@@ -46,6 +46,30 @@ What this shows, and what it doesn't:
   claims. No deployed measurement was taken. `--deploy` / `--url` with the
   same variables takes it.
 
+### Deployed run (2026-11-26)
+
+Staging build `fed55443`, from a throwaway branch with the `concurrency`
+option (#114) and an `across-scale` scenario. The Worker ran on Cloudflare
+(`staging.tapedb.dev`) and the client in the Workers Builds container, with 2
+rows per workspace and three `findMany` reads at each setting. Every read
+returned every row.
+
+| Workspaces | Seeding | concurrency 16 | 64 | unbounded |
+| --- | --- | --- | --- | --- |
+| 100 | 3.1 s | 331 ms p50 (316–357) | 261 ms (246–395) | 228 ms (192–277) |
+| 1,000 | 18.6 s | 11.2 s p50 (4.1–11.7) | 3.9 s (3.8–3.9) | 4.0 s (3.8–8.7) |
+
+On Cloudflare each workspace's object runs on its own, so the server side
+is parallel and the local bottleneck is gone: 1,000 workspaces read in
+about 4 s, not 25. A bound of 16 makes the client wait in line (11 s). A
+bound of 64 reads as fast as unbounded and still caps what the client holds
+open, so it is the default in #114. The first unbounded read (8.7 s)
+includes minting 1,000 claims at once.
+
+The client here was a Node process in a build container. A browser on
+HTTP/1.1 opens few connections per host and would sit closer to the
+bounded numbers. This run did not measure that.
+
 ## Options considered
 
 1. **Keep `$across` client-side (chosen).** It already preserves the
@@ -75,17 +99,16 @@ What this shows, and what it doesn't:
 
 ## Decision
 
-Keep `$across` as it is, and document its operating range: tens of
-workspaces for interactive use, around 100 for occasional admin views, and a
-read model beyond that. Don't build server-side fan-out without a deployed
+Keep `$across` client-side, with a bound on concurrency (default 64, #114).
+Its operating range, measured on Cloudflare: around 100 workspaces in a
+quarter to a third of a second, which is fine for interactive use; 1,000 in
+about 4 s, which is fine for an admin view or a report but not for an
+interactive screen. Beyond that, use a read model. Don't build server-side fan-out without a deployed
 measurement that shows the client-side cost remains after the follow-ups
 below.
 
-## Follow-ups that need the owner's approval
+## Follow-ups
 
-- **A concurrency bound in `$across`** (for example
-  `$across(ids, { concurrency: 16 })`, with a default), so 1,000 workspaces
-  don't mean 2,000 simultaneous requests and claim mints. It's a small,
-  additive client change, and it can be measured with the same benchmark.
-- **A deployed run** of the same benchmark (`--deploy`) at 100 and 1,000
-  workspaces, to replace the local numbers above.
+Both were approved and done on 2026-11-26: the concurrency bound (#114,
+default 64) and the deployed run above. Still open: the same measurement from
+a browser.

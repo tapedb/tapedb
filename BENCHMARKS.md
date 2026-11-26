@@ -333,7 +333,8 @@ These follow from the measurements above, not from a target.
   `bench/results/local-2026-11-26-across.json`. It is discussed in
   [docs/adr/0001-cross-workspace-reads.md](docs/adr/0001-cross-workspace-reads.md):
   about 0.9 s at 100 workspaces and 20–25 s at 1,000, with one local workerd
-  running every object. A deployed run is still to be taken.
+  running every object. The ADR also records a deployed run: on Cloudflare,
+  about 0.23–0.33 s at 100 and 3.9 s at 1,000 with concurrency 64.
 - **R2 failing mid-run.** A client cannot cause it; the room tests cover it,
   and the staging drills cover a lost Durable Object.
 - **Cloudflare's own hardware.** The deployed-runtime run above is workerd on
