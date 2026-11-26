@@ -571,6 +571,7 @@
       "WorkspaceMetricsReport": {
         "kind": "interface",
         "shape": {
+          "health": "{ status: \"ok\" | \"degraded\" | \"failing\"; reasons: Array<{ code: string; status: \"degraded\" | \"failing\"; message: string; }>; } | null",
           "metrics": "{ since: number; uptimeMs: number; restartsCounters: true; counters: Record<string, number>; latency: { estimated: true; bucketsMs: number[]; timers: Record<string, { count: number; sumMs: number; maxMs: number; meanMs: number | null; p50Ms: number | null; p95Ms: number | null; p99Ms: number | null; buckets: number[]; }>; }; }",
           "gauges": "Record<string, unknown>",
           "measurement": "Record<string, string>"

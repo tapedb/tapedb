@@ -928,7 +928,7 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `POST /engine/workspaces/:id/vector/rows` | `{ model, ids }` → `{ ok, data: { model, rows: [{ id, status }] } }` for rows the caller may read; status is `unindexed`, `pending`, `indexed` or `failed` |
 | `GET /engine/workspaces/:id/schema` | the schema document the workspace runs: `namespaces` (fields with type, default and `personal`, and `access`: each action's rule, `role`, `filter` with the caller's evaluated `where`, or `check`), `links` (with each foreign key's `onDelete`), `files` (each file action's rule) and `caller` (`{ sub, role }`) |
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2. With `?after=<seq>`, it answers once a transaction lands past `seq`, or after 25 seconds |
-| `GET /engine/workspaces/:id/metrics` | how hard the workspace is being worked → `{ ok, metrics, gauges, measurement }`; ADMIN or higher. See [Metrics](#metrics) |
+| `GET /engine/workspaces/:id/metrics` | how hard the workspace is being worked, and whether it is healthy → `{ ok, health, metrics, gauges, measurement }`; ADMIN or higher. See [Metrics](#metrics) |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
 | `GET /engine/workspaces/:id/history?model=…&id=…` | one row's recorded changes → `{ ok, data: HistoryEntry[] }`; ADMIN or higher; 409 `audit_disabled` without `audit: true` |
 | `GET /engine/workspaces/:id/log?before=&limit=&model=` | the transaction log, newest first → `{ ok, data: { entries, next } }`; ADMIN or higher. Each entry: `seq`, `at`, the writer (`sub`, `role`; null without `audit: true`), `rows` and `counts` (rows per model and op) and up to 100 `ops`. Values are shown only for models whose read rule is a role the caller meets, never for personal fields; other ops list the fields in `hidden`. `limit` 1–100 (default 50); `next` is the `before` of the following page, null at the start of the retained log |
@@ -960,7 +960,22 @@ worked. ADMIN or higher: the numbers are operational, and a member has no
 business reading them. It carries counts, sizes and durations only — no row
 values, no subjects, no claims and nothing from a personal field.
 
-The answer is in three parts, because they are trustworthy in different ways.
+**`health`** comes first: `{ status, reasons }`, where `status` is `ok`,
+`degraded` or `failing` and each reason is `{ code, status, message }`. It is
+computed only from numbers elsewhere in the answer, so a reader can check it.
+
+| Code | Status | When |
+| --- | --- | --- |
+| `recovering` | degraded | A restore from R2 is in progress; requests answer 503 `workspace_recovering` |
+| `recovery_failing` | failing | A restore is in progress and R2 has refused it (`recovery.failures` above zero) |
+| `flush_failing` | failing | The last flush to R2 failed; writes past `flushedSeq` exist only in the Durable Object |
+| `flush_lagging` | degraded | The oldest write not yet in R2 is over 5 minutes old, or over 10,000 writes are waiting. Under 30 seconds is the alarm's normal delay |
+| `snapshot_overdue` | degraded | The next snapshot is more than a day past `snapshotDueAt` (a workspace never snapshotted is not overdue: the next pass takes one) |
+| `webhooks_dead_lettered` | degraded | At least one webhook event is dead-lettered |
+| `write_latency_high` | degraded | Estimated `transaction` p95 over 1 s, with at least 20 samples |
+| `live_updates_slow` | degraded | Estimated `subscriptionUpdate` p95 over 2.5 s, with at least 20 samples |
+
+The rest of the answer is in three parts, because they are trustworthy in different ways.
 
 **`metrics`** comes from the Durable Object's memory. `counters` and `latency`
 describe **one object's lifetime, not the workspace's history**: a Durable
@@ -1014,7 +1029,9 @@ them, and `durability`:
 | `pendingSeq` | how far ahead of R2 the log is. Non-zero between alarms is normal; growing without falling back is not |
 | `hasPending`, `lastFlushAt`, `lastFlushAgeMs` | whether work is waiting, and when a flush last succeeded |
 | `flushAttempts`, `nextAttemptAt`, `lastFlushError` | a failing flush and its backoff |
-| `snapshotSeq`, `snapshotStatus`, `snapshotAgeMs` | the snapshot a restore would start from, and how old it is |
+| `oldestPendingAt` | commit time of the oldest write not yet in R2; null when everything is flushed |
+| `snapshotSeq`, `snapshotStatus`, `snapshotAgeMs`, `snapshotCompletedAt` | the snapshot a restore would start from, and how old it is |
+| `snapshotDueAt` | when the next snapshot is due (half the retention after the last); null with nothing new to snapshot |
 
 **`measurement`** labels each of the above `measured` or `estimated`, so a
 dashboard does not present a bucket estimate as a reading.

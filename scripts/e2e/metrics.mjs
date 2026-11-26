@@ -98,6 +98,9 @@ const flushed = await db.$metrics();
 assert.equal(flushed.gauges.durability.pendingSeq, 0);
 assert.equal(flushed.gauges.durability.flushedSeq, flushed.gauges.durability.seq);
 assert.equal(flushed.gauges.durability.lastFlushError, null);
+// Flushed and quiet: the verdict is ok, and nothing is waiting for R2.
+assert.deepEqual(flushed.health, { status: "ok", reasons: [] });
+assert.equal(flushed.gauges.durability.oldestPendingAt, null);
 assert.ok(flushed.gauges.durability.lastFlushAgeMs >= 0);
 assert.equal(flushed.metrics.counters["durability.flushFailures"], 0);
 // The gauge and the counter move at different moments of the same alarm:
