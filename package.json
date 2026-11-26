@@ -119,7 +119,7 @@
     "@types/react-dom": "^19.3.0",
     "@xyflow/react": "^13.0.2",
     "async-storage-v3": "npm:@react-native-async-storage/async-storage@^3",
-    "better-auth": "1.7.25",
+    "better-auth": "1.7.27",
     "esbuild": "^0.28.2",
     "fake-indexeddb": "6.2.8",
     "miniflare": "5.20261117.0-beta",
