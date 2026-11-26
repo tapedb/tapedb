@@ -41,7 +41,7 @@
   sustained load; eleven reads through the client at two sizes; live-update,
   presence and broadcast fan-out at 10/50/200 sockets; how far R2 trails
   commits under load, from `/metrics`; and many workspaces, from first touch to
-  `$across` at 10 and 100 with a refused token. It runs against `tapedb dev` or
+  `$across` at 10, 100 and 1,000 with a refused token. It runs against `tapedb dev` or
   a deployed Worker, records every measurement with its environment in one
   file, and `scripts/bench-report.mjs` renders it. BENCHMARKS.md gains its run
   and four more bottlenecks: presence fan-out growing with the square of the
@@ -58,8 +58,6 @@
   import hides from bun entirely. `@types/bun` is a new devDependency so the
   scripts can be checked against bun's own published types rather than a
   hand-written shim.
-
-- `$across(ids, { concurrency })` bounds how many workspaces a one-off read asks at once, claims included. The default is 16. Before, every workspace's request and claim started together: 1,000 workspaces meant about 2,000 simultaneous requests from one client (docs/adr/0001-cross-workspace-reads.md). Live queries still open one socket per workspace.
 
 - `$across(ids, { concurrency })` bounds how many workspaces a one-off read asks at once, claims included. The default is 64, chosen from a deployed run: at 1,000 workspaces it read as fast as unbounded (3.9 s against 4.0 s p50) where 16 took 11.2 s. Before, every workspace's request and claim started together: 1,000 workspaces meant about 2,000 simultaneous requests from one client (docs/adr/0001-cross-workspace-reads.md). Live queries still open one socket per workspace.
 
