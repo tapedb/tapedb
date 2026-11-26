@@ -59,6 +59,8 @@
   scripts can be checked against bun's own published types rather than a
   hand-written shim.
 
+- `$across` uses a `getToken` given after a call for the same workspace without one. It kept one client per workspace, and a client first made without `getToken` (the development claim route) kept using that route, so the later call's tokens were never sent. It now keeps one client per workspace and token source.
+
 ## 0.3.6 - 2026-11-22
 
 - Named SQL queries. `schema(models, { queries: { name: sqlQuery({ sql, params, returns, role?, bypassReadRules? }) } })` declares a SQLite statement in the schema file, and `db.$query(name, params)` runs it, typed from `params` and `returns`. Use it for what the query builder cannot express: recursive CTEs, window functions, joins with their own grouping. A request names a query and passes values, which are always bound; the client never sends SQL.
