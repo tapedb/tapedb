@@ -61,6 +61,8 @@
 
 - `$across(ids, { concurrency })` bounds how many workspaces a one-off read asks at once, claims included. The default is 16. Before, every workspace's request and claim started together: 1,000 workspaces meant about 2,000 simultaneous requests from one client (docs/adr/0001-cross-workspace-reads.md). Live queries still open one socket per workspace.
 
+- `$across(ids, { concurrency })` bounds how many workspaces a one-off read asks at once, claims included. The default is 64, chosen from a deployed run: at 1,000 workspaces it read as fast as unbounded (3.9 s against 4.0 s p50) where 16 took 11.2 s. Before, every workspace's request and claim started together: 1,000 workspaces meant about 2,000 simultaneous requests from one client (docs/adr/0001-cross-workspace-reads.md). Live queries still open one socket per workspace.
+
 - `$across` uses a `getToken` given after a call for the same workspace without one. It kept one client per workspace, and a client first made without `getToken` (the development claim route) kept using that route, so the later call's tokens were never sent. It now keeps one client per workspace and token source.
 
 ## 0.3.6 - 2026-11-22

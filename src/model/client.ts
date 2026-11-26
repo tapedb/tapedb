@@ -437,7 +437,7 @@ export interface AcrossOptions {
   getToken?: (workspaceId: string) => Promise<string>;
   /**
    * How many workspaces a one-off read asks at once, claims included.
-   * Default 16. A live query still opens one socket per workspace.
+   * Default 64. A live query still opens one socket per workspace.
    */
   concurrency?: number;
 }

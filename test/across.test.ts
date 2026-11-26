@@ -217,8 +217,8 @@ describe("$across", () => {
     expect(tokensSeen).toEqual([`${B}:Bearer token-${B}`]);
   });
 
-  test("asks at most `concurrency` workspaces at once (16 by default), claims included", async () => {
-    const ids = Array.from({ length: 40 }, (_, n) => `6f1c2f3e-6b1a-4c9a-9a6f-${String(n).padStart(12, "0")}`);
+  test("asks at most `concurrency` workspaces at once (64 by default), claims included", async () => {
+    const ids = Array.from({ length: 100 }, (_, n) => `6f1c2f3e-6b1a-4c9a-9a6f-${String(n).padStart(12, "0")}`);
     for (const id of ids) {
       const db = new Database(":memory:");
       for (const migration of appSchema.migrations) db.exec(migration.sql);
@@ -247,8 +247,8 @@ describe("$across", () => {
     };
 
     expect(await db.$across(ids, { getToken }).task.count()).toBe(0);
-    expect(peak).toBe(16);
-    expect(claimPeak).toBeLessThanOrEqual(16);
+    expect(peak).toBe(64);
+    expect(claimPeak).toBeLessThanOrEqual(64);
 
     peak = 0;
     claimPeak = 0;

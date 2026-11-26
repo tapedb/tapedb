@@ -173,7 +173,7 @@ function strip<R extends Record<string, unknown>>(rows: R[], extra: string[]): R
 // ---- Fan-out ----------------------------------------------------------------
 
 /** Workspaces asked at once by a one-off `$across` read unless `concurrency` says otherwise. */
-export const DEFAULT_ACROSS_CONCURRENCY = 16;
+export const DEFAULT_ACROSS_CONCURRENCY = 64;
 
 /**
  * Runs `task` for every index, at most `limit` at a time, and settles each.
