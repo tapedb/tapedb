@@ -10,6 +10,42 @@
 
 - `TxResult` gained an optional `deduped: true`, set when a `clientTxId` was answered from an existing receipt. `applied: 0` alone could not tell a replay from a no-op delete, which a client retrying a write also wants to know.
 
+- `bun run bench` (`scripts/bench.ts`) measures the engine: writes at four
+  batch sizes, bulk writes, the dedupe path, thirteen read shapes from an
+  indexed lookup to a named SQL query with a CTE, invalidation cost as live
+  queries multiply, flush, snapshot and recovery at two workspace sizes with
+  and without a snapshot to start from, and bytes per row. Exact quantiles
+  from kept samples, reproducible from `--seed`, configurable with `--rows`,
+  `--iterations` and `--only`, and `--json` records the run with the
+  environment and version that produced it.
+
+- The load scenario takes `BENCH_JSON` and records what a Worker and a socket
+  actually serve. The two suites are reported apart, and labelled in their own
+  output, because only one of them can speak about a deployment: bun's SQLite
+  allows 32,766 bound parameters against a Durable Object's 100, R2 is a `Map`
+  in process, and nothing local pays for the runtime, the socket or a cold
+  start. Neither asserts a threshold — a benchmark that failed a target
+  invented in this repo would be measuring the machine it ran on.
+
+- BENCHMARKS.md records a run of each, four bottlenecks and the operating
+  guidelines that follow from them. The contrast is the useful part: the
+  engine inserts a row in 0.022 ms, and a client observes the same write
+  107 ms later. Live queries are a per-write tax a single-threaded object pays
+  before serving the next request (100 of them add about 18 ms to every
+  write); `patchMany` is the most expensive write by an order of magnitude; an
+  unindexed filter costs about 7x an indexed one at 20,000 rows and the gap
+  grows; cursor pagination does not degrade with depth.
+
+- `bun run typecheck` now covers `scripts/` as well as `src` and `test/types`,
+  and `scripts/soak.ts` runs again. It had been broken since the deployment
+  config stopped being a module global: `runTransaction`, `recordFileEntry`
+  and `forgetFileEntry` gained a required argument, and the soak is a script
+  rather than a test, so nothing failed. `test/fixtures/test-support.ts` was
+  importing two types from a file that does not exist, which a type-only
+  import hides from bun entirely. `@types/bun` is a new devDependency so the
+  scripts can be checked against bun's own published types rather than a
+  hand-written shim.
+
 ## 0.3.6 - 2026-11-22
 
 - Named SQL queries. `schema(models, { queries: { name: sqlQuery({ sql, params, returns, role?, bypassReadRules? }) } })` declares a SQLite statement in the schema file, and `db.$query(name, params)` runs it, typed from `params` and `returns`. Use it for what the query builder cannot express: recursive CTEs, window functions, joins with their own grouping. A request names a query and passes values, which are always bound; the client never sends SQL.
