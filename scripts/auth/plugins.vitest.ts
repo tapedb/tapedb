@@ -256,12 +256,21 @@ describe("OAuth 2.1 provider", () => {
   }
   const token = (form: Record<string, string>) => call("/api/auth/oauth2/token", { form: { client_id: clientId, client_secret: clientSecret, ...form } });
 
-  test("authorization code with PKCE: a wrong verifier is refused, and the code redeems once under a race", async () => {
+  test("authorization code with PKCE: a wrong verifier is refused, and the code redeems at most once under a race", async () => {
     const { code, verifier } = await authorize();
     const wrong = await token({ grant_type: "authorization_code", code, redirect_uri: redirect, code_verifier: randomBytes(32).toString("base64url") });
     expect(wrong.status).toBe(400);
     const results = await Promise.all([1, 2, 3].map(() => token({ grant_type: "authorization_code", code, redirect_uri: redirect, code_verifier: verifier })));
-    expect(statuses(results).filter((s) => s === 200).length).toBe(1);
+    // At most one redemption succeeds. Better Auth treats a reused code as a
+    // replay and revokes what the code issued (RFC 6749 §10.5), so the request
+    // that consumed it can itself be refused ("grant revoked during token
+    // issuance") when a loser's revocation lands first: zero is correct too.
+    const codes = statuses(results);
+    expect(codes.filter((s) => s === 200).length).toBeLessThanOrEqual(1);
+    for (const r of results.filter((r) => r.status !== 200)) {
+      expect(r.status).toBe(400);
+      expect((await json<{ error: string }>(r.clone())).error).toBe("invalid_grant");
+    }
   });
 
   test("a refresh token rotates once under a race, and replaying the old one revokes the family", async () => {

@@ -45,7 +45,7 @@ Checked against `better-auth` 1.7.25, `@better-auth/oauth-provider` 1.7.25 and
 | Admin plugin | Verified (ban) | Other admin routes untested |
 | JWT and JWKS | Verified | The JWT from `get-session` carries a key id published at `/jwks` |
 | OAuth 2.1 / OIDC provider: client registration | Verified, with a caveat | Dynamic registration (`/oauth2/register`). It writes inside `runWithTransaction`; a failure part-way can leave a client without its resource bindings |
-| OAuth provider: authorization code with PKCE | Verified | Consent flow; a wrong `code_verifier` is refused; three concurrent redemptions of one code produce exactly one token |
+| OAuth provider: authorization code with PKCE | Verified | Consent flow; a wrong `code_verifier` is refused; three concurrent redemptions of one code produce at most one token, and the others are refused with `invalid_grant` (a reused code revokes what it issued, so under a race the first redemption can be refused too) |
 | OAuth provider: refresh token lifecycle | Verified | Three concurrent rotations of one refresh token produce exactly one; replaying a rotated token is refused and revokes the token it was rotated into |
 | OAuth provider: token revocation | Verified | A revoked refresh token is refused |
 | Device authorization (RFC 8628) | Verified | Code issue, claim and approval; three concurrent polls produce exactly one token |
