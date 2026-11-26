@@ -58,7 +58,7 @@ import type {
   UpdateData,
   WithInclude,
 } from "./schema";
-import { acrossModel, type AcrossQuery, type WorkspaceClients } from "./across";
+import { acrossModel, DEFAULT_ACROSS_CONCURRENCY, type AcrossQuery, type WorkspaceClients } from "./across";
 import { plan, READ_METHODS } from "./plan";
 import { splitSelect, toEngineWhere, type Where } from "./where";
 
@@ -435,6 +435,11 @@ export interface AcrossOptions {
    * development claim route (no `getToken`).
    */
   getToken?: (workspaceId: string) => Promise<string>;
+  /**
+   * How many workspaces a one-off read asks at once, claims included.
+   * Default 16. A live query still opens one socket per workspace.
+   */
+  concurrency?: number;
 }
 
 /** What `$query(name, ...)` takes after the name: params, optional when every one is. */
@@ -767,6 +772,10 @@ export function createClient<M extends Models, Q extends SqlQueries = {}>(
       throw new Error("$across needs at least one workspace id.");
     }
     const ids = [...new Set(workspaceIds)];
+    const concurrency = options.concurrency ?? DEFAULT_ACROSS_CONCURRENCY;
+    if (!Number.isInteger(concurrency) || concurrency < 1) {
+      throw new Error("$across concurrency must be a positive integer.");
+    }
     if (config.getToken && !options.getToken) {
       throw new Error("$across needs getToken(workspaceId): each workspace has its own claim.");
     }
@@ -801,7 +810,8 @@ export function createClient<M extends Models, Q extends SqlQueries = {}>(
         clients.map(({ workspaceId, client: one }) => ({
           workspaceId,
           model: (one as unknown as Record<string, unknown>)[key] as WorkspaceClients[number]["model"],
-        }))
+        })),
+        concurrency
       );
     }
     return out as Across<M>;

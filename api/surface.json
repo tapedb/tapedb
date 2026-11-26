@@ -58,7 +58,8 @@
       "AcrossOptions": {
         "kind": "interface",
         "shape": {
-          "getToken": "((workspaceId: string) => Promise<string>) | undefined"
+          "getToken": "((workspaceId: string) => Promise<string>) | undefined",
+          "concurrency": "number | undefined"
         }
       },
       "AcrossQuery": {
