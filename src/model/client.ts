@@ -18,6 +18,7 @@ import {
   type WebhookReport,
   type WebhookRetryOutcome,
   type WebhookRetryRequest,
+  type QueryProfile,
   type DataClientImpl,
   type HeadlessDataClient,
   type StoredFile,
@@ -438,6 +439,13 @@ export interface ClientExtras {
    * events wait behind it until it lands. A delivered event is never re-sent.
    */
   $webhookRetry(request: WebhookRetryRequest): Promise<WebhookRetryOutcome>;
+  /**
+   * The read statements that have cost this workspace the most since its
+   * object started, each with SQLite's plan, the tables it scanned whole and
+   * columns that are candidates for `.index()`. Admins and owners only. Never
+   * carries a value. `{ reset: true }` clears it and returns null.
+   */
+  $queryProfile(options?: { sort?: QueryProfile["sort"]; limit?: number; reset?: boolean }): Promise<QueryProfile | null>;
   /** Retries queued writes now (also runs on reconnect and when back online). */
   $flush(): Promise<void>;
   /** Closes the socket. */
@@ -784,6 +792,7 @@ export function createClient<M extends Models, Q extends SqlQueries = {}>(
     $webhooks: () => impl.webhookReport(),
     $webhookDeliveries: (query = {}) => impl.webhookDeliveries(query),
     $webhookRetry: (request) => impl.webhookRetry(request),
+    $queryProfile: (options) => impl.queryProfile(options),
     $query: (name: string, params?: Record<string, unknown>) => impl.sqlQuery(name, params),
     $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),

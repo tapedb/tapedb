@@ -34,6 +34,37 @@ export interface SqlExecutor {
  * goes through `fitBindings`, which keeps it within the object's limit of 100
  * bound parameters.
  */
+/**
+ * The Durable Object executor, with every read statement (`all`, `one`)
+ * reported to `onRead`: its text and parameter count as they ran, the rows
+ * returned, the rows SQLite read (`rowsRead` from the cursor, null where the
+ * runtime has none) and the wall time. Writes pass through unrecorded.
+ */
+export function profiledSqlExecutor(
+  storage: DurableObjectStorage,
+  onRead: (sql: string, params: number, ms: number, rowsReturned: number, rowsRead: number | null) => void
+): SqlExecutor {
+  const read = <T extends SqlRow>(sql: string, params: SqlValue[]): T[] => {
+    const fitted = fitBindings(sql, params);
+    const started = Date.now();
+    const cursor = storage.sql.exec<T>(fitted.sql, ...fitted.params);
+    const rows = cursor.toArray();
+    const rowsRead = (cursor as { rowsRead?: unknown }).rowsRead;
+    onRead(fitted.sql, fitted.params.length, Date.now() - started, rows.length, typeof rowsRead === "number" ? rowsRead : null);
+    return rows;
+  };
+  const plain = durableObjectSqlExecutor(storage);
+  return {
+    ...plain,
+    all<T extends SqlRow = SqlRow>(sql: string, ...params: SqlValue[]): T[] {
+      return read<T>(sql, params);
+    },
+    one<T extends SqlRow = SqlRow>(sql: string, ...params: SqlValue[]): T | undefined {
+      return read<T>(sql, params)[0];
+    },
+  };
+}
+
 export function durableObjectSqlExecutor(
   storage: DurableObjectStorage
 ): SqlExecutor {

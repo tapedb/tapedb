@@ -75,6 +75,8 @@
 
 - The outbox gained a `revived_at` column, added in place for workspaces whose outbox predates this. The outbox is local Durable Object state — not in `ENGINE_TABLES`, so neither snapshotted nor restored — which is why this is not an engine migration: there is no other copy to keep in step.
 
+- Query profiles. `db.$queryProfile()` (`GET /engine/workspaces/:id/queries`, ADMIN or higher) lists the read statements that have cost a workspace the most: typed reads, live queries and named SQL, each with its run count, rows returned, rows SQLite read (from the Durable Object cursor, which is what Cloudflare bills), and wall time. Each comes with SQLite's own plan, the model tables it scanned whole, and the columns it compared on them as candidates for `.index()`. Statements are recorded by their SQL text, whose values are always bound, so no filter value is kept. The record is in memory, bounded to 200 statements, and starts again with the object. `reset: true` clears it. Nothing changes an index or a migration.
+
 ## 0.3.6 - 2026-11-22
 
 - Named SQL queries. `schema(models, { queries: { name: sqlQuery({ sql, params, returns, role?, bypassReadRules? }) } })` declares a SQLite statement in the schema file, and `db.$query(name, params)` runs it, typed from `params` and `returns`. Use it for what the query builder cannot express: recursive CTEs, window functions, joins with their own grouping. A request names a query and passes values, which are always bound; the client never sends SQL.

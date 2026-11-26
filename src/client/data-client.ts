@@ -70,6 +70,40 @@ const TERMINAL_AUTH_CODES = new Set([
   "invalid_config",
 ]);
 
+/** One read statement in `db.$queryProfile()`, with SQLite's plan for it. */
+export interface ProfiledStatement {
+  id: string;
+  /** Where it ran: a typed read, a live query, or a named SQL query. */
+  sources: Array<"query" | "live" | "sql">;
+  /** The SQL as it ran, with placeholders: never a value. */
+  sql: string;
+  truncated: boolean;
+  count: number;
+  rowsReturned: number;
+  /** Rows SQLite read to answer it, summed; null where the runtime does not count. */
+  rowsRead: number | null;
+  /** Wall time. On Cloudflare a statement that never waits on I/O reads 0. */
+  totalMs: number;
+  maxMs: number;
+  lastAt: number;
+  /** SQLite's plan, or null when it could not be explained. */
+  plan: Array<{ id: number; parent: number; detail: string }> | null;
+  /** Model tables read whole, without an index. */
+  fullScans?: string[];
+  indexes?: string[];
+  /** Columns the statement compares on a fully scanned table: candidates for `.index()`. */
+  indexCandidates?: Array<{ table: string; columns: string[] }>;
+}
+
+export interface QueryProfile {
+  /** When this object started recording; it starts again after an eviction. */
+  since: number;
+  /** Statements held (at most 200). */
+  recorded: number;
+  sort: "rowsRead" | "totalMs" | "count" | "rowsReturned";
+  statements: ProfiledStatement[];
+}
+
 /** One recorded change to a row (`db.$history`). */
 export interface HistoryEntry {
   /** Log sequence of the transaction. */
@@ -718,6 +752,21 @@ class DataClientImpl {
       throw new ServerError(error?.code ?? "http_error", error?.message ?? `Query failed with HTTP ${response.status}.`, response.status);
     }
     return body.data.rows;
+  }
+
+  async queryProfile(options: { sort?: QueryProfile["sort"]; limit?: number; reset?: boolean } = {}): Promise<QueryProfile | null> {
+    const token = await this.requireToken();
+    const query = new URLSearchParams();
+    if (options.sort) query.set("sort", options.sort);
+    if (options.limit !== undefined) query.set("limit", String(options.limit));
+    const url = `${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}/queries${query.size ? `?${query}` : ""}`;
+    const response = await this.fetchImpl(url, { method: options.reset ? "DELETE" : "GET", headers: { authorization: `Bearer ${token}` } });
+    const body = (await response.json().catch(() => null)) as { ok?: boolean; data?: QueryProfile } | null;
+    if (!response.ok || !body?.ok) {
+      const error = readServerError(body);
+      throw new ServerError(error?.code ?? "http_error", error?.message ?? `Query profile failed with HTTP ${response.status}.`, response.status);
+    }
+    return options.reset ? null : body.data ?? null;
   }
 
   async history(model: string, id: string): Promise<HistoryEntry[]> {
