@@ -59,7 +59,16 @@ export { id } from "./client/id";
 /** The model map, the constraint on `Client`, `Schema` and every generic
  *  `createClient` takes: a typed helper cannot be written without it. */
 export type { Models } from "./model/schema";
-export type { HistoryEntry, StoredFile, WorkspaceMetricsReport } from "./client/data-client";
+export type {
+  HistoryEntry,
+  StoredFile,
+  WebhookDelivery,
+  WebhookEndpointHealth,
+  WebhookReport,
+  WebhookRetryOutcome,
+  WebhookRetryRequest,
+  WorkspaceMetricsReport,
+} from "./client/data-client";
 export type { PresencePeer, PresenceError, PresenceSubscribeOptions, QueryError, TopicGap, TopicSender, WriteRejection } from "./client/types";
 export type { StorageObject } from "./client/storage-client";
 

@@ -65,6 +65,16 @@
 
 - `$across` uses a `getToken` given after a call for the same workspace without one. It kept one client per workspace, and a client first made without `getToken` (the development claim route) kept using that route, so the later call's tokens were never sent. It now keeps one client per workspace and token source.
 
+- Three admin routes for operating the webhook outbox, and `db.$webhooks()`, `db.$webhookDeliveries()` and `db.$webhookRetry()` to reach them. `GET /webhooks` reports each endpoint's counts, whether it is backing off, and the one delivery it is waiting on — which, because nothing overtakes a failing event, is the whole explanation of a stalled endpoint. `GET /webhooks/deliveries` lists the same bookkeeping per delivery. `POST /webhooks/retry` makes deliveries due now, by id or by a bounded filter. ADMIN or higher: a retry sends data to a third party.
+
+- A retry re-queues the existing outbox row rather than capturing a new event, so the event id, the sequence and the signed body are the ones first captured; nothing re-reads the database, so a retry cannot pick up a row's later state and pass it off as the original change. The attempt count and age window restart (recorded as `revivedAt`), because a dead event has exhausted both and re-queuing one without resetting them would be a no-op dressed up as a retry. A revived event keeps its sequence, so it becomes its endpoint's head again and that endpoint's newer events wait behind it until it lands — the ordering guarantee doing its job, and worth knowing before reviving something old. A delivered event is never re-sent, even when named by id, because the engine cannot tell a deliberate redelivery from a duplicate.
+
+- The inspection routes never return the signed body. It holds the row's non-personal values and was written for the endpoint rather than filtered through the caller's read rules, so returning it would show an admin row values their own rules may hide. What comes back is what the event was about, not what it contained.
+
+- An endpoint the deployment has since dropped is still reported, with `retired: true` and the url its queued events carry. Those events can no longer be signed, so they dead-letter; hiding the endpoint would hide why a count never falls.
+
+- The outbox gained a `revived_at` column, added in place for workspaces whose outbox predates this. The outbox is local Durable Object state — not in `ENGINE_TABLES`, so neither snapshotted nor restored — which is why this is not an engine migration: there is no other copy to keep in step.
+
 ## 0.3.6 - 2026-11-22
 
 - Named SQL queries. `schema(models, { queries: { name: sqlQuery({ sql, params, returns, role?, bypassReadRules? }) } })` declares a SQLite statement in the schema file, and `db.$query(name, params)` runs it, typed from `params` and `returns`. Use it for what the query builder cannot express: recursive CTEs, window functions, joins with their own grouping. A request names a query and passes values, which are always bound; the client never sends SQL.

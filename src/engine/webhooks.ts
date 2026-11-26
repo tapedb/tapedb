@@ -101,6 +101,15 @@ export const WEBHOOK_PASS_ATTEMPTS = 25;
 export const WEBHOOK_SEND_TIMEOUT_MS = 10_000;
 /** After this many attempts an event is dead-lettered whatever its age. */
 const WEBHOOK_MAX_ATTEMPTS = 60;
+
+/**
+ * Attempts before an event is dead-lettered. Read by webhook-ops.ts so an
+ * operator sees the schedule in force rather than guessing at the engine's
+ * constants.
+ */
+export function webhookMaxAttempts(): number {
+  return WEBHOOK_MAX_ATTEMPTS;
+}
 /** Captured changes turned into events per pass; the rest wait for the next. */
 const CHANGES_PER_DRAIN = 500;
 
@@ -240,8 +249,18 @@ function createTables(sql: SqlExecutor): void {
     status TEXT NOT NULL DEFAULT 'pending',
     last_status INTEGER,
     last_error TEXT,
-    delivered_at INTEGER
+    delivered_at INTEGER,
+    revived_at INTEGER
   )`);
+  // A workspace whose outbox predates re-queuing by hand still has to take a
+  // retry, so the column is added rather than assumed. The outbox is local
+  // Durable Object state (it is not in ENGINE_TABLES, so it is neither
+  // snapshotted nor restored), which is why this is not an engine migration:
+  // there is no other copy of it to keep in step.
+  const columns = sql.all<{ name: string }>(`PRAGMA table_info("${WEBHOOK_OUTBOX_TABLE}")`);
+  if (!columns.some((column) => String(column.name) === "revived_at")) {
+    sql.exec(`ALTER TABLE "${WEBHOOK_OUTBOX_TABLE}" ADD COLUMN revived_at INTEGER`);
+  }
   sql.exec(`CREATE INDEX IF NOT EXISTS "${WEBHOOK_OUTBOX_TABLE}_due"
     ON "${WEBHOOK_OUTBOX_TABLE}" (status, next_attempt_at, seq)`);
 }
@@ -498,6 +517,7 @@ interface OutboxRow extends SqlRow {
   created_at: number;
   attempts: number;
   next_attempt_at: number;
+  revived_at: number | null;
 }
 
 /** Wait before the next attempt: 30 s, doubling, capped at 30 minutes. */
@@ -532,7 +552,7 @@ export async function deliverWebhooks(
   // event is its head, and nothing later may overtake it. A row held back by
   // its own backoff is still the head, so it blocks the rest of its endpoint.
   const queue = sql.all<OutboxRow>(
-    `SELECT id, event_id, hook, url, seq, model, op, body, created_at, attempts, next_attempt_at
+    `SELECT id, event_id, hook, url, seq, model, op, body, created_at, attempts, next_attempt_at, revived_at
        FROM "${WEBHOOK_OUTBOX_TABLE}"
       WHERE status = 'pending'
       ORDER BY seq, rowid
@@ -602,7 +622,12 @@ export async function deliverWebhooks(
       continue;
     }
 
-    const expired = now - Number(row.created_at) >= WEBHOOK_MAX_AGE_MS || attempt >= WEBHOOK_MAX_ATTEMPTS;
+    // The age window runs from the last time this event was re-queued by
+    // hand, or from capture when it never was. Measuring a revived event from
+    // its original capture would dead-letter it again on the first pass,
+    // which would make a retry a no-op rather than a retry.
+    const since = row.revived_at === null ? Number(row.created_at) : Number(row.revived_at);
+    const expired = now - since >= WEBHOOK_MAX_AGE_MS || attempt >= WEBHOOK_MAX_ATTEMPTS;
     if (expired) {
       markDead(sql, row, attempt, result.error ?? `HTTP ${result.status ?? "failure"}`, result.status ?? null);
       summary.dead += 1;
