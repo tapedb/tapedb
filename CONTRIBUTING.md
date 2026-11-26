@@ -155,6 +155,8 @@ bun run bench                                    # the engine, in process, over 
 bun run bench --rows 50000 --only queries --json bench.json
 
 BENCH_JSON=load.json SUBSCRIBERS=50 WRITES=400 node scripts/e2e.mjs --only load
+bun run bench:e2e                                # every end-to-end workload; SCALE=0.2 for a smoke run
+node scripts/bench-report.mjs bench/results/latest.json
 ```
 
 The local suite bounds the engine's own cost and shows how it scales with the
