@@ -14,7 +14,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 // package.json "files": what the published tarball carries.
-const SHIPPED = ["README.md", "API.md", "PRIVACY.md", "SECURITY.md", "LIMITATIONS.md", "RELEASING.md"];
+const SHIPPED = ["README.md", "API.md", "PRIVACY.md", "SECURITY.md", "LIMITATIONS.md", "RELEASING.md", "AUTH-COMPATIBILITY.md"];
 
 const RESERVED = /(^|[^\w-])([\w-]+\.)*example\.(com|org|net)\b/;
 
