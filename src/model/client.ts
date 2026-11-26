@@ -13,6 +13,7 @@ import {
   createClientParts,
   type ClientDeps,
   type HistoryEntry,
+  type WorkspaceMetricsReport,
   type DataClientImpl,
   type HeadlessDataClient,
   type StoredFile,
@@ -399,6 +400,17 @@ export interface ClientExtras {
    * Admins and owners only; needs `defineTapeDB({ audit: true })`.
    */
   $history(target: { model: keyof Models & string; id: string }): Promise<HistoryEntry[]>;
+  /**
+   * How hard this workspace is being worked: counters, latency and the
+   * durability state. Admins and owners only.
+   *
+   * The counters cover the serving object's lifetime and reset when it is
+   * evicted (`metrics.restartsCounters`); the quantiles are bucket estimates
+   * (`metrics.latency.estimated`) while `sumMs`, `maxMs` and `meanMs` are
+   * exact; `gauges` is read from storage when you ask. Poll it and keep your
+   * own history if you want a trend: nothing is retained here.
+   */
+  $metrics(): Promise<WorkspaceMetricsReport>;
   /** Retries queued writes now (also runs on reconnect and when back online). */
   $flush(): Promise<void>;
   /** Closes the socket. */
@@ -736,6 +748,7 @@ export function createClient<M extends Models, Q extends SqlQueries = {}>(
     },
     $erasePerson: (subject) => impl.erasePerson(subject),
     $history: ({ model, id }) => impl.history(model, id),
+    $metrics: () => impl.metrics(),
     $query: (name: string, params?: Record<string, unknown>) => impl.sqlQuery(name, params),
     $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),

@@ -68,7 +68,7 @@ export function runTransaction(
 
       if (prior !== undefined) {
         if (prior.ops_hash === null || prior.ops_hash === hash) {
-          return { txId: tx.txId, seq: prior.seq, applied: 0 };
+          return { txId: tx.txId, seq: prior.seq, applied: 0, deduped: true };
         }
         throw new TxError(
           "conflict",

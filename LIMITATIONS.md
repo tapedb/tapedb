@@ -25,6 +25,17 @@
   back to an earlier schema; a drop cannot be undone, because its values are
   gone. Review generated SQL before deploying.
 
+- **Metrics are per object, bounded, and partly estimated.** `GET /metrics`
+  counts and times what a workspace does in the Durable Object's memory:
+  nothing is persisted, so an eviction resets every counter, and the answer
+  says so (`restartsCounters`, `since`, `uptimeMs`). Latency is kept as fixed
+  buckets, so `p50`/`p95`/`p99` are bucket bounds rather than samples while
+  `sumMs`, `maxMs` and `meanMs` are exact; `measurement` labels each field. The
+  gauges — connections, live queries, storage size, log rows, durability state
+  — are read from SQLite and the socket list at request time, so those are
+  exact and survive a restart. There is no aggregation across workspaces and no
+  retention: a dashboard that wants history or totals polls and keeps its own.
+
 ## Release gates
 
 Every release passes the gates in [RELEASING.md](RELEASING.md): CI on every

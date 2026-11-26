@@ -145,6 +145,14 @@ export interface TxResult {
   seq: number;
   /** Number of ops that changed a row. */
   applied: number;
+  /**
+   * Set when this answer came from an earlier transaction's receipt: the
+   * `clientTxId` had already been applied, so nothing ran again and `seq` is
+   * the original's. Absent on a first application, including one that changed
+   * no rows — `applied: 0` alone does not distinguish a replay from a no-op
+   * delete.
+   */
+  deduped?: true;
 }
 
 export type TxErrorCode =

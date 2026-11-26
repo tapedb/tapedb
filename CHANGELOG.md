@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- `GET /engine/workspaces/:id/metrics` answers how hard one workspace is being worked: counters for writes, reads, named SQL, sockets, live queries, presence, broadcast, flushes, snapshots and recoveries; latency histograms for `query`, `transaction`, `sql`, `subscriptionUpdate`, `flush`, `snapshot` and `recovery`; and gauges read from SQLite and the socket list — connections, live queries, `storageBytes`, `txLogRows` and the durability state, including how far ahead of R2 the log is. ADMIN or higher. It carries counts, sizes and durations only: no row values, no subjects, no claims, nothing from a personal field.
+
+- The instrumentation is in the Durable Object's memory and bounded there. Nothing is written to SQLite or R2, because a metric that cost a transaction would slow the path it measures; samples are kept as fixed buckets rather than values, so memory per timer is a constant whatever the traffic. The cost of that is a window and an approximation, and the answer states both rather than leaving them to be discovered: `restartsCounters: true`, `since` and `uptimeMs` say the counters describe one object's lifetime and start again after an eviction, `latency.estimated` and `latency.bucketsMs` say the quantiles are bucket bounds while `sumMs`, `maxMs` and `meanMs` are exact, and `measurement` labels every field `measured` or `estimated` so a dashboard cannot present an estimate as a reading. Every timer records failures as well as successes: a flush that never reached R2 is the sample most worth having.
+
+- `TxResult` gained an optional `deduped: true`, set when a `clientTxId` was answered from an existing receipt. `applied: 0` alone could not tell a replay from a no-op delete, which a client retrying a write also wants to know.
+
 ## 0.3.6 - 2026-11-22
 
 - Named SQL queries. `schema(models, { queries: { name: sqlQuery({ sql, params, returns, role?, bypassReadRules? }) } })` declares a SQLite statement in the schema file, and `db.$query(name, params)` runs it, typed from `params` and `returns`. Use it for what the query builder cannot express: recursive CTEs, window functions, joins with their own grouping. A request names a query and passes values, which are always bound; the client never sends SQL.

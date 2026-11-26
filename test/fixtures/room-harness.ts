@@ -7,6 +7,16 @@ import { Database } from "bun:sqlite";
 
 export function createSqlStorage(db: Database) {
   return {
+    /**
+     * What a Durable Object's `databaseSize` reports, worked out the same way:
+     * pages times page size, so a test reads a real figure that grows with the
+     * data rather than a constant.
+     */
+    get databaseSize(): number {
+      const pages = db.query(`PRAGMA page_count`).get() as { page_count: number } | null;
+      const size = db.query(`PRAGMA page_size`).get() as { page_size: number } | null;
+      return (pages?.page_count ?? 0) * (size?.page_size ?? 0);
+    },
     exec<T extends Record<string, unknown>>(query: string, ...params: unknown[]) {
       // Leading comments do not make a read a write.
       const trimmed = query.trim().replace(/^(?:--[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)+/, "");

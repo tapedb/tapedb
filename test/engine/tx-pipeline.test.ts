@@ -329,7 +329,11 @@ describe("transaction pipeline", () => {
         },
       ],
     });
-    expect(retry).toEqual({ txId: "t1-retry", seq: 1, applied: 0 });
+    // The retry's own txId, the original's sequence, nothing applied, and
+    // `deduped` to say which of those two reasons `applied: 0` has: a replay
+    // and a write that changed no rows are not the same answer.
+    expect(retry).toEqual({ txId: "t1-retry", seq: 1, applied: 0, deduped: true });
+    expect(first.deduped).toBeUndefined();
 
     const log = all(store, `SELECT * FROM "_tx_log"`);
     expect(log).toHaveLength(1);
