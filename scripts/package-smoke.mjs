@@ -37,7 +37,13 @@ try {
     run("migrate", "check");
     if (type === undefined) {
       // Exercise dependency installation against this packed version, before
-      // it is published: the existing file dependency must remain intact.
+      // it is published: the existing file dependencies must remain intact.
+      // init adds @tapedb/cli at its own version, which is not on the registry
+      // yet either, so the packed wrapper goes in first and init must keep it.
+      const cliPacked = command("npm", ["pack", "--json", "--pack-destination", scratch], join(root, "packages", "cli"));
+      const cliArchive = join(scratch, packedArchive(cliPacked.stdout));
+      command("npm", ["install", "--save-dev", cliArchive, "--ignore-scripts", "--omit=peer", "--no-audit", "--no-fund"], dir);
+      const withCli = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
       run("init", "--yes", "--no-start");
       const ready = JSON.parse(readFileSync(join(dir, "package.json"), "utf8"));
       assert.ok(ready.devDependencies.wrangler, "init must install Wrangler");
@@ -45,6 +51,8 @@ try {
       assert.ok(existsSync(join(dir, "node_modules", "wrangler", "package.json")));
       assert.equal(ready.dependencies["@tapedb/tapedb"], JSON.parse(installedManifest).dependencies["@tapedb/tapedb"]);
       assert.ok(readFileSync(join(dir, ".gitignore"), "utf8").includes(".dev.vars"));
+      assert.equal(ready.devDependencies["@tapedb/cli"], withCli.devDependencies["@tapedb/cli"], "init must keep the project's @tapedb/cli");
+      assert.ok(existsSync(join(dir, "node_modules", ".bin", "tapedb-cli")), "the project must have its own tapedb-cli bin");
       console.log("package smoke: automatic project installation passed");
     }
 
