@@ -169,7 +169,7 @@ function harness() {
   const message = (socket: FakeSocket, payload: unknown) =>
     room.webSocketMessage(socket as never, JSON.stringify(payload));
 
-  return { context, room, call, metrics, transact, query, openSocket, message };
+  return { data, context, room, call, metrics, transact, query, openSocket, message };
 }
 
 const insert = (id: string, txId: string, title = `note ${id}`, clientTxId?: string) => ({
@@ -459,5 +459,39 @@ describe("GET /metrics counts realtime work", () => {
     expect(body.metrics.counters["broadcast.messages"]).toBe(1);
     expect(body.gauges.topics).toBe(2);
     expect(body.gauges.presenceTargets).toBe(1);
+  });
+});
+
+describe("GET /metrics leads with a health verdict", () => {
+  type Health = { status: string; reasons: Array<{ code: string; status: string }> };
+  const health = async (h: ReturnType<typeof harness>) => {
+    const response = await h.call("/metrics", ADMIN);
+    return ((await response.json()) as { health: Health; gauges: { durability: { oldestPendingAt: number | null } } });
+  };
+
+  test("a workspace with writes waiting for the alarm is ok, and says what is waiting", async () => {
+    const h = harness();
+    expect((await h.transact(insert("n1", "t1"))).status).toBe(200);
+    const body = await health(h);
+    expect(body.health).toEqual({ status: "ok", reasons: [] });
+    expect(body.gauges.durability.oldestPendingAt).not.toBeNull();
+  });
+
+  test("a flush R2 refuses makes it failing, with the reason named", async () => {
+    const h = harness();
+    expect((await h.transact(insert("n1", "t1"))).status).toBe(200);
+    (h.data as unknown as { put: () => Promise<never> }).put = async () => {
+      throw new Error("R2 is down");
+    };
+    await h.room.alarm();
+    const body = await health(h);
+    expect(body.health.status).toBe("failing");
+    expect(body.health.reasons.map((reason) => reason.code)).toContain("flush_failing");
+  });
+
+  test("the verdict carries no row values either", async () => {
+    const h = harness();
+    await h.transact(insert("n1", "t1", "a secret title"));
+    expect(JSON.stringify(await health(h))).not.toContain("a secret title");
   });
 });

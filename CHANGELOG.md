@@ -6,6 +6,8 @@
 
 - The instrumentation is in the Durable Object's memory and bounded there. Nothing is written to SQLite or R2, because a metric that cost a transaction would slow the path it measures; samples are kept as fixed buckets rather than values, so memory per timer is a constant whatever the traffic. The cost of that is a window and an approximation, and the answer states both rather than leaving them to be discovered: `restartsCounters: true`, `since` and `uptimeMs` say the counters describe one object's lifetime and start again after an eviction, `latency.estimated` and `latency.bucketsMs` say the quantiles are bucket bounds while `sumMs`, `maxMs` and `meanMs` are exact, and `measurement` labels every field `measured` or `estimated` so a dashboard cannot present an estimate as a reading. Every timer records failures as well as successes: a flush that never reached R2 is the sample most worth having.
 
+- `/metrics` leads with `health`: `ok`, `degraded` or `failing`, and one coded reason per problem (`recovering`, `recovery_failing`, `flush_failing`, `flush_lagging`, `snapshot_overdue`, `webhooks_dead_lettered`, `write_latency_high`, `live_updates_slow`). It is computed only from numbers the answer already carries, so it costs nothing and a reader can check it. `gauges.durability` gained `oldestPendingAt`, `snapshotCompletedAt` and `snapshotDueAt`, which the lag and overdue rules read. `db.$metrics()` returns `health`, or null from an older Worker.
+
 - `TxResult` gained an optional `deduped: true`, set when a `clientTxId` was answered from an existing receipt. `applied: 0` alone could not tell a replay from a no-op delete, which a client retrying a write also wants to know.
 
 ## 0.3.6 - 2026-11-22

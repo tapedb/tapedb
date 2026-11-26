@@ -92,6 +92,15 @@ export interface HistoryEntry {
  * typed — the window the counters cover, and that the quantiles are estimates.
  */
 export interface WorkspaceMetricsReport {
+  /**
+   * The verdict over the rest of the answer: `ok`, `degraded` or `failing`,
+   * with one reason per problem. Codes are the engine's (a newer one may
+   * appear), so they are typed as strings. Null from a Worker that predates it.
+   */
+  health: {
+    status: "ok" | "degraded" | "failing";
+    reasons: Array<{ code: string; status: "degraded" | "failing"; message: string }>;
+  } | null;
   metrics: {
     /** When the object serving this workspace started counting, ms since the epoch. */
     since: number;
@@ -669,7 +678,7 @@ class DataClientImpl {
       const error = readServerError(body);
       throw new ServerError(error?.code ?? "http_error", error?.message ?? `Metrics failed with HTTP ${response.status}.`, response.status);
     }
-    return { metrics: body.metrics, gauges: body.gauges, measurement: body.measurement ?? {} };
+    return { health: body.health ?? null, metrics: body.metrics, gauges: body.gauges, measurement: body.measurement ?? {} };
   }
 
   async *exportRecords(): AsyncGenerator<Record<string, unknown>> {
