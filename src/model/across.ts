@@ -172,11 +172,37 @@ function strip<R extends Record<string, unknown>>(rows: R[], extra: string[]): R
 
 // ---- Fan-out ----------------------------------------------------------------
 
+/** Workspaces asked at once by a one-off `$across` read unless `concurrency` says otherwise. */
+export const DEFAULT_ACROSS_CONCURRENCY = 64;
+
+/**
+ * Runs `task` for every index, at most `limit` at a time, and settles each.
+ * A read that has not started does not mint a claim or open a request, so
+ * the bound holds for both.
+ */
+async function settleLimited<T>(count: number, limit: number, task: (index: number) => PromiseLike<T>): Promise<PromiseSettledResult<T>[]> {
+  const results = new Array<PromiseSettledResult<T>>(count);
+  let next = 0;
+  const worker = async () => {
+    while (next < count) {
+      const index = next++;
+      try {
+        results[index] = { status: "fulfilled", value: await task(index) };
+      } catch (reason) {
+        results[index] = { status: "rejected", reason };
+      }
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(Math.max(1, limit), count) }, worker));
+  return results;
+}
+
 async function settle<T>(
   clients: WorkspaceClients,
-  read: (model: SingleModel, index: number) => PromiseLike<T>
+  read: (model: SingleModel, index: number) => PromiseLike<T>,
+  concurrency: number
 ): Promise<{ values: Array<T | undefined>; errors: Record<string, unknown> }> {
-  const settled = await Promise.allSettled(clients.map(({ model }, index) => Promise.resolve(read(model, index))));
+  const settled = await settleLimited(clients.length, concurrency, (index) => read(clients[index].model, index));
   const errors: Record<string, unknown> = {};
   const values = settled.map((result, index) => {
     if (result.status === "fulfilled") return result.value;
@@ -192,6 +218,7 @@ const SNAPSHOTS_KEPT = 1000;
 
 function acrossQuery<S, T>(
   clients: WorkspaceClients,
+  concurrency: number,
   open: (model: SingleModel) => SingleQuery<S>,
   combine: (parts: Array<S | undefined>) => T
 ): AcrossQuery<T> {
@@ -229,7 +256,7 @@ function acrossQuery<S, T>(
   return {
     key,
     then(onFulfilled, onRejected) {
-      return settle(clients, (_model, index) => queries[index])
+      return settle(clients, (_model, index) => queries[index], concurrency)
         .then(({ values, errors }) => {
           const result = combine(values);
           if (Object.keys(errors).length > 0) throw new AcrossError(errors, result);
@@ -281,12 +308,13 @@ function decodePositions(cursor: string): Positions {
 
 // ---- The client ---------------------------------------------------------------
 
-export function acrossModel(clients: WorkspaceClients): AcrossModelClient<Record<string, unknown>> {
+export function acrossModel(clients: WorkspaceClients, concurrency: number = DEFAULT_ACROSS_CONCURRENCY): AcrossModelClient<Record<string, unknown>> {
   const findMany = (args: AcrossFindArgs = {}) => {
     const order = orderOf(args.orderBy);
     const { args: read, extra } = withOrderFields(args, order);
     return acrossQuery(
       clients,
+      concurrency,
       (model) => model.findMany(read),
       (parts) =>
         strip(
@@ -343,7 +371,7 @@ export function acrossModel(clients: WorkspaceClients): AcrossModelClient<Record
             const fetched = await settle(open, (model, index) => {
               const position = positions[open[index].workspaceId];
               return model.findPage({ ...read, ...(typeof position === "string" ? { after: position } : {}) });
-            });
+            }, concurrency);
             const pages = fetched.values;
             const merged = merge(
               open.map(({ workspaceId }, index) => ({ workspaceId, rows: pages[index]?.rows ?? [] })),
@@ -353,24 +381,25 @@ export function acrossModel(clients: WorkspaceClients): AcrossModelClient<Record
             // Each workspace moves past the rows this page used from it. A
             // page used in part gets the cursor after its last used row.
             const next: Positions = { ...positions };
-            await Promise.all(
-              open.map(async ({ workspaceId, model }, index) => {
-                const page = pages[index];
-                if (page === undefined) return;
-                const used = merged.used[index];
-                if (used === page.rows.length) {
-                  next[workspaceId] = page.hasMore && page.cursor !== null ? page.cursor : true;
-                } else if (used > 0) {
-                  const position = positions[workspaceId];
-                  const partial = await model.findPage({
-                    ...read,
-                    take: used,
-                    ...(typeof position === "string" ? { after: position } : {}),
-                  });
-                  next[workspaceId] = partial.cursor ?? true;
-                }
-              })
-            );
+            const moved = await settleLimited(open.length, concurrency, async (index) => {
+              const { workspaceId, model } = open[index];
+              const page = pages[index];
+              if (page === undefined) return;
+              const used = merged.used[index];
+              if (used === page.rows.length) {
+                next[workspaceId] = page.hasMore && page.cursor !== null ? page.cursor : true;
+              } else if (used > 0) {
+                const position = positions[workspaceId];
+                const partial = await model.findPage({
+                  ...read,
+                  take: used,
+                  ...(typeof position === "string" ? { after: position } : {}),
+                });
+                next[workspaceId] = partial.cursor ?? true;
+              }
+            });
+            const failed = moved.find((result): result is PromiseRejectedResult => result.status === "rejected");
+            if (failed) throw failed.reason;
             const hasMore = clients.some(({ workspaceId }) => next[workspaceId] !== true);
             const page = {
               rows: strip(merged.rows, extra),
@@ -388,6 +417,7 @@ export function acrossModel(clients: WorkspaceClients): AcrossModelClient<Record
     count(args = {}) {
       return acrossQuery(
         clients,
+        concurrency,
         (model) => model.count(args),
         (parts) => parts.reduce<number>((sum, part) => sum + (part ?? 0), 0)
       );
