@@ -2,7 +2,7 @@ import { afterEach, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ignoreLocalFiles, missingSecrets, olderExactVersion, provisionAndDeploy, servesStudio, syncTapedb, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
+import { ignoreLocalFiles, missingSecrets, olderExactVersion, projectManifest, provisionAndDeploy, servesStudio, syncTapedb, type DeployConfig, type WranglerCommand } from "../src/cli/onboarding";
 import { devArgs } from "../src/cli/index";
 
 const roots: string[] = [];
@@ -256,4 +256,26 @@ test("deploy knows whether the Worker serves the studio, from worker.ts", () => 
   expect(servesStudio(root)).toBe(false);
   writeFileSync(join(root, "worker.ts"), 'import { studio } from "@tapedb/tapedb/studio";\nimport { defineTapeDB } from "@tapedb/tapedb/worker";\n');
   expect(servesStudio(root)).toBe(true);
+});
+
+test("init puts @tapedb/cli in the project, so `npx tapedb-cli` runs this CLI and not a registry package", () => {
+  // Every message tells people to run `npx tapedb-cli …`. That bin is @tapedb/cli's;
+  // without it in the project, npx resolves the name on the registry, where the
+  // deprecated unscoped `tapedb-cli` answers with an old engine.
+  const fresh = projectManifest(null, "0.4.2");
+  expect(fresh.devDependencies["@tapedb/cli"]).toBe("0.4.2");
+  expect(fresh.dependencies["@tapedb/tapedb"]).toBe("0.4.2");
+  // A project's own entry is kept, wherever it is.
+  expect(projectManifest({ dependencies: { "@tapedb/cli": "0.4.0" } }, "0.4.2").dependencies["@tapedb/cli"]).toBe("0.4.0");
+  expect(projectManifest({ dependencies: { "@tapedb/cli": "0.4.0" } }, "0.4.2").devDependencies["@tapedb/cli"]).toBeUndefined();
+});
+
+test("updating an older tapedb moves a pinned @tapedb/cli with it", () => {
+  const root = project();
+  writeFileSync(join(root, "package.json"), JSON.stringify({ dependencies: { "@tapedb/tapedb": "0.4.0" }, devDependencies: { "@tapedb/cli": "0.4.0" } }));
+  mkdirSync(join(root, "node_modules", "@tapedb", "tapedb"), { recursive: true });
+  writeFileSync(join(root, "node_modules", "@tapedb", "tapedb", "package.json"), JSON.stringify({ version: "0.4.0" }));
+  const ran: string[][] = [];
+  syncTapedb(root, "0.4.2", (manager, args) => { ran.push([manager, ...args]); return 0; });
+  expect(ran).toEqual([["npm", "install", "@tapedb/tapedb@0.4.2"], ["npm", "install", "--save-dev", "@tapedb/cli@0.4.2"]]);
 });

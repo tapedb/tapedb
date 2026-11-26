@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- `init` adds `@tapedb/cli` to the project, pinned to the same version as `@tapedb/tapedb`, and updating an older tapedb moves it too. Every instruction the CLI prints says `npx tapedb-cli …`, and that bin is `@tapedb/cli`'s: in a project made by `init`, which installed only `@tapedb/tapedb` (bin `tapedb`), npx resolved `tapedb-cli` on the registry and ran the deprecated unscoped `tapedb-cli` package, an old engine, instead. Projects made before this can run `npm install -D @tapedb/cli@<their tapedb version>`, or use the `tapedb:*` scripts, which were never affected.
+
 ## 0.4.1 - 2026-11-26
 
 - 0.4.0 on npm was packed from a stale build: its `dist/` predates 0.4.0 and has none of its code (no `/metrics`, `/webhooks`, `/queries`, `$across` concurrency). 0.4.1 is 0.4.0 as tagged, built from its source. Use 0.4.1; 0.4.0 is deprecated.
