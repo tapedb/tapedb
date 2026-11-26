@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.4.0 - 2026-11-26
 
 - `GET /engine/workspaces/:id/metrics` answers how hard one workspace is being worked: counters for writes, reads, named SQL, sockets, live queries, presence, broadcast, flushes, snapshots and recoveries; latency histograms for `query`, `transaction`, `sql`, `subscriptionUpdate`, `flush`, `snapshot` and `recovery`; and gauges read from SQLite and the socket list — connections, live queries, `storageBytes`, `txLogRows` and the durability state, including how far ahead of R2 the log is. ADMIN or higher. It carries counts, sizes and durations only: no row values, no subjects, no claims, nothing from a personal field.
 
