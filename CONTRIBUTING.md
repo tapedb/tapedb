@@ -33,14 +33,20 @@ npx @tapedb/cli dev      # local database, and the studio at http://localhost:87
 | `src/cli/` | Node-only. No Cloudflare SDK imports. |
 | `test/` | `bun test`. Engine tests use `bun:sqlite`; client tests use fakes. |
 
-Two rules have already been broken once and cost a debugging session each, so
-they are worth stating:
+Three rules have already been broken once and cost a debugging session each,
+so they are worth stating:
 
 1. **The core has zero runtime dependencies.** If `bun run build` produces an
    `index.js` that mentions `react`, the build is wrong.
 2. **Nothing in `src/` may reference the application this was extracted from.**
    No product names, no table names, no bucket names. `bun test` does not check
    this; review does.
+3. **`bun run typecheck` covers `src`, `test/types` and `scripts`.** The
+   scripts were outside it until the benchmarks went in, and `scripts/soak.ts`
+   had been broken for three days by then: the engine gained a required
+   argument and nothing told anyone, because the soak is a script nobody runs
+   on every change. A script that imports from `src/` is held to the same
+   check as `src/`.
 
 ## Packages and entry points
 
@@ -137,6 +143,33 @@ table through a migration, wipe the Durable Object's storage, and check the
 workspace comes back from R2 identical — every row, the file index, the
 sequence, the idempotency receipts. About four minutes, most of it waiting for
 the alarm.
+
+## Benchmarks
+
+Two suites, reported apart because only one says anything about what a
+deployment serves. [BENCHMARKS.md](BENCHMARKS.md) records a run of each, the
+bottlenecks they show and the operating guidelines that follow.
+
+```bash
+bun run bench                                    # the engine, in process, over bun's SQLite
+bun run bench --rows 50000 --only queries --json bench.json
+
+BENCH_JSON=load.json SUBSCRIBERS=50 WRITES=400 node scripts/e2e.mjs --only load
+```
+
+The local suite bounds the engine's own cost and shows how it scales with the
+data. It cannot tell you what a Worker serves: bun's SQLite allows far more
+than a Durable Object's, R2 is a `Map`, and there is no runtime or socket in
+the path. The load scenario is the other half — a packed build in workerd (or
+`--url` a deployed Worker) driven by real clients over real sockets.
+
+Neither asserts a threshold, deliberately: a benchmark that failed a target
+invented in this repo would be measuring the machine it ran on. Record a run
+and compare it with the next one.
+
+Run the local suite after anything that touches the query compiler, the
+transaction pipeline or the durability path, and put the before and after in
+the pull request.
 
 ## The soak
 

@@ -2,7 +2,12 @@ import { ENGINE_MIGRATIONS } from "../../src/engine/migrations-bundle";
 import { readdirSync, readFileSync } from "node:fs";
 import { Database } from "bun:sqlite";
 
-import type { SqlExecutor, SqlValue } from "./sql";
+// The durability executor's shape (a cursor per `exec`), which is what
+// `createSqlExecutor` below returns. This used to import from "./sql", a file
+// that does not exist here; a type-only import is erased before bun runs, so
+// the suite never noticed and neither did `typecheck`, which did not cover
+// this directory.
+import type { SqlExecutor, SqlValue } from "../../src/engine/durability/sql";
 
 /**
  * Test-only adapter that gives `bun:sqlite` the same tiny `exec` surface as
@@ -273,7 +278,10 @@ export class FakeR2Bucket {
         JSON.parse(new TextDecoder().decode(bytes)) as unknown,
       text: async () => new TextDecoder().decode(bytes),
       get body() {
-        return new Blob([bytes]).stream();
+        // `bytes` is a Uint8Array over an ArrayBufferLike, which the current
+        // DOM types will not accept as a BlobPart because it could be backed
+        // by a SharedArrayBuffer. It never is here.
+        return new Blob([bytes as unknown as BlobPart]).stream();
       },
       arrayBuffer: async () => bytes.slice().buffer,
     };

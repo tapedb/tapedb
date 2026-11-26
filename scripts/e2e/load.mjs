@@ -3,10 +3,15 @@
 // Not run by default: node scripts/e2e.mjs --only load
 //   SUBSCRIBERS=50 ROWS=500 WRITES=400 CONCURRENCY=8; DISTINCT=1 makes each subscriber
 //   its own user (claims signed with TAPEDB_CLAIM_SECRET, or .dev.vars locally).
+//   BENCH_JSON=path also writes the run as JSON, so a result can be recorded and
+//   compared rather than read off a terminal once. This is the deployed-runtime
+//   half of the benchmarks: scripts/bench.ts measures the engine in process,
+//   this measures what a Worker and a socket actually serve.
 import { randomUUID } from "node:crypto";
 import { createClient } from "@tapedb/tapedb";
 import { readFileSync } from "node:fs";
 import { createHmac } from "node:crypto";
+import { writeFileSync } from "node:fs";
 import { BASE, s } from "./common.mjs";
 
 const SUBSCRIBERS = Number(process.env.SUBSCRIBERS ?? 50);
@@ -67,7 +72,8 @@ while (ready < SUBSCRIBERS) {
   if (Date.now() - setupStart > 60_000) throw new Error(`only ${ready}/${SUBSCRIBERS} subscribers got data`);
   await new Promise((r) => setTimeout(r, 50));
 }
-console.log(`${SUBSCRIBERS} subscribers ready in ${Date.now() - setupStart} ms, each holding ${ROWS} rows`);
+const setupMs = Date.now() - setupStart;
+console.log(`${SUBSCRIBERS} subscribers ready in ${setupMs} ms, each holding ${ROWS} rows`);
 
 // Writes sort to the top of every window ("z" > "seed"), so each one reaches every subscriber.
 const latencies = [];
@@ -94,5 +100,48 @@ const fanout = [...lastSeen].map(([title, at]) => at - sentAt.get(title));
 console.log(`writes: ${WRITES} at concurrency ${CONCURRENCY} in ${writeMs} ms (${Math.round((WRITES / writeMs) * 1000)}/s)`);
 console.log(`write latency ms: p50 ${quantile(latencies, 0.5)}  p95 ${quantile(latencies, 0.95)}  p99 ${quantile(latencies, 0.99)}  max ${Math.max(...latencies)}`);
 console.log(`seen by all ${SUBSCRIBERS}: ${lastSeen.size}/${WRITES}; delay ms p50 ${quantile(fanout, 0.5)}  p95 ${quantile(fanout, 0.95)}  max ${Math.max(...fanout)}`);
+if (process.env.BENCH_JSON) {
+  const summary = (values) => ({
+    count: values.length,
+    p50Ms: quantile(values, 0.5),
+    p95Ms: quantile(values, 0.95),
+    p99Ms: quantile(values, 0.99),
+    maxMs: values.length === 0 ? null : Math.max(...values),
+  });
+  writeFileSync(
+    process.env.BENCH_JSON,
+    `${JSON.stringify(
+      {
+        environment: {
+          at: new Date().toISOString(),
+          target: BASE,
+          // Named so a recorded result cannot be mistaken for the other half:
+          // this one includes the Workers runtime, the socket and the network.
+          measures: "a running Worker: the runtime, the Durable Object, the socket and the network between them",
+          runtime: `node ${process.versions.node}`,
+          distinctUsers: Boolean(process.env.DISTINCT),
+        },
+        workload: { subscribers: SUBSCRIBERS, seededRows: ROWS, writes: WRITES, concurrency: CONCURRENCY },
+        results: {
+          // Time until every subscriber held its first window, measured when
+          // that happened rather than at the end of the run.
+          subscriberSetupMs: setupMs,
+          writeThroughputPerSecond: Math.round((WRITES / writeMs) * 1000),
+          writeLatency: summary(latencies),
+          // Time from a write being sent to the last of the subscribers
+          // holding it. Only writes every subscriber saw are counted, and
+          // `seenByAll` says how many that was.
+          fanoutDelay: summary(fanout),
+          seenByAll: lastSeen.size,
+          writesTotal: WRITES,
+        },
+      },
+      null,
+      2
+    )}\n`
+  );
+  console.log(`wrote ${process.env.BENCH_JSON}`);
+}
+
 for (const db of subscribers) db.$close();
 writer.$close();
