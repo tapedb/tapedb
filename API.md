@@ -929,6 +929,9 @@ the path. Bodies and answers are JSON unless stated; errors are
 | `GET /engine/workspaces/:id/schema` | the schema document the workspace runs: `namespaces` (fields with type, default and `personal`, and `access`: each action's rule, `role`, `filter` with the caller's evaluated `where`, or `check`), `links` (with each foreign key's `onDelete`), `files` (each file action's rule) and `caller` (`{ sub, role }`) |
 | `GET /engine/workspaces/:id/status` | the workspace's status, including `durability: { seq, flushedSeq, snapshotSeq, lastFlushError }`: every write at or below `flushedSeq` is in R2. With `?after=<seq>`, it answers once a transaction lands past `seq`, or after 25 seconds |
 | `GET /engine/workspaces/:id/metrics` | how hard the workspace is being worked, and whether it is healthy → `{ ok, health, metrics, gauges, measurement }`; ADMIN or higher. See [Metrics](#metrics) |
+| `GET /engine/workspaces/:id/webhooks` | ADMIN or higher; per-endpoint delivery health and the retry schedule in force → `{ ok, data: WebhookReport }`. See [Webhook operations](#webhook-operations) |
+| `GET /engine/workspaces/:id/webhooks/deliveries` | ADMIN or higher; delivery bookkeeping, newest transaction first. `?status=pending\|delivered\|dead`, `?endpoint=<index>`, `?before=<seq>`, `?limit=` (1–200). 400 `invalid_webhook_query` |
+| `POST /engine/workspaces/:id/webhooks/retry` | ADMIN or higher; `{ ids }` or `{ status: "pending"\|"dead", endpoint?, limit? }` makes deliveries due now → `{ ok, data: { requeued, ids, skipped, more } }`. 400 `invalid_webhook_retry` |
 | `GET /engine/workspaces/:id/export` | NDJSON export (below) |
 | `GET /engine/workspaces/:id/history?model=…&id=…` | one row's recorded changes → `{ ok, data: HistoryEntry[] }`; ADMIN or higher; 409 `audit_disabled` without `audit: true` |
 | `GET /engine/workspaces/:id/log?before=&limit=&model=` | the transaction log, newest first → `{ ok, data: { entries, next } }`; ADMIN or higher. Each entry: `seq`, `at`, the writer (`sub`, `role`; null without `audit: true`), `rows` and `counts` (rows per model and op) and up to 100 `ops`. Values are shown only for models whose read rule is a role the caller meets, never for personal fields; other ops list the fields in `hidden`. `limit` 1–100 (default 50); `next` is the `before` of the following page, null at the start of the retained log |
@@ -1042,6 +1045,77 @@ you expect rather than climbing, and `transaction` p99 is stable. Durability is
 falling behind when `pendingSeq` grows across several reads or `lastFlushAgeMs`
 keeps rising; `flushAttempts` above zero with a `lastFlushError` says R2 is
 refusing and the pass is backing off.
+
+### Webhook operations
+
+Delivery, signing, ordering, retries and dead-lettering are described above.
+These three routes are for the day a consumer breaks: seeing why, and getting
+the queue moving again. All three need **ADMIN or higher** — a retry sends data
+to a third party, and the report names the endpoints a deployment talks to.
+They answer 400 `webhooks_not_configured` where the deployment configures none.
+
+`GET /webhooks` reports each endpoint: its `url`, `events` and `models`,
+`pending`/`delivered`/`dead` counts, `oldestPendingAgeMs`, whether it is
+`backingOff`, and `head` — the one delivery it is waiting on. Because an
+endpoint's events go in `seq` order and nothing overtakes a failing one, that
+single row is the whole explanation of a stalled endpoint: its `attempts`,
+`lastStatus`, `lastError` and `nextAttemptAt` say what is wrong and when the
+engine will try again. `policy` carries the schedule actually in force
+(`firstRetryMs`, `maxRetryMs`, `maxAgeMs`, `maxAttempts`, `attemptsPerPass`,
+`retryLimit`) so a long wait can be told from a stall without knowing the
+engine's constants. An endpoint the deployment has since dropped is reported
+with `retired: true` and the url its queued events still carry: those events
+can no longer be signed, so they dead-letter, and hiding the endpoint would
+hide why a count never falls.
+
+`GET /webhooks/deliveries` lists the same bookkeeping per delivery, ordered by
+`seq` descending — the delivery order an endpoint sees, reversed.
+**The signed body is never returned.** It holds the row's non-personal values
+and was written for the endpoint rather than filtered through the caller's read
+rules, so returning it would show an admin row values their own rules may hide.
+What comes back is what the event was *about* (`model`, `op`, `seq`,
+`eventId`), not what it contained.
+
+`POST /webhooks/retry` makes deliveries due now: a `dead` one returns to the
+queue, a waiting one stops serving out its backoff. Name them exactly
+(`{ ids: [...] }`) or by filter (`{ status: "dead", endpoint?: 0, limit?: 100 }`);
+sending both is refused, because a caller who sends both means one of them. A
+filter run is bounded (default and maximum **500**) and takes the oldest first,
+so a bounded replay drains a queue from its head rather than leaving the
+blocking event behind; `more: true` says to call again.
+
+What a retry does and does not do:
+
+- **It re-sends the original event.** The existing outbox row is re-queued, so
+  the `eventId`, the `seq` and the signed body are the ones first captured.
+  Nothing re-reads the database, so a retry cannot pick up a row's later state
+  and pass it off as the original change. A consumer deduplicating on
+  `X-Tapedb-Event-Id` sees an event it already knows.
+- **The attempt count and age window restart**, and `revivedAt` records it. A
+  dead event has by definition exhausted both; re-queuing one without
+  resetting them would be a no-op dressed up as a retry. `lastError` is left in
+  place — it is the last thing that actually happened.
+- **Ordering survives it, including the awkward part.** A revived event keeps
+  its original `seq`, so it becomes its endpoint's head again and that
+  endpoint's *newer* events wait behind it until it is delivered or dies again.
+  That is the ordering guarantee doing its job, and it is worth knowing before
+  reviving something old.
+- **One endpoint cannot disturb another.** Re-queuing touches only its own
+  rows, and head-of-line blocking is per endpoint.
+- **A delivered event is never re-sent**, even when named by id: the engine
+  cannot tell a deliberate redelivery from a duplicate, and a consumer that
+  acknowledged the event did not ask to see it again. Such ids come back under
+  `skipped` with `already_delivered`; unknown ids with `not_found`.
+- **Nothing here can affect a committed write.** The outbox is downstream of
+  the commit; these routes change delivery bookkeeping and no application row,
+  and a retry burns no transaction sequence.
+
+Exactly-once delivery is not claimed and is not achievable: a delivery that
+timed out may have arrived, and retrying it may deliver it twice. Consumers
+should key on `X-Tapedb-Event-Id`.
+
+From a client, with an admin claim: `db.$webhooks()`, `db.$webhookDeliveries(query?)`
+and `db.$webhookRetry(request)`.
 
 ### Admin HTTP API
 

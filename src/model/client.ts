@@ -14,6 +14,10 @@ import {
   type ClientDeps,
   type HistoryEntry,
   type WorkspaceMetricsReport,
+  type WebhookDelivery,
+  type WebhookReport,
+  type WebhookRetryOutcome,
+  type WebhookRetryRequest,
   type DataClientImpl,
   type HeadlessDataClient,
   type StoredFile,
@@ -411,6 +415,29 @@ export interface ClientExtras {
    * own history if you want a trend: nothing is retained here.
    */
   $metrics(): Promise<WorkspaceMetricsReport>;
+  /**
+   * How each webhook endpoint is doing, and the event any stalled one is
+   * waiting on. Admins and owners only.
+   */
+  $webhooks(): Promise<WebhookReport>;
+  /**
+   * Webhook deliveries, newest transaction first. Delivery bookkeeping only —
+   * the signed body is not returned.
+   */
+  $webhookDeliveries(query?: {
+    status?: "pending" | "delivered" | "dead";
+    endpoint?: number;
+    before?: number;
+    limit?: number;
+  }): Promise<WebhookDelivery[]>;
+  /**
+   * Makes deliveries due now: a dead one returns to the queue, a waiting one
+   * stops waiting out its backoff. The event keeps its id and its body, so a
+   * retry re-sends the original event rather than capturing a new one, and a
+   * revived event becomes its endpoint's head again — the endpoint's newer
+   * events wait behind it until it lands. A delivered event is never re-sent.
+   */
+  $webhookRetry(request: WebhookRetryRequest): Promise<WebhookRetryOutcome>;
   /** Retries queued writes now (also runs on reconnect and when back online). */
   $flush(): Promise<void>;
   /** Closes the socket. */
@@ -754,6 +781,9 @@ export function createClient<M extends Models, Q extends SqlQueries = {}>(
     $erasePerson: (subject) => impl.erasePerson(subject),
     $history: ({ model, id }) => impl.history(model, id),
     $metrics: () => impl.metrics(),
+    $webhooks: () => impl.webhookReport(),
+    $webhookDeliveries: (query = {}) => impl.webhookDeliveries(query),
+    $webhookRetry: (request) => impl.webhookRetry(request),
     $query: (name: string, params?: Record<string, unknown>) => impl.sqlQuery(name, params),
     $export: () => impl.exportRecords() as AsyncIterable<ExportRecord<Models>>,
     $flush: () => impl.flushOutbox(),

@@ -197,8 +197,64 @@ assert.deepEqual(
   "six writes: board create/update/delete, person create, board-once, board-retry (delivered once)"
 );
 
+// ---- Operating the outbox ------------------------------------------------
+
+// The inspection and retry routes against the real runtime. Worth doing here
+// rather than only in bun: the outbox gained a column in place
+// (`revived_at`), and a Durable Object's SQLite is the one that has to take
+// that ALTER on a workspace whose table already existed.
+const report = await db.$webhooks();
+assert.equal(report.endpoints.length, 1, JSON.stringify(report));
+assert.equal(report.endpoints[0].url, url);
+assert.equal(report.endpoints[0].delivered, 6);
+assert.equal(report.endpoints[0].pending, 0);
+assert.equal(report.endpoints[0].head, null, "nothing is waiting once every delivery landed");
+assert.equal(report.endpoints[0].retired, false);
+assert.ok(report.policy.maxAttempts > 1 && report.policy.maxAgeMs > report.policy.firstRetryMs);
+
+const listed = await db.$webhookDeliveries();
+assert.equal(listed.length, 6);
+// Newest transaction first, and bookkeeping only: the signed body never comes
+// back, because no read rule filtered it.
+assert.ok(listed[0].seq >= listed[listed.length - 1].seq);
+assert.ok(listed.every((row) => row.status === "delivered" && row.eventId && row.model));
+assert.ok(!Object.hasOwn(listed[0], "body"), "the signed body is not returned");
+assert.ok(!JSON.stringify(listed).includes("@"), "no personal value reaches an inspection read");
+
+// Every one of these is delivered, so every one is refused: an acknowledged
+// event is never re-sent, even when named by id.
+const refused = await db.$webhookRetry({ ids: listed.map((row) => row.id) });
+assert.equal(refused.requeued, 0);
+assert.equal(refused.skipped.length, 6);
+assert.ok(refused.skipped.every((entry) => entry.reason === "already_delivered"));
+
+const unknown = await db.$webhookRetry({ ids: ["no-such-delivery"] });
+assert.deepEqual(unknown.skipped, [{ id: "no-such-delivery", reason: "not_found" }]);
+
+// A filter run over a queue with nothing to do is a clean no-op, not an error.
+const none = await db.$webhookRetry({ status: "dead" });
+assert.equal(none.requeued, 0);
+assert.equal(none.more, false);
+
+// A member may not read any of it.
+const memberToken = await fetch(`${BASE}/_tapedb/claim`, {
+  method: "POST",
+  headers: { "content-type": "application/json" },
+  // The development claim route takes a numeric level, not a role name.
+  body: JSON.stringify({ workspaceId: workspace, role: 2 }),
+})
+  .then((response) => response.json())
+  .then((claim) => claim.token);
+for (const path of ["webhooks", "webhooks/deliveries"]) {
+  const response = await fetch(`${BASE}/engine/workspaces/${workspace}/${path}`, {
+    headers: { authorization: `Bearer ${memberToken}` },
+  });
+  assert.equal(response.status, 403, `${path} is admin-only`);
+}
+
 server.close();
 db.$close();
 console.log(
-  `webhooks: 6 delivered (1 after a 500, 500→200 in ${Math.round(backoff / 1000)}s), signatures verify, personal fields absent, a replayed clientTxId delivered once`
+  `webhooks: 6 delivered (1 after a 500, 500→200 in ${Math.round(backoff / 1000)}s), signatures verify, personal fields absent, ` +
+    `a replayed clientTxId delivered once, outbox inspection admin-only and bodyless, delivered events never re-sent`
 );

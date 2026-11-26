@@ -137,6 +137,75 @@ export interface WorkspaceMetricsReport {
   measurement: Record<string, string>;
 }
 
+/**
+ * Delivery bookkeeping for one webhook event. The body is not included: see
+ * the engine's webhook-ops.ts for why (it carries row values that were written
+ * for the endpoint, not filtered through the caller's read rules).
+ */
+export interface WebhookDelivery {
+  id: string;
+  /** Stable across retries: what a consumer deduplicates on. */
+  eventId: string;
+  endpoint: number;
+  url: string;
+  seq: number;
+  model: string;
+  op: string;
+  status: "pending" | "delivered" | "dead";
+  attempts: number;
+  lastStatus: number | null;
+  lastError: string | null;
+  createdAt: number;
+  nextAttemptAt: number;
+  deliveredAt: number | null;
+  revivedAt: number | null;
+}
+
+export interface WebhookEndpointHealth {
+  endpoint: number;
+  url: string;
+  events: string[];
+  models: string[] | null;
+  /** The deployment no longer configures this endpoint; its events will die. */
+  retired: boolean;
+  pending: number;
+  delivered: number;
+  dead: number;
+  /** The event this endpoint is waiting on; everything else waits behind it. */
+  head: WebhookDelivery | null;
+  backingOff: boolean;
+  oldestPendingAgeMs: number | null;
+}
+
+export interface WebhookReport {
+  endpoints: WebhookEndpointHealth[];
+  totals: { pending: number; delivered: number; dead: number };
+  policy: {
+    firstRetryMs: number;
+    maxRetryMs: number;
+    maxAgeMs: number;
+    maxAttempts: number;
+    attemptsPerPass: number;
+    retryLimit: number;
+  };
+}
+
+export interface WebhookRetryRequest {
+  ids?: string[];
+  /** "delivered" is not accepted: an acknowledged event is never re-sent. */
+  status?: "pending" | "dead";
+  endpoint?: number;
+  limit?: number;
+}
+
+export interface WebhookRetryOutcome {
+  requeued: number;
+  ids: string[];
+  skipped: Array<{ id: string; reason: "not_found" | "already_delivered" }>;
+  /** More matched the filter than the limit allowed; call again to continue. */
+  more: boolean;
+}
+
 export interface FetchResponseLike {
   body?: ReadableStream<Uint8Array> | null;
   ok: boolean;
@@ -679,6 +748,45 @@ class DataClientImpl {
       throw new ServerError(error?.code ?? "http_error", error?.message ?? `Metrics failed with HTTP ${response.status}.`, response.status);
     }
     return { health: body.health ?? null, metrics: body.metrics, gauges: body.gauges, measurement: body.measurement ?? {} };
+  }
+
+  private async admin<T>(
+    path: string,
+    init: { method: string; headers?: Record<string, string>; body?: string },
+    what: string
+  ): Promise<T> {
+    const token = await this.requireToken();
+    const response = await this.fetchImpl(`${this.config.apiUrl}/engine/workspaces/${this.config.workspaceId}${path}`, {
+      ...init,
+      headers: { authorization: `Bearer ${token}`, ...(init.headers ?? {}) },
+    });
+    const body = (await response.json().catch(() => null)) as { ok?: boolean; data?: T } | null;
+    if (!response.ok || !body?.ok || body.data === undefined) {
+      const error = readServerError(body);
+      throw new ServerError(error?.code ?? "http_error", error?.message ?? `${what} failed with HTTP ${response.status}.`, response.status);
+    }
+    return body.data;
+  }
+
+  async webhookReport(): Promise<WebhookReport> {
+    return this.admin<WebhookReport>("/webhooks", { method: "GET" }, "Reading webhook health");
+  }
+
+  async webhookDeliveries(query: { status?: string; endpoint?: number; before?: number; limit?: number } = {}): Promise<WebhookDelivery[]> {
+    const search = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined) search.set(key, String(value));
+    }
+    const suffix = search.size === 0 ? "" : `?${search.toString()}`;
+    return this.admin<WebhookDelivery[]>(`/webhooks/deliveries${suffix}`, { method: "GET" }, "Listing webhook deliveries");
+  }
+
+  async webhookRetry(request: WebhookRetryRequest): Promise<WebhookRetryOutcome> {
+    return this.admin<WebhookRetryOutcome>(
+      "/webhooks/retry",
+      { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(request) },
+      "Retrying webhook deliveries"
+    );
   }
 
   async *exportRecords(): AsyncGenerator<Record<string, unknown>> {

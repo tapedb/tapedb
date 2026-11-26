@@ -109,6 +109,23 @@ function network() {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
+/**
+ * Waits for a condition rather than for a fixed number of turns.
+ *
+ * A replay crosses several IndexedDB callbacks, so one `tick()` is enough only
+ * while the event loop is quiet. It is not quiet when another test file has
+ * left a room's alarms running, which made the assertions below fail about
+ * three runs in four whenever file ordering put a room test first — a race in
+ * the test, not in the client.
+ */
+async function until(done: () => boolean, what: string, attempts = 200): Promise<void> {
+  for (let i = 0; i < attempts; i += 1) {
+    if (done()) return;
+    await tick();
+  }
+  throw new Error(`timed out waiting for ${what}`);
+}
+
 const entry = (
   clientTxId: string,
   createdAt: number,
@@ -193,7 +210,7 @@ describe("AsyncStorageOutbox", () => {
     const second = network();
     second.state.up = true;
     const resumed = client(reloaded, second);
-    await tick();
+    await until(() => second.bodies.length > 0, "the resumed client to replay");
 
     expect(sentTitles(second.bodies)).toEqual(["offline"]);
     expect(await reloaded.list(WORKSPACE)).toEqual([]);
@@ -217,7 +234,7 @@ describe("AsyncStorageOutbox", () => {
     const net = network();
     net.state.up = true;
     const { db, sockets } = client(new AsyncStorageOutbox(storage), net);
-    await tick();
+    await until(() => net.bodies.length >= 2, "both queued writes to be sent");
     expect(net.bodies.map((body) => (body.ops as Array<{ id: string }>)[0].id)).toEqual([
       "a",
       "b",
@@ -314,7 +331,7 @@ describe("createClient({ outbox })", () => {
     socket.open();
     net.state.up = true;
     socket.push({ type: "session:ready", workspaceId: WORKSPACE, connections: 1 });
-    await tick();
+    await until(() => net.bodies.length > 0, "the socket opening to flush the queue");
 
     expect(sentTitles(net.bodies)).toEqual(["offline"]);
     expect(storage.queued()).toEqual([]);
@@ -360,7 +377,7 @@ describe("createClient({ outbox })", () => {
     const online = network();
     online.state.up = true;
     const reloaded = client(undefined, online, { userId: "dev-user" });
-    await tick();
+    await until(() => online.bodies.length > 0, "the queued write to be sent");
     expect(sentTitles(online.bodies)).toEqual(["offline"]);
     reloaded.db.$close();
   });
