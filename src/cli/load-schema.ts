@@ -33,12 +33,39 @@ function schemaPackageResolution() {
       try {
         return nextResolve(specifier, context);
       } catch (error) {
+        // `./content` the way a bundler and TypeScript read it: Node's ESM
+        // resolver wants the file's extension, so try the ones a project uses.
+        if (isExtensionlessRelative(specifier) && isModuleNotFound(error)) {
+          for (const suffix of RELATIVE_SUFFIXES) {
+            try {
+              return nextResolve(specifier + suffix, context);
+            } catch (next) {
+              if (!isModuleNotFound(next)) throw next;
+            }
+          }
+          throw error;
+        }
         const file = Object.hasOwn(modules, specifier) ? modules[specifier] : undefined;
         if (!file || !isUnresolvedPackage(error)) throw error;
         return nextResolve(pathToFileURL(join(dist, file)).href, context);
       }
     },
   });
+}
+
+const RELATIVE_SUFFIXES = [".ts", ".mts", ".tsx", ".js", ".mjs", "/index.ts", "/index.js"];
+
+const MODULE_EXTENSIONS = new Set([".ts", ".mts", ".cts", ".tsx", ".js", ".mjs", ".cjs", ".jsx", ".json"]);
+
+/** `./x`, `../x/y` or `./cms.content`: relative, with no module extension of its own. */
+function isExtensionlessRelative(specifier: string): boolean {
+  return /^\.{1,2}\//.test(specifier) && !MODULE_EXTENSIONS.has(extname(specifier));
+}
+
+function isModuleNotFound(error: unknown): boolean {
+  const code = (error as { code?: string } | null)?.code;
+  // A directory (`./more` for more/index.ts) is refused rather than not found.
+  return code === "ERR_MODULE_NOT_FOUND" || code === "MODULE_NOT_FOUND" || code === "ERR_UNSUPPORTED_DIR_IMPORT";
 }
 
 /** True when the failure is "the package cannot be resolved from this project". */
