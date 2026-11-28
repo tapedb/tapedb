@@ -755,7 +755,6 @@
       },
       "ExtensionModels": {
         "kind": "type",
-        "experimental": true,
         "shape": "<E extends readonly SchemaExtension<any>[]> E extends readonly [] ? {} : UnionToIntersection<E[number][\"models\"]>"
       },
       "FieldFilter": {
@@ -875,7 +874,6 @@
       },
       "SchemaExtension": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "name": "string",
           "models": "EM",
@@ -1086,7 +1084,7 @@
           "retention": "RetentionOptions | undefined",
           "limits": "LimitsOptions | undefined @experimental",
           "webhooks": "readonly WebhookOptions[] | undefined @experimental",
-          "extensions": "readonly TapeDBExtension[] | undefined @experimental",
+          "extensions": "readonly TapeDBExtension[] | undefined",
           "vectorize": "VectorizeOptions | undefined",
           "http": "HttpApiOptions | undefined @experimental"
         }
@@ -1116,7 +1114,6 @@
       },
       "ExtensionChanges": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "models": "readonly string[] | undefined",
           "events": "readonly WebhookEvent[] | undefined",
@@ -1125,7 +1122,6 @@
       },
       "ExtensionContext": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "fetch": "(request: Request) => Promise<Response>",
           "signClaim": "(workspaceId: string, as: { sub: string; role: number; ttlSeconds?: number; }) => Promise<string>",
@@ -1200,7 +1196,6 @@
       },
       "TapeDBExtension": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "name": "string",
           "fetch": "((request: Request, env: Env, ctx: ExecutionContext, tapedb: ExtensionContext) => Response | null | undefined | Promise<Response | null | undefined>) | undefined",
@@ -1616,12 +1611,10 @@
     "@tapedb/tapedb/extension": {
       "defineExtension": {
         "kind": "function",
-        "experimental": true,
         "shape": "(extension: TapeDBCliExtension) => TapeDBCliExtension"
       },
       "ExtensionCommand": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "summary": "string",
           "usage": "string",
@@ -1630,7 +1623,6 @@
       },
       "ExtensionProject": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "root": "string",
           "read": "(path: string) => string | null",
@@ -1644,7 +1636,6 @@
       },
       "TapeDBCliExtension": {
         "kind": "interface",
-        "experimental": true,
         "shape": {
           "name": "string",
           "add": "((project: ExtensionProject) => Promise<void> | void) | undefined",
@@ -2408,7 +2399,7 @@
         "kind": "interface",
         "shape": {
           "files": "FileAccess<K> | undefined",
-          "extensions": "E | undefined @experimental",
+          "extensions": "E | undefined",
           "queries": "Q | undefined",
           "(declaration)": "<K extends string = string, Q extends SqlQueries = SqlQueries, E extends readonly SchemaExtension<any>[] = readonly SchemaExtension<any>[]>"
         }

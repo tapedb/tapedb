@@ -171,8 +171,6 @@ export interface DefineTapeDBOptions {
    * Worker's cron triggers, and receives change events for the models it
    * names, delivered after the commit like webhooks but called in process.
    * See `TapeDBExtension`.
-   *
-   * @experimental May change in a minor release.
    */
   extensions?: readonly TapeDBExtension[];
   /**

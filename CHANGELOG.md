@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.2 - 2026-11-28
+
+- Extensions are stable: `schema(models, { extensions })`, `defineTapeDB({ extensions })`, `@tapedb/tapedb/extension` and their types (`SchemaExtension`, `ExtensionModels`, `TapeDBExtension`, `ExtensionContext`, `ExtensionChanges`, `TapeDBCliExtension`, `ExtensionProject`, `ExtensionCommand`). They change only in a major release from here, as the rest of the stable API does; before 1.0 a breaking change bumps the minor version and is listed under "Breaking". `@tapedb/cms` is built on exactly this contract and runs on it deployed. No code changes.
+
 ## 0.5.1 - 2026-11-28
 
 - The CLI loads a schema whose relative imports leave out the extension, as TypeScript and bundlers allow: `import { content } from "./cms.content"` finds `cms.content.ts`, dot in the name included (then `.mts`, `.tsx`, `.js`, `.mjs`, and `index.ts` or `index.js` in a directory). Node's ESM resolver wants the extension, so `migrate` stopped at the first such import; `tapedb add @tapedb/cms` writes exactly that import, so a project set up by it could not migrate. The Worker was never affected: its bundler resolves them. In a package with `"type": "commonjs"`, Node reads a `.ts` file as CommonJS, so a helper the schema imports there needs the `.mts` extension.
