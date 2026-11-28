@@ -81,6 +81,21 @@ try {
     run("migrate", "check");
     assert.equal(readdirSync(dir).filter(name => /^\.tapedb\.schema\./.test(name)).length, 0);
 
+    // Written as a bundler reads them: `./labels` is labels.ts, `./more` is more/index.ts,
+    // `./cms.labels` (a dot in the name, as `tapedb add @tapedb/cms` writes) is cms.labels.ts.
+    // Not under "type": "commonjs", where Node reads a .ts file as CommonJS (use .mts there).
+    if (type !== "commonjs") {
+    mkdirSync(join(dir, "more"));
+    writeFileSync(join(dir, "more", "index.ts"), 'export const more: string = "More";\n');
+    writeFileSync(join(dir, "labels.ts"), 'import { more } from "./more";\nexport const second: string = more;\n');
+    writeFileSync(join(dir, "cms.labels.ts"), 'export const dotted: string = "Dotted";\n');
+    const withExtra = readFileSync(schemaPath, "utf8");
+    writeFileSync(schemaPath, 'import { second } from "./labels";\nimport { dotted } from "./cms.labels";\nvoid dotted;\n' + withExtra.replace('export default schema({', 'export default schema({\n  second: model({ title: t.string().default(second) }),'));
+    run("migrate", "dev", "--name", "second");
+    run("migrate", "check");
+    assert.equal(readdirSync(dir).filter(name => /^\.tapedb\.schema\./.test(name)).length, 0);
+    }
+
     // A failed init must fail the process, keep user files, and clean its copy.
     rmSync(join(dir, "tapedb"), { recursive: true });
     writeFileSync(schemaPath, "export default {};\n");

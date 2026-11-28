@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.1 - 2026-11-28
+
+- The CLI loads a schema whose relative imports leave out the extension, as TypeScript and bundlers allow: `import { content } from "./cms.content"` finds `cms.content.ts`, dot in the name included (then `.mts`, `.tsx`, `.js`, `.mjs`, and `index.ts` or `index.js` in a directory). Node's ESM resolver wants the extension, so `migrate` stopped at the first such import; `tapedb add @tapedb/cms` writes exactly that import, so a project set up by it could not migrate. The Worker was never affected: its bundler resolves them. In a package with `"type": "commonjs"`, Node reads a `.ts` file as CommonJS, so a helper the schema imports there needs the `.mts` extension.
+
 ## 0.5.0 - 2026-11-28
 
 - Extensions (**experimental**): a package adds to a TapeDB app in the schema, the Worker and the CLI, declared with the rest of it. `@tapedb/cms` is the first. The contract is in API.md under Extensions.
