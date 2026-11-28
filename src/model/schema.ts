@@ -172,8 +172,6 @@ export interface FileAccess<K extends string = string> {
  * Its models join the app's (a name both use is refused). Its file rules
  * apply to the files under `files.prefix` and leave the app's rules for
  * every other path.
- *
- * @experimental
  */
 export interface SchemaExtension<EM extends Models = Models> {
   /** Names the extension in errors. */
@@ -182,12 +180,12 @@ export interface SchemaExtension<EM extends Models = Models> {
   files?: FileAccess<Extract<keyof EM, string>> & { prefix: string };
 }
 
-/** The models every extension adds, together. @experimental */
+/** The models every extension adds, together. */
 export type ExtensionModels<E extends readonly SchemaExtension<any>[]> = E extends readonly [] ? {} : UnionToIntersection<E[number]["models"]>;
 
 export interface SchemaOptions<K extends string = string, Q extends SqlQueries = SqlQueries, E extends readonly SchemaExtension<any>[] = readonly SchemaExtension<any>[]> {
   files?: FileAccess<K>;
-  /** Packages that add models and path-scoped file rules; see `SchemaExtension`. @experimental */
+  /** Packages that add models and path-scoped file rules; see `SchemaExtension`. */
   extensions?: E;
   /** Named SQL queries, run from the client with `db.$query(name, params)`. */
   queries?: Q;

@@ -18,7 +18,7 @@
  * `schema(models, { extensions })`.
  */
 
-/** The project the CLI is working in, with the edits an extension may make. @experimental */
+/** The project the CLI is working in, with the edits an extension may make. */
 export interface ExtensionProject {
   /** The project's directory. */
   root: string;
@@ -55,7 +55,7 @@ export interface ExtensionProject {
   log(message: string): void;
 }
 
-/** @experimental */
+/** */
 export interface ExtensionCommand {
   /** One line for `tapedb <extension> --help`. */
   summary: string;
@@ -65,7 +65,7 @@ export interface ExtensionCommand {
   run(args: string[], project: ExtensionProject): Promise<number | void> | number | void;
 }
 
-/** The command-line half of an extension. @experimental */
+/** The command-line half of an extension. */
 export interface TapeDBCliExtension {
   /** `tapedb <name> <command>`; lowercase letters, digits and dashes. */
   name: string;
@@ -79,7 +79,7 @@ export interface TapeDBCliExtension {
   commands?: Record<string, ExtensionCommand>;
 }
 
-/** Declares the command-line half of an extension. @experimental */
+/** Declares the command-line half of an extension. */
 export function defineExtension(extension: TapeDBCliExtension): TapeDBCliExtension {
   return extension;
 }

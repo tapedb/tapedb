@@ -13,7 +13,7 @@
 import type { WebhookEvent, WebhookEventPayload } from "../engine/webhooks";
 import type { Env } from "../types";
 
-/** What a Worker extension gets from TapeDB besides `env` and `ctx`. @experimental */
+/** What a Worker extension gets from TapeDB besides `env` and `ctx`. */
 export interface ExtensionContext {
   /** This deployment's own fetch handler, called in process: engine routes, files, claims. */
   fetch(request: Request): Promise<Response>;
@@ -26,7 +26,7 @@ export interface ExtensionContext {
   verifyClaim(token: string | null | undefined, workspaceId: string): Promise<{ sub: string; role: number; workspaceId: string } | null>;
 }
 
-/** Change events an extension receives. @experimental */
+/** Change events an extension receives. */
 export interface ExtensionChanges {
   /** Models by API name; every model when omitted. */
   models?: readonly string[];
@@ -39,7 +39,7 @@ export interface ExtensionChanges {
   handle(event: WebhookEventPayload, env: Env): Promise<void> | void;
 }
 
-/** A package's routes, cron work and change handler, for `defineTapeDB({ extensions })`. @experimental */
+/** A package's routes, cron work and change handler, for `defineTapeDB({ extensions })`. */
 export interface TapeDBExtension {
   /** Names the extension in errors and in the change outbox; letters, digits and dashes. */
   name: string;

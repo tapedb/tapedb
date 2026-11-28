@@ -1175,7 +1175,7 @@ write's transaction, in order after the commit, retried until handled, but as a
 function call inside the workspace's Durable Object, with no URL, secret or
 network in between. In the schema its models sit beside the app's, and its file
 rules cover only the paths under its prefix. The contract is in
-[API.md](API.md#extensions); it is experimental.
+[API.md](API.md#extensions).
 
 ## Architecture
 
