@@ -11,6 +11,7 @@ export default defineConfig({
     auth: "src/auth/index.ts",
     studio: "src/studio/index.ts",
     cli: "src/cli/index.ts",
+    extension: "src/extension.ts",
   },
   format: ["esm"],
   target: "es2022",

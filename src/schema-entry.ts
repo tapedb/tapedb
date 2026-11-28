@@ -9,6 +9,8 @@ export { schema, model, t, role, filter, check, fileCheck, attachedTo, sqlQuery 
 export { encodeVector, decodeVector, VECTOR_TAG, VECTOR_MAX_DIMENSIONS } from "./schema";
 export type {
   ModelOptions,
+  SchemaExtension,
+  ExtensionModels,
   Access,
   AccessAuth,
   FileAccess,

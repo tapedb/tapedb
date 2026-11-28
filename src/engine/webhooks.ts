@@ -146,7 +146,8 @@ export function resolveWebhooks(
 ): readonly ConfiguredWebhook[] {
   const hooks = (options ?? []).map((option, index) => {
     const where = `webhooks[${index}]`;
-    if (typeof option?.url !== "string" || !/^https?:\/\/[^\s]+$/i.test(option.url)) {
+    // `tapedb-extension:<name>` is an extension's change handler (extensions.ts), registered by defineTapeDB.
+    if (typeof option?.url !== "string" || !/^(https?:\/\/[^\s]+|tapedb-extension:[a-z0-9-]+)$/i.test(option.url)) {
       invalid(`${where}.url must be an http or https URL.`);
     }
     if (typeof option.secret !== "string" || option.secret.length === 0) {

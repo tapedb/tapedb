@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { checkQueries } from "./query-check";
 import { prepareAuthPage } from "./auth-page";
+import { parseJsonc } from "./jsonc";
+import { addExtension, buildExtensions, runExtensionCommand } from "./extensions";
 import { AUTH_FILE, AUTH_WORKER_FILE } from "./auth-template";
 /**
  * tapedb CLI.
@@ -167,33 +169,6 @@ async function migrate(argv: string[]): Promise<number> {
   return 1;
 }
 
-/** JSON with comments, without mangling "//" inside strings. */
-function parseJsonc(text: string): unknown {
-  let out = "";
-  let inString = false;
-  for (let index = 0; index < text.length; index += 1) {
-    const char = text[index];
-    if (inString) {
-      out += char;
-      if (char === "\\") {
-        out += text[index + 1] ?? "";
-        index += 1;
-      } else if (char === '"') inString = false;
-      continue;
-    }
-    if (char === '"') {
-      inString = true;
-      out += char;
-    } else if (char === "/" && text[index + 1] === "/") {
-      while (index < text.length && text[index] !== "\n") index += 1;
-      out += "\n";
-    } else if (char === "/" && text[index + 1] === "*") {
-      index = text.indexOf("*/", index + 2) + 1;
-      if (index === 0) break;
-    } else out += char;
-  }
-  return JSON.parse(out.replace(/,(\s*[}\]])/g, "$1"));
-}
 
 async function deploy(argv: string[]): Promise<number> {
   const flags = parseFlags(argv);
@@ -234,6 +209,7 @@ async function deploy(argv: string[]): Promise<number> {
   }
 
   if(existsSync(join(root,"auth.ts"))||existsSync(join(root,"tapedb.auth.tsx")))await prepareAuthPage(root);
+  await buildExtensions(root, "deploy");
   return provisionAndDeploy(root, config, env, flags.yes === true, undefined, async (command, context) => {
     try {
       await provisionVectorize({
@@ -413,6 +389,11 @@ async function init(argv: string[]): Promise<number> {
   }
 
   if(withAuth)await prepareAuthPage(target);
+  // The CMS, before the first migration, so that migration has its models.
+  if (flags.cms === true) {
+    const code = await addExtension(target, "@tapedb/cms");
+    if (code !== 0) return code;
+  }
   try {
     if (readSnapshot(target) === null) {
       const schema = await loadSchema(target, {});
@@ -441,8 +422,11 @@ function usage(): number {
   console.log(`tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out
 
 Usage:
-  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--auth --email-from <address>] [--yes] [--no-install] [--no-start] [--force]
+  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--auth --email-from <address>] [--cms] [--yes] [--no-install] [--no-start] [--force]
   npx tapedb-cli auth build [--dir <path>]
+  npx tapedb-cli add <package> [--dir <path>]
+  npx tapedb-cli build [--dir <path>]
+  npx tapedb-cli <extension> <command> ...
   npx tapedb-cli migrate dev|rollback|status|check [--dir <path>] [--schema <file>]
   npx tapedb-cli deploy [--dir <path>] [--env <name>]
   npx tapedb-cli dev  [--dir <path>] [--port <port>]
@@ -458,6 +442,11 @@ Commands:
   init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,
           and the first migration. Existing files are kept unless --force.
           --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.
+          --cms adds @tapedb/cms (as tapedb add does) before the first migration.
+  add     Install an extension (such as @tapedb/cms), list it under "tapedb.extensions"
+          in package.json and let it set the project up. Its commands then run as
+          tapedb <extension> <command>; dev and deploy run its build first.
+  build   Generate what dev and deploy generate: the auth page and extension files.
   migrate dev --name <name> [--rename old=new] [--accept-data-loss]
           Diff the schema against the last migration and write the next one.
   migrate rollback [--to <id>] [--accept-data-loss]
@@ -536,6 +525,7 @@ async function dev(argv: string[]): Promise<number> {
   }
 
   const authPage=existsSync(join(target,"auth.ts"))||existsSync(join(target,"tapedb.auth.tsx"))?await prepareAuthPage(target,true):undefined;
+  const extensionBuilds = await buildExtensions(target, "dev", true);
 
   // The studio comes with the database: on 4400, or any free port when that is taken.
   const worker = `http://localhost:${port}`;
@@ -553,6 +543,7 @@ async function dev(argv: string[]): Promise<number> {
   });
   process.off("SIGINT", ignore);
   studio.close();
+  extensionBuilds.close();
   await authPage?.close();
   return status;
 }
@@ -696,6 +687,22 @@ export async function run(argv: string[]): Promise<number> {
     console.log(existsSync(join(root,'tapedb.auth.tsx'))?'Built tapedb.auth.tsx.':'Using the built-in TapeDB auth page.');
     return 0;
   }
+  if (command === "add") {
+    const flags = parseFlags(argv.slice(2));
+    if (!argv[1] || argv[1].startsWith("--")) {
+      console.error("Use tapedb add <package> [--dir <path>], e.g. tapedb add @tapedb/cms.");
+      return 1;
+    }
+    return addExtension(typeof flags.dir === "string" ? flags.dir : ".", argv[1]);
+  }
+  if (command === "build") {
+    // What dev and deploy generate before they start: the auth page and every extension's files.
+    const flags = parseFlags(argv.slice(1));
+    const root = resolve(typeof flags.dir === "string" ? flags.dir : ".");
+    if (existsSync(join(root, "auth.ts")) || existsSync(join(root, "tapedb.auth.tsx"))) await (await prepareAuthPage(root)).close();
+    (await buildExtensions(root, "deploy")).close();
+    return 0;
+  }
   if (command === "init") return init(argv.slice(1));
   if (command === "migrate") return migrate(argv.slice(1));
   if (command === "deploy") return deploy(argv.slice(1));
@@ -710,6 +717,10 @@ export async function run(argv: string[]): Promise<number> {
   if (command === undefined || command === "--help" || command === "-h") {
     return usage();
   }
+
+  // A listed extension's commands: tapedb <extension> <command>.
+  const extensionCode = await runExtensionCommand(".", argv);
+  if (extensionCode !== null) return extensionCode;
 
   console.error(`Unknown command "${command}".`);
   return usage();

@@ -330,6 +330,8 @@ export { sqlQuery } from "./model/queries";
 export type { SqlQuery, SqlQueries, SqlQueryOptions, QueryParams, QueryColumns, QueryParamValues, QueryRow } from "./model/queries";
 export type {
   ModelOptions,
+  SchemaExtension,
+  ExtensionModels,
   Access,
   AccessAuth,
   FileAccess,

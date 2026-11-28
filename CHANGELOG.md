@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.0 - 2026-11-28
+
+- Extensions (**experimental**): a package adds to a TapeDB app in the schema, the Worker and the CLI, declared with the rest of it. `@tapedb/cms` is the first. The contract is in API.md under Extensions.
+
+- `schema(models, { extensions })` takes `SchemaExtension`s `{ name, models, files? }`. Their models join the app's, typed, and a name clash throws. `files: { prefix, read?, write?, delete? }` rules apply under `prefix` only: a file takes the rule of the longest prefix that defines the action, else the app's `files` rule, else the default.
+
+- `defineTapeDB({ extensions })` takes `TapeDBExtension`s. `fetch` serves the requests TapeDB does not answer, `scheduled` runs on the Worker's cron triggers (`worker` now has a `scheduled` handler), and `changes.handle` receives the change events of the models it names. Those go through the webhook outbox, so they are captured in the write's transaction, handed over after the commit in sequence order and retried while later events wait, but end in a call inside the workspace's Durable Object rather than a request: no URL, secret or public address. `/webhooks` lists each as the endpoint `tapedb-extension:<name>`. Each hook gets an `ExtensionContext`: `fetch` into the deployment in process, `signClaim` and `verifyClaim`.
+
+- The CLI loads extensions a project lists under `"tapedb": { "extensions": [...] }` in package.json, each from `<package>/tapedb` (`defineExtension` from the new `@tapedb/tapedb/extension` entry). `tapedb add <package>` installs and lists one and runs its set-up, which may write files, add R2 buckets, cron triggers, vars and bindings to wrangler.jsonc, and add itself to the `extensions` of `schema()` and `defineTapeDB()` together with its imports; code not written as literal options is left alone and reported. `tapedb dev` runs each extension's build before it starts and again when a file the build names changes; `tapedb deploy` runs it before deploying; `tapedb build` runs it, and the auth page build, on its own. `tapedb <extension> <command>` runs an extension's commands. `tapedb init --cms` adds `@tapedb/cms` before the first migration.
+
 ## 0.4.2 - 2026-11-26
 
 - `init` adds `@tapedb/cli` to the project, pinned to the same version as `@tapedb/tapedb`, and updating an older tapedb moves it too. Every instruction the CLI prints says `npx tapedb-cli …`, and that bin is `@tapedb/cli`'s: in a project made by `init`, which installed only `@tapedb/tapedb` (bin `tapedb`), npx resolved `tapedb-cli` on the registry and ran the deprecated unscoped `tapedb-cli` package, an old engine, instead. Projects made before this can run `npm install -D @tapedb/cli@<their tapedb version>`, or use the `tapedb:*` scripts, which were never affected.

@@ -76,7 +76,7 @@ const NAME = /^[A-Za-z][A-Za-z0-9]*$/;
 // ---- Scanning ----------------------------------------------------------------
 
 /** Index just past a string, template literal or comment starting at `i`, or `i`. */
-function skipLiteral(src: string, i: number): number {
+export function skipLiteral(src: string, i: number): number {
   const c = src[i];
   if (c === "/" && src[i + 1] === "/") {
     const end = src.indexOf("\n", i);
@@ -107,7 +107,7 @@ function skipLiteral(src: string, i: number): number {
 }
 
 /** Index of the bracket that closes the one at `open`. */
-function matching(src: string, open: number): number {
+export function matching(src: string, open: number): number {
   const pairs: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
   const stack = [pairs[src[open]]];
   for (let i = open + 1; i < src.length; i++) {
@@ -124,7 +124,7 @@ function matching(src: string, open: number): number {
 }
 
 /** Next index at or after `i` that is not whitespace or a comment. */
-function skipTrivia(src: string, i: number): number {
+export function skipTrivia(src: string, i: number): number {
   while (i < src.length) {
     if (/\s/.test(src[i])) { i++; continue; }
     const skipped = skipLiteral(src, i);
