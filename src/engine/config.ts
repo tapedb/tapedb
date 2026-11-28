@@ -20,7 +20,8 @@ import type { FileRules } from "./file-access";
 import type { RealtimeAuthorizer } from "./topics";
 import { DEFAULT_MAX_PRESENCE_ROOMS, DEFAULT_TOPIC_REPLAY_MS } from "./topics";
 import type { ConfiguredVectorize } from "./vector-index/definition";
-import type { ConfiguredWebhook, WebhookTransport } from "./webhooks";
+import type { ConfiguredWebhook, WebhookEventPayload, WebhookTransport } from "./webhooks";
+import type { Env } from "../types";
 import { LOG_PART_BYTES } from "./tx-log";
 
 /** Resolved realtime settings: who may join a channel, and how much is kept. */
@@ -62,6 +63,12 @@ export interface DeploymentConfig {
    * the one deployment it builds instead of globally.
    */
   readonly webhookTransport: WebhookTransport | null;
+  /**
+   * `defineTapeDB({ extensions })`: change handlers by extension name. Their
+   * events go through the webhook outbox to `tapedb-extension:<name>` and are
+   * handed to the function in the room instead of posted.
+   */
+  readonly extensionHandlers: ReadonlyMap<string, (event: WebhookEventPayload, env: Env) => Promise<void> | void>;
 }
 
 /**
@@ -91,5 +98,6 @@ export function deploymentConfig(overrides: Partial<DeploymentConfig>): Deployme
     logPartBytes: overrides.logPartBytes ?? LOG_PART_BYTES,
     queries: overrides.queries ?? Object.freeze({}),
     webhookTransport: overrides.webhookTransport ?? null,
+    extensionHandlers: overrides.extensionHandlers ?? new Map(),
   });
 }

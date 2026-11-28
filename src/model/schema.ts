@@ -163,8 +163,32 @@ export interface FileAccess<K extends string = string> {
   delete?: FileRuleDecision<K>;
 }
 
-export interface SchemaOptions<K extends string = string, Q extends SqlQueries = SqlQueries> {
+/**
+ * Models and file rules a package adds to the app's schema, such as the
+ * CMS's content models:
+ *
+ *   schema(models, { extensions: [content] })
+ *
+ * Its models join the app's (a name both use is refused). Its file rules
+ * apply to the files under `files.prefix` and leave the app's rules for
+ * every other path.
+ *
+ * @experimental
+ */
+export interface SchemaExtension<EM extends Models = Models> {
+  /** Names the extension in errors. */
+  name: string;
+  models: EM;
+  files?: FileAccess<Extract<keyof EM, string>> & { prefix: string };
+}
+
+/** The models every extension adds, together. @experimental */
+export type ExtensionModels<E extends readonly SchemaExtension<any>[]> = E extends readonly [] ? {} : UnionToIntersection<E[number]["models"]>;
+
+export interface SchemaOptions<K extends string = string, Q extends SqlQueries = SqlQueries, E extends readonly SchemaExtension<any>[] = readonly SchemaExtension<any>[]> {
   files?: FileAccess<K>;
+  /** Packages that add models and path-scoped file rules; see `SchemaExtension`. @experimental */
+  extensions?: E;
   /** Named SQL queries, run from the client with `db.$query(name, params)`. */
   queries?: Q;
 }
@@ -533,11 +557,19 @@ type WithUsers<M extends Models> = "$users" extends ModelTargets<M> ? M & {"$use
  * Throws on anything the engine would only discover later: a relation to a
  * model that does not exist, an ambiguous inverse, a reserved name.
  */
-export function schema<M extends Models, Q extends SqlQueries = {}>(
-  models: M & ValidSchema<NoInfer<M>>,
-  options: SchemaOptions<Extract<keyof M, string>, Q> = {}
-): Schema<WithUsers<M>, Q> {
-  if(Object.hasOwn(models,"$users"))throw new Error("$users is managed by built-in auth.");
+export function schema<M extends Models, Q extends SqlQueries = {}, const E extends readonly SchemaExtension<any>[] = []>(
+  appModels: M & ValidSchema<NoInfer<M>>,
+  options: SchemaOptions<Extract<keyof M, string>, Q, E> = {}
+): Schema<WithUsers<M & ExtensionModels<E>>, Q> {
+  if(Object.hasOwn(appModels,"$users"))throw new Error("$users is managed by built-in auth.");
+  const models: Models = { ...appModels };
+  for (const ext of options.extensions ?? []) {
+    if (!ext || typeof ext.name !== "string" || typeof ext.models !== "object") throw new Error("extensions: each is { name, models, files? }.");
+    for (const [key, model] of Object.entries(ext.models)) {
+      if (Object.hasOwn(models, key)) throw new Error(`Model "${key}" from the ${ext.name} extension has the same name as another model; rename one of them.`);
+      models[key] = model as Model;
+    }
+  }
   const usesUsers=Object.values(models).some(definition=>Object.values(definition.fields).some(member=>member instanceof BelongsTo && member.target==='$users'));
   const allModels:Models=usesUsers?{...models,"$users":usersModel()}:models;
   const entities: Record<string, EntityConfig> = {};
@@ -684,18 +716,27 @@ export function schema<M extends Models, Q extends SqlQueries = {}>(
     if (definition.options.table !== undefined) tables[key] = definition.options.table;
   }
 
-  const files = options.files;
-  for (const [action, rule] of Object.entries(files ?? {})) {
-    if (!["read", "write", "delete"].includes(action)) {
-      throw new Error(`files.${action} is not a file action; use read, write or delete.`);
+  const checkFileRules = (where: string, rules: Record<string, unknown>) => {
+    for (const [action, rule] of Object.entries(rules) as [string, FileRuleDecision | undefined][]) {
+      if (action === "prefix") continue;
+      if (!["read", "write", "delete"].includes(action)) {
+        throw new Error(`${where}.${action} is not a file action; use read, write or delete.`);
+      }
+      if (rule?.decision === "attachedTo" && !(rule.model in allModels)) {
+        throw new Error(`${where}.${action} is attached to "${rule.model}", which is not a model.`);
+      }
+      if ((rule as { decision?: string } | undefined)?.decision === "filter") {
+        throw new Error(`${where}.${action}: filter() is for model reads; use fileCheck() or attachedTo().`);
+      }
     }
-    if (rule?.decision === "attachedTo" && !(rule.model in allModels)) {
-      throw new Error(`files.${action} is attached to "${rule.model}", which is not a model.`);
-    }
-    if ((rule as { decision?: string } | undefined)?.decision === "filter") {
-      throw new Error(`files.${action}: filter() is for model reads; use fileCheck() or attachedTo().`);
-    }
-  }
+  };
+  checkFileRules("files", (options.files ?? {}) as Record<string, unknown>);
+  const paths = (options.extensions ?? []).flatMap((ext) => {
+    if (!ext.files) return [];
+    checkFileRules(`${ext.name} extension files`, ext.files as unknown as Record<string, unknown>);
+    return [ext.files];
+  });
+  const files = paths.length ? { ...(options.files ?? {}), paths } : options.files;
 
   const queries: Record<string, SqlQuery> = {};
   for (const [name, query] of Object.entries(options.queries ?? {})) {
@@ -704,7 +745,7 @@ export function schema<M extends Models, Q extends SqlQueries = {}>(
   }
 
   const compiled = defineSchema({ entities, links, permissions, tables });
-  return { ...compiled, ...(files && Object.keys(files).length > 0 ? { files: files as unknown as FileRules } : {}), models:allModels, graph, queries } as unknown as Schema<WithUsers<M>, Q>;
+  return { ...compiled, ...(files && Object.keys(files).length > 0 ? { files: files as unknown as FileRules } : {}), models:allModels, graph, queries } as unknown as Schema<WithUsers<M & ExtensionModels<E>>, Q>;
 }
 
 /** A default in the form the column stores it. */

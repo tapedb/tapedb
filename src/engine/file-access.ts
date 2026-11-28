@@ -60,6 +60,20 @@ export interface FileRules {
   read?: FileRule;
   write?: FileRule;
   delete?: FileRule;
+  /**
+   * Rules for the files under a path prefix, from a schema extension
+   * (`schema(models, { extensions })`): a file under `prefix` follows the
+   * rule set here for an action, and the deployment's rule otherwise. The
+   * longest matching prefix wins.
+   */
+  paths?: readonly PathFileRules[];
+}
+
+export interface PathFileRules {
+  prefix: string;
+  read?: FileRule;
+  write?: FileRule;
+  delete?: FileRule;
 }
 
 const DEFAULTS: Record<FileAction, FileRule> = {
@@ -81,36 +95,61 @@ const NO_RULES: FileRules = Object.freeze({});
  * result is frozen and travels in the deployment's `DeploymentConfig`; there is
  * no module-level copy to set, so a second deployment cannot change it.
  */
+function checkRule(action: string, rule: FileRule | undefined): void {
+  if (rule === undefined) return;
+  if (rule.decision === "role") {
+    if (!Number.isInteger(rule.level)) throw new Error(`files.${action}: role() needs a role level.`);
+  } else if (rule.decision === "check") {
+    if (typeof rule.test !== "function") throw new Error(`files.${action}: fileCheck() needs a function.`);
+  } else if (rule.decision === "attachedTo") {
+    if (typeof rule.locate !== "function") throw new Error(`files.${action}: attachedTo() needs a function from path to row id.`);
+  } else {
+    throw new Error(`files.${action}: use role(), fileCheck() or attachedTo().`);
+  }
+}
+
 export function resolveFileRules(next: FileRules | undefined): FileRules {
+  const paths = [...(next?.paths ?? [])];
+  for (const scoped of paths) {
+    if (typeof scoped.prefix !== "string" || scoped.prefix.length === 0 || scoped.prefix.startsWith("/")) {
+      throw new Error(`files.paths: a prefix is a relative path such as "public/media/".`);
+    }
+    for (const [action, rule] of Object.entries(scoped)) {
+      if (action === "prefix") continue;
+      if (!["read", "write", "delete"].includes(action)) throw new Error(`files.paths["${scoped.prefix}"].${action} is not a file action.`);
+      checkRule(`paths["${scoped.prefix}"].${action}`, rule as FileRule);
+    }
+  }
+  if (new Set(paths.map((p) => p.prefix)).size !== paths.length) throw new Error("files.paths: two rule sets claim the same prefix.");
+  // Longest first, so the most specific prefix decides.
+  paths.sort((a, b) => b.prefix.length - a.prefix.length);
   for (const [action, rule] of Object.entries(next ?? {})) {
+    if (action === "paths") continue;
     if (!["read", "write", "delete"].includes(action)) {
       throw new Error(`files.${action} is not a file action; use read, write or delete.`);
     }
-    if (rule === undefined) continue;
-    if (rule.decision === "role") {
-      if (!Number.isInteger(rule.level)) throw new Error(`files.${action}: role() needs a role level.`);
-    } else if (rule.decision === "check") {
-      if (typeof rule.test !== "function") throw new Error(`files.${action}: fileCheck() needs a function.`);
-    } else if (rule.decision === "attachedTo") {
-      if (typeof rule.locate !== "function") throw new Error(`files.${action}: attachedTo() needs a function from path to row id.`);
-    } else {
-      throw new Error(`files.${action}: use role(), fileCheck() or attachedTo().`);
-    }
+    checkRule(action, rule as FileRule | undefined);
   }
-  return Object.freeze({ ...(next ?? {}) });
+  return Object.freeze({ ...(next ?? {}), ...(paths.length ? { paths: Object.freeze(paths) } : {}) });
 }
 
 /** True when the deployment sets any file rule; the defaults need no Durable Object. */
 export function fileRulesConfigured(rules: FileRules = NO_RULES): boolean {
-  return Object.values(rules).some((rule) => rule !== undefined);
+  return rules.read !== undefined || rules.write !== undefined || rules.delete !== undefined || (rules.paths?.length ?? 0) > 0;
 }
 
-function ruleFor(action: FileAction, rules: FileRules): FileRule {
+function ruleFor(action: FileAction, rules: FileRules, path?: string): FileRule {
+  if (path !== undefined) {
+    for (const scoped of rules.paths ?? []) {
+      if (path.startsWith(scoped.prefix) && scoped[action] !== undefined) return scoped[action]!;
+    }
+  }
   return rules[action] ?? DEFAULTS[action];
 }
 
 /** The role a role-only rule needs, or null when the rule looks at the file. */
 export function fileRoleFloor(action: FileAction, rules: FileRules = NO_RULES): number | null {
+  if ((rules.paths ?? []).some((scoped) => scoped[action] !== undefined)) return null;
   const rule = ruleFor(action, rules);
   return rule.decision === "role" ? rule.level : null;
 }
@@ -161,7 +200,7 @@ export function authorizeFile(
   file: FileInfo,
   existing?: FileInfo
 ): boolean {
-  const rule = ruleFor(action, rules);
+  const rule = ruleFor(action, rules, file.path);
   switch (rule.decision) {
     case "role":
       return hasRole(claim, rule.level as never);
@@ -188,18 +227,25 @@ export function readableFiles<T extends FileInfo>(
   files: T[],
   rules: FileRules = NO_RULES
 ): T[] {
-  const rule = ruleFor("read", rules);
-  if (rule.decision !== "attachedTo") {
-    return files.filter((file) => authorizeFile(sql, claim, rules, "read", file));
+  // Files whose rule is attachedTo are read in batches per model; the rest one by one.
+  const verdict = new Map<T, boolean>();
+  const attached = new Map<string, { rule: Extract<FileRule, { decision: "attachedTo" }>; files: T[] }>();
+  for (const file of files) {
+    const rule = ruleFor("read", rules, file.path);
+    if (rule.decision !== "attachedTo") {
+      verdict.set(file, authorizeFile(sql, claim, rules, "read", file));
+      continue;
+    }
+    const group = attached.get(rule.model) ?? { rule, files: [] };
+    group.files.push(file);
+    attached.set(rule.model, group);
   }
-  const ids = files.map((file) => locate(rule, file.path));
-  const visible = readableRows(
-    sql,
-    claim,
-    rule.model,
-    [...new Set(ids.filter((id): id is string => id !== null))]
-  );
-  return files.filter((_, index) => ids[index] !== null && visible.has(ids[index]!));
+  for (const { rule, files: group } of attached.values()) {
+    const ids = group.map((file) => locate(rule, file.path));
+    const visible = readableRows(sql, claim, rule.model, [...new Set(ids.filter((id): id is string => id !== null))]);
+    group.forEach((file, index) => verdict.set(file, ids[index] !== null && visible.has(ids[index]!)));
+  }
+  return files.filter((file) => verdict.get(file) === true);
 }
 
 /** How each file action is decided, for tooling: a role level, a check in code, or the rules of a model's rows. */

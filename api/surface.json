@@ -483,7 +483,7 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models, Q extends SqlQueries = {}>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>, Q>) => Schema<WithUsers<M>, Q>"
+        "shape": "<M extends Models, Q extends SqlQueries = {}, const E extends readonly SchemaExtension<any>[] = []>(appModels: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>, Q, E>) => Schema<WithUsers<M & ExtensionModels<E>>, Q>"
       },
       "Schema": {
         "kind": "interface",
@@ -753,6 +753,11 @@
         "kind": "function",
         "shape": "(values: readonly number[], dimensions: number) => string"
       },
+      "ExtensionModels": {
+        "kind": "type",
+        "experimental": true,
+        "shape": "<E extends readonly SchemaExtension<any>[]> E extends readonly [] ? {} : UnionToIntersection<E[number][\"models\"]>"
+      },
       "FieldFilter": {
         "kind": "interface",
         "shape": {
@@ -852,7 +857,7 @@
       },
       "schema": {
         "kind": "function",
-        "shape": "<M extends Models, Q extends SqlQueries = {}>(models: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>, Q>) => Schema<WithUsers<M>, Q>"
+        "shape": "<M extends Models, Q extends SqlQueries = {}, const E extends readonly SchemaExtension<any>[] = []>(appModels: M & ValidSchema<NoInfer<M>>, options?: SchemaOptions<Extract<keyof M, string>, Q, E>) => Schema<WithUsers<M & ExtensionModels<E>>, Q>"
       },
       "Schema": {
         "kind": "interface",
@@ -866,6 +871,16 @@
           "clientSchema": "import(\"src/client/types\").SchemaDefinition",
           "files": "FileRules | undefined",
           "(declaration)": "<M extends Models = Models, Q extends SqlQueries = {}> extends TapeDBSchema"
+        }
+      },
+      "SchemaExtension": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "name": "string",
+          "models": "EM",
+          "files": "(FileAccess<Extract<keyof EM, string>> & { prefix: string; }) | undefined",
+          "(declaration)": "<EM extends Models = Models>"
         }
       },
       "SqlQueries": {
@@ -1071,6 +1086,7 @@
           "retention": "RetentionOptions | undefined",
           "limits": "LimitsOptions | undefined @experimental",
           "webhooks": "readonly WebhookOptions[] | undefined @experimental",
+          "extensions": "readonly TapeDBExtension[] | undefined @experimental",
           "vectorize": "VectorizeOptions | undefined",
           "http": "HttpApiOptions | undefined @experimental"
         }
@@ -1096,6 +1112,24 @@
           "TAPEDB_CLAIM_AUDIENCE": "string | undefined",
           "TAPEDB_DEV_CLAIMS": "string | undefined",
           "TAPEDB_DEV_CLAIMS_TOKEN": "string | undefined"
+        }
+      },
+      "ExtensionChanges": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "models": "readonly string[] | undefined",
+          "events": "readonly WebhookEvent[] | undefined",
+          "handle": "(event: WebhookEventPayload, env: Env) => Promise<void> | void"
+        }
+      },
+      "ExtensionContext": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "fetch": "(request: Request) => Promise<Response>",
+          "signClaim": "(workspaceId: string, as: { sub: string; role: number; ttlSeconds?: number; }) => Promise<string>",
+          "verifyClaim": "(token: string | null | undefined, workspaceId: string) => Promise<{ sub: string; role: number; workspaceId: string; } | null>"
         }
       },
       "HttpApiOptions": {
@@ -1164,6 +1198,16 @@
           "api": "{ getSession(input: { headers: Headers; }): Promise<{ user: { id: string; }; } | null>; }"
         }
       },
+      "TapeDBExtension": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "name": "string",
+          "fetch": "((request: Request, env: Env, ctx: ExecutionContext, tapedb: ExtensionContext) => Response | null | undefined | Promise<Response | null | undefined>) | undefined",
+          "scheduled": "((controller: ScheduledController, env: Env, ctx: ExecutionContext, tapedb: ExtensionContext) => void | Promise<void>) | undefined",
+          "changes": "ExtensionChanges | undefined"
+        }
+      },
       "TapeDBRoom": {
         "kind": "class",
         "shape": {
@@ -1195,7 +1239,7 @@
         "shape": {
           "WorkspaceRoom": "typeof WorkspaceRoom",
           "AuthRoom": "typeof AuthRoom",
-          "worker": "{ fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response>; }"
+          "worker": "{ fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response>; scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void>; }"
         }
       },
       "TopicAction": {
@@ -1569,6 +1613,46 @@
         }
       }
     },
+    "@tapedb/tapedb/extension": {
+      "defineExtension": {
+        "kind": "function",
+        "experimental": true,
+        "shape": "(extension: TapeDBCliExtension) => TapeDBCliExtension"
+      },
+      "ExtensionCommand": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "summary": "string",
+          "usage": "string",
+          "run": "(args: string[], project: ExtensionProject) => Promise<number | void> | number | void"
+        }
+      },
+      "ExtensionProject": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "root": "string",
+          "read": "(path: string) => string | null",
+          "write": "(path: string, contents: string, options?: { overwrite?: boolean; }) => boolean",
+          "wrangler": "{ addR2Bucket(binding: string, suffix: string): void; addCron(expression: string): void; addVar(name: string, value: string): void; setIfAbsent(key: string, value: unknown): void; }",
+          "useInSchema": "(expression: string, imports: string[]) => boolean",
+          "useInWorker": "(expression: string, imports: string[]) => boolean",
+          "installDev": "(packages: string[]) => void",
+          "log": "(message: string) => void"
+        }
+      },
+      "TapeDBCliExtension": {
+        "kind": "interface",
+        "experimental": true,
+        "shape": {
+          "name": "string",
+          "add": "((project: ExtensionProject) => Promise<void> | void) | undefined",
+          "build": "((project: ExtensionProject, options: { mode: \"dev\" | \"deploy\"; }) => Promise<{ watch?: string[]; } | void> | { watch?: string[]; } | void) | undefined",
+          "commands": "Record<string, ExtensionCommand> | undefined"
+        }
+      }
+    },
     "(referenced, not exported)": {
       "AggregateArgs (src/model/client.ts)": {
         "kind": "interface",
@@ -1874,7 +1958,8 @@
         "shape": {
           "read": "FileRule | undefined",
           "write": "FileRule | undefined",
-          "delete": "FileRule | undefined"
+          "delete": "FileRule | undefined",
+          "paths": "readonly PathFileRules[] | undefined"
         }
       },
       "FilterDecision (src/model/schema.ts)": {
@@ -2128,6 +2213,15 @@
         "kind": "type",
         "shape": "<S> S extends EnumField<infer V, infer O, boolean> ? V | (O extends true ? null : never) : S extends Field<infer K, infer O, boolean> ? KindOutput[K] | (S extends { personalSubject: string } ? null : O extends true ? null : never) : never"
       },
+      "PathFileRules (src/engine/file-access.ts)": {
+        "kind": "interface",
+        "shape": {
+          "prefix": "string",
+          "read": "FileRule | undefined",
+          "write": "FileRule | undefined",
+          "delete": "FileRule | undefined"
+        }
+      },
       "PermissionAction (src/engine/tx-permissions.ts)": {
         "kind": "type",
         "shape": "\"view\" | \"create\" | \"update\" | \"delete\""
@@ -2314,8 +2408,9 @@
         "kind": "interface",
         "shape": {
           "files": "FileAccess<K> | undefined",
+          "extensions": "E | undefined @experimental",
           "queries": "Q | undefined",
-          "(declaration)": "<K extends string = string, Q extends SqlQueries = SqlQueries>"
+          "(declaration)": "<K extends string = string, Q extends SqlQueries = SqlQueries, E extends readonly SchemaExtension<any>[] = readonly SchemaExtension<any>[]>"
         }
       },
       "Select (src/model/schema.ts)": {
@@ -2572,7 +2667,7 @@
       }
     }
   },
-  "cli": "tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out\n\nUsage:\n  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--auth --email-from <address>] [--yes] [--no-install] [--no-start] [--force]\n  npx tapedb-cli auth build [--dir <path>]\n  npx tapedb-cli migrate dev|rollback|status|check [--dir <path>] [--schema <file>]\n  npx tapedb-cli deploy [--dir <path>] [--env <name>]\n  npx tapedb-cli dev  [--dir <path>] [--port <port>]\n  npx tapedb-cli studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]\n  npx tapedb-cli export --workspace <uuid> [--url <worker-url>] [--out <file>]\n  npx tapedb-cli seed --workspace <uuid> [--file <tapedb.seed.ts>] [--url <worker-url>] [--seed <label>]\n  npx tapedb-cli backup --workspace <uuid> --out <dir> [--url <worker-url>] [--dry-run]\n  npx tapedb-cli restore --from <dir> [--into <uuid>] [--url <worker-url>] [--dry-run]\n  npx tapedb-cli erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]\n  npx tapedb-cli move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]\n\nCommands:\n  init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,\n          and the first migration. Existing files are kept unless --force.\n          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.\n  migrate dev --name <name> [--rename old=new] [--accept-data-loss]\n          Diff the schema against the last migration and write the next one.\n  migrate rollback [--to <id>] [--accept-data-loss]\n          Write the migration that takes the database back to the schema\n          after <id> (default: the one before the last).\n  migrate status | check\n          List migrations; check fails if the schema has unmigrated changes.\n  deploy  [--env <name>] [--yes]  Select an account, provision missing resources and secrets, and deploy.\n  dev     Run the local database on port 8787, with the studio beside it.\n  studio  Open a local table browser against a running Worker.\n  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).\n  seed    Run the project's seeder against a running Worker: --seed makes the\n          same seed give the same rows. --dry-run checks without writing.\n  backup  Write a workspace as a directory: rows.ndjson (the export verbatim),\n          files/<path> with each file's bytes, and backup.json with a sha256 for\n          every part. --workspace may come from TAPEDB_WORKSPACE. --dry-run\n          reads and hashes and writes nothing.\n  restore Import a backup into an empty workspace: every hash is verified before\n          anything is written, and a destination that already holds rows or\n          files is refused. --into picks the workspace (default: the one the\n          backup came from). --dry-run verifies and prints counts and hashes.\n  erase   Delete a workspace for good: its data, history and files (owner claim).\n          --confirm must repeat the workspace id. The id answers 410 afterwards.",
+  "cli": "tapedb — a typed database for Cloudflare: models in, Durable Objects and R2 out\n\nUsage:\n  npx tapedb-cli init [--dir <path>] [--name <worker-name>] [--jurisdiction eu] [--local|--cloud] [--auth --email-from <address>] [--cms] [--yes] [--no-install] [--no-start] [--force]\n  npx tapedb-cli auth build [--dir <path>]\n  npx tapedb-cli add <package> [--dir <path>]\n  npx tapedb-cli build [--dir <path>]\n  npx tapedb-cli <extension> <command> ...\n  npx tapedb-cli migrate dev|rollback|status|check [--dir <path>] [--schema <file>]\n  npx tapedb-cli deploy [--dir <path>] [--env <name>]\n  npx tapedb-cli dev  [--dir <path>] [--port <port>]\n  npx tapedb-cli studio [--url <worker-url>] [--workspace <uuid>] [--port <port>]\n  npx tapedb-cli export --workspace <uuid> [--url <worker-url>] [--out <file>]\n  npx tapedb-cli seed --workspace <uuid> [--file <tapedb.seed.ts>] [--url <worker-url>] [--seed <label>]\n  npx tapedb-cli backup --workspace <uuid> --out <dir> [--url <worker-url>] [--dry-run]\n  npx tapedb-cli restore --from <dir> [--into <uuid>] [--url <worker-url>] [--dry-run]\n  npx tapedb-cli erase --workspace <uuid> --confirm <uuid> [--url <worker-url>]\n  npx tapedb-cli move --to eu|fedramp|none --workspaces <file> [--url <worker-url>]\n\nCommands:\n  init    Write tapedb.schema.ts, worker.ts, wrangler.jsonc and .dev.vars,\n          and the first migration. Existing files are kept unless --force.\n          --jurisdiction eu keeps Durable Objects and R2 buckets in the EU.\n          --cms adds @tapedb/cms (as tapedb add does) before the first migration.\n  add     Install an extension (such as @tapedb/cms), list it under \"tapedb.extensions\"\n          in package.json and let it set the project up. Its commands then run as\n          tapedb <extension> <command>; dev and deploy run its build first.\n  build   Generate what dev and deploy generate: the auth page and extension files.\n  migrate dev --name <name> [--rename old=new] [--accept-data-loss]\n          Diff the schema against the last migration and write the next one.\n  migrate rollback [--to <id>] [--accept-data-loss]\n          Write the migration that takes the database back to the schema\n          after <id> (default: the one before the last).\n  migrate status | check\n          List migrations; check fails if the schema has unmigrated changes.\n  deploy  [--env <name>] [--yes]  Select an account, provision missing resources and secrets, and deploy.\n  dev     Run the local database on port 8787, with the studio beside it.\n  studio  Open a local table browser against a running Worker.\n  export  Stream every row the claim may read as NDJSON (TAPEDB_TOKEN, or a dev claim).\n  seed    Run the project's seeder against a running Worker: --seed makes the\n          same seed give the same rows. --dry-run checks without writing.\n  backup  Write a workspace as a directory: rows.ndjson (the export verbatim),\n          files/<path> with each file's bytes, and backup.json with a sha256 for\n          every part. --workspace may come from TAPEDB_WORKSPACE. --dry-run\n          reads and hashes and writes nothing.\n  restore Import a backup into an empty workspace: every hash is verified before\n          anything is written, and a destination that already holds rows or\n          files is refused. --into picks the workspace (default: the one the\n          backup came from). --dry-run verifies and prints counts and hashes.\n  erase   Delete a workspace for good: its data, history and files (owner claim).\n          --confirm must repeat the workspace id. The id answers 410 afterwards.",
   "errorCodes": [
     "api_token_misconfigured",
     "audit_disabled",

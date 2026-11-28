@@ -1150,6 +1150,33 @@ zero runtime dependencies and the page stays a single response under one hash pe
 script and style. `node scripts/gen-studio-graph.mjs` rebuilds it; a test fails
 while the bundle is stale.
 
+## Extensions
+
+A package can add to a TapeDB app in the schema, the Worker and the CLI at
+once. The first is [`@tapedb/cms`](https://github.com/tapedb/cms), a content
+management system:
+
+```bash
+npx @tapedb/cli add @tapedb/cms    # or: npx @tapedb/cli init --cms
+```
+
+`add` installs the package, lists it in package.json and lets it set the
+project up: here a content file, the CMS in `schema(models, { extensions })`
+and in `defineTapeDB({ extensions })`, and an R2 bucket, the Images binding and
+a cron trigger in wrangler.jsonc, which `tapedb deploy` provisions. From then
+on `tapedb dev` and `tapedb deploy` run the extension's build (the CMS bundles
+the app's `tapedb.cms.tsx`, as they do `tapedb.auth.tsx`), and its commands run
+as `tapedb <extension> <command>` (`tapedb cms import`).
+
+In the Worker an extension serves the routes TapeDB does not, runs on the
+Worker's cron triggers, and receives the change events of the models it names.
+Those are delivered like [webhooks](API.md#webhook-operations): captured in the
+write's transaction, in order after the commit, retried until handled, but as a
+function call inside the workspace's Durable Object, with no URL, secret or
+network in between. In the schema its models sit beside the app's, and its file
+rules cover only the paths under its prefix. The contract is in
+[API.md](API.md#extensions); it is experimental.
+
 ## Architecture
 
 One Durable Object per workspace is the only writer, which is what makes
@@ -1206,9 +1233,11 @@ export default defineTapeDB({ schema, retention: { days: 14 } }); // at least 2
 | `@tapedb/tapedb/worker` | `defineTapeDB`, claim helpers | no |
 | `@tapedb/tapedb/studio` | `studio`, served at `/_tapedb/studio` | no |
 | `@tapedb/tapedb/seed` | `defineSeeder`, `runSeeder` | no |
+| `@tapedb/tapedb/extension` | `defineExtension`, for an extension's CLI half | no |
 
-The CLI is a command, not an import: `npx @tapedb/cli init | migrate | dev | studio
-| deploy | export | backup | restore | seed | erase | move` (bin `tapedb-cli`).
+The CLI is a command, not an import: `npx @tapedb/cli init | add | build | migrate |
+dev | studio | deploy | export | backup | restore | seed | erase | move`, plus each
+listed extension's commands (bin `tapedb-cli`).
 
 [API.md](API.md) is the reference: every export and signature, what is stable
 and what is experimental, the HTTP routes, the export format and the error

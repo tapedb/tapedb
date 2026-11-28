@@ -35,7 +35,8 @@ import { ADMIN_PREFIX, handleAdminRequest, resolveHttpApi, type HttpApiOptions }
 import { apiError, discardBody, json } from "../http";
 import { handleClaimRequest } from "../claim-route";
 import { limiterKey, limiterName, resolveClaimLimits, type ClaimLimits, type LimitDecision } from "../engine/claim-limits";
-import { mintClaim, mintDevClaim, type ClaimIdentity } from "../mint";
+import { mintClaim, mintDevClaim, signRoleClaim, type ClaimIdentity } from "../mint";
+import { EXTENSION_SCHEME, resolveExtensions, type ExtensionContext, type TapeDBExtension } from "./extensions";
 import type { TapeDBSchema } from "../schema";
 import type { BundledWorkspaceMigration } from "../engine/migrations-bundle";
 import type { Env } from "../types";
@@ -161,6 +162,20 @@ export interface DefineTapeDBOptions {
    */
   webhooks?: readonly WebhookOptions[];
   /**
+   * Packages that add routes, cron work and change handlers to this
+   * deployment, e.g. the CMS:
+   *
+   *   extensions: [cms({ content })]
+   *
+   * An extension answers requests TapeDB itself does not, runs on the
+   * Worker's cron triggers, and receives change events for the models it
+   * names, delivered after the commit like webhooks but called in process.
+   * See `TapeDBExtension`.
+   *
+   * @experimental May change in a minor release.
+   */
+  extensions?: readonly TapeDBExtension[];
+  /**
    * Mirrors one model's vector attribute into a Cloudflare Vectorize index, and
    * answers `search` over it.
    *
@@ -218,7 +233,11 @@ export interface TapeDBWorker {
   /** The database room class. Export it from the Worker entry. */
   WorkspaceRoom: typeof WorkspaceRoom;
   AuthRoom: typeof AuthRoom;
-  worker: { fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> };
+  worker: {
+    fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response>;
+    /** Runs each extension's `scheduled`; wired to the Worker's cron triggers. */
+    scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void>;
+  };
 }
 
 /**
@@ -392,11 +411,22 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   // deployment in the same process (a test, `@tapedb/tapedb/backend` in Node)
   // cannot change this one's audit flag, file rules, realtime caps, webhooks or
   // log part size. Validated here, so a bad option fails at definition time.
+  const extensions = resolveExtensions(options.extensions);
   const config: DeploymentConfig = deploymentConfig({
     audit: options.audit === true,
     files: resolveFileRules(schema.files),
     realtime: resolveRealtime(options.realtime, options.topics),
-    webhooks: resolveWebhooks(options.webhooks),
+    // An extension's change handler is one more endpoint in the same outbox,
+    // addressed `tapedb-extension:<name>`; the room calls it instead of posting.
+    webhooks: resolveWebhooks([
+      ...(options.webhooks ?? []),
+      ...extensions.list.flatMap((ext) =>
+        ext.changes
+          ? [{ url: `${EXTENSION_SCHEME}${ext.name}`, events: ext.changes.events ?? ["create", "update", "delete"], ...(ext.changes.models ? { models: ext.changes.models } : {}), secret: "in-process" }]
+          : []
+      ),
+    ]),
+    extensionHandlers: extensions.handlers,
     vectorize: resolveVectorize(options.vectorize),
     queries: resolveQueries(
       (schema as { queries?: Parameters<typeof resolveQueries>[0] }).queries,
@@ -411,8 +441,30 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
   // a mistyped secret fails at deploy rather than on the first backend call.
   const httpApi = resolveHttpApi(options.http);
 
+  /** What an extension may use: this deployment, in process. */
+  const extensionContext = (env: Env, ctx: ExecutionContext): ExtensionContext => ({
+    fetch: (request) => worker.fetch(request, env, ctx),
+    signClaim: async (workspaceId, as) =>
+      (await signRoleClaim(env.TAPEDB_CLAIM_SECRET as string, { sub: as.sub, workspaceId, role: as.role as never, ttlSeconds: as.ttlSeconds ?? 60 })).token,
+    verifyClaim: async (token, workspaceId) => {
+      const bare = token?.replace(/^Bearer\s+/i, "");
+      if (!bare) return null;
+      try {
+        const claim = await verifyRoleClaim(bare, env, workspaceId);
+        return { sub: claim.sub, role: claim.role, workspaceId: claim.workspaceId };
+      } catch {
+        return null;
+      }
+    },
+  });
+
   const worker = {
-    async fetch(request: Request, env: Env, _ctx: ExecutionContext): Promise<Response> {
+    async scheduled(controller: ScheduledController, env: Env, ctx: ExecutionContext): Promise<void> {
+      for (const ext of extensions.list) {
+        if (ext.scheduled) await ext.scheduled(controller, env, ctx, extensionContext(env, ctx));
+      }
+    },
+    async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
       if (!registryConfigured()) {
         return apiError(500, "engine_not_configured", "Call defineTapeDB({ schema }) first.");
       }
@@ -495,6 +547,12 @@ export function defineTapeDB(options: DefineTapeDBOptions): TapeDBWorker {
       }
 
       if (!url.pathname.startsWith(`${ENGINE_PREFIX}/`)) {
+        // Routes TapeDB does not own go to the extensions, in order.
+        for (const ext of extensions.list) {
+          if (!ext.fetch) continue;
+          const answered = await ext.fetch(request, env, ctx, extensionContext(env, ctx));
+          if (answered) return answered;
+        }
         await discardBody(request);
         return apiError(404, "no_route", `No route for ${request.method} ${url.pathname}.`);
       }
@@ -610,6 +668,7 @@ export type { ClaimIdentity } from "../mint";
 export type { ClaimLimit, ClaimLimits } from "../engine/claim-limits";
 export type { TopicAction, TopicAuthorizer, TopicOptions } from "../engine/topics";
 export type { WebhookEvent, WebhookEventPayload, WebhookOptions } from "../engine/webhooks";
+export type { ExtensionChanges, ExtensionContext, TapeDBExtension } from "./extensions";
 export type {
   VectorIndex,
   VectorIndexDescription,

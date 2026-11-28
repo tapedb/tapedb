@@ -35,6 +35,7 @@ then records the new surface with `bun run api:update`.
 | `@tapedb/tapedb/worker` | Cloudflare Workers | `defineTapeDB` and claim helpers |
 | `@tapedb/tapedb/studio` | Cloudflare Workers | `studio`: the studio at `/_tapedb/studio`, for `defineTapeDB({ studio })` |
 | `@tapedb/tapedb/seed` | Node (the CLI) | `defineSeeder`, `runSeeder` and the seeding context |
+| `@tapedb/tapedb/extension` | Node (the CLI) | **experimental**: `defineExtension`, the command-line half of an [extension](#extensions) |
 | `npx tapedb-cli` | Node 22.18+ | the CLI, a separate package that runs the matching `@tapedb/tapedb` |
 
 `@tapedb/tapedb` has no runtime dependencies and never imports React.
@@ -47,7 +48,8 @@ then records the new surface with `bun run api:update`.
 `FieldFilter`, `OrderBy`, `Include`, `CreateData`, `UpdateData`,
 `DeleteBehaviour`, `ScalarKind`, `Access`, `AccessAuth`, `CheckContext`,
 `FileAccess`, `FileCheckContext`, `FileInfo`, `SqlQuery`, `SqlQueries`,
-`SqlQueryOptions`, `QueryParams`, `QueryColumns`, `QueryParamValues`, `QueryRow`.
+`SqlQueryOptions`, `QueryParams`, `QueryColumns`, `QueryParamValues`, `QueryRow`,
+and, **experimental**, `SchemaExtension` and `ExtensionModels`.
 
 `schema(models, { queries? })`: named SQL queries, each
 `sqlQuery({ sql, params?, returns, role?, bypassReadRules? })`. `sql` is one
@@ -67,6 +69,15 @@ defaults to `member`. `schema()` throws on more than one statement, a write,
 and `existing` the one it replaces). `attachedTo` reads need the row readable
 by the caller; writes and deletes need the caller allowed to update it. Defaults:
 read `member`, write and delete `editor`. A rule that throws denies.
+
+`schema(models, { extensions? })` (**experimental**): `extensions` is a list of
+`SchemaExtension` `{ name, models, files? }`, each adding its models to the
+app's (the client and the rules see one schema; the result's type includes
+them) and, with `files: { prefix, read?, write?, delete? }`, the rules for
+files under `prefix`. A model name an extension shares with the app or another
+extension throws. A file takes the rule of the longest prefix that defines the
+action, else the app's `files` rule, else the default; a prefix must be relative
+and is not repeated.
 
 Literal `schema()` definitions are checked by TypeScript: relation targets must
 exist, each `hasMany` must resolve to exactly one matching `belongsTo` (or name
@@ -385,6 +396,7 @@ the default and `WorkspaceRoom` under that name (`tapedb init` writes this).
 | `limits` | **experimental**: `LimitsOptions` `{ writes?: { models?: { [model]: { count, windowSeconds } }, workspace?: { count, windowSeconds } } }` — per-model and per-workspace write budgets, see [Write budgets](#write-budgets) |
 | `webhooks` | **experimental**: `readonly WebhookOptions[]` — signed change events to an endpoint, captured inside the write's transaction and delivered after the commit |
 | `vectorize` | `VectorizeOptions` `{ index, model, field, filterFields?, embed?, keywordFields?, rerank? }` — mirrors one model's `t.vector({ dimensions })` attribute into a Vectorize index; see [Vector search](#vector-search) |
+| `extensions` | **experimental**: `readonly TapeDBExtension[]` — routes, cron work and change handlers from packages such as `@tapedb/cms`; see [Extensions](#extensions) |
 | `http` | **experimental**: `HttpApiOptions` `{ token }` — the admin HTTP API (`POST /v1/query`, `/v1/transact`, `/v1/claim`) for a backend server. `token` is the shared secret such a caller sends, at least 32 bytes: a string, refused when the Worker is defined if it is shorter, or `(env) => env.TAPEDB_API_TOKEN`, the form a deployment uses. Absent, the paths answer 404 — see [Admin HTTP API](#admin-http-api) |
 
 Also exported: `signRoleClaim(secret, { sub, workspaceId, role, iss?, aud?,
@@ -401,7 +413,9 @@ allow consumers to emit declarations without leaking private names.
 `TopicAction`, `TopicAuthorizer` and `TopicGap` are **experimental**, and so are
 `RealtimeOptions`, `RealtimeAuthorizer`, `RealtimeAuthorizeContext` and
 `RealtimeKind`, and `LimitsOptions`, `WriteLimitsOptions` and `WriteLimit`, and
-`HttpApiOptions` and `HttpApiToken`. The vector types are stable as of 0.3.4:
+`HttpApiOptions` and `HttpApiToken`, and `TapeDBExtension`, `ExtensionContext` and
+`ExtensionChanges`. `worker` has a `scheduled` handler, which runs each
+extension's `scheduled` on the Worker's cron triggers. The vector types are stable as of 0.3.4:
 `VectorizeOptions`, `VectorIndex` (the four operations this engine uses),
 `VectorRecord`, `VectorIndexMutation`, `VectorQueryOptions`, `VectorQueryResult`,
 `VectorMatch` and `VectorIndexDescription`.
@@ -1268,10 +1282,69 @@ queries and topics; presence rooms are the exception, capped at
 `maxPresenceRooms` and budgeted together at 8 KiB. The protocol belongs to the
 client; use it directly only if you must.
 
+## Extensions
+
+**Experimental.** A package extends a TapeDB deployment in three places, each
+optional; `@tapedb/cms` uses all three.
+
+**Schema** — a `SchemaExtension` in `schema(models, { extensions })` (see
+[above](#tapedbtapedbschema--stable)): models and the rules for files under a
+prefix.
+
+**Worker** — a `TapeDBExtension` in `defineTapeDB({ extensions })`:
+
+| Member | |
+| --- | --- |
+| `name` | lowercase letters, digits and dashes; unique among the deployment's extensions |
+| `fetch(request, env, ctx, tapedb)` | requests TapeDB does not answer itself, extensions in order; a `Response`, or `null` to pass to the next one (after the last, 404) |
+| `scheduled(controller, env, ctx, tapedb)` | the Worker's cron triggers |
+| `changes` | `{ models?, events?, handle(event, env) }`: the change events of the named models (every model when omitted; `create`, `update` and `delete` by default) |
+
+`tapedb` is an `ExtensionContext`: `fetch(request)` calls the deployment in
+process (engine routes, files, claims, auth), `signClaim(workspaceId, { sub,
+role, ttlSeconds? })` signs a claim with `TAPEDB_CLAIM_SECRET` to act through
+those routes and their rules, and `verifyClaim(token, workspaceId)` checks a
+caller's claim (a token or a `Bearer` header) and answers `{ sub, role,
+workspaceId }` or null.
+
+`changes.handle` receives the same `WebhookEventPayload` a webhook does, and is
+delivered the same way: captured inside the write's transaction, handed over
+after the commit in sequence order, and on a throw retried with backoff while
+later events wait. It runs in the workspace's Durable Object with that
+object's `env`, so there is no URL, secret or network hop. In
+`GET /engine/workspaces/:id/webhooks` it is the endpoint
+`tapedb-extension:<name>`.
+
+**CLI** — a module at `<package>/tapedb` (found through the package's
+`exports`) whose default export is `defineExtension({ name, add?, build?,
+commands? })` from `@tapedb/tapedb/extension`. The project lists the package
+under `"tapedb": { "extensions": [...] }` in package.json.
+
+| Member | Runs |
+| --- | --- |
+| `add(project)` | from `tapedb add <package>`, after the package is installed and listed; sets the project up and changes nothing on a second run |
+| `build(project, { mode })` | before `tapedb dev` (`mode: "dev"`) and `tapedb deploy` (`"deploy"`), and from `tapedb build`; returns `{ watch }`, project files after whose change `tapedb dev` runs it again |
+| `commands` | `{ [command]: { summary, usage, run(args, project) } }`, run as `tapedb <name> <command>`; `run` returns the exit code |
+
+`project` is an `ExtensionProject`: `root`; `read(path)` (null when absent);
+`write(path, contents, { overwrite? })`, which keeps an existing file and
+answers false unless `overwrite`; `wrangler.addR2Bucket(binding, suffix)`
+(bucket `<worker name>-<suffix>`, in the jurisdiction of the existing
+buckets), `wrangler.addCron(expression)`, `wrangler.addVar(name, value)` and
+`wrangler.setIfAbsent(key, value)`, each adding only what is missing;
+`useInSchema(expression, imports)` and `useInWorker(expression, imports)`,
+which add `expression` to the `extensions` of `schema()` in tapedb.schema.ts
+and of `defineTapeDB()` in wrangler.jsonc's `main` (creating the array, and
+adding the missing import lines), and answer false without changing the file
+when the call is not written as literal options; `installDev(packages)`; and
+`log(message)`. Also exported: the types `TapeDBCliExtension`,
+`ExtensionProject` and `ExtensionCommand`.
+
 ## CLI
 
-`npx tapedb-cli init | migrate dev|rollback|status|check|squash | dev | studio |
-deploy | export | backup | restore | seed | erase | move`. The exact commands
+`npx tapedb-cli init | add | build | migrate dev|rollback|status|check|squash | dev | studio |
+deploy | export | backup | restore | seed | erase | move`, and
+`<extension> <command>` for each listed [extension](#extensions). The exact commands
 and flags are in `npx tapedb-cli --help`
 and are part of the checked surface. `deploy` refuses when `ENVIRONMENT` is not
 `production`, when `TAPEDB_DEV_CLAIMS` is set, when an R2 bucket is outside

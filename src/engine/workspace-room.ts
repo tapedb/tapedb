@@ -1,4 +1,5 @@
 import { analyzeQuery, runQuery, SqlQueryError, type QueryAnalysis, type SqlQueryStorage } from "./sql-query";
+import { EXTENSION_SCHEME } from "../worker/extensions";
 import { DurableObject } from "cloudflare:workers";
 
 import { stableStringify } from "./tx-hash";
@@ -3502,12 +3503,27 @@ export class WorkspaceRoom extends DurableObject<Env> {
     const summary = await deliverWebhooks(sql, {
       now: Date.now(),
       hooks: this.config.webhooks,
-      send: this.config.webhookTransport ?? defaultWebhookTransport,
+      send: (request) => (request.url.startsWith(EXTENSION_SCHEME) ? this.deliverToExtension(request) : (this.config.webhookTransport ?? defaultWebhookTransport)(request)),
       limit: WEBHOOK_PASS_ATTEMPTS,
     });
     if (summary.pending > 0 && summary.nextAt !== null) {
       // Either a retry is due (its backoff) or a failed head blocked the rest.
       await this.scheduleDurabilityAlarm(Math.max(Date.now() + 1_000, summary.nextAt));
+    }
+  }
+
+  /**
+   * An extension's change event, handed to its function in this object rather
+   * than posted: a return is a delivery, a throw a retry with backoff.
+   */
+  private async deliverToExtension(request: { url: string; body: string }): Promise<{ ok: boolean; status?: number; error?: string }> {
+    const handle = this.config.extensionHandlers.get(request.url.slice(EXTENSION_SCHEME.length));
+    if (!handle) return { ok: false, error: `no extension named ${request.url.slice(EXTENSION_SCHEME.length)}` };
+    try {
+      await handle(JSON.parse(request.body), this.env);
+      return { ok: true, status: 200 };
+    } catch (error) {
+      return { ok: false, error: error instanceof Error ? error.message : String(error) };
     }
   }
 
